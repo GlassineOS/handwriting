@@ -41,11 +41,15 @@ def evaluate(model, ds, batch=64):
 
 def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: int = 32,
           lr: float = 2e-3, threads: int = 8, eval_every: int = 2000, seed: int = 0,
-          val_limit: int = 2000, steps_per_s: float | None = None, augment: bool = False):
+          val_limit: int = 2000, steps_per_s: float | None = None, augment: bool = False,
+          select: Path | None = None):
+    """Checkpoints every eval_every steps; best.pt is the lowest CER on `select` (fonts never
+    trained on) if given, else on `val`."""
     torch.manual_seed(seed)
     torch.set_num_threads(threads)
     out.mkdir(parents=True, exist_ok=True)
     ds, vs = InkSet(data, augment=augment), InkSet(val, val_limit)
+    ss = InkSet(select, val_limit) if select else None
     model = Recognizer(**cfg)
     nparam = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
@@ -77,14 +81,17 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
                 print(f"step {step}/{total} loss {run:.3f} {step / el:.2f} step/s lr {sched.get_last_lr()[0]:.2e}", flush=True)
             if step % eval_every == 0 or step >= total or time.time() > deadline:
                 r = evaluate(model, vs)
+                if ss is not None:
+                    r["select"] = evaluate(model, ss)
                 r.update(step=step, loss=run, minutes=(time.time() - t0) / 60)
                 print("val", json.dumps(r), flush=True)
                 log.write(json.dumps(r) + "\n")
                 log.flush()
                 ck = {"cfg": model.cfg, "state": model.state_dict(), "step": step, "val": r}
                 torch.save(ck, out / "last.pt")
-                if r["cer"] < best:
-                    best = r["cer"]
+                score = r["select"]["cer"] if ss is not None else r["cer"]
+                if score < best:
+                    best = score
                     torch.save(ck, out / "best.pt")
             if step >= total or time.time() > deadline:
                 break

@@ -19,6 +19,17 @@ DOWNSAMPLE = 8  # input points per model frame at most (model.py, down=3)
 
 _TABLES = None
 _PARAMS = None
+_LOADED: dict[str, dict] = {}  # font id -> glyph table, kept across builds in one process
+
+
+def tables(font_cache: Path, fonts: list[str], workers: int = 8):
+    missing = [f for f in fonts if f not in _LOADED]
+    if missing:
+        for fid, t in font_tables(font_cache, ALPHABET.replace(" ", ""), missing, workers):
+            _LOADED[fid] = t
+    if set(fonts) - set(_LOADED):
+        raise SystemExit(f"fonts missing from {font_cache}: {sorted(set(fonts) - set(_LOADED))}")
+    return [(f, _LOADED[f]) for f in fonts]  # order matters: line() draws fonts by index
 
 
 def encode(s: str) -> list[int]:
@@ -44,9 +55,7 @@ def build(out: Path, texts: list[str], fonts: list[str], params: Params, seed: i
           font_cache: Path, workers: int = 8, provenance: dict | None = None):
     """Render texts (one sample each) with only `fonts`, store features under out/."""
     global _TABLES, _PARAMS
-    _TABLES = font_tables(font_cache, ALPHABET.replace(" ", ""), fonts)
-    if sorted(f for f, _ in _TABLES) != sorted(fonts):
-        raise SystemExit(f"fonts missing from {font_cache}: {fonts}")
+    _TABLES = tables(font_cache, fonts, workers)
     _PARAMS = params
     out.mkdir(parents=True, exist_ok=True)
     seeds = np.random.default_rng(seed).integers(0, 2**62, len(texts))

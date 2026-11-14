@@ -1,4 +1,7 @@
-"""Fetch handwriting fonts from google/fonts with their licence and metadata."""
+"""Fetch handwriting fonts from google/fonts with their licence and metadata.
+
+google/fonts keeps families by licence: `ofl/` (SIL Open Font License) and `apache/`
+(Apache License 2.0). Both allow redistribution; the licence text travels with the font."""
 
 import json
 import re
@@ -6,7 +9,9 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
-RAW = "https://raw.githubusercontent.com/{repo}/{ref}/ofl/{dir}/{name}"
+RAW = "https://raw.githubusercontent.com/{repo}/{ref}/{tree}/{dir}/{name}"
+# licence directory in google/fonts -> (METADATA.pb licence, licence file)
+TREES = {"ofl": ("OFL", "OFL.txt"), "apache": ("APACHE2", "LICENSE.txt")}
 
 
 def _get(url: str) -> bytes:
@@ -48,16 +53,20 @@ def fetch(manifest: Path, out: Path) -> list[dict]:
     out.mkdir(parents=True, exist_ok=True)
     families = []
     for fam in cfg["family"]:
-        d = fam["dir"]
-        url = lambda name: RAW.format(repo=repo, ref=ref, dir=d, name=name)
+        d, tree = fam["dir"], fam.get("tree", "ofl")
+        if tree not in TREES:
+            raise SystemExit(f"{d}: tree {tree}, only {sorted(TREES)} are accepted")
+        lic, lic_file = TREES[tree]
+        url = lambda name: RAW.format(repo=repo, ref=ref, tree=tree, dir=d, name=name)
         meta = parse_metadata(_get(url("METADATA.pb")).decode())
-        if meta["license"] != "OFL":
-            raise SystemExit(f"{d}: licence {meta['license']}, only OFL is accepted")
+        if meta["license"] != lic:
+            raise SystemExit(f"{d}: licence {meta['license']}, expected {lic} under {tree}/")
         if "HANDWRITING" not in meta["categories"]:
             raise SystemExit(f"{d}: category {meta['categories']}, not HANDWRITING")
         fdir = out / d
         fdir.mkdir(exist_ok=True)
-        (fdir / "OFL.txt").write_bytes(_get(url("OFL.txt")))
+        if not (fdir / lic_file).exists():
+            (fdir / lic_file).write_bytes(_get(url(lic_file)))
         files = []
         for f in meta["fonts"]:
             if f["style"] != "normal" or f["weight"] != "400":
@@ -66,7 +75,8 @@ def fetch(manifest: Path, out: Path) -> list[dict]:
             if not target.exists():
                 target.write_bytes(_get(url(f["filename"])))
             files.append(f["filename"])
-        meta.update(dir=d, files=sorted(set(files)), source=f"{repo}@{ref}")
+        meta.update(dir=d, files=sorted(set(files)), source=f"{repo}@{ref}",
+                    split=fam.get("split", "train"), style=fam.get("style"))
         families.append(meta)
         print(f"{d}: {meta['name']} ({meta['license']}), {len(meta['files'])} file(s)")
     (out / "manifest.json").write_text(json.dumps(families, indent=2) + "\n")
