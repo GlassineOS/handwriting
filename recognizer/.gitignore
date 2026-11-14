@@ -1,0 +1,4 @@
+*.o
+/glassine-handwriting
+/test-engine
+__pycache__/
