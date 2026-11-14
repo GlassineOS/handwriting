@@ -224,7 +224,13 @@ def cmd_adapt(a):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="glassine-train")
+    import sys
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["release"]:  # its own options: glassine-train release --help
+        from .release import main as release
+        return release(argv[1:])
+    ap = argparse.ArgumentParser(prog="glassine-train", epilog="glassine-train release --help: "
+                                 "a trained run as a base model package (models/README.md)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("data", help="fetch text, render train/val/test datasets")
     d.add_argument("--train-lines", type=int, default=300_000)
