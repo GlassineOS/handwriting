@@ -33,6 +33,16 @@ INK = [json.loads(line) for line in (HERE / "data" / "ink.jsonl").read_text().sp
 REAL = os.environ.get("HW_MODEL_DIR")
 
 
+def edits(a, b):
+    """character edit distance"""
+    row = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, y in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (x != y))
+    return row[-1]
+
+
 def pts(stroke, t0=0.0):
     """sample-format points (t in s) -> the contract's POINTS (t in ms)"""
     return " ".join(f"{p[0]:.4f},{p[1]:.4f},{(p[2] - t0) * 1000:.1f}" for p in stroke)
@@ -211,8 +221,8 @@ class Contract(unittest.TestCase):
             one = self.c.ask("recognize", "en", "normal", "em", "3", "", ";".join(pts(q) for q in s["strokes"]))
             self.assertEqual(one[0], "recognize")
             self.assertEqual(parse_text(one), r)
-            if REAL:
-                self.assertEqual(r[0][0], s["text"])
+            if REAL:   # any trained model, not one model's exact output: at most 1 error in 10
+                self.assertLessEqual(edits(r[0][0], s["text"]), max(1, len(s["text"]) // 10), r[0][0])
             self.c.ask("end", "s")
 
     def test_stream_reads_while_writing(self):
