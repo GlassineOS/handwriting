@@ -1,55 +1,72 @@
 # glassine-train (prototype)
 
-A first small English online-handwriting recognizer, trained only on synthetic ink from
-`../synth`. It is a prototype to learn what works, not the product engine: every number
-below is measured on synthetic ink, never on real handwriting.
+A small English online-handwriting recognizer, trained only on synthetic ink from `../synth`.
+It is a prototype to learn what works, not the product engine: every number below is
+measured on synthetic ink, never on real handwriting.
 
 ```sh
-(cd ../synth && uv run glassine-synth fetch)       # the fonts
-uv run glassine-train data --ablation              # text, then all datasets (about 15 min, 4 GB in build/)
-uv run glassine-train train --run main --minutes 120 --steps-per-s 1.8056 --lr 3e-3 --threads 6
-uv run glassine-train train --run novar --data train-novar --minutes 120 --steps-per-s 1.8056 --lr 3e-3 --threads 6
-uv run glassine-train eval --run main              # every test set, CER/WER + confusions
-uv run glassine-train export --run main            # ONNX, size, single-thread x86 timing
-uv run glassine-train adapt --run main --font reeniebeanie   # head-only adaptation + timings
-uv run glassine-train train --run aug --augment ...  # same, with random slant and stretch
+(cd ../synth && uv run glassine-synth fetch)        # the fonts in ../synth/fonts.toml
+uv run glassine-train data --subsets 40 --variation --copies 2 --workers 20
+uv run glassine-train train --run full --data train-f158-var-x2 --augment --hidden 176 \
+    --minutes 400 --steps-per-s 0.66667 --lr 3e-3 --threads 10      # 16000 steps
+uv run --extra lexicon glassine-train lexicon       # word list + character model (CC BY-SA)
+uv run glassine-train tune --run full               # decoder weights, on the dev fonts
+uv run glassine-train eval --run full --lexicon build/lexicon/en   # every test set, greedy + lexicon
+uv run glassine-train export --run full             # ONNX fp32 + int8, size, x86 timing
+uv run glassine-train adapt --run full --font reeniebeanie        # head-only adaptation
 uv run pytest -q tests
 ```
 
-`--minutes` is a hard deadline and `--steps-per-s` only sets the schedule length
-(minutes × 60 × rate = 13000 steps here), so two runs get the same step count.
+`--minutes` is a hard deadline and `--steps-per-s` only sets the schedule length (minutes ×
+60 × rate = 16000 steps here), so runs on a busy host get the same step count.
 
 ## Data
 
-**Ink.** `glassine-synth` (`../synth`), nine OFL fonts from the Google Fonts handwriting
-category (`../synth/fonts.toml`; licence and upstream commit kept next to each font and in
-every dataset's `meta.json`). One rendered sample per text line, default `Params`.
+**Ink.** `glassine-synth` (`../synth`): one rendered sample per text line. The fonts are
+every Latin handwriting family of Google Fonts that the stroke extraction handles, 176 in
+all (163 OFL, 13 Apache 2.0; `../synth/fonts.toml` lists them and the ones left out with
+the reason; licence and upstream commit are kept next to each font and in every dataset's
+`meta.json`).
 
-**Fonts held out.** `kalam` and `reeniebeanie` never appear in training or validation.
-The other seven train. Dancing Script stays in training: its joined letters are a known
-generator artefact, so holding it out would measure the artefact.
+**Fonts by split** (`split` in `fonts.toml`; a font is in one split only):
+
+| split | fonts | used for |
+|---|---|---|
+| train | 158 | training |
+| dev | 4 (2 print, 2 script) | choosing the checkpoint, the pilots and the decoder weights |
+| test | 2 original + 12 new | the reported held-out numbers, never used for any choice |
+
+The two original held-out fonts, `kalam` and `reeniebeanie`, stay held out, and their test
+sets keep their names and bytes, so old and new models are measured on the same ink. The 12
+new test fonts and the dev fonts were drawn at random from the pool, stratified six print
+and six script (two and two for dev), because the pool is mostly script and the two groups
+read very differently. None has a near-duplicate in training: its nearest training font by
+glyph-skeleton distance is no closer than training fonts are to each other (the closest
+training pairs, a family and its swash-capital variant, were cut to one). Many families
+share a designer; that was not excluded.
+
+**Letter-shape variation** (`--variation`, synth `Params.warp = 0.025`, `zones = 0.15`):
+per letter a smooth random displacement of all its strokes, per line a scale of ascenders,
+descenders and letter width. Training only; every test and dev set is rendered with the
+default parameters, so the variation is never measured against itself. `--copies 2`
+renders every training line twice with new ink (600 k lines).
 
 **Text.** Public-domain books (`src/glassine_train/text.py`): the plain-text editions of
-nine novels for training (Austen, Carroll, Conan Doyle, Shelley, Dickens, Stevenson,
-Twain, Wells, Bronte) and one never used in training for the test texts (Baum, *The
-Wonderful Wizard of Oz*). `fetch` checks each book's catalogue record for "Public domain
-in the USA." and that every author died before 1956 (also free under life + 70 years),
-and cuts the distributor's header, licence and footer away. Text is not stored in the
-repository; it is fetched and rebuilt from this list.
+nine novels for training (Austen, Carroll, Conan Doyle, Shelley, Dickens, Stevenson, Twain,
+Wells, Bronte) and one never used in training for the test texts (Baum, *The Wonderful
+Wizard of Oz*). `fetch` checks each book's catalogue record for "Public domain in the USA."
+and that every author died before 1956 (also free under life + 70 years), and cuts the
+distributor's header, licence and footer away. Text is not stored in the repository.
 
-Training lines (310 k available, 300 k used), at most 40 characters, characters
-`a-z A-Z 0-9 .,;:!?'-()` and space:
+Training lines (300 k), at most 40 characters, characters `a-z A-Z 0-9 .,;:!?'-()` and
+space: book sentences cut into 1 to 8 word lines; random word sequences from the training
+vocabulary (a third as many), so the model cannot lean on sentence context; numbers,
+dates, times, phone-style numbers, punctuation fragments (1 in 12); random letter strings,
+every letter equally likely (1 in 12).
 
-- book sentences cut into 1 to 8 word lines;
-- random word sequences from the training vocabulary (a third as many), so the model
-  cannot lean on sentence context;
-- numbers, dates, times, phone-style numbers, punctuation fragments (1 in 12);
-- random letter strings, every letter equally likely (1 in 12), for rare letters and
-  capitals (the nine training books contain 8 capital Z in all).
-
-Validation (model selection only): 2000 held-back lines of the training books, training
-fonts. Test sets, generated once with fixed seeds and reused for every model, the same
-texts in both font groups:
+Dev (`dev`) and the training-font check (`val`): 2000 held-back lines of the training
+books, in the dev fonts and in the seven original training fonts. Test sets, generated
+once with fixed seeds, the same texts in each font group:
 
 | set | text |
 |---|---|
@@ -58,9 +75,10 @@ texts in both font groups:
 | `test_symbols` | 500 number and punctuation lines |
 | `test_letters` | 500 random letter strings |
 
-each rendered in the training fonts (`-trainfonts`) and in the held-out fonts only
-(`-heldout`, the honest proxy), plus `test-font-kalam` / `test-font-reeniebeanie`, and
-for the ablation `test-*-novar` (no stroke-order variants).
+each in the original held-out fonts (`-heldout`, plus `test-font-kalam`,
+`test-font-reeniebeanie`), the new held-out fonts (`-newprint`, `-newscript`; "new
+held-out" below is their mean) and the seven original training fonts (`-trainfonts`, in
+training for every model here).
 
 ## Features (`features.py`)
 
@@ -79,168 +97,192 @@ come from the ink, never from the generator:
 ## Model (`model.py`)
 
 Conv1d 5→64 (k5), three strided Conv1d 64→128→128→128 (k5, stride 2: 8× fewer frames),
-GELU, padding masked; 2-layer bidirectional LSTM, 128 per direction; linear to 73
-characters + CTC blank. Greedy CTC decoding. 885 k parameters. Lines too short for CTC
-after 8× downsampling (5 of 300 k, all punctuation-only strings such as `..!` whose
-ink is tiny) are left out of training.
+GELU, padding masked; 2-layer bidirectional LSTM, 176 per direction (128 in the first
+prototype); linear to 73 characters + CTC blank. 1.41 M parameters (encoder 1.38 M, output
+layer 26 k). Lines too short for CTC after 8× downsampling (16 of 600 k, punctuation-only
+strings whose ink is tiny) are left out of training.
 
 AdamW, one-cycle LR (peak 3e-3), batch 32 (buckets of similar length), gradient clip 5,
-dropout 0.1, CPU (6 threads), checkpoint and validation every 1000 steps; the best
-validation CER is kept.
+dropout 0.1, random slant and stretch per line (`--augment`: shear sd 0.15, x stretch
+lognormal sd 0.12, y stretch sd 0.08, pause feature scaled), CPU (10 threads); checkpoint
+every 1000 steps, `best.pt` = lowest CER on the dev fonts.
+
+### Interface
+
+Unchanged from the first prototype: the same features (`features.py`), ONNX input `ink`
+(1, points, 5) float32 and output `logp` (1, frames, 74) log-probabilities, class 0 = CTC
+blank and class k = `ALPHABET[k - 1]` (`data.py`), frames = points downsampled 8× (three
+stride-2 convolutions). Only the LSTM width changed, which is inside the file.
+
+## Lexicon decoding (`lexicon.py`)
+
+A CTC prefix beam search (beam 16) over the model's output with a word list and a
+character n-gram model, in plain Python so the recognizer can port it as it is (the
+module docstring is the specification). Score of a hypothesis:
+
+    log P_ctc + lm_weight · Σ log P_char(c | previous 4 characters) + char_bonus · characters
+    + word_bonus · listed words − oov_penalty · unlisted words
+
+A word is a run of letters with inner apostrophes, looked up without case; numbers and
+punctuation pass without word bonus or penalty, and words that are not in the list stay
+possible (they pay the penalty), so names and rare words can still be written. The
+character model is interpolated Witten-Bell over n-gram counts (a table of context, next
+character, count). Weights tuned on the dev fonts only (`tune`, 1000 lines, grid in
+`decoder.json`): `lm_weight 0.25, char_bonus 0.5, word_bonus 0, oov_penalty 1.5`; a word
+bonus never helped. Per line about 5 ms in CPython on the x86 host (median, warm cache).
+
+**Word list and character model** (`lexicon`): from the same pinned sources as the word
+predictor's English model (GlassineOS/shell `tools/predict-model/en.sources`, the same
+sha256): the Simple English Wikipedia (CC BY-SA 3.0 and GFDL) and Tatoeba's English
+sentences (CC BY 2.0 FR) without its two stock names. The 50 000 most frequent words, and
+character n-grams up to order 5 seen at least 50 times (432 k entries, 4.8 MB as text, 1.9
+MB gzipped). The result is CC BY-SA 3.0, not GPL; `LICENSE.txt` with the attributions is
+written next to it, and neither file is in the repository. The test book is not in the
+sources. Out-of-list words: 1.5 % of the test book's words, 8 % of its random-word lines,
+3 % of the dev text. Order 6 with every n-gram seen 3 times (4.9 M entries, 52 MB) read
+the dev fonts 0.3 points better (with the first prototype); order 4 0.7 points worse.
 
 ## Results
 
-Two runs of 13000 steps (batch 32, about 1.4 passes over 300 k lines), 75 minutes each
-on 6 CPU threads, run side by side. Greedy decoding, no lexicon or language model. CER =
-character edit distance / reference length; WER the same over words; "lines" = share of
-lines read exactly.
+CER = character edit distance / reference length, WER the same over words, "greedy" =
+best path, "lexicon" = the decoder above. All on synthetic ink.
 
-### Main model (stroke-order variants on)
+### Before and after
 
-| test set | CER | CER, case folded | WER | lines exact |
-|---|---|---|---|---|
-| test book, training fonts | 0.6 % | 0.5 % | 4.2 % | 90 % |
-| test book, **held-out fonts** | **30.0 %** | 28.6 % | 76.7 % | 7 % |
-| … held-out `kalam` only | 9.2 % | 8.4 % | 39.0 % | 23 % |
-| … held-out `reeniebeanie` only | 50.0 % | 48.6 % | 112 % | 2 % |
-| random words, training fonts | 0.6 % | 0.5 % | 5.1 % | 89 % |
-| random words, held-out fonts | 33.4 % | 31.3 % | 99.0 % | 4 % |
-| numbers and punctuation, training / held-out | 2.2 % / 29.4 % | | | |
-| random letters, training / held-out | 5.4 % / 32.8 % | 3.5 % / 28.0 % | | |
-
-Validation (held-back training-book lines, training fonts) ended at 0.52 % CER.
-Random word order reads as well as sentences, so the model does not rely on sentence
-context; random letter strings are clearly worse (5.4 % vs 0.6 % on training fonts), so it
-does carry a word-spelling prior. The held-out fonts are the honest number, and it is
-poor, with a wide spread: `kalam` (a print hand close to the training fonts) reads at
-9 %, `reeniebeanie` (small x-height, an `e` without a bar, an open `a`) at 50 %. The
-generated strokes for `reeniebeanie` were checked by eye against training fonts: no
-skeleton artefacts, the letters are just drawn differently. Top held-out errors:
-`e→c` (1302), `a→o` (623), `h→l` (508), `r→c`, `n→u`, `y→l`, `g→o`: letter shapes that
-differ in small loops and joins between fonts. On training fonts the errors are spaces
-(missing or extra), `I/l/i`, `O/o/0` and apostrophes.
-
-### Ablation: stroke-order variants (synth `reverse_loop`, `delay`, `extra_lift`)
-
-Same texts, seeds and steps; the second model trained with the three set to 0.
-
-| test set | variants on in training | variants off in training |
+| | first prototype | this model |
 |---|---|---|
-| training fonts, test ink with variants | 0.6 % | 10.4 % |
-| training fonts, test ink without variants | 0.7 % | 0.6 % |
-| held-out fonts, test ink with variants | 30.0 % | 39.2 % |
-| held-out fonts, test ink without variants | 29.8 % | 30.9 % |
+| training | 7 fonts, 300 k lines, 13 k steps, 885 k parameters | 158 fonts with letter-shape variation, 600 k lines, 16 k steps, 1.41 M parameters |
+| **original held-out fonts**, test book, greedy / lexicon | **30.0 % / 19.4 %** | **12.0 % / 6.0 %** |
+| … `kalam` | 9.2 % | 1.1 % / 0.7 % |
+| … `reeniebeanie` | 50.0 % | 23.7 % / 11.7 % |
+| **new held-out fonts**, test book, greedy / lexicon | **37.2 % / 28.0 %** | **4.9 % / 2.1 %** |
+| … print / script, greedy | 25.3 % / 49.0 % | 3.8 % / 6.0 % |
+| … print / script, lexicon | 16.7 % / 39.2 % | 1.7 % / 2.5 % |
+| random words, original / new held-out, greedy | 33.4 % / 41.5 % | 14.2 % / 5.5 % |
+| … lexicon | 25.7 % / 34.4 % | 7.9 % / 2.5 % |
+| numbers and punctuation, original / new held-out, greedy | 29.4 % / 40.0 % | 8.3 % / 13.6 % |
+| random letters, original / new held-out, greedy | 32.8 % / 52.4 % | 22.3 % / 22.5 % |
+| test book, training fonts, greedy / lexicon | 0.6 % / 0.9 % | 1.7 % / 1.1 % |
+| random letters, training fonts, greedy (case folded) | 5.4 % (3.5 %) | 15.9 % (10.5 %) |
+| dev fonts, greedy | 34.7 % | 3.8 % |
 
-The variants cost nothing on ink written in canonical order, and a model trained without
-them cannot read dots and crosses written after the word (10 % CER on fonts it knows).
-Keep them. This compares the generator with itself; whether real writers' orders match
-the variants is open until there is real ink.
+The first prototype's lexicon numbers use weights tuned for it on the dev fonts in the same
+way (`lm_weight 0.7, char_bonus 3.5, oov_penalty 2`). With the slant-and-stretch
+augmentation alone (the first prototype's third run) the original held-out fonts read at
+26.9 % and the new ones at 36.8 %.
+
+The new held-out fonts are now read at 5 % greedy, 2 % with the lexicon. The original pair
+improved less (12 %), almost all of it `reeniebeanie` (`e→c`, `n→u`, `a→e`: an `e` without
+a bar, an open `a`), which is far from every training font. The price is on the seven
+original fonts: 0.6 % → 1.7 % on book text and 5 % → 16 % on random letter strings,
+mostly capitals (case-folded 10.5 %): the training set now has 158 alphabets of capitals,
+many of them ornamental, and capitals are rare in the text. Top errors on new held-out
+print are spaces and `r→v`; on script `n→m`, spaces, `g→q`, `o→a`.
+
+**Lexicon decoding** halves the error on text in every font group and is the second
+biggest step after the fonts. It hurts where there are no words: numbers and punctuation
+(held-out 8.3 → 10.3 %, new 13.6 → 15.4 %) and random letters (22 → 33 %). The recognizer
+should therefore keep the greedy reading as an alternative (or skip the word terms when the
+field expects numbers or codes).
+
+### What each step bought (pilots)
+
+Pilot runs on the same recipe (885 k parameters, `--augment`, dev selection, 6000-step
+schedule, run side by side). The 7- and 40-font pilots were stopped at step 3000 (7 fonts
+had stopped improving: dev 39.3, 36.1, 35.9 % at steps 1000, 2000, 3000). Test sets
+greedy:
+
+| training fonts | steps | dev | original held-out | new held-out | training fonts |
+|---|---|---|---|---|---|
+| 7 | 3000 | 35.9 % | 30.4 % | 38.6 % | 2.0 % |
+| 40 (random subset) | 3000 | 11.3 % | 21.4 % | 15.4 % | 11.6 % |
+| 158 | 6000 | 5.3 % | 13.8 % | 7.5 % | 4.0 % |
+| 158 + letter-shape variation | 6000 | 5.6 % | 14.1 % | 7.3 % | 4.3 % |
+
+Dev CER at equal steps (1000 / 2000 / 3000): 7 fonts 39.3 / 36.1 / 35.9 %, 40 fonts 31.4 /
+14.2 / 11.3 %, 158 fonts 30.4 / 10.7 / 6.7 %, with variation 31.3 / 9.5 / 7.6 %.
+
+- **More fonts** is by far the largest gain: new held-out 38.6 → 7.5 %, original held-out
+  30.4 → 13.8 %, and the curve is still falling from 40 to 158 fonts.
+- **Letter-shape variation** bought nothing measurable (within ±0.3 points, one seed each).
+  With 158 fonts the model already sees many shapes per letter; the warps add little on
+  top. It is kept in the final recipe (it costs nothing), not because it was shown to help.
+- **Larger model, twice the ink, more steps** (the final run against the 158-font pilot):
+  new held-out 7.3 → 4.9 %, original 14.1 → 12.0 %, training fonts 4.3 → 1.7 %. The
+  pilots underfit (training-font CER as high as dev), so capacity and steps were the next
+  limit.
 
 ### Size and speed (x86 host, one thread)
 
-| | |
-|---|---|
-| parameters | 885 k (encoder 866 k, output layer 19 k) |
-| ONNX fp32 | 3.5 MB; matches PyTorch to 4e-5 |
-| ONNX int8 weights (dynamic) | 0.9 MB; held-out CER 30.3 % (fp32 30.0 %) |
-| one line (median 600 points), onnxruntime | 3.9 ms fp32, 5.1 ms int8 (median) |
+| | first prototype | this model |
+|---|---|---|
+| parameters | 885 k | 1.41 M |
+| ONNX fp32 | 3.5 MB | 5.6 MB; matches PyTorch to 8e-5 |
+| ONNX int8 weights (dynamic) | 0.9 MB | 1.4 MB; original held-out CER 12.1 % (fp32 12.0 %) |
+| one line (median 600 points), onnxruntime fp32 / int8 | 3.3 / 4.2 ms | 5.3 / 5.0 ms |
 
-Preprocessing (`features()`, Python + NumPy, not part of the ONNX file) adds 7.6 ms per
-40-character line on the same host. ARM speed is not measured; as an estimate only, even
-20× slower per thread would keep a line near 250 ms, inside the 1 s budget.
+Both models timed in the same process, interleaved, pinned to one core (an earlier quiet
+measurement of the first prototype gave 3.9 ms). Preprocessing (`features()`) and the
+lexicon decoder add about 8 ms and 5 ms per line in Python.
 
 ### Per-writer adaptation (FR-009): frozen encoder, small head
 
-`adapt.py`: the encoder (convolutions + LSTM, 866 k parameters) runs once per confirmed
-sample and its frames are cached; only the head trains, on those frames. Two heads: the
-output layer alone (19 k parameters), or a residual bottleneck adapter 256→32→256 in front
-of it, starting as the identity (36 k parameters). Adam, lr 1e-3, batch 8, 5 epochs.
-A held-out font stands in for a new writer: adaptation lines are training-book text in
-that font, the check is 1000 test-book lines in the same font, the other held-out font
-and the training fonts.
-
-Host, one thread (another training run on the machine at the same time):
-
-| | |
-|---|---|
-| encoder forward, one line of 600 points (PyTorch eager) | 5.1 ms (median; 7–8 ms while another run was training) |
-| head training, 200 cached lines × 5 epochs | 0.6 s (output layer), 1.0 s (adapter) |
-| full-model fine-tune, one line (forward + backward + step) | 32–37 ms |
-
-So adapting to 200 samples costs about 200 × 5 ms of encoding (once, cacheable as samples
-arrive) plus about a second of head training on this host; a full fine-tune of the same
-5 epochs would be about 35 s and touch every weight.
-
-CER before → after, adapter (rank 32) / output layer only:
+`adapt.py`: the encoder (convolutions + LSTM, 1.38 M parameters) runs once per confirmed
+sample and its frames are cached; only the head trains: the output layer alone (26 k
+parameters) or a residual bottleneck adapter 352→32→352 in front of it, starting as the
+identity (49 k). Adam, lr 1e-3, batch 8, 5 epochs. An original held-out font stands in for
+a new writer: adaptation lines are training-book text in that font, the check is 1000
+test-book lines in the same font, the other held-out font and the training fonts. Greedy.
 
 | writer stand-in | lines | same font | other held-out font | training fonts |
 |---|---|---|---|---|
-| `reeniebeanie` | before | 50.1 % | 9.4 % | 0.7 % |
-| | 50 | 19.3 % / 36.1 % | 10.3 % / 9.0 % | 2.7 % / 1.3 % |
-| | 200 | **8.2 %** / 18.9 % | 14.8 % / 11.2 % | 3.1 % / 1.8 % |
-| `kalam` | before | 9.4 % | 50.1 % | 0.7 % |
-| | 50 | 3.0 % / 5.4 % | 47.3 % / 47.9 % | 1.5 % / 0.9 % |
-| | 200 | **1.8 %** / 2.5 % | 46.5 % / 47.0 % | 1.4 % / 1.1 % |
+| `reeniebeanie` | before | 23.6 % | 1.2 % | 1.8 % |
+| | 50 | 5.2 % / 14.2 % | 2.4 % / 1.6 % | 3.1 % / 2.5 % |
+| | 200 | **3.2 %** / 6.3 % | 2.2 % / 1.9 % | 3.6 % / 3.0 % |
+| `kalam` | before | 1.2 % | 23.6 % | 1.8 % |
+| | 50 | 1.2 % / 1.2 % | 24.5 % / 24.0 % | 2.8 % / 2.2 % |
+| | 200 | **0.9 %** / 1.0 % | 25.7 % / 25.1 % | 2.6 % / 2.3 % |
 
-A small head learns a new hand quickly from a few hundred lines, which is the case for
-FR-009 with a frozen shared encoder. These are upper bounds: a font draws every letter
-the same way each time, which is far easier to learn than a real writer's variation. The
-fact that a 36 k-parameter head on frozen features recovers `reeniebeanie` from 50 % to
-8 % also says the encoder's features do separate its letters; it is the output mapping
-that the seven training fonts never taught. The price is drift on other hands (training fonts
-0.7 % → 3 % after the strongest adaptation): fine for a personal model, and exactly what
-FR-009's held-back check on the person's own samples should watch; keep the base head to
-fall back to.
-
-### Slant and stretch augmentation
-
-A third run, `--augment`: per line a random shear (sd 0.15), x stretch (lognormal sd
-0.12) and y stretch (sd 0.08), applied to the features (the map is linear), and the pause
-feature scaled at random. Same data, steps and settings as the main model; 55 minutes
-(the host was quieter). One seed each, so small differences are noise.
-
-| test set | main | augmented |
-|---|---|---|
-| test book, training fonts | 0.6 % | 0.7 % |
-| test book, held-out fonts | 30.0 % | 26.9 % |
-| … `kalam` | 9.2 % | 10.0 % |
-| … `reeniebeanie` | 50.0 % | 43.4 % |
-| random words, held-out fonts | 33.4 % | 30.5 % |
-| numbers and punctuation, held-out fonts | 29.4 % | 24.5 % |
-
-Validation was the same (0.52 % for both), so this was not picked on the held-out fonts.
-Affine jitter helps a little on the font that is far from the training set and not at all
-on the near one: it does not supply new letter shapes, which is the real gap. The export,
-size and adaptation numbers above are for the main model.
+(adapter rank 32 / output layer only). Encoder forward 8–10 ms per line (PyTorch eager,
+host busy), head training 1.1 s for 200 lines × 5 epochs with the adapter, a full
+fine-tune 35–42 ms per line. A small head still learns a far hand quickly (`reeniebeanie`
+23.6 → 3.2 %, against 50 → 8 % with the first prototype), at the cost of some drift on
+other hands; keep the base head to fall back to, as FR-009 says.
 
 ## What limits accuracy
 
-1. **Too few hands.** Seven fonts are seven writers; the model fits their shapes
-   (0.6 % CER) and generalises unevenly to others (9 % and 50 % on the two held out).
-   This dominates everything else.
-2. **Generator realism.** Fonts give tidy, repeatable glyphs; real hands vary letter to
-   letter, join untidily and use stroke orders the generator does not have. Synthetic
-   held-out fonts are only a proxy; there is no real-ink number yet.
-3. **Small things that will matter later:** greedy decoding with no lexicon (spaces and
-   `I/l`, `O/0` are context questions), and case (2–5 points of CER on letters).
+1. **Generator realism.** Fonts give tidy, repeatable glyphs laid out letter by letter;
+   real hands vary letter to letter, join untidily (script fonts here are not joined into
+   one pen-down stroke) and use stroke orders the generator does not have. Synthetic
+   held-out fonts are only a proxy; there is still no real-ink number, and the gap from
+   the proxy to real ink is likely larger now than the gap between the proxy and training.
+2. **Far hands.** A font unlike all 158 (`reeniebeanie`) still reads at 24 % greedy; the
+   per-writer head fixes it in a few hundred lines.
+3. **Capitals and context-free strings.** Random letters (16 % on training fonts) and
+   numbers are the weak spot, and the lexicon cannot help there.
+4. **Spaces.** Missing and extra spaces are the most common error on the new held-out
+   fonts; the generator's word gaps are one distribution for all fonts.
 
 ## Next steps
 
-- More hands: all OFL/Apache handwriting fonts the generator handles (the category has
-  many more than nine), and per-glyph shape perturbation beyond affine jitter (moving
-  loop sizes, opening and closing loops, `e` bars, ascender heights); measure held-out
-  fonts after each, with more than two held out.
-- Real ink to test on: a small donated set under clear terms, as the research notes say;
-  until then, report held-out fonts per release.
-- Beam search with a word list and a small character n-gram, and context from the text
-  before the cursor (FR-003, FR-006).
-- Run the int8 ONNX model on the reference device to get real latency and head-training
+- Real ink to test on: a small donated set under clear terms (`../docs/samples.md`), now
+  the most important missing number.
+- Joined script in the generator: connect letters within a word into pen-down strokes
+  where the font's letters meet, so script reads like it is written; measure on a joined
+  held-out set and on real ink, not on the generator alone.
+- Capitals: more capital-heavy training text, and a check whether ornamental capitals
+  from formal scripts help or hurt.
+- Decoder: context from the text before the cursor, n-best alternatives for the keyboard
+  (the decoder already returns them), and a way to turn the word terms off for numeric
+  fields; port `lexicon.py` and check its speed on the device.
+- Run the int8 ONNX model on the reference device for real latency and head-training
   times (not measured here).
 - Prompted alignment (FR-007): CTC forced alignment gives stroke spans per character; the
   generator's `spans` can test it.
 
 ## Licence
 
-Code GPL-2.0-or-later. The fonts are OFL (their licence travels with them in
-`../synth/build/fonts`); the texts are public domain. A model trained by this recipe
+Code GPL-2.0-or-later. The fonts are OFL or Apache 2.0 (their licence travels with them
+in `../synth/build/fonts`); the texts are public domain. The lexicon files built by
+`lexicon` are CC BY-SA 3.0 (see above). A model trained by this recipe
 contains neither, but its recipe, sources and licences are this file.

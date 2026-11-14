@@ -334,7 +334,10 @@ def cmd_lexicon(a):
         return
     src = Path("build/lexicon")
     lexicon.fetch(src)
-    lexicon.build(src, Path(a.out), a.words, a.order, a.min_count, a.max_lines)
+    counts = Path(a.out + "-counts")  # order 6, every n-gram seen 3 times or more
+    if not (counts / "charlm.txt").exists():
+        lexicon.build(src, counts, a.words, 6, 3, a.max_lines)
+    lexicon.prune(counts, Path(a.out), a.min_count, a.words, a.order)
 
 
 def _logps(m, ds):
@@ -392,7 +395,7 @@ def main(argv=None):
     t.add_argument("--minutes", type=float, default=60)
     t.add_argument("--steps-per-s", type=float, help="measured rate, sets the LR schedule length")
     t.add_argument("--conv", type=int, default=128)
-    t.add_argument("--hidden", type=int, default=128)
+    t.add_argument("--hidden", type=int, default=176)
     t.add_argument("--layers", type=int, default=2)
     t.add_argument("--dropout", type=float, default=0.1)
     t.add_argument("--down", type=int, default=3, help="strided convolutions (2**down downsampling)")
@@ -438,8 +441,8 @@ def main(argv=None):
     lx = sub.add_parser("lexicon", help="fetch the word-list sources, build words + character model")
     lx.add_argument("--out", default="build/lexicon/en")
     lx.add_argument("--words", type=int, default=50_000)
-    lx.add_argument("--order", type=int, default=6)
-    lx.add_argument("--min-count", type=int, default=3)
+    lx.add_argument("--order", type=int, default=5)
+    lx.add_argument("--min-count", type=int, default=50)
     lx.add_argument("--max-lines", type=int)
     lx.add_argument("--prune-from", help="instead: a smaller copy of this built lexicon")
     a = ap.parse_args(argv)
