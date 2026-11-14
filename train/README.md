@@ -43,7 +43,8 @@ and six script (two and two for dev), because the pool is mostly script and the 
 read very differently. None has a near-duplicate in training: its nearest training font by
 glyph-skeleton distance is no closer than training fonts are to each other (the closest
 training pairs, a family and its swash-capital variant, were cut to one). Many families
-share a designer; that was not excluded.
+share a designer; that was not excluded, and the per-font results below show it does not
+explain the numbers.
 
 **Letter-shape variation** (`--variation`, synth `Params.warp = 0.025`, `zones = 0.15`):
 per letter a smooth random displacement of all its strokes, per line a scale of ascenders,
@@ -77,7 +78,7 @@ once with fixed seeds, the same texts in each font group:
 
 each in the original held-out fonts (`-heldout`, plus `test-font-kalam`,
 `test-font-reeniebeanie`), the new held-out fonts (`-newprint`, `-newscript`; "new
-held-out" below is their mean) and the seven original training fonts (`-trainfonts`, in
+held-out" below is their mean; `test-font-NAME`, 300 test-book lines, for each of them) and the seven original training fonts (`-trainfonts`, in
 training for every model here).
 
 ## Features (`features.py`)
@@ -97,8 +98,8 @@ come from the ink, never from the generator:
 ## Model (`model.py`)
 
 Conv1d 5→64 (k5), three strided Conv1d 64→128→128→128 (k5, stride 2: 8× fewer frames),
-GELU, padding masked; 2-layer bidirectional LSTM, 176 per direction (128 in the first
-prototype); linear to 73 characters + CTC blank. 1.41 M parameters (encoder 1.38 M, output
+GELU, padding masked; 2-layer bidirectional LSTM, 176 per direction (128 in the 7-font
+baseline); linear to 73 characters + CTC blank. 1.41 M parameters (encoder 1.38 M, output
 layer 26 k). Lines too short for CTC after 8× downsampling (16 of 600 k, punctuation-only
 strings whose ink is tiny) are left out of training.
 
@@ -109,10 +110,14 @@ every 1000 steps, `best.pt` = lowest CER on the dev fonts.
 
 ### Interface
 
-Unchanged from the first prototype: the same features (`features.py`), ONNX input `ink`
+Unchanged from the 7-font baseline: the same features (`features.py`), ONNX input `ink`
 (1, points, 5) float32 and output `logp` (1, frames, 74) log-probabilities, class 0 = CTC
 blank and class k = `ALPHABET[k - 1]` (`data.py`), frames = points downsampled 8× (three
-stride-2 convolutions). Only the LSTM width changed, which is inside the file.
+stride-2 convolutions). Only the LSTM width changed, which is inside the file. One
+consequence outside it: the encoder frames, which are the input of a per-writer head
+(`adapt.py`), are now 352 wide (2 × 176) instead of 256, so a head trained on the 7-font
+baseline does not fit this encoder; heads are always trained against the encoder they run
+on.
 
 ## Lexicon decoding (`lexicon.py`)
 
@@ -140,7 +145,7 @@ MB gzipped). The result is CC BY-SA 3.0, not GPL; `LICENSE.txt` with the attribu
 written next to it, and neither file is in the repository. The test book is not in the
 sources. Out-of-list words: 1.5 % of the test book's words, 8 % of its random-word lines,
 3 % of the dev text. Order 6 with every n-gram seen 3 times (4.9 M entries, 52 MB) read
-the dev fonts 0.3 points better (with the first prototype); order 4 0.7 points worse.
+the dev fonts 0.3 points better (with the 7-font baseline); order 4 0.7 points worse.
 
 ## Results
 
@@ -149,7 +154,7 @@ best path, "lexicon" = the decoder above. All on synthetic ink.
 
 ### Before and after
 
-| | first prototype | this model |
+| | 7-font baseline | this model |
 |---|---|---|
 | training | 7 fonts, 300 k lines, 13 k steps, 885 k parameters | 158 fonts with letter-shape variation, 600 k lines, 16 k steps, 1.41 M parameters |
 | **original held-out fonts**, test book, greedy / lexicon | **30.0 % / 19.4 %** | **12.0 % / 6.0 %** |
@@ -166,10 +171,31 @@ best path, "lexicon" = the decoder above. All on synthetic ink.
 | random letters, training fonts, greedy (case folded) | 5.4 % (3.5 %) | 15.9 % (10.5 %) |
 | dev fonts, greedy | 34.7 % | 3.8 % |
 
-The first prototype's lexicon numbers use weights tuned for it on the dev fonts in the same
+The 7-font baseline's lexicon numbers use weights tuned for it on the dev fonts in the same
 way (`lm_weight 0.7, char_bonus 3.5, oov_penalty 2`). With the slant-and-stretch
-augmentation alone (the first prototype's third run) the original held-out fonts read at
+augmentation alone (a run of the 7-font recipe with `--augment`) the original held-out fonts read at
 26.9 % and the new ones at 36.8 %.
+
+Per font, test book, greedy (300 lines each; "shares a designer" = a training font is by
+the same designer, which is the case for most of the pool):
+
+| font | style | shares a designer | 7-font baseline | this model |
+|---|---|---|---|---|
+| annieuseyourtelescope | print | yes | 24.7 % | 3.6 % |
+| delicioushandrawn | print | no | 13.4 % | 2.5 % |
+| eaglelake | print | yes | 47.8 % | 5.2 % |
+| nothingyoucoulddo | print | yes | 25.6 % | 3.1 % |
+| waitingforthesunrise | print | yes | 21.2 % | 11.3 % |
+| yuyu | print | no | 18.6 % | 4.0 % |
+| betaniapatmos | script | no | 47.5 % | 8.8 % |
+| caramel | script | yes | 49.9 % | 3.2 % |
+| damion | script | yes | 44.9 % | 8.0 % |
+| kolkerbrush | script | yes | 67.0 % | 7.6 % |
+| sacramento | script | yes | 55.4 % | 8.4 % |
+| yellowtail | script | yes | 34.7 % | 4.0 % |
+
+The three fonts whose designer has nothing in training read no worse (mean 5.1 %) than the
+nine that share one (6.0 %), so the gain is not a designer leak.
 
 The new held-out fonts are now read at 5 % greedy, 2 % with the lexicon. The original pair
 improved less (12 %), almost all of it `reeniebeanie` (`e→c`, `n→u`, `a→e`: an `e` without
@@ -214,7 +240,7 @@ Dev CER at equal steps (1000 / 2000 / 3000): 7 fonts 39.3 / 36.1 / 35.9 %, 40 fo
 
 ### Size and speed (x86 host, one thread)
 
-| | first prototype | this model |
+| | 7-font baseline | this model |
 |---|---|---|
 | parameters | 885 k | 1.41 M |
 | ONNX fp32 | 3.5 MB | 5.6 MB; matches PyTorch to 8e-5 |
@@ -222,7 +248,7 @@ Dev CER at equal steps (1000 / 2000 / 3000): 7 fonts 39.3 / 36.1 / 35.9 %, 40 fo
 | one line (median 600 points), onnxruntime fp32 / int8 | 3.3 / 4.2 ms | 5.3 / 5.0 ms |
 
 Both models timed in the same process, interleaved, pinned to one core (an earlier quiet
-measurement of the first prototype gave 3.9 ms). Preprocessing (`features()`) and the
+measurement of the 7-font baseline gave 3.9 ms). Preprocessing (`features()`) and the
 lexicon decoder add about 8 ms and 5 ms per line in Python.
 
 ### Per-writer adaptation (FR-009): frozen encoder, small head
@@ -246,7 +272,7 @@ test-book lines in the same font, the other held-out font and the training fonts
 (adapter rank 32 / output layer only). Encoder forward 8–10 ms per line (PyTorch eager,
 host busy), head training 1.1 s for 200 lines × 5 epochs with the adapter, a full
 fine-tune 35–42 ms per line. A small head still learns a far hand quickly (`reeniebeanie`
-23.6 → 3.2 %, against 50 → 8 % with the first prototype), at the cost of some drift on
+23.6 → 3.2 %, against 50 → 8 % with the 7-font baseline), at the cost of some drift on
 other hands; keep the base head to fall back to, as FR-009 says.
 
 ## What limits accuracy
