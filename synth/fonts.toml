@@ -1,0 +1,24 @@
+# Font families from the google/fonts repository (directory under ofl/).
+# fetch checks each family's METADATA.pb: licence must be OFL, category HANDWRITING.
+[source]
+repository = "google/fonts"
+ref = "main"
+
+[[family]]
+dir = "caveat"
+[[family]]
+dir = "indieflower"
+[[family]]
+dir = "patrickhand"
+[[family]]
+dir = "kalam"
+[[family]]
+dir = "architectsdaughter"
+[[family]]
+dir = "gochihand"
+[[family]]
+dir = "dancingscript"
+[[family]]
+dir = "shadowsintolight"
+[[family]]
+dir = "reeniebeanie"
