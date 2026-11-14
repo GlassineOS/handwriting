@@ -1,0 +1,86 @@
+The quick brown fox jumps over the lazy dog.
+Pack my box with five dozen liquor jugs.
+Six big juicy steaks sizzled in the pan.
+Jackdaws love my big sphinx of quartz.
+How vexingly quick daft zebras jump!
+Write a short note before the bell rings.
+The train left at 7:45 and came back at 9:10.
+Please call me back on Monday, if you can.
+She found 12 shells, 3 stones and a key.
+Is it going to rain later today?
+We walked along the river until dark.
+Bring two pens, some paper and a ruler.
+The meeting moved to room 204 (second floor).
+Thank you for the lovely letter!
+It's cold outside; take a warm coat.
+My list: milk, bread, eggs, apples.
+Turn left at the old mill, then go straight.
+How many days are there in a leap year?
+The garden is quiet in the early morning.
+Exit 18 is closed - use exit 19.
+abcdefghijklmnopqrstuvwxyz
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+0123456789
+. , ; : ! ? ' - ( )
+a
+b
+c
+d
+e
+f
+g
+h
+i
+j
+k
+l
+m
+n
+o
+p
+q
+r
+s
+t
+u
+v
+w
+x
+y
+z
+A
+B
+C
+D
+E
+F
+G
+H
+I
+J
+K
+L
+M
+N
+O
+P
+Q
+R
+S
+T
+U
+V
+W
+X
+Y
+Z
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9

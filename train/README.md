@@ -12,6 +12,7 @@ uv run glassine-train train --run novar --data train-novar --minutes 120 --steps
 uv run glassine-train eval --run main              # every test set, CER/WER + confusions
 uv run glassine-train export --run main            # ONNX, size, single-thread x86 timing
 uv run glassine-train adapt --run main --font reeniebeanie   # head-only adaptation + timings
+uv run glassine-train release --run main --lang en --version N --commit C   # ../models/README.md
 uv run glassine-train train --run aug --augment ...  # same, with random slant and stretch
 uv run pytest -q tests
 ```
