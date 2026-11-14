@@ -21,7 +21,8 @@ TEXT = [  # written for this tool; redistributable with it
 ]
 
 
-def _tables(cache: Path, chars: str, only: list[str] | None = None):
+def font_tables(cache: Path, chars: str, only: list[str] | None = None):
+    """Glyph tables (font id, {char: Glyph}) for the fetched fonts, all at the same x-height."""
     out = []
     for fam in fetch.load(cache):
         if only and fam["dir"] not in only:
@@ -70,7 +71,7 @@ def main(argv=None):
     if a.cmd == "fetch":
         fetch.fetch(a.manifest, a.cache)
     elif a.cmd == "glyphs":
-        tables = _tables(a.cache, a.chars, a.font)
+        tables = font_tables(a.cache, a.chars, a.font)
         a.o.parent.mkdir(parents=True, exist_ok=True)
         a.o.write_text(sheet.glyph_sheet(tables, a.chars))
         print(a.o)
@@ -78,7 +79,7 @@ def main(argv=None):
         texts = a.text.read_text().splitlines() if a.text else TEXT
         texts = [t for t in texts if t.strip()]
         chars = "".join(sorted(set("".join(texts))))
-        tables = _tables(a.cache, chars, a.font)
+        tables = font_tables(a.cache, chars, a.font)
         prov = {f["dir"]: {"name": f["name"], "license": f["license"], "source": f["source"],
                            "upstream": f["upstream"], "commit": f["upstream_commit"]}
                 for f in fetch.load(a.cache)}
