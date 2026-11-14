@@ -13,7 +13,7 @@ from . import text
 from .data import build
 
 FONTS = Path("../synth/build/fonts")
-# The first prototype's fonts: seven to train, two held out. Their datasets keep their names
+# The 7-font baseline's fonts: seven to train, two held out. Their datasets keep their names
 # (`train`, `val`, `test-trainfonts`, `test-heldout`, ...), so old and new models are measured
 # on the same ink.
 ORIG_TRAIN = ["caveat", "indieflower", "patrickhand", "architectsdaughter", "gochihand",
@@ -54,7 +54,7 @@ def cmd_data(a):
     out = Path("build/data")
     sp = font_splits()
     tr = c["train"][:a.train_lines]
-    # the first prototype's sets
+    # the 7-font baseline's sets
     jobs = [("train", tr, TRAIN_FONTS, Params(), 11)]
     if a.ablation:
         jobs.append(("train-novar", tr, TRAIN_FONTS, Params(**NO_VARIANTS), 11))
@@ -83,6 +83,8 @@ def cmd_data(a):
     for split, n in EVAL_SIZES.items():
         for style in ("print", "script"):
             jobs.append((f"{split}-new{style}", c[split][:n], sp[f"test-{style}"], Params(), 13))
+    for f in sp["test-print"] + sp["test-script"]:  # one font at a time, for per-font numbers
+        jobs.append((f"test-font-{f}", c["test"][:300], [f], Params(), 13))
     for name, texts, fonts, params, seed in jobs:
         if (out / name / "meta.json").exists():
             print(f"{name}: exists")
