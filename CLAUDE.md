@@ -1,7 +1,8 @@
 # CLAUDE.md — GlassineOS/handwriting
 
 On-device online handwriting recognition for GlassineOS (see `README.md`): one program
-with a session interface that the on-screen keyboard and any app use. Nothing built yet;
+with a session interface that the on-screen keyboard and any app use: `recognizer/`,
+contract in `docs/recognizer.md` (keep it in step with the code; `make -C recognizer check`);
 the first spec is `specs/001-recognizer/`.
 
 - Nothing leaves the device: no network code, no telemetry. Samples come only from a

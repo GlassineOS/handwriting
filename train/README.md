@@ -14,6 +14,7 @@ uv run glassine-train tune --run full               # decoder weights, on the de
 uv run glassine-train eval --run full --lexicon build/lexicon/en   # every test set, greedy + lexicon
 uv run glassine-train export --run full             # ONNX fp32 + int8, size, x86 timing
 uv run glassine-train adapt --run full --font reeniebeanie        # head-only adaptation
+uv run glassine-train release --run full --lang en --version N --commit C   # ../models/README.md
 uv run pytest -q tests
 ```
 

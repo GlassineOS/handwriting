@@ -161,7 +161,10 @@ def cmd_eval(a):
             res[f"{split}-new"] = pooled
             print(f"{split + '-new':28s} " + " ".join(f"{k} {v:.4f}" for k, v in pooled.items()))
     tag = a.ckpt.removesuffix(".pt") + ("-lexicon" if lex is not None else "")
-    (run / f"eval-{tag}.json").write_text(json.dumps(res, indent=1))
+    out = run / f"eval-{tag}.json"
+    if (a.only or a.limit) and out.exists():  # a partial run adds to the full results
+        res = {**json.loads(out.read_text()), **res}
+    out.write_text(json.dumps(res, indent=1))
 
 
 def cmd_tune(a):
@@ -380,7 +383,13 @@ def decode_set(m, ds, lex, kw, workers):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="glassine-train")
+    import sys
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["release"]:  # its own options: glassine-train release --help
+        from .release import main as release
+        return release(argv[1:])
+    ap = argparse.ArgumentParser(prog="glassine-train", epilog="glassine-train release --help: "
+                                 "a trained run as a base model package (models/README.md)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("data", help="fetch text, render train/val/test datasets")
     d.add_argument("--train-lines", type=int, default=300_000)
