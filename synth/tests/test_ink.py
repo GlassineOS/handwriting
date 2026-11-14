@@ -34,3 +34,22 @@ def test_delayed_dot_moves_to_word_end():
     # strokes in time order: i stem, l stem, then the i dot
     assert smp["spans"][0] == [0, 2]
     assert smp["spans"][1] == [1]
+
+
+def test_shape_variation_keeps_spans_and_is_off_by_default():
+    text = "il li"
+    base = line(text, [("a", _table())], np.random.default_rng(5), Params())
+    again = line(text, [("a", _table())], np.random.default_rng(5), Params(warp=0.0, zones=0.0))
+    assert all(np.array_equal(x, y) for x, y in zip(base["strokes"], again["strokes"]))
+    var = line(text, [("a", _table())], np.random.default_rng(5), Params(warp=0.03, zones=0.2))
+    assert [bool(s) for s in var["spans"]] == [bool(s) for s in base["spans"]]
+    assert all(np.isfinite(s).all() for s in var["strokes"])
+    assert not all(np.allclose(x[:, :2], y[:, :2]) for x, y in zip(base["strokes"], var["strokes"])
+                   if x.shape == y.shape)
+
+
+def test_zones_stretch_only_outside_the_x_height():
+    from glassine_synth.ink import XH, _zones
+    q = np.array([[0.0, -0.9], [0.0, -0.2], [0.0, 0.3]])
+    z = _zones(q, 2.0, 0.5)
+    assert np.allclose(z[:, 1], [-XH - 2 * (0.9 - XH), -0.2, 0.15])

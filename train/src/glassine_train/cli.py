@@ -13,12 +13,31 @@ from . import text
 from .data import build
 
 FONTS = Path("../synth/build/fonts")
-ALL_FONTS = ["caveat", "indieflower", "patrickhand", "kalam", "architectsdaughter",
-             "gochihand", "dancingscript", "shadowsintolight", "reeniebeanie"]
+# The first prototype's fonts: seven to train, two held out. Their datasets keep their names
+# (`train`, `val`, `test-trainfonts`, `test-heldout`, ...), so old and new models are measured
+# on the same ink.
+ORIG_TRAIN = ["caveat", "indieflower", "patrickhand", "architectsdaughter", "gochihand",
+              "dancingscript", "shadowsintolight"]
 HELD_OUT = ["kalam", "reeniebeanie"]  # never in training; the honest proxy for unseen hands
-TRAIN_FONTS = [f for f in ALL_FONTS if f not in HELD_OUT]
+TRAIN_FONTS = ORIG_TRAIN
 NO_VARIANTS = {"reverse_loop": 0.0, "delay": 0.0, "extra_lift": 0.0}
 EVAL_SIZES = {"test": 2000, "test_words": 1000, "test_symbols": 500, "test_letters": 500}
+VARIATION = {"warp": 0.025, "zones": 0.15}  # letter-shape variation for --variation
+
+
+def font_splits() -> dict[str, list[str]]:
+    """Fonts by split and style from the synth manifest (`split`, `style` in fonts.toml):
+    train, dev, test (all held out), test-print / test-script (held out, new to this set:
+    the original two are reported on their own)."""
+    out = {"train": [], "dev": [], "test": [], "test-print": [], "test-script": []}
+    for f in font_fetch.load(FONTS):
+        sp = f.get("split", "train")
+        out[sp].append(f["dir"])
+        if sp == "test" and f["dir"] not in HELD_OUT:
+            out[f"test-{f['style']}"].append(f["dir"])
+    if set(HELD_OUT) - set(out["test"]):
+        raise SystemExit(f"fonts.toml must keep {HELD_OUT} in the test split")
+    return out
 
 
 def _provenance():
@@ -33,7 +52,9 @@ def cmd_data(a):
     (raw / "corpus.json").write_text(json.dumps({k: len(v) for k, v in c.items()}))
     prov = {"fonts": _provenance(), "text": json.loads((raw / "manifest.json").read_text())}
     out = Path("build/data")
+    sp = font_splits()
     tr = c["train"][:a.train_lines]
+    # the first prototype's sets
     jobs = [("train", tr, TRAIN_FONTS, Params(), 11)]
     if a.ablation:
         jobs.append(("train-novar", tr, TRAIN_FONTS, Params(**NO_VARIANTS), 11))
@@ -47,6 +68,21 @@ def cmd_data(a):
         if split == "test":
             for f in HELD_OUT:
                 jobs.append((f"test-font-{f}", texts, [f], Params(), 13))
+    # every training font, a random subset, and the letter-shape variation
+    nt = len(sp["train"])
+    jobs.append((f"train-f{nt}", tr, sp["train"], Params(), 11))
+    for k in a.subsets:
+        sub = sorted(np.random.default_rng(5).permutation(sp["train"])[:k].tolist())
+        jobs.append((f"train-f{k}", tr, sub, Params(), 11))
+    if a.variation:
+        jobs.append((f"train-f{nt}-var", tr, sp["train"], Params(**VARIATION), 11))
+    if a.copies > 1:  # every text line rendered `copies` times, each time new ink
+        jobs.append((f"train-f{nt}-var-x{a.copies}", tr * a.copies, sp["train"], Params(**VARIATION), 31))
+    # dev fonts (model selection, decoder tuning) and the new held-out fonts, default ink only
+    jobs.append(("dev", c["val"][:2000], sp["dev"], Params(), 12))
+    for split, n in EVAL_SIZES.items():
+        for style in ("print", "script"):
+            jobs.append((f"{split}-new{style}", c[split][:n], sp[f"test-{style}"], Params(), 13))
     for name, texts, fonts, params, seed in jobs:
         if (out / name / "meta.json").exists():
             print(f"{name}: exists")
@@ -65,30 +101,98 @@ def cmd_train(a):
     (out / "args.json").write_text(json.dumps(vars(a), default=str, indent=1))
     train(Path("build/data") / a.data, Path("build/data") / a.val, out, a.minutes, cfg,
           a.batch, a.lr, a.threads, a.eval_every, a.seed, steps_per_s=a.steps_per_s,
-          augment=a.augment)
+          augment=a.augment, select=Path("build/data") / a.select if a.select else None)
+
+
+def _model(a):
+    from .train import load
+    p = Path(a.run)
+    return load(p / a.ckpt if p.is_dir() else Path("build/runs") / a.run / a.ckpt)
+
+
+def _run_dir(a) -> Path:
+    p = Path(a.run)
+    return p if p.is_dir() else Path("build/runs") / a.run
 
 
 def cmd_eval(a):
     import torch
     from .data import InkSet
     from .metrics import confusions, rates
-    from .train import load, recognise
+    from .train import recognise
     torch.set_num_threads(a.threads)
-    run = Path("build/runs") / a.run
-    m = load(run / a.ckpt)
+    run = _run_dir(a)
+    m = _model(a)
+    lex, kw = None, None
+    if a.lexicon:
+        from .lexicon import Lexicon
+        lex = Lexicon(Path(a.lexicon))
+        kw = json.loads((run / "decoder.json").read_text())["params"]
     res = {}
     for d in sorted(Path("build/data").iterdir()):
-        if not d.name.startswith("test") or not (d / "meta.json").exists():
+        if not d.name.startswith(("test", "dev")) or not (d / "meta.json").exists():
             continue
-        refs, hyps = recognise(m, InkSet(d))
+        if a.only and not any(d.name.startswith(o) for o in a.only):
+            continue
+        ds = InkSet(d, a.limit)
+        refs, hyps = recognise(m, ds)
         r = rates(refs, hyps)
-        if d.name in ("test-heldout", "test-trainfonts"):
+        if d.name in ("test-heldout", "test-trainfonts", "test-newprint", "test-newscript"):
             r["confusions"] = confusions(refs, hyps)
             r["examples"] = [[x, y] for x, y in list(zip(refs, hyps))[:12]]
+        line = (f"{d.name:28s} CER {r['cer']:.4f} (no case {r['cer_nocase']:.4f}) "
+                f"WER {r['wer']:.4f} lines {r['line_acc']:.3f}")
+        if lex is not None:
+            refs_l, hyps_l = decode_set(m, ds, lex, kw, a.workers)
+            r["lexicon"] = rates(refs_l, hyps_l)
+            line += f" | lexicon CER {r['lexicon']['cer']:.4f} WER {r['lexicon']['wer']:.4f}"
         res[d.name] = r
-        print(f"{d.name:28s} CER {r['cer']:.4f} (no case {r['cer_nocase']:.4f}) "
-              f"WER {r['wer']:.4f} lines {r['line_acc']:.3f}", flush=True)
-    (run / f"eval-{a.ckpt.removesuffix('.pt')}.json").write_text(json.dumps(res, indent=1))
+        print(line, flush=True)
+    # the new held-out fonts pooled (print and script sets: same texts, six fonts each)
+    for split in EVAL_SIZES:
+        a_, b_ = res.get(f"{split}-newprint"), res.get(f"{split}-newscript")
+        if a_ and b_:
+            pooled = {"cer": (a_["cer"] + b_["cer"]) / 2, "wer": (a_["wer"] + b_["wer"]) / 2}
+            if "lexicon" in a_:
+                pooled["lexicon_cer"] = (a_["lexicon"]["cer"] + b_["lexicon"]["cer"]) / 2
+                pooled["lexicon_wer"] = (a_["lexicon"]["wer"] + b_["lexicon"]["wer"]) / 2
+            res[f"{split}-new"] = pooled
+            print(f"{split + '-new':28s} " + " ".join(f"{k} {v:.4f}" for k, v in pooled.items()))
+    tag = a.ckpt.removesuffix(".pt") + ("-lexicon" if lex is not None else "")
+    (run / f"eval-{tag}.json").write_text(json.dumps(res, indent=1))
+
+
+def cmd_tune(a):
+    """Grid search of the decoder weights on the dev fonts (never on test fonts)."""
+    import itertools
+    import torch
+    from .data import InkSet
+    from .lexicon import Lexicon
+    from .metrics import rates
+    torch.set_num_threads(a.threads)
+    run = _run_dir(a)
+    m = _model(a)
+    lex = Lexicon(Path(a.lexicon))
+    ds = InkSet(Path("build/data") / a.data, a.limit)
+    from .train import recognise
+    refs, hyps = recognise(m, ds)
+    greedy_cer = rates(refs, hyps)["cer"]
+    print(f"greedy CER {greedy_cer:.4f} on {a.data} ({len(ds)} lines)", flush=True)
+    grid = list(itertools.product(a.lm_weight, a.char_bonus, a.word_bonus, a.oov_penalty))
+    best = None
+    rows = []
+    for lw, cb, wb, op in grid:
+        kw = {"beam": a.beam, "lm_weight": lw, "char_bonus": cb, "word_bonus": wb, "oov_penalty": op}
+        r_, h_ = decode_set(m, ds, lex, kw, a.workers)
+        r = rates(r_, h_)
+        rows.append({"params": kw, "cer": r["cer"], "wer": r["wer"]})
+        print(json.dumps(rows[-1]), flush=True)
+        if best is None or r["cer"] < best["cer"]:
+            best = rows[-1]
+    best = dict(best)
+    best.update(greedy_cer=greedy_cer, data=a.data, lexicon=a.lexicon, grid=rows)
+    (run / "decoder.json").write_text(json.dumps(best, indent=1))
+    print("best", json.dumps({k: v for k, v in best.items() if k != "grid"}))
 
 
 def cmd_export(a):
@@ -223,6 +327,53 @@ def cmd_adapt(a):
     print(json.dumps({k: v for k, v in rep.items() if k not in ("runs",)}, indent=1))
 
 
+def cmd_lexicon(a):
+    from . import lexicon
+    if a.prune_from:
+        lexicon.prune(Path(a.prune_from), Path(a.out), a.min_count, a.words, a.order)
+        return
+    src = Path("build/lexicon")
+    lexicon.fetch(src)
+    lexicon.build(src, Path(a.out), a.words, a.order, a.min_count, a.max_lines)
+
+
+def _logps(m, ds):
+    """Model output (frames, classes) per line, in dataset order."""
+    import torch
+    from .train import loader
+    out = [None] * len(ds)
+    order = sorted(range(len(ds)), key=ds.length)
+    k = 0
+    with torch.no_grad():
+        for x, lens, _, _, _ in loader(ds, 64, workers=0):
+            lp, ol = m(x, lens)
+            for b in range(len(lens)):
+                out[order[k]] = lp[b, :int(ol[b])].numpy()
+                k += 1
+    return out
+
+
+_LEX = None
+
+
+def _dec(args):
+    from . import lexicon
+    from .data import ALPHABET
+    lp, kw = args
+    return lexicon.decode(lp, ALPHABET, _LEX, **kw)[0][0]
+
+
+def decode_set(m, ds, lex, kw, workers):
+    """(refs, hyps) for a dataset with lexicon decoding, lines decoded in parallel."""
+    import multiprocessing as mp
+    global _LEX
+    _LEX = lex
+    lps = _logps(m, ds)
+    with mp.get_context("fork").Pool(workers) as pool:
+        hyps = pool.map(_dec, [(lp, kw) for lp in lps], chunksize=8)
+    return list(ds.texts[:len(ds)]), hyps
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="glassine-train")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -230,9 +381,13 @@ def main(argv=None):
     d.add_argument("--train-lines", type=int, default=300_000)
     d.add_argument("--workers", type=int, default=8)
     d.add_argument("--ablation", action="store_true", help="also render without order variants")
+    d.add_argument("--subsets", type=int, nargs="*", default=[], help="also train sets of N random training fonts")
+    d.add_argument("--variation", action="store_true", help="also the full training set with letter-shape variation")
+    d.add_argument("--copies", type=int, default=1, help="also a variation set with every line rendered N times")
     t = sub.add_parser("train")
     t.add_argument("--data", default="train")
-    t.add_argument("--val", default="val", help="dataset for model selection")
+    t.add_argument("--val", default="val", help="dataset shown during training (training fonts)")
+    t.add_argument("--select", default="dev", help="dataset for model selection (fonts never trained on); '' = val")
     t.add_argument("--run", required=True)
     t.add_argument("--minutes", type=float, default=60)
     t.add_argument("--steps-per-s", type=float, help="measured rate, sets the LR schedule length")
@@ -251,6 +406,23 @@ def main(argv=None):
     e.add_argument("--run", required=True)
     e.add_argument("--ckpt", default="best.pt")
     e.add_argument("--threads", type=int, default=8)
+    e.add_argument("--lexicon", help="lexicon directory; decoder weights from the run's decoder.json")
+    e.add_argument("--workers", type=int, default=8, help="processes for lexicon decoding")
+    e.add_argument("--only", nargs="*", help="dataset name prefixes")
+    e.add_argument("--limit", type=int, help="first N lines of each set")
+    tu = sub.add_parser("tune", help="decoder weights for lexicon decoding, on the dev fonts")
+    tu.add_argument("--run", required=True)
+    tu.add_argument("--ckpt", default="best.pt")
+    tu.add_argument("--lexicon", default="build/lexicon/en")
+    tu.add_argument("--data", default="dev")
+    tu.add_argument("--limit", type=int, default=1000)
+    tu.add_argument("--threads", type=int, default=4)
+    tu.add_argument("--workers", type=int, default=8)
+    tu.add_argument("--beam", type=int, default=16)
+    tu.add_argument("--lm-weight", type=float, nargs="+", default=[0.3, 0.5, 0.8])
+    tu.add_argument("--char-bonus", type=float, nargs="+", default=[0.0, 1.0, 2.0])
+    tu.add_argument("--word-bonus", type=float, nargs="+", default=[0.0, 1.0])
+    tu.add_argument("--oov-penalty", type=float, nargs="+", default=[0.0, 2.0])
     x = sub.add_parser("export")
     x.add_argument("--run", required=True)
     x.add_argument("--ckpt", default="best.pt")
@@ -263,8 +435,15 @@ def main(argv=None):
     ad.add_argument("--epochs", type=int, default=5)
     ad.add_argument("--lr", type=float, default=1e-3)
     ad.add_argument("--eval-lines", type=int, default=1000)
+    lx = sub.add_parser("lexicon", help="fetch the word-list sources, build words + character model")
+    lx.add_argument("--out", default="build/lexicon/en")
+    lx.add_argument("--words", type=int, default=50_000)
+    lx.add_argument("--order", type=int, default=6)
+    lx.add_argument("--min-count", type=int, default=3)
+    lx.add_argument("--max-lines", type=int)
+    lx.add_argument("--prune-from", help="instead: a smaller copy of this built lexicon")
     a = ap.parse_args(argv)
-    {"adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+    {"lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":

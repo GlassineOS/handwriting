@@ -2,15 +2,16 @@
 
 import argparse
 import json
+import multiprocessing as mp
 from pathlib import Path
 
 import numpy as np
 
 from . import fetch, sheet
 from .glyph import EM, glyph, load_font
-from .ink import Params, line
+from .ink import XH, Params, line
 
-XHEIGHT = 0.45  # em
+XHEIGHT = XH  # em
 CHARS = ("abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "0123456789" ".,;:!?'-()")
 TEXT = [  # written for this tool; redistributable with it
     "the quick brown fox jumps over the lazy dog",
@@ -21,23 +22,29 @@ TEXT = [  # written for this tool; redistributable with it
 ]
 
 
-def font_tables(cache: Path, chars: str, only: list[str] | None = None):
+def _table(args):
+    path, chars = args
+    font = load_font(path)
+    k = XHEIGHT / (-font.getbbox("x", anchor="ls")[1] / EM)  # same x-height for every font
+    table = {}
+    for c in chars:
+        g = glyph(font, c)
+        g.advance *= k
+        g.strokes = [s * k for s in g.strokes]
+        table[c] = g
+    return table
+
+
+def font_tables(cache: Path, chars: str, only: list[str] | None = None, workers: int = 1):
     """Glyph tables (font id, {char: Glyph}) for the fetched fonts, all at the same x-height."""
-    out = []
-    for fam in fetch.load(cache):
-        if only and fam["dir"] not in only:
-            continue
-        for f in fam["files"]:
-            font = load_font(cache / fam["dir"] / f)
-            k = XHEIGHT / (-font.getbbox("x", anchor="ls")[1] / EM)  # same x-height for every font
-            table = {}
-            for c in chars:
-                g = glyph(font, c)
-                g.advance *= k
-                g.strokes = [s * k for s in g.strokes]
-                table[c] = g
-            out.append((fam["dir"], table))
-    return out
+    jobs = [(fam["dir"], (cache / fam["dir"] / f, chars)) for fam in fetch.load(cache)
+            if not only or fam["dir"] in only for f in fam["files"]]
+    if workers > 1 and len(jobs) > 1:
+        with mp.get_context("fork").Pool(min(workers, len(jobs))) as pool:
+            tables = pool.map(_table, [j for _, j in jobs])
+    else:
+        tables = [_table(j) for _, j in jobs]
+    return [(d, t) for (d, _), t in zip(jobs, tables)]
 
 
 def _json(smp, prov, lang):
