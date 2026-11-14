@@ -163,11 +163,11 @@ Host, one thread (another training run on the machine at the same time):
 
 | | |
 |---|---|
-| encoder forward, one line (PyTorch eager, host under load) | 7–8 ms (median) |
+| encoder forward, one line of 600 points (PyTorch eager) | 5.1 ms (median; 7–8 ms while another run was training) |
 | head training, 200 cached lines × 5 epochs | 0.6 s (output layer), 1.0 s (adapter) |
 | full-model fine-tune, one line (forward + backward + step) | 32–37 ms |
 
-So adapting to 200 samples costs about 200 × 8 ms of encoding (once, cacheable as samples
+So adapting to 200 samples costs about 200 × 5 ms of encoding (once, cacheable as samples
 arrive) plus about a second of head training on this host; a full fine-tune of the same
 5 epochs would be about 35 s and touch every weight.
 
@@ -194,8 +194,24 @@ fall back to.
 
 ### Slant and stretch augmentation
 
-Pending: a third run (`--augment`: random shear, x and y stretch per line, applied to the
-features) is training; its numbers follow in a later commit.
+A third run, `--augment`: per line a random shear (sd 0.15), x stretch (lognormal sd
+0.12) and y stretch (sd 0.08), applied to the features (the map is linear), and the pause
+feature scaled at random. Same data, steps and settings as the main model; 55 minutes
+(the host was quieter). One seed each, so small differences are noise.
+
+| test set | main | augmented |
+|---|---|---|
+| test book, training fonts | 0.6 % | 0.7 % |
+| test book, held-out fonts | 30.0 % | 26.9 % |
+| … `kalam` | 9.2 % | 10.0 % |
+| … `reeniebeanie` | 50.0 % | 43.4 % |
+| random words, held-out fonts | 33.4 % | 30.5 % |
+| numbers and punctuation, held-out fonts | 29.4 % | 24.5 % |
+
+Validation was the same (0.52 % for both), so this was not picked on the held-out fonts.
+Affine jitter helps a little on the font that is far from the training set and not at all
+on the near one: it does not supply new letter shapes, which is the real gap. The export,
+size and adaptation numbers above are for the main model.
 
 ## What limits accuracy
 
@@ -211,8 +227,9 @@ features) is training; its numbers follow in a later commit.
 ## Next steps
 
 - More hands: all OFL/Apache handwriting fonts the generator handles (the category has
-  many more than nine), per-glyph stroke perturbation beyond affine jitter, and the
-  augmentation above; measure held-out fonts after each.
+  many more than nine), and per-glyph shape perturbation beyond affine jitter (moving
+  loop sizes, opening and closing loops, `e` bars, ascender heights); measure held-out
+  fonts after each, with more than two held out.
 - Real ink to test on: a small donated set under clear terms, as the research notes say;
   until then, report held-out fonts per release.
 - Beam search with a word list and a small character n-gram, and context from the text
