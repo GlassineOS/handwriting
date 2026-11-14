@@ -246,18 +246,37 @@ One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
 data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
 line). `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export.
 
-**ghm, version 1** (little-endian): a 64-byte header of `GHWM`, then 32-bit unsigned integers
-version (1), header bytes (64), features per row, first convolution's channels, convolution
-channels, strided convolutions, kernel width, LSTM hidden size, LSTM layers, classes, charset
-bytes, then 4 zero bytes. Then the charset (UTF-8; class `k+1` is its `k`-th character, class 0 the
-CTC blank) padded with zeros to a multiple of 4, then 32-bit floats: the feature scale, the first
-convolution's weights and bias, each strided convolution's weights and bias (stride 2), per LSTM
-layer and direction the input weights, recurrent weights and bias (gates in ONNX order i, o, f, c;
-the bias the sum of the two ONNX biases), the output layer's weights (classes × 2·hidden) and
-bias. The architecture and the features are the trainer's (`train/`, `features.py`); the
-recognizer computes the same features to within float rounding, checked by `make check`.
+**ghm, version 1** (little-endian). A 64-byte header: `GHWM`, then fifteen 32-bit unsigned
+integers: version (1), header bytes (64), features per row `F`, first convolution's channels
+`C1`, the other convolutions' channels `C`, strided convolutions `S`, kernel width `K`, LSTM
+hidden size `H`, LSTM layers `L`, classes `N`, charset bytes, and four zeros. Then the charset
+(UTF-8; class `k+1` is its `k`-th character, class 0 the CTC blank), padded with zeros to a
+multiple of 4. Then 32-bit floats, each tensor row-major in this order:
+
+| Tensor | Floats | Use |
+|---|---|---|
+| scale | `F` | each feature is multiplied by it |
+| first convolution weights, bias | `C1·F·K` [out][in][tap], `C1` | stride 1, padding `K/2`, then exact GELU |
+| per strided convolution: weights, bias | `C·Cin·K` [out][in][tap], `C` (`Cin` = `C1` for the first, else `C`) | stride 2, padding `K/2`, GELU |
+| per LSTM layer, forward then backward: input weights, recurrent weights, bias | `4H·I` (`I` = `C`, or `C1` without strided convolutions, then `2H`), `4H·H`, `4H` | gates i, o, f, c (ONNX order); the bias is ONNX's two biases added |
+| output weights, bias | `N·2H` [class][input], `N` | then log-softmax |
+
+A file whose size doesn't match the header is refused. The architecture and the features are the
+trainer's (`train/`, `features.py`); the recognizer computes the same features to within float
+rounding, checked by `make check`. `R` feature rows give `ceil(R / 2^S)` frames; frame `f` is
+centred on row `f·2^S`.
 
 **gha, version 1** (an adaptation, little-endian): `GHWA`, version, the base model's hash (64-bit),
 rank, dimension, classes, samples learned from, held back (32-bit), error after and before
 (float), time (64-bit), then from byte 56 the head's floats: adapter down weights and bias, up
 weights and bias, output weights and bias.
+
+## Environment
+
+| Variable | Meaning |
+|---|---|
+| `GLASSINE_HANDWRITING_MODELS` | the base models' directory instead of `/usr/share/glassine/handwriting` |
+| `XDG_DATA_HOME`, `XDG_CONFIG_HOME` | the store and the settings, as above |
+| `GLASSINE_HANDWRITING_SYSFS` | for tests: a directory laid out like `/sys/class/power_supply` |
+| `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
+| `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
