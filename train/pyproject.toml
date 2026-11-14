@@ -12,6 +12,9 @@ dependencies = [
   "onnxruntime>=1.20",
 ]
 
+[project.optional-dependencies]
+lexicon = ["pyarrow>=15"]  # reading the word-list source (lexicon.py)
+
 [project.scripts]
 glassine-train = "glassine_train.cli:main"
 

@@ -1,24 +1,447 @@
-# Font families from the google/fonts repository (directory under ofl/).
-# fetch checks each family's METADATA.pb: licence must be OFL, category HANDWRITING.
+# Font families from the google/fonts repository (directory under ofl/ or apache/).
+# fetch checks each family's METADATA.pb: licence OFL (ofl/) or Apache 2.0 (apache/), category
+# HANDWRITING. Regular weight only.
+#
+# split: "train" (default), "dev" (never trained on; model selection and decoder tuning) or
+# "test" (never trained on, never used for any choice; the reported held-out numbers).
+# style tags the held-out hands, so results can be reported per group: "print" (letters
+# written apart) or "script" (joined, cursive letter forms). kalam and reeniebeanie are the
+# original two held-out fonts; the others were drawn at random from the pool, six print and six
+# script for test, two and two for dev. No held-out font has a near-duplicate in training
+# (nearest training font by glyph-skeleton distance is no closer than the training fonts are
+# to each other).
+#
+# Left out (the stroke extraction cannot turn them into a pen path, or the letters are not
+# ordinary letter forms):
+#   babylonica: ornamental capitals
+#   ballet: capitals are ornamental swirls
+#   bilboswashcaps: near-duplicate of bilbo
+#   deliusswashcaps: near-duplicate of delius
+#   fleurdeleah: ornamental capitals
+#   giveyouglory: several lower-case letters drawn as capitals
+#   kings: skeleton falls apart (rough outline)
+#   lavishlyyours: ornamental capitals
+#   loversquarrel: ornamental capitals
+#   meaculpa: ornamental capitals
+#   meddon: ornamental capitals
+#   missfajardose: ornamental capitals
+#   monsieurladoulaise: ornamental capitals
+#   mrbedfort: capitals unreadable as letters
+#   mrssaintdelafield: ornamental capitals
+#   neonderthaw: double-line outline
+#   passionsconflict: ornamental capitals
+#   permanentmarker: lower case drawn as capitals
+#   rocksalt: lower case drawn as capitals
+#   sedgwickavedisplay: blobby skeleton
+#   smooch: skeleton falls apart (brush texture)
+#   splash: skeleton falls apart (spatter texture)
+#   walterturncoat: lower case drawn as capitals
+#   waterbrush: brush texture, broken digits
+#   windsong: letters stretched into flourishes
+#   yuyushort: letters flattened into lines
+
 [source]
 repository = "google/fonts"
 ref = "main"
 
 [[family]]
-dir = "caveat"
+dir = "agravepro"
 [[family]]
-dir = "indieflower"
+dir = "aguafinascript"
 [[family]]
-dir = "patrickhand"
+dir = "alexbrush"
 [[family]]
-dir = "kalam"
+dir = "allison"
+[[family]]
+dir = "allura"
+[[family]]
+dir = "annieuseyourtelescope"
+split = "test"
+style = "print"
 [[family]]
 dir = "architectsdaughter"
 [[family]]
-dir = "gochihand"
+dir = "areyouserious"
+[[family]]
+dir = "arizonia"
+[[family]]
+dir = "beaurivage"
+split = "dev"
+style = "script"
+[[family]]
+dir = "berkshireswash"
+split = "dev"
+style = "print"
+[[family]]
+dir = "betaniapatmos"
+split = "test"
+style = "script"
+[[family]]
+dir = "bethellen"
+[[family]]
+dir = "bilbo"
+[[family]]
+dir = "birthstone"
+[[family]]
+dir = "birthstonebounce"
+[[family]]
+dir = "bonbon"
+[[family]]
+dir = "bonheurroyale"
+[[family]]
+dir = "borel"
+[[family]]
+dir = "butterflykids"
+[[family]]
+dir = "calligraffitti"
+tree = "apache"
+[[family]]
+dir = "caramel"
+split = "test"
+style = "script"
+[[family]]
+dir = "carattere"
+[[family]]
+dir = "cause"
+[[family]]
+dir = "caveat"
+[[family]]
+dir = "caveatbrush"
+[[family]]
+dir = "cedarvillecursive"
+[[family]]
+dir = "cherish"
+[[family]]
+dir = "clickerscript"
+[[family]]
+dir = "comforter"
+[[family]]
+dir = "comforterbrush"
+[[family]]
+dir = "comicneue"
+[[family]]
+dir = "comingsoon"
+tree = "apache"
+[[family]]
+dir = "condiment"
+[[family]]
+dir = "cookie"
+[[family]]
+dir = "corinthia"
+[[family]]
+dir = "courgette"
+[[family]]
+dir = "coveredbyyourgrace"
+[[family]]
+dir = "craftygirls"
+tree = "apache"
+[[family]]
+dir = "damion"
+split = "test"
+style = "script"
 [[family]]
 dir = "dancingscript"
 [[family]]
-dir = "shadowsintolight"
+dir = "dawningofanewday"
+[[family]]
+dir = "delicioushandrawn"
+split = "test"
+style = "print"
+[[family]]
+dir = "delius"
+[[family]]
+dir = "devonshire"
+[[family]]
+dir = "drsugiyama"
+[[family]]
+dir = "eaglelake"
+split = "test"
+style = "print"
+[[family]]
+dir = "eduauvicwanthand"
+[[family]]
+dir = "eduauvicwantpre"
+[[family]]
+dir = "edunswactfoundation"
+[[family]]
+dir = "eduqldbeginner"
+[[family]]
+dir = "edusabeginner"
+[[family]]
+dir = "edutasbeginner"
+[[family]]
+dir = "eduvicwantbeginner"
+[[family]]
+dir = "engagement"
+[[family]]
+dir = "ephesis"
+[[family]]
+dir = "estonia"
+[[family]]
+dir = "euphoriascript"
+[[family]]
+dir = "explora"
+[[family]]
+dir = "felipa"
+[[family]]
+dir = "festive"
+[[family]]
+dir = "fondamento"
+[[family]]
+dir = "fuggles"
+[[family]]
+dir = "fuzzybubbles"
+[[family]]
+dir = "gloriahallelujah"
+[[family]]
+dir = "gochihand"
+[[family]]
+dir = "grandhotel"
+[[family]]
+dir = "grapenuts"
+[[family]]
+dir = "greatvibes"
+[[family]]
+dir = "grechenfuemen"
+[[family]]
+dir = "greyqo"
+[[family]]
+dir = "gwendolyn"
+[[family]]
+dir = "handlee"
+[[family]]
+dir = "herrvonmuellerhoff"
+[[family]]
+dir = "homemadeapple"
+tree = "apache"
+[[family]]
+dir = "hurricane"
+[[family]]
+dir = "imperialscript"
+[[family]]
+dir = "indieflower"
+[[family]]
+dir = "ingriddarling"
+[[family]]
+dir = "inspiration"
+[[family]]
+dir = "islandmoments"
+[[family]]
+dir = "italianno"
+[[family]]
+dir = "jimnightshade"
+[[family]]
+dir = "julee"
+[[family]]
+dir = "justanotherhand"
+tree = "apache"
+[[family]]
+dir = "justmeagaindownhere"
+[[family]]
+dir = "kalam"
+split = "test"
+style = "print"
+[[family]]
+dir = "kaushanscript"
+[[family]]
+dir = "kolkerbrush"
+split = "test"
+style = "script"
+[[family]]
+dir = "kristi"
+[[family]]
+dir = "labelleaurore"
+[[family]]
+dir = "leaguescript"
+[[family]]
+dir = "leckerlione"
+[[family]]
+dir = "licorice"
+[[family]]
+dir = "lovedbytheking"
+[[family]]
+dir = "lovelight"
+[[family]]
+dir = "lugrasimo"
+[[family]]
+dir = "lumanosimo"
+[[family]]
+dir = "luxuriousscript"
+[[family]]
+dir = "mansalva"
+[[family]]
+dir = "marckscript"
+[[family]]
+dir = "meiescript"
+[[family]]
+dir = "meowscript"
+[[family]]
+dir = "merienda"
+[[family]]
+dir = "montecarlo"
+[[family]]
+dir = "montez"
+tree = "apache"
+[[family]]
+dir = "moondance"
+[[family]]
+dir = "mrdafoe"
+[[family]]
+dir = "mrdehaviland"
+[[family]]
+dir = "mrssheppards"
+[[family]]
+dir = "msmadi"
+[[family]]
+dir = "mynerve"
+[[family]]
+dir = "mysoul"
+[[family]]
+dir = "nerkoone"
+[[family]]
+dir = "neucha"
+[[family]]
+dir = "niconne"
+[[family]]
+dir = "norican"
+[[family]]
+dir = "nothingyoucoulddo"
+split = "test"
+style = "print"
+[[family]]
+dir = "ole"
+[[family]]
+dir = "ooohbaby"
+[[family]]
+dir = "overtherainbow"
+[[family]]
+dir = "pacifico"
+[[family]]
+dir = "pangolin"
+[[family]]
+dir = "parisienne"
+[[family]]
+dir = "patrickhand"
+[[family]]
+dir = "petemoss"
+[[family]]
+dir = "petitformalscript"
+[[family]]
+dir = "pinyonscript"
+[[family]]
+dir = "playpensans"
+[[family]]
+dir = "praise"
+[[family]]
+dir = "princesssofia"
+[[family]]
+dir = "puppiesplay"
+[[family]]
+dir = "quintessential"
+[[family]]
+dir = "qwigley"
+[[family]]
+dir = "qwitchergrypen"
+[[family]]
+dir = "rancho"
+tree = "apache"
+split = "dev"
+style = "print"
+[[family]]
+dir = "redressed"
+tree = "apache"
 [[family]]
 dir = "reeniebeanie"
+split = "test"
+style = "print"
+[[family]]
+dir = "rochester"
+tree = "apache"
+[[family]]
+dir = "romanesco"
+[[family]]
+dir = "rougescript"
+split = "dev"
+style = "script"
+[[family]]
+dir = "rugeboogie"
+[[family]]
+dir = "ruthie"
+[[family]]
+dir = "sacramento"
+split = "test"
+style = "script"
+[[family]]
+dir = "sassyfrass"
+[[family]]
+dir = "satisfy"
+tree = "apache"
+[[family]]
+dir = "schoolbell"
+tree = "apache"
+[[family]]
+dir = "sedgwickave"
+[[family]]
+dir = "sendflowers"
+[[family]]
+dir = "shadowsintolight"
+[[family]]
+dir = "shadowsintolighttwo"
+[[family]]
+dir = "shalimar"
+[[family]]
+dir = "shortstack"
+[[family]]
+dir = "sofia"
+[[family]]
+dir = "squarepeg"
+[[family]]
+dir = "stalemate"
+[[family]]
+dir = "stylescript"
+[[family]]
+dir = "sueellenfrancisco"
+[[family]]
+dir = "sunshiney"
+tree = "apache"
+[[family]]
+dir = "swankyandmoomoo"
+[[family]]
+dir = "tangerine"
+[[family]]
+dir = "tapestry"
+[[family]]
+dir = "thegirlnextdoor"
+[[family]]
+dir = "thenautigal"
+[[family]]
+dir = "twinklestar"
+[[family]]
+dir = "updock"
+[[family]]
+dir = "vibur"
+[[family]]
+dir = "vujahdayscript"
+[[family]]
+dir = "waitingforthesunrise"
+split = "test"
+style = "print"
+[[family]]
+dir = "waterfall"
+[[family]]
+dir = "whisper"
+[[family]]
+dir = "yellowtail"
+tree = "apache"
+split = "test"
+style = "script"
+[[family]]
+dir = "yesteryear"
+[[family]]
+dir = "yomogi"
+[[family]]
+dir = "yuyu"
+split = "test"
+style = "print"
+[[family]]
+dir = "zeyada"
