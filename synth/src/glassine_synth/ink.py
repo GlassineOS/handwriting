@@ -31,6 +31,37 @@ class Params:
     reverse_loop: float = 0.25  # chance a closed stroke is written clockwise
     delay: float = 0.5  # chance dots and crosses wait for the word's end
     extra_lift: float = 0.03  # chance a stroke is split by a stray pen lift
+    # letter-shape variation (all off by default, so default ink is unchanged): fonts draw a
+    # letter the same way every time, writers do not
+    warp: float = 0.0  # per letter: smooth local displacement, sd of each bump (em)
+    zones: float = 0.0  # per line: ascender, descender and letter-width scale (lognormal sd)
+
+
+XH = 0.45  # x-height of every font after loading (em); the cli scales all fonts to it
+
+
+def _warp(strokes, rng, amp):
+    """One smooth random displacement field for all strokes of a letter: a few Gaussian
+    bumps inside its box, so loops grow or shrink, openings close a little, bars move."""
+    pts = np.concatenate(strokes)
+    lo, hi = pts.min(0), pts.max(0)
+    k = int(rng.integers(2, 5))
+    c = rng.uniform(lo, hi, (k, 2))
+    r = rng.uniform(0.12, 0.3, k)
+    v = rng.normal(0, amp, (k, 2))
+
+    def f(q):
+        w = np.exp(-((q[:, None, :] - c[None]) ** 2).sum(-1) / (2 * r[None] ** 2))
+        return q + w @ v
+    return [f(q) for q in strokes]
+
+
+def _zones(q, asc, desc):
+    """Stretch the part above the x-height by asc and the part below the baseline by desc."""
+    y = q[:, 1]
+    y = np.where(y < -XH, -XH + (y + XH) * asc, y)
+    y = np.where(y > 0, y * desc, y)
+    return np.c_[q[:, 0], y]
 
 
 def _affine(pts, rng, p: Params, centre):
@@ -94,6 +125,10 @@ def line(text: str, fonts: list[tuple[str, dict[str, Glyph]]], rng: np.random.Ge
     slant = rng.normal(0.05, p.slant)
     tilt = np.radians(rng.normal(0, p.tilt))
     ph, freq = rng.uniform(0, 2 * np.pi), rng.uniform(0.1, 0.4)
+    asc = desc = width = 1.0
+    if p.zones > 0:
+        asc, desc = rng.lognormal(0, p.zones, 2)
+        width = rng.lognormal(0, p.zones / 2)
     pen_x = 0.0
     shapes = []  # (char index, stroke array (n,2), delayable, word index)
     char_font = []
@@ -111,14 +146,20 @@ def line(text: str, fonts: list[tuple[str, dict[str, Glyph]]], rng: np.random.Ge
         g = table.get(ch)
         if g is None:
             continue
-        centre = np.array([g.advance / 2, -0.35])
+        adv = g.advance * width
+        centre = np.array([adv / 2, -0.35])
         base_y = p.drift * np.sin(freq * pen_x * 2 * np.pi + ph)
-        for s, dl in zip(g.strokes, g.delayable):
+        strokes = g.strokes
+        if p.zones > 0:
+            strokes = [_zones(q * [width, 1], asc, desc) for q in strokes]
+        if p.warp > 0 and strokes:
+            strokes = _warp(strokes, rng, p.warp)
+        for s, dl in zip(strokes, g.delayable):
             q = _elastic(_affine(s, rng, p, centre), rng, p)
             q = q + np.array([pen_x, base_y])
             q[:, 0] += -slant * q[:, 1]
             shapes.append((ci, q, dl, word))
-        pen_x += g.advance * max(0.6, 1 + rng.normal(0, p.spacing))
+        pen_x += adv * max(0.6, 1 + rng.normal(0, p.spacing))
 
     # stroke order variants: loops reversed, dots and crosses delayed to the word's end
     order = []

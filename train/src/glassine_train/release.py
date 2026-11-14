@@ -46,7 +46,8 @@ recognizer.ghm (the model)
 
   The model contains no text and no font software. It was trained on public-domain
   texts (no terms) rendered as synthetic ink from fonts under the SIL Open Font
-  License 1.1; the OFL covers the fonts themselves, not what is made with them. The
+  License 1.1 or the Apache License 2.0; these cover the fonts themselves, not what is
+  made with them. The
   sources and their licences are listed below so the training can be checked and
   repeated.
 
@@ -126,10 +127,10 @@ def readme(a, run_args, meta, ev, exp, ghm, test_meta):
     w(f"glassine-synth (GlassineOS/handwriting synth/) from {len(train_fonts)} fonts, seed {meta['seed']}.")
     w("No real handwriting and no sample of any person is in this model.")
     w("")
-    w("Fonts (SIL Open Font License 1.1, from google/fonts; upstream commit):")
+    w("Fonts (SIL Open Font License 1.1 or Apache License 2.0, from google/fonts; upstream commit):")
     for d in sorted(fonts):
         f = fonts[d]
-        role = "held out, testing only" if d in held else "training"
+        role = "held out, never trained on" if d in held else "training"
         w(f"  {f['name']} ({d}), {role}: {f['commit']}")
     w("")
     w("Text (public domain; Project Gutenberg plain-text editions):")
@@ -172,14 +173,22 @@ def licenses(meta, fonts_dir):
     for k in sorted(texts, key=lambda k: texts[k]["title"]):
         t = texts[k]
         L.append(f"  {t['title']}, {t['author']}: {t['source']}")
-    L += ["", "Fonts, SIL Open Font License 1.1 (used only to render training ink):"]
-    ofl = None
+    L += ["", "Fonts, used only to render training ink. SIL Open Font License 1.1:"]
+    ofl = apache = None
+    rest = []
     for d in sorted(fonts):
         m = man.get(d)
         if m is None:
             fail(f"{fonts_dir}/manifest.json: no font {d}")
         if m["upstream_commit"] != fonts[d]["commit"]:
             fail(f"font {d}: fetched {m['upstream_commit']}, trained on {fonts[d]['commit']}")
+        if m["license"] == "APACHE2":
+            # the Apache licence text carries no notice: the copyright from the font's metadata
+            apache = apache or (fonts_dir / d / "LICENSE.txt").read_text()
+            notes = sorted({f["copyright"] for f in m["fonts"] if f.get("copyright")})
+            rest.append(f"  {m['name']} ({m['upstream']}, {m['upstream_commit']}):")
+            rest += [f"    {c}" for c in notes]
+            continue
         # the copyright notice as the font's own OFL.txt states it, then the licence text
         txt = (fonts_dir / d / "OFL.txt").read_text()
         i = txt.find("This Font Software is licensed")
@@ -189,7 +198,11 @@ def licenses(meta, fonts_dir):
         L += [f"    {r.strip()}" for r in txt[:i].splitlines() if r.strip()]
         if ofl is None:
             ofl = txt[i:]
+    if rest:
+        L += ["", "Fonts, used only to render training ink. Apache License 2.0:"] + rest
     L += ["", "SIL Open Font License, Version 1.1, as distributed with the fonts:", "", ofl.rstrip()]
+    if apache:
+        L += ["", "Apache License, Version 2.0, as distributed with the fonts:", "", apache.rstrip()]
     return "\n".join(L) + "\n"
 
 
