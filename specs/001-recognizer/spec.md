@@ -60,6 +60,14 @@ samples there are, from which apps, and can turn learning off, erase everything,
 and import their samples and adaptation as one file (for a new device); nothing leaves the
 device otherwise.
 
+### Scenario 7 – Donating samples to the base model (Priority: P3)
+
+**Given** a person who wants to help the base models, **When** they start donating in the
+settings, **Then** they are shown public-domain sentences to write, see each written
+sentence again before it is kept, choose a licence once, and get one file they send
+themselves; nothing is donated without that review, and their own samples are never
+included unless they pick them one by one.
+
 ## Requirements
 
 - **FR-001**: The recognizer is a separate program with a stable, versioned interface
@@ -111,9 +119,17 @@ device otherwise.
 - **FR-012**: Base models are trained only on data the project may use and redistribute
   (data under a suitable licence, and text rendered as synthetic handwriting); the
   training recipe, the data sources and their licences ship with the models. No sample of
-  any person is part of a base model.
+  any person is part of a base model, except samples donated under FR-014.
 - **FR-013**: No device names in the program; what differs per device (the pen's units,
   pressure, rate) comes from the client's stroke data.
+- **FR-014**: Donation: off unless the person starts it. Donated samples are prompted
+  writing of public-domain or openly licensed sentences shipped with the program, or
+  samples the person picks one by one from their own; each is shown before it is kept.
+  The person chooses the licence (CC0 or CC BY 4.0) once per donation. The donation file
+  uses the sample format with no client, wall-clock time, device or person named in it
+  (`docs/samples.md`). The recognizer only writes the file; sending it is a step the
+  person takes outside this program. Donations are separate from the samples used for
+  the person's own adaptation, and stopping or erasing a donation never touches those.
 
 ## Key entities
 
@@ -122,13 +138,14 @@ device otherwise.
 - **Sample**: strokes, confirmed text, alignment, language, client, time.
 - **Base model**: per language, shipped with the program, the same for everyone.
 - **Adaptation**: per person, built on the device from their samples.
+- **Donation**: samples the person reviewed and licensed for the base models.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
 | Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import) | owned (this program) | 1 | FR-001–FR-011; defined with the plan |
-| Sample file format (export/import) | owned (this program) | 1 | FR-010 |
+| Sample format (export/import, donation, training data) | owned (this program) | 1 | FR-010, FR-014; `docs/samples.md` |
 | Base model package (model, language, recipe, data sources and licences) | owned (this program) | 1 | FR-005, FR-012 |
 | Writing paper and corrections | consumer (`GlassineOS/shell` spec 006) | — | shell spec 006 FR-011–FR-013a |
 | Settings: learning, erase, counts, export/import | consumer (the shell's settings app) | — | shell spec 006 FR-008 |
@@ -161,7 +178,7 @@ Device-neutral; it needs a pen that reports positions over time.
 Host level: the interface against recorded stroke files (recognize, streaming, prompted
 alignment, gestures); the sample rules (no sample without confirmation, none from a
 private field, erase and export/import round trip); an adaptation that does worse is
-rejected.
+rejected; a donation file holds only reviewed samples and no client, time or device.
 
 Hardware: supervised: writing on the keyboard's paper in English; an adaptation
 after a day of use, compared on held-back samples.
