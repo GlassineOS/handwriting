@@ -1,6 +1,6 @@
 # GlassineOS/handwriting
 
-On-device handwriting recognition for GlassineOS. **Nothing built yet.**
+On-device handwriting recognition for GlassineOS.
 
 It reads the pen's movement as you write (online recognition: positions over time, pen
 down and up), not a picture of finished writing. Stroke order, direction and pauses tell
@@ -34,10 +34,20 @@ handwriting; the recipe, sources and licences ship with them.
 
 The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
 
+## What is here
+
+- [`recognizer/`](recognizer): `glassine-handwriting`, the recognizer (C, no runtime
+  beyond libc and json-c). How to talk to it and read its files:
+  [`docs/recognizer.md`](docs/recognizer.md). `make -C recognizer check` runs its tests.
+- [`train/`](train): the trainer and the base model recipe.
+- [`synth/`](synth): synthetic handwriting from fonts, the trainer's data.
+- [`docs/samples.md`](docs/samples.md): the sample format.
+
 ## Status and framing
 
 GlassineOS is a hobby project, written largely with AI coding agents and not reviewed by
-subsystem experts. This repository holds a specification; no code yet.
+subsystem experts. The recognizer is tested on a desktop machine only; no device has run it
+yet.
 
 ## License
 
