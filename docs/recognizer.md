@@ -244,7 +244,9 @@ none exists.
 One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
 `$GLASSINE_HANDWRITING_MODELS/LANG/`) with `recognizer.ghm` (the model), `README` (the recipe and
 data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
-line). `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export.
+line). `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
+`glassine-train release` makes the whole directory as a release tarball
+([`models/README.md`](../models/README.md)).
 
 **ghm, version 1** (little-endian). A 64-byte header: `GHWM`, then fifteen 32-bit unsigned
 integers: version (1), header bytes (64), features per row `F`, first convolution's channels

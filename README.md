@@ -40,6 +40,8 @@ The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
   beyond libc and json-c). How to talk to it and read its files:
   [`docs/recognizer.md`](docs/recognizer.md). `make -C recognizer check` runs its tests.
 - [`train/`](train): the trainer and the base model recipe.
+- [`models/`](models): how a trained model is released (GitHub release assets, not
+  files here) and each language's prompts.
 - [`synth/`](synth): synthetic handwriting from fonts, the trainer's data.
 - [`docs/samples.md`](docs/samples.md): the sample format.
 
