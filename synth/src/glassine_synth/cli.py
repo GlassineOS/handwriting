@@ -40,9 +40,15 @@ def font_tables(cache: Path, chars: str, only: list[str] | None = None):
     return out
 
 
-def _json(smp, prov):
+def _json(smp, prov, lang):
+    # sample format v1, docs/samples.md
     return {
+        "version": 1,
         "text": smp["text"],
+        "lang": lang,
+        "source": "synthetic",
+        "spans_source": "exact",
+        "units": {"xy": "em"},
         "strokes": [np.round(s, 4).tolist() for s in smp["strokes"]],
         "spans": smp["spans"],
         "fonts": smp["fonts"],
@@ -64,6 +70,7 @@ def main(argv=None):
     s.add_argument("--text", type=Path, help="one line of text per line (default: built-in)")
     s.add_argument("-n", type=int, default=1, help="variants per text line")
     s.add_argument("--seed", type=int, default=1)
+    s.add_argument("--lang", default="en", help="language tag of the text")
     s.add_argument("--font", action="append")
     s.add_argument("-o", type=Path, default=Path("build/lines"))
     a = ap.parse_args(argv)
@@ -89,7 +96,7 @@ def main(argv=None):
         with open(a.o / "samples.jsonl", "w") as fh:
             for smp in samples:
                 used = sorted(set(smp["fonts"]))
-                fh.write(json.dumps(_json(smp, {k: prov[k] for k in used})) + "\n")
+                fh.write(json.dumps(_json(smp, {k: prov[k] for k in used}, a.lang)) + "\n")
         (a.o / "lines.svg").write_text(sheet.line_sheet(samples))
         print(a.o / "samples.jsonl", a.o / "lines.svg", f"{len(samples)} samples")
 
