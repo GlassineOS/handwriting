@@ -1,0 +1,44 @@
+# GlassineOS/handwriting
+
+On-device handwriting recognition for GlassineOS. **Nothing built yet.**
+
+It reads the pen's movement as you write (online recognition: positions over time, pen
+down and up), not a picture of finished writing. Stroke order, direction and pauses tell
+letters apart, so a small model is enough and it can read while you are still writing.
+
+## One program, many clients
+
+The recognizer is a separate program on the person's session with a versioned
+interface. The shell's on-screen keyboard is its first client: its writing paper turns
+handwriting into text in any field (`GlassineOS/shell`, spec 006). Any app can use the
+same interface:
+
+- **Recognize** strokes, with context (the text before the cursor, the language), into
+  ranked candidates, each with which strokes made which character.
+- **Gestures:** strike-through, caret and scratch-out, with what they cover.
+- **Prompted writing:** given the text to expect, align the strokes to its characters.
+  An app that turns a person's handwriting into a font builds on this; the same samples
+  teach the recognizer.
+
+## Learning, and the person's control
+
+The recognizer ships a base model per language (English first) and adapts to the person
+on the device, from samples they confirmed (a picked alternative, a correction, a prompt
+they wrote), never from its own guesses and never from private fields. Adaptation runs
+while the device is idle and charging and is kept only when it does better on held-back
+samples. Learning can be turned off, everything erased at once, and samples moved to a
+new device by export and import. Nothing leaves the device otherwise.
+
+Base models are trained only on data the project may redistribute, or on synthetic
+handwriting; the recipe, sources and licences ship with them.
+
+The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
+
+## Status and framing
+
+GlassineOS is a hobby project, written largely with AI coding agents and not reviewed by
+subsystem experts. This repository holds a specification; no code yet.
+
+## License
+
+GPL-2.0-or-later (`LICENSE`).
