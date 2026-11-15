@@ -70,6 +70,7 @@ int hw_donation_add(const char *json);          /* a reviewed sample (no client,
 int hw_donation_write(const char *path);
 int hw_donation_erase(void);
 int hw_donation_remove(const char *id);         /* 1 removed, 0 not there, -1 error */
+int hw_donation_has(const char *id);            /* 1 there, 0 not, -1 error */
 long hw_donation_count(void);
 
 #endif

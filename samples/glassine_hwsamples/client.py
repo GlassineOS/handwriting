@@ -286,6 +286,24 @@ class Cli:
     def donation_add(self, sample_id):
         self.run("donation", "add", sample_id)
 
+    def donation_earlier(self):
+        """this app's prompted samples written to shipped prompts that the donation hasn't
+        got (kept before donating was on): [(id, time, text)]"""
+        out = []
+        for line in self.run("donation", "earlier", "-c", self.client).splitlines():
+            f = line.split("\t")
+            if len(f) >= 4:
+                out.append((f[0], int(f[1]), unesc(f[3])))
+        return out
+
+    def donation_add_all(self, ids):
+        """adds these samples to the donation, one by one; the number added"""
+        n = 0
+        for i in ids:
+            self.donation_add(i)
+            n += 1
+        return n
+
     def donation_write(self, path):
         self.run("donation", "write", path)
 
