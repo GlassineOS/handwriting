@@ -45,9 +45,19 @@ int hw_samples_add(const char *json, const struct hw_meta *m);
 /* all samples, in the order they were added; *gen the erase count */
 int hw_samples_load(struct hw_entry **out, size_t *n, unsigned long *gen);
 void hw_entries_free(struct hw_entry *e, size_t n);
-/* the same entries, kept in this process and read again only when the store's files
- * changed; borrowed: valid until the next call, not freed by the caller */
-int hw_samples_view(const struct hw_entry **out, size_t *n);
+/* The index of the samples (the samples.index file, kept in step with samples.jsonl): what
+ * a listing needs without reading any strokes. Each entry is a sample stored once (a line
+ * stored twice counts once), in the order stored; text and read (the first reading at the
+ * time of writing, "" when none) are the sample's own. */
+struct hw_index_entry {
+	struct hw_meta meta;
+	const char *text, *read;
+};
+/* borrowed: valid until the next call into the store, not freed by the caller */
+int hw_samples_index(const struct hw_index_entry **out, size_t *n);
+/* one sample's line by id, malloc'd; NULL when there is none (*err 0) or on an error
+ * (*err -1); m (may be NULL) gets its meta */
+char *hw_samples_line(const char *id, struct hw_meta *m, int *err);
 /* erase all (client NULL) or one client's; the adaptations go too. Returns the number
  * of samples erased, -1 on error. */
 long hw_samples_erase(const char *client);
@@ -68,9 +78,14 @@ int hw_donation_start(const char *licence);     /* CC0-1.0 or CC-BY-4.0 */
 int hw_donation_licence(char *out, size_t n);   /* 1 started, 0 not */
 int hw_donation_add(const char *json);          /* a reviewed sample (no client, no time) */
 int hw_donation_write(const char *path);
-int hw_donation_erase(void);
+int hw_donation_erase(void);                   /* the donor ID stays */
+/* the donor ID (donation/donor-id): a random UUID made at the first donation start; 1 there,
+ * 0 none yet. hw_donor_new makes a new one (replacing it) and gives it. */
+int hw_donor_id(char *out, size_t n);
+int hw_donor_new(char *out, size_t n);
 int hw_donation_remove(const char *id);         /* 1 removed, 0 not there, -1 error */
 int hw_donation_has(const char *id);            /* 1 there, 0 not, -1 error */
+char *hw_donation_line(const char *id);         /* a donated sample's line, malloc'd; NULL none */
 long hw_donation_count(void);
 
 #endif

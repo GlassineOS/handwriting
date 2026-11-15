@@ -19,6 +19,7 @@ sample per line (JSON lines, UTF-8).
 | `provenance` | object | synthetic only | Fonts used: name, licence, source, upstream commit |
 | `fonts` | list of strings | synthetic only | Font id per character of `text` |
 | `licence` | string | donated only | Licence the person chose for the sample (`CC0-1.0` or `CC-BY-4.0`) |
+| `donor` | string | donated only | The donor ID: a random UUID, the same in every sample and every donation of one person (until they ask for a new one), so samples can be counted per writer; nothing about the person or the device |
 | `area` | object | no | The writing area it was written in (prompted writing): `box` `[x0, y0, x1, y1]` and `line` (the line spacing), in the units of `x` and `y`; `orientation`, the screen's rotation in degrees (0, 90, 180, 270) |
 | `reading` | list | no | What the recognizer read when it was written, before learning from it: candidates best first, each `{"text": …, "score": …}` (`score` the log-probability, ≤ 0) |
 | `pick` | object | no | A picked candidate (`confirmed`): `rank`, its place among the candidates (1 = first), and `from`, where it came from: `ink` (the ink's best reading), `beam` (another reading of the ink), `words` (a word of the list one edit from a reading) or `guided` (a reading of the search the words guided) |
@@ -43,7 +44,8 @@ tilt_y]`. All strokes of one sample use the same length.
 - Points are the pen's values as reported: no smoothing, resampling or cleaning. Hover
   positions (the pen above the screen) are not part of a stroke.
 - Nothing identifies the writer or the device: no device name, serial, user name, client
-  name or wall-clock time in a sample. Times start at 0 for each sample.
+  name or wall-clock time in a sample. A donated sample's `donor` is random: it tells one
+  writer's samples apart from another's, nothing more. Times start at 0 for each sample.
 - On the device, a stored sample also has its client and the time it was confirmed (spec
   001 FR-009). They live beside the sample in the person's data directory, not in it,
   and are dropped on export for donation.
