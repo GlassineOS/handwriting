@@ -137,8 +137,9 @@ class Recognizer:
             self.ask("stroke", session, points(s, t0))
 
     def read(self, session, count=3):
-        """[(text, score)] best first"""
-        r = self.ask("read", session, str(count))
+        """[(text, score)] best first: the ink's reading alone (no words), what the hand
+        itself reads"""
+        r = self.ask("read", session, str(count), "raw")
         if r[0] != "text":
             return []
         n = int(r[1])

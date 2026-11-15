@@ -36,6 +36,7 @@
 #include "hw/recog.h"
 #include "hw/sample.h"
 #include "hw/store.h"
+#include "hw/words.h"
 
 #define VERSION 1
 #define MAX_LINE (4 << 20)      /* bytes of one request line */
@@ -211,6 +212,28 @@ static int field_rule(const char *f, int *bad)
 	return rule;
 }
 
+/* whether readings in FIELD may use the words: prose only (purpose normal, or not a text
+ * field), no hint that isn't about prose, and the setting `words` not off */
+static int words_field(const char *f)
+{
+	if (*f && strcmp(f, "-")) {
+		char t[256];
+		if (strlen(f) >= sizeof t) return 0;
+		strcpy(t, f);
+		static const char *hints_ok[] = { "completion", "spellcheck", "auto_capitalization", "lowercase",
+						  "uppercase", "titlecase", "latin", "multiline", NULL };
+		int first = 1;
+		for (char *p = strtok(t, ","); p; p = strtok(NULL, ","), first = 0) {
+			if (first) { if (strcmp(p, "normal")) return 0; continue; }
+			int known = 0;
+			for (int i = 0; hints_ok[i]; i++) if (!strcmp(p, hints_ok[i])) known = 1;
+			if (!known) return 0;
+		}
+	}
+	char v[32];
+	return !hw_conf_get("words", v, sizeof v) || strcmp(v, "off");
+}
+
 /* LANGS -> the first language with a model: the request's list, else the setting, else
  * the locale, else English */
 static struct hw_lang *pick_lang(const char *langs, int *bad)
@@ -260,6 +283,10 @@ struct session {
 	int width;                      /* numbers per point: 3, or 4 with pressure; 0 none yet */
 	int pressure_all, tilt_all;
 	struct hw_area area;            /* the writing area, when the client said (area) */
+	int words;                      /* readings use the words (a prose field, the setting on) */
+	/* the last reply's candidates, for a pick: text, where each came from */
+	char *cand[MAX_CANDS];
+	int cand_from[MAX_CANDS], ncand;
 };
 
 static struct session sessions[MAX_SESSIONS];
@@ -271,8 +298,15 @@ static struct session *find_session(const char *name)
 	return NULL;
 }
 
+static void cands_clear(struct session *s)
+{
+	for (int i = 0; i < s->ncand; i++) free(s->cand[i]);
+	s->ncand = 0;
+}
+
 static void session_clear(struct session *s)
 {
+	cands_clear(s);
 	for (size_t i = 0; i < s->n; i++) hw_ink_free(&s->ink[i]);
 	s->n = 0;
 	s->width = 0;
@@ -404,9 +438,11 @@ static void text_of(const unsigned *cp, int n, char *o, size_t max)
 }
 
 /* candidates (and their alignment) for ink; appends "\tTEXT\tSCORE\tALIGN" per candidate */
-static int candidates(struct hw_lang *l, const struct hw_ink *ink, const int *ids, size_t n, int want, struct buf *b,
-		      int *ncand)
+static int candidates(struct hw_lang *l, struct session *s, int raw, int want, struct buf *b, int *ncand)
 {
+	const struct hw_ink *ink = s->ink;
+	const int *ids = s->ids;
+	size_t n = s->n;
 	size_t *np;
 	struct hw_stroke *st = strokes_of(ink, n, &np);
 	if (!st) return -1;
@@ -416,11 +452,15 @@ static int candidates(struct hw_lang *l, const struct hw_ink *ink, const int *id
 	if (ret == 0 && r.rows > 0) {
 		r.npoints = np;
 		struct hw_reading rd;
-		hw_read(l, &r, want, &rd);
+		struct hw_context x;
+		if (s->words && !raw) hw_context_of(hw_words_get(l->lang), s->before, &x);
+		hw_read_words(l, &r, s->words && !raw && x.w ? &x : NULL, want, &rd);
 		*ncand = rd.n;
+		cands_clear(s);
 		for (int c = 0; c < rd.n; c++) {
 			char text[4 * HW_MAX_LABELS + 1];
 			text_of(rd.c[c].cp, rd.c[c].len, text, sizeof text);
+			if (c < MAX_CANDS && (s->cand[c] = strdup(text))) { s->cand_from[c] = rd.c[c].from; s->ncand = c + 1; }
 			bput(b, "\t", 1);
 			besc(b, text);
 			bfmt(b, "\t%.3f\t", rd.c[c].score);
@@ -458,7 +498,9 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 		r.npoints = np;
 		struct hw_reading rd;
 		struct hw_charspan *cs = NULL;
-		if (hw_read(l, &r, 1, &rd) == 1) {
+		struct hw_context x;
+		if (s->words) hw_context_of(hw_words_get(l->lang), s->before, &x);
+		if (hw_read_words(l, &r, s->words && x.w ? &x : NULL, 1, &rd) == 1) {
 			long nc = hw_align(l, &r, rd.c[0].cp, (size_t)rd.c[0].len, &cs);
 			long lo = -1, hi = -1, before = 0;
 			for (long k = 0; k < nc; k++) {
@@ -485,7 +527,7 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 	if (!done) bstr(b, ge->kind == HW_GESTURE_CARET ? "@0" : "-");
 }
 
-static void do_read(const char *id, struct session *s, int want)
+static void do_read(const char *id, struct session *s, int want, int raw)
 {
 	int bad;
 	if (!s->n) { reply("read\t%s\tempty", id); return; }
@@ -514,7 +556,7 @@ static void do_read(const char *id, struct session *s, int want)
 	free(ge); free(st); free(np);
 	struct buf c = { 0 };
 	int nc;
-	if (candidates(l, s->ink, s->ids, s->n, want, &c, &nc)) { reply("error\t%s\tmemory", id); free(c.s); return; }
+	if (candidates(l, s, raw, want, &c, &nc)) { reply("error\t%s\tmemory", id); free(c.s); return; }
 	bfmt(&b, "read\t%s\ttext\t%d", id, nc);
 	if (c.s) bstr(&b, c.s);
 	bstr(&out, b.s);
@@ -575,8 +617,13 @@ static double fit_ok(void)
 
 /* keep: the person kept the sample although the alignment failed the check (its spans are
  * then inferred); without it such a sample isn't made (*reason 3, *fit its score) */
+/* gate: a pick the ink alone didn't read (a word from the list, proposed one edit from a
+ * reading) is kept only when its alignment passes the check and no character fits below
+ * PICK_MIN; failing, no sample (*reason 3). pick_rank > 0: the candidate picked (1 = the
+ * first) and where it came from. */
+#define PICK_MIN 0.3
 static char *make_sample(struct hw_lang *l, const struct session *s, const char *text, const char *source, int prompted,
-			 int keep, int *exact, double *fit, int *reason)
+			 int keep, int gate, int pick_rank, const char *pick_from, int *exact, double *fit, int *reason)
 {
 	unsigned cp[HW_MAX_LABELS];
 	size_t n = hw_utf8_decode(text, cp, HW_MAX_LABELS);
@@ -603,6 +650,13 @@ static char *make_sample(struct hw_lang *l, const struct session *s, const char 
 		*fit = m ? sum / m : 0;
 		*exact = m && *fit >= fit_ok();
 		if (!*exact && !keep) { *reason = 3; free(cs); goto out; }
+	} else if (gate) {
+		double sum = 0, lo = 1;
+		int m = 0;
+		for (long k = 0; k < nc; k++)
+			if (cs[k].fit >= 0 && cp[k] != ' ') { sum += cs[k].fit; m++; if (cs[k].fit < lo) lo = cs[k].fit; }
+		*fit = m ? sum / m : 0;
+		if (!m || *fit < fit_ok() || lo < PICK_MIN) { *reason = 3; free(cs); goto out; }
 	}
 	strcpy(smp.spans_source, *exact ? "exact" : "inferred");
 	smp.units = s->units;
@@ -611,6 +665,8 @@ static char *make_sample(struct hw_lang *l, const struct session *s, const char 
 	smp.pressure = s->pressure_all;
 	smp.tilt = s->tilt_all;
 	smp.area = s->area;
+	smp.pick_rank = pick_rank;
+	snprintf(smp.pick_from, sizeof smp.pick_from, "%s", pick_rank > 0 ? pick_from : "");
 	struct hw_reading rd = { 0 };
 	char texts[3][4 * HW_MAX_LABELS + 1];
 	if (prompted) {
@@ -662,8 +718,15 @@ static void do_confirm(const char *id, struct session *s, const char *source, co
 	struct hw_lang *l = pick_lang(s->langs, &bad);
 	if (!l) { reply("confirm\t%s\tskip\tno-model", id); return; }
 	int prompted = !strcmp(src, "prompted"), exact;
+	/* a pick: which candidate of the last reading it was */
+	int rank = 0, from = -1;
+	if (!strcmp(src, "confirmed"))
+		for (int i = 0; i < s->ncand && !rank; i++) if (!strcmp(s->cand[i], text)) { rank = i + 1; from = s->cand_from[i]; }
+	int gate = from == HW_FROM_WORDS;
+	static const char *froms[] = { "ink", "beam", "words" };
 	double fit = 0;
-	char *line = make_sample(l, s, text, src, prompted, keep, &exact, &fit, &why);
+	char *line = make_sample(l, s, text, src, prompted, keep && !gate, gate, rank,
+				 from >= 0 && from < 3 ? froms[from] : "", &exact, &fit, &why);
 	if (!line && why == 3) { reply("confirm\t%s\tskip\tfit\t%.2f", id, fit); return; }
 	if (!line) { reply("confirm\t%s\tskip\t%s", id, why == 1 ? "empty" : "short"); return; }
 	struct hw_meta m = { 0 };
@@ -777,7 +840,7 @@ static void do_donate(const char *id, struct session *s, const char *text, int k
 	if (!l) { reply("donate\t%s\tskip\tno-model", id); return; }
 	if (!shipped_prompt(l, text)) { reply("donate\t%s\tskip\tprompt", id); return; }
 	double fit = 0;
-	char *line = make_sample(l, s, text, "prompted", 1, keep, &exact, &fit, &why);
+	char *line = make_sample(l, s, text, "prompted", 1, keep, 0, 0, "", &exact, &fit, &why);
 	if (!line && why == 3) { reply("donate\t%s\tskip\tfit\t%.2f", id, fit); return; }
 	if (!line) { reply("donate\t%s\tskip\t%s", id, why == 1 ? "empty" : "short"); return; }
 	char sid[17];
@@ -890,6 +953,7 @@ static void request(char *line, int skip_read)
 		s->rule = rule;
 		s->units = u;
 		s->before = strdup(f[6]);
+		s->words = words_field(f[4]);
 		s->pressure_all = 1;
 		s->tilt_all = 1;
 		reply("begin\t%s\tok", id);
@@ -909,6 +973,8 @@ static void request(char *line, int skip_read)
 		if (e == f[5] || *e || want < 1 || want > MAX_CANDS) { reply("error\t%s\tbad-count", id); return; }
 		UNESC(6);
 		snprintf(tmp.langs, sizeof tmp.langs, "%s", f[2]);
+		tmp.before = strdup(f[6]);
+		tmp.words = words_field(f[3]);
 		tmp.pressure_all = 1;
 		tmp.tilt_all = 1;
 		char *save = NULL;
@@ -921,7 +987,7 @@ static void request(char *line, int skip_read)
 		}
 		struct buf b0 = out;      /* the reply line, renamed from read to recognize */
 		size_t at = b0.len;
-		do_read(id, &tmp, (int)want);
+		do_read(id, &tmp, (int)want, 0);
 		if (out.len > at && !strncmp(out.s + at, "read\t", 5)) {
 			struct buf t = { 0 };
 			bstr(&t, "recognize");
@@ -948,15 +1014,16 @@ static void request(char *line, int skip_read)
 		if ((sid = session_add(s, &k, w)) < 0) { hw_ink_free(&k); reply("error\t%s\ttoo-many", id); return; }
 		reply("stroke\t%s\tok\t%d", id, sid);
 	} else if (!strcmp(v, "read")) {
-		if (n != 3 && n != 4) { reply("error\t%s\tbad-line", id); return; }
+		/* read ID S [COUNT [raw]] */
+		if (n < 3 || n > 5 || (n == 5 && strcmp(f[4], "raw"))) { reply("error\t%s\tbad-line", id); return; }
 		long want = 3;
-		if (n == 4) {
+		if (n >= 4) {
 			char *e;
 			want = strtol(f[3], &e, 10);
 			if (e == f[3] || *e || want < 1 || want > MAX_CANDS) { reply("error\t%s\tbad-count", id); return; }
 		}
 		if (skip_read) { reply("drop\t%s", id); return; }
-		do_read(id, s, (int)want);
+		do_read(id, s, (int)want, n == 5);
 	} else if (!strcmp(v, "align")) {
 		NEED(4);
 		UNESC(3);

@@ -48,6 +48,8 @@ struct hw_sample {
 	int tilt;                       /* points carry pressure and tilt */
 	struct hw_area area;
 	struct hw_reading_text reading;
+	int pick_rank;                  /* a picked candidate: its place (1 = first); 0 none */
+	char pick_from[8];              /* where it came from: ink, beam, words */
 };
 
 void hw_ink_free(struct hw_ink *k);
