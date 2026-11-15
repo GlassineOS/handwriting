@@ -139,7 +139,12 @@ included unless they pick them one by one.
   samples the person picks one by one from their own; each is shown before it is kept.
   The person chooses the licence (CC0 or CC BY 4.0) once per donation. The donation file
   uses the sample format with no client, wall-clock time, device or person named in it
-  (`docs/samples.md`). The recognizer only writes the file; sending it is a step the
+  (`docs/samples.md`), and carries one donor ID: a random identifier made when the person
+  first starts a donation, kept with their data on the device and the same in every later
+  donation from it, so the project can tell writers apart and count each writer's
+  samples across donations. It is not derived from the device, the account or anything
+  else about the person. The person sees it where they donate and can replace it with a
+  new one, after which their donations count as a new writer's. The recognizer only writes the file; sending it is a step the
   person takes outside this program. Donations are separate from the samples used for
   the person's own adaptation, and stopping or erasing a donation never touches those.
 
