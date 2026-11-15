@@ -53,3 +53,40 @@ def test_zones_stretch_only_outside_the_x_height():
     q = np.array([[0.0, -0.9], [0.0, -0.2], [0.0, 0.3]])
     z = _zones(q, 2.0, 0.5)
     assert np.allclose(z[:, 1], [-XH - 2 * (0.9 - XH), -0.2, 0.15])
+
+
+def test_new_parameters_off_by_default():
+    a = line("il li", [("a", _table())], np.random.default_rng(5), Params())
+    b = line("il li", [("a", _table())], np.random.default_rng(5),
+             Params(asc_scale=1.0, desc_scale=1.0, join=0.0, pulse_floor=0.0))
+    assert all(np.array_equal(x, y) for x, y in zip(a["strokes"], b["strokes"]))
+
+
+def test_joins_keep_every_character_spanned():
+    from glassine_synth.ink import preset
+    p = preset("real1", join=1.0, join_dist=5.0, extra_lift=0.0, delay=0.0)
+    smp = line("ilil il", [("a", _table())], np.random.default_rng(2), p)
+    plain = line("ilil il", [("a", _table())], np.random.default_rng(2), Params(extra_lift=0.0, delay=0.0))
+    assert len(smp["strokes"]) < len(plain["strokes"])
+    assert all(smp["spans"][k] for k in range(7) if k != 4)
+    for s in smp["strokes"]:
+        assert np.all(np.diff(s[:, 2]) > 0)
+
+
+def test_timed_glyph_keeps_its_timing():
+    q = np.c_[np.zeros(30), np.linspace(-0.4, 0, 30), np.linspace(0, 0.29, 30)]
+    tab = {"l": Glyph("l", 0.3, [q], [False])}
+    smp = line("ll", [("h", tab)], np.random.default_rng(1), Params(extra_lift=0.0))
+    for s in smp["strokes"]:
+        assert len(s) == 30 and np.allclose(np.diff(s[:, 2]), 0.01)
+    assert smp["strokes"][1][0, 2] > smp["strokes"][0][-1, 2]
+
+
+def test_stats_measure_a_line():
+    from glassine_synth.stats import measure
+    a = np.linspace(0, 2 * np.pi, 40)
+    tab = {**_table(), "o": Glyph("o", 0.4, [np.c_[0.2 + 0.2 * np.cos(a), -0.225 + 0.225 * np.sin(a)]], [False])}
+    smp = line("lol oil", [("a", tab)], np.random.default_rng(4), Params())
+    s = {"text": smp["text"], "strokes": [x.tolist() for x in smp["strokes"]], "spans": smp["spans"]}
+    m = measure([s])
+    assert m["samples"] == 1 and m["strokes_per_char"] > 0 and m["speed_xh_per_s"]["n"] > 0
