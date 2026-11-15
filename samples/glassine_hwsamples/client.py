@@ -4,12 +4,14 @@ on a child process, and its command line. The app keeps no samples of its own: e
 it stores, adapts and donates goes through here."""
 
 import os
+import select
 import subprocess
 import threading
 
 from . import APP_ID
 
 BIN = os.environ.get("GLASSINE_HANDWRITING_BIN", "glassine-handwriting")
+TIMEOUT = 60          # seconds for one reply (a long sentence on a slow device takes a few)
 
 
 def esc(s):
@@ -70,6 +72,11 @@ class Recognizer:
         rid = f"q{self.n}"
         self.p.stdin.write("\t".join([verb, rid, *fields]) + "\n")
         self.p.stdin.flush()
+        # never wait forever: a recognizer that doesn't answer is restarted
+        if not select.select([self.p.stdout], [], [], TIMEOUT)[0]:
+            self.p.kill()
+            self.p.wait()
+            raise Error("the recognizer didn't answer")
         line = self.p.stdout.readline()
         if not line.endswith("\n"):
             raise BrokenPipeError("recognizer went away")
