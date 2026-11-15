@@ -49,9 +49,14 @@ void hw_entries_free(struct hw_entry *e, size_t n);
  * of samples erased, -1 on error. */
 long hw_samples_erase(const char *client);
 unsigned long hw_store_generation(void);
+/* deletes one sample by id (only owner's unless NULL): 1 deleted, 0 no such sample, -2
+ * it belongs to another client, -1 error. Bumps the erase count like an erase, so a
+ * running adaptation drops its result; the adaptations in use stay. */
+int hw_samples_delete(const char *id, const char *owner);
 
-/* one file with the samples (and their client and time) and the adaptations */
-int hw_export(const char *path);
+/* one file with the samples (and their client and time) and the adaptations; with a
+ * client, only that client's samples and no adaptation */
+int hw_export(const char *path, const char *client);
 /* returns the number of samples added, -1 on error (reason on stderr) */
 long hw_import(const char *path);
 
@@ -61,6 +66,7 @@ int hw_donation_licence(char *out, size_t n);   /* 1 started, 0 not */
 int hw_donation_add(const char *json);          /* a reviewed sample (no client, no time) */
 int hw_donation_write(const char *path);
 int hw_donation_erase(void);
+int hw_donation_remove(const char *id);         /* 1 removed, 0 not there, -1 error */
 long hw_donation_count(void);
 
 #endif
