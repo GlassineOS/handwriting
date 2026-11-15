@@ -144,8 +144,9 @@ has them `inferred`; the reply says which. A prompted sample also stores the wri
 adaptation from it), sample format `area` and `reading`.
 
 A `picked` or `confirmed` text that was one of the candidates of the session's last reading is
-stored with its place among them and where it came from (sample format `pick`). When it was a
-word of the list (`words`, below) rather than the ink's, it is checked like a prompted sample,
+stored with its place among them and where it came from (sample format `pick`). When the words
+put it there (a near word or the guided search, below) rather than the ink, it is checked like a
+prompted sample,
 and also every written character must fit at least 0.3; failing, the reply is
 `confirm ID skip fit SCORE` and `keep` doesn't override it (the client shows nothing).
 
@@ -159,10 +160,15 @@ when there is none for a regional one; shell `docs/predictor.md`) and the person
 they change. Without either, readings are the ink's alone. The setting `words = off` turns them
 off. Every other field, and `read … raw`, reads without them.
 
-- The ink's ten best readings are scored again: the ink's log-probability, plus 0.3 × (for each
+- A second search of the ink is guided by the words: a prefix inside a word of the list pays
+  nothing until the word ends, then as below; a letter that leaves the list makes an unknown
+  word that pays per character, so names, numbers and codes still come through. Its ten best
+  readings join the ink's own ten best, when the ink scores them within 6 of its best.
+- All these readings are scored again: the ink's log-probability, plus 0.3 × (for each
   word of the list, the natural log of its probability after the two words before, from `BEFORE`
   and the reading itself; for every other character but a space, −4.5).
-- The ink's best reading stays first, unless another of its readings scores 3 more and the best
+- The ink's best reading stays first, unless another reading of the ink (its own or the guided
+  search's) scores 2.5 more and the best
   isn't all words of the list; the ink's best then comes second. The rest follow by score.
 - For an unknown word of four letters or more in the three best readings, up to two of the most
   frequent words of the list one edit away (a letter changed, left out, added, or two swapped)
@@ -358,4 +364,4 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…` replace the Words weights |
+| `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |

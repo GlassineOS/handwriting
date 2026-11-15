@@ -63,8 +63,9 @@ int *hw_span_strokes(const struct hw_run *r, const struct hw_charspan *c, size_t
 
 /* Candidates: up to n readings, best first. */
 #define HW_READ_MAX 16
-enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS };      /* the ink's best reading, another
-							  * reading of the ink, a word from the list */
+/* the ink's best reading, another reading of the ink, a word of the list one edit from a
+ * reading, a reading found with the words guiding the search */
+enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS, HW_FROM_GUIDED };
 struct hw_reading {
 	int n;
 	struct {
