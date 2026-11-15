@@ -488,6 +488,28 @@ class Samples(unittest.TestCase):
         bad.write_text('{"format":"something-else","version":1}\n')
         self.assertNotEqual(self.env.run("samples", "import", str(bad), check=False).returncode, 0)
 
+    def test_store_survives_a_lost_append(self):
+        """a crash can leave zero bytes where an append never reached the disk, or a line cut
+        short: every other sample stays readable, and the next one starts on its own line"""
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        ids = [self.confirm(c, INK[0], session="a")[3]]
+        st = self.env.store
+        with open(st / "samples.jsonl", "ab") as f:
+            f.write(b"\0" * 3688)                 # an append lost in a crash
+        ids.append(self.confirm(c, INK[1], session="b")[3])
+        with open(st / "samples.jsonl", "ab") as f:
+            f.write(b'{"version":1,"text":"cut sh')  # a line cut short
+        ids.append(self.confirm(c, INK[2], session="c")[3])
+        self.assertEqual(c.ask("samples")[2:], ["3", *ids])
+        c.close()
+        self.assertIn("samples\t3\n", self.env.run("samples", "stats").stdout)
+        self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()], ids)
+        # a delete rewrites the file without the damage
+        self.env.run("samples", "delete", ids[0])
+        self.assertNotIn(b"\0", (st / "samples.jsonl").read_bytes())
+        self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()], ids[1:])
+
     def test_erase_with_nothing_stored(self):
         self.assertEqual(self.env.run("samples", "erase").stdout, "0\n")
         self.assertFalse(self.env.store.exists())
