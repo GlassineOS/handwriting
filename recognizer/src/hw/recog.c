@@ -254,7 +254,9 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 
 /* the weights (natural log units); $GLASSINE_HANDWRITING_WORDS="lm=0.3,margin=2,..."
  * replaces them (tuning) */
-static struct { double lm, word, chr, margin, near; int beam, nbest, minlen; } W = { 0.3, 0, -4.5, 3.0, 6.0, 16, 10, 4 };
+static struct { double lm, word, chr, margin, near; int beam, nbest, minlen, guided; } W = {
+	0.3, 0, -4.5, 2.5, 6.0, 16, 10, 4, 1 };
+#define POOL 32                 /* readings scored at most: the ink's, the guided search's, near words */
 
 static void weights(void)
 {
@@ -275,10 +277,11 @@ static void weights(void)
 		else if (!strcmp(k, "beam")) W.beam = (int)v;
 		else if (!strcmp(k, "nbest")) W.nbest = (int)v;
 		else if (!strcmp(k, "minlen")) W.minlen = (int)v;
+		else if (!strcmp(k, "guided")) W.guided = (int)v;
 		p += used;
 		if (*p == ',') p++;
 	}
-	if (W.nbest > HW_READ_MAX - 2) W.nbest = HW_READ_MAX - 2;
+	if (W.nbest > (POOL - 2) / 2) W.nbest = (POOL - 2) / 2;
 	if (W.nbest < 1) W.nbest = 1;
 	if (W.beam < W.nbest) W.beam = W.nbest;
 }
@@ -498,6 +501,122 @@ static int near_words(const struct hw_lang *l, const struct hw_context *x, const
 	return got;
 }
 
+/* The search guided by the words: each prefix of the beam knows the word it is in, as the
+ * run of the list's words that start with it; a letter that leaves the list makes it an
+ * unknown word, at W.chr per letter, so names and codes still get through. A finished
+ * word scores as in text_words. */
+struct gstate {
+	long p2, p1;                    /* the two words before the current one */
+	long lo, hi;                    /* the list's words starting with key; lo < 0: unknown */
+	int klen, wlen;                 /* key bytes, letters in the word */
+	char key[2 * HW_WORD_MAX + 8];
+};
+
+struct guide {
+	const struct hw_lang *l;
+	const struct hw_context *x;
+	struct gstate *st;
+	size_t cap;
+	int bad;
+};
+
+static struct gstate *gnode(struct guide *g, int id)
+{
+	if ((size_t)id >= g->cap) {
+		size_t c = g->cap ? g->cap : 1024;
+		while (c <= (size_t)id) c *= 2;
+		struct gstate *n = realloc(g->st, c * sizeof *n);
+		if (!n) { g->bad = 1; return NULL; }
+		g->st = n;
+		g->cap = c;
+	}
+	return &g->st[id];
+}
+
+/* what a finished word adds, and the context after it */
+static double word_end(const struct guide *g, struct gstate *n)
+{
+	double d = 0;
+	if (!n->wlen) return 0;
+	int known = 0;
+	long id = HW_NO_WORD;
+	if (n->klen <= HW_WORD_MAX) {
+		n->key[n->klen] = 0;
+		id = hw_words_find(g->x->w, n->key, &known);
+	}
+	double unk = W.chr * n->wlen;
+	if (known) {
+		double lp = fmax(hw_words_logp(g->x->w, n->p2, n->p1, id, known), unk);
+		/* an unknown word paid as it went */
+		d = n->lo < 0 ? lp - unk : lp;
+	} else if (n->lo >= 0) {
+		d = unk;
+	}
+	n->p2 = n->p1;
+	n->p1 = known && id >= 0 ? id : HW_NO_WORD;
+	n->wlen = n->klen = 0;
+	n->lo = 0;
+	n->hi = hw_words_count(g->x->w);
+	return W.lm * d;
+}
+
+static double guide_step(void *ctx, int parent, int node, int label)
+{
+	struct guide *g = ctx;
+	struct gstate *p = gnode(g, parent), *n = p ? gnode(g, node) : NULL;
+	if (!n) return -INFINITY;
+	p = &g->st[parent];             /* gnode may have moved it */
+	*n = *p;
+	unsigned c = g->l->model.charset[label - 1];
+	int wordch = hw_is_letter(c) || (hw_is_apostrophe(c) && n->wlen);
+	if (wordch) {
+		char u[8];
+		size_t ul = utf8_of(&c, 1, u, sizeof u);
+		char f[16];
+		size_t fl = hw_fold(u, ul, f);
+		if (n->klen + fl > HW_WORD_MAX || n->wlen >= HW_WORD_MAX) {
+			double d = n->lo >= 0 ? W.chr * (n->wlen + 1) : W.chr;
+			n->lo = -1;
+			n->wlen++;
+			return W.lm * d;
+		}
+		memcpy(n->key + n->klen, f, fl);
+		n->klen += (int)fl;
+		n->wlen++;
+		if (n->lo >= 0 && hw_words_narrow(g->x->w, n->key, (size_t)n->klen, &n->lo, &n->hi)) return 0;
+		double d = n->lo >= 0 ? W.chr * n->wlen : W.chr;
+		n->lo = -1;
+		return W.lm * d;
+	}
+	double d = word_end(g, n);
+	if (c != ' ') d += W.lm * W.chr;
+	if (hw_is_sentence_end(c)) { n->p2 = HW_NO_WORD; n->p1 = HW_BOS; }
+	else if (!hw_is_transparent(c)) { n->p2 = n->p1 = HW_NO_WORD; }
+	return d;
+}
+
+static double guide_end(void *ctx, int node)
+{
+	struct guide *g = ctx;
+	struct gstate *n = gnode(g, node);
+	if (!n) return -INFINITY;
+	struct gstate t = *n;
+	return word_end(g, &t);
+}
+
+static int guided_read(const struct hw_lang *l, const struct hw_run *r, const struct hw_context *x, struct hw_cand *out,
+		       int n)
+{
+	struct guide g = { l, x, NULL, 0, 0 };
+	struct gstate *root = gnode(&g, 0);
+	if (!root) return 0;
+	*root = (struct gstate){ x->prev2, x->prev1, 0, hw_words_count(x->w), 0, 0, "" };
+	struct hw_ctc_lm lm = { &g, guide_step, guide_end };
+	int k = hw_ctc_beam_lm(r->logp, r->T, r->C, W.beam, out, n, &lm);
+	free(g.st);
+	return g.bad ? 0 : k;
+}
+
 static int cmp_total(const void *a, const void *b)
 {
 	const struct scored *x = a, *y = b;
@@ -512,10 +631,10 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 	memset(out, 0, sizeof *out);
 	if (n > 8) n = 8;
 	if (r->T <= 0 || n <= 0) return 0;
-	struct hw_cand cand[HW_READ_MAX];
+	static struct hw_cand cand[POOL];
 	int nc = hw_ctc_beam(r->logp, r->T, r->C, W.beam, cand, W.nbest);
 	if (!nc) return 0;
-	static struct scored s[HW_READ_MAX];
+	static struct scored s[POOL];
 	int ns = 0;
 	for (int i = 0; i < nc; i++) {
 		struct scored *c = &s[ns];
@@ -527,6 +646,25 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 		if (!isfinite(c->fwd)) c->fwd = cand[i].score;
 		score(x, c);
 		ns++;
+	}
+	/* readings the words find in the ink that its own search missed */
+	if (W.guided && hw_words_count(x->w)) {
+		static struct hw_cand gc[POOL];
+		int ng = guided_read(l, r, x, gc, W.nbest);
+		for (int i = 0; i < ng && ns < POOL - 2; i++) {
+			struct scored *c = &s[ns];
+			c->len = gc[i].n;
+			if (!c->len) continue;
+			for (int k = 0; k < c->len; k++) c->cp[k] = l->model.charset[gc[i].lab[k] - 1];
+			int dup = 0;
+			for (int q = 0; q < ns; q++) dup |= same(&s[q], c->cp, c->len);
+			if (dup) continue;
+			c->from = HW_FROM_GUIDED;
+			c->fwd = forward(l, r, c->cp, c->len);
+			if (!isfinite(c->fwd) || c->fwd < s[0].fwd - W.near) continue;     /* not what the ink says */
+			score(x, c);
+			ns++;
+		}
 	}
 	/* words of the list near an unknown word of the ink's best readings */
 	int props = 0, nink = ns;
@@ -540,7 +678,7 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 			word_id(x->w, c->cp + a, b - a, &known);
 			unsigned near[2][HW_WORD_MAX + 1];
 			int nl[2], k = known ? 0 : near_words(l, x, c->cp, a, b, near, nl);
-			for (int g = 0; g < k && props < 2 && ns < HW_READ_MAX; g++) {
+			for (int g = 0; g < k && props < 2 && ns < POOL; g++) {
 				struct scored *p = &s[ns];
 				int m = 0;
 				for (int q = 0; q < a; q++) p->cp[m++] = c->cp[q];
@@ -565,11 +703,11 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 	 * best isn't all words; a word from the list is never first */
 	int first = 0;
 	for (int i = 1; i < ns; i++)
-		if (s[i].from == HW_FROM_BEAM && s[i].total > s[first].total) first = i;
+		if ((s[i].from == HW_FROM_BEAM || s[i].from == HW_FROM_GUIDED) && s[i].total > s[first].total) first = i;
 	if (first && (s[0].allwords || s[first].total - s[0].total < W.margin)) first = 0;
 	struct scored head = s[first], ink = s[0];
 	int rest = 0;
-	static struct scored others[HW_READ_MAX];
+	static struct scored others[POOL];
 	for (int i = 0; i < ns; i++) if (i != first) others[rest++] = s[i];
 	qsort(others, (size_t)rest, sizeof *others, cmp_total);
 	/* the ink's best among the first two */
@@ -581,7 +719,7 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 				break;
 			}
 	int k = 0;
-	const struct scored *order[HW_READ_MAX];
+	const struct scored *order[POOL];
 	order[k++] = &head;
 	for (int i = 0; i < rest && k < n; i++) order[k++] = &others[i];
 	for (int i = 0; i < k; i++) {

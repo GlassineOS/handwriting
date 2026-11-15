@@ -86,7 +86,7 @@ static int child(struct trie *tr, int parent, int label)
 	return id;
 }
 
-struct beam { int node; double pb, pnb; };
+struct beam { int node; double pb, pnb, lm; };
 
 static int grow_slots(int **slot, size_t *cap, size_t need)
 {
@@ -103,14 +103,21 @@ static int grow_slots(int **slot, size_t *cap, size_t need)
 static int cmp_beam(const void *a, const void *b)
 {
 	const struct beam *x = a, *y = b;
-	double sx = lse(x->pb, x->pnb), sy = lse(y->pb, y->pnb);
+	double sx = lse(x->pb, x->pnb) + x->lm, sy = lse(y->pb, y->pnb) + y->lm;
 	if (sx != sy) return sx < sy ? 1 : -1;
 	return x->node - y->node;      /* stable among equals */
 }
 
 int hw_ctc_beam(const float *logp, long T, int C, int width, struct hw_cand *out, int nout)
 {
+	return hw_ctc_beam_lm(logp, T, C, width, out, nout, NULL);
+}
+
+int hw_ctc_beam_lm(const float *logp, long T, int C, int width, struct hw_cand *out, int nout, const struct hw_ctc_lm *lm)
+{
 	struct trie tr = { 0 };
+	double *nlm = NULL;             /* per node: the language score of its prefix */
+	size_t nlmcap = 0;
 	tr.cap = 1024;
 	tr.n = malloc(tr.cap * sizeof *tr.n);
 	size_t ncap = (size_t)width * (size_t)(C + 1) + 1;
@@ -121,7 +128,12 @@ int hw_ctc_beam(const float *logp, long T, int C, int width, struct hw_cand *out
 	if (!tr.n || !cur || !nxt || trie_rehash(&tr, 2048)) goto out;
 	tr.n[0] = (struct node){ -1, 0, 0 };
 	tr.len = 1;
-	cur[0] = (struct beam){ 0, 0.0, NEG };
+	if (lm) {
+		nlmcap = 1024;
+		if (!(nlm = malloc(nlmcap * sizeof *nlm))) goto out;
+		nlm[0] = 0;
+	}
+	cur[0] = (struct beam){ 0, 0.0, NEG, 0 };
 	ncur = 1;
 	for (long t = 0; t < T; t++) {
 		const float *p = logp + (size_t)t * C;
@@ -139,11 +151,21 @@ int hw_ctc_beam(const float *logp, long T, int C, int width, struct hw_cand *out
 					if (to < 0) continue;
 					if (tr.len > before) {
 						if (grow_slots(&slot, &slotcap, tr.len)) goto out;
+						if (lm) {
+							if (tr.len > nlmcap) {
+								double *g = realloc(nlm, 2 * tr.len * sizeof *g);
+								if (!g) goto out;
+								nlm = g;
+								nlmcap = 2 * tr.len;
+							}
+							nlm[to] = nlm[id] + lm->step(lm->ctx, id, to, c);
+						}
 					}
+					if (lm && nlm[to] == NEG) continue;
 				} else if (grow_slots(&slot, &slotcap, tr.len)) {
 					goto out;
 				}
-				if (slot[to] < 0) { slot[to] = nn; nxt[nn++] = (struct beam){ to, NEG, NEG }; }
+				if (slot[to] < 0) { slot[to] = nn; nxt[nn++] = (struct beam){ to, NEG, NEG, lm ? nlm[to] : 0 }; }
 				struct beam *x = &nxt[slot[to]];
 				if (!c) x->pb = lse(x->pb, tot + p[0]);
 				else x->pnb = lse(x->pnb, (c == last ? pb : tot) + p[c]);
@@ -158,7 +180,12 @@ int hw_ctc_beam(const float *logp, long T, int C, int width, struct hw_cand *out
 		memcpy(cur, nxt, (size_t)ncur * sizeof *cur);
 		for (int b = 0; b < nn; b++) slot[nxt[b].node] = -1;
 	}
+	if (lm) {                       /* the prefixes as whole readings */
+		for (int b = 0; b < ncur; b++) cur[b].lm += lm->end(lm->ctx, cur[b].node);
+		qsort(cur, (size_t)ncur, sizeof *cur, cmp_beam);
+	}
 	for (int b = 0; b < ncur && ret < nout; b++) {
+		if (lm && cur[b].lm == NEG) continue;
 		struct hw_cand *c = &out[ret++];
 		int id = cur[b].node, n = tr.n[id].len;
 		c->n = n;
@@ -166,7 +193,7 @@ int hw_ctc_beam(const float *logp, long T, int C, int width, struct hw_cand *out
 		for (int k = n - 1; k >= 0; k--, id = tr.n[id].parent) c->lab[k] = tr.n[id].label;
 	}
 out:
-	free(tr.n); free(tr.hash); free(cur); free(nxt); free(slot);
+	free(tr.n); free(tr.hash); free(cur); free(nxt); free(slot); free(nlm);
 	return ret;
 }
 

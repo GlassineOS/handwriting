@@ -20,6 +20,17 @@ int hw_ctc_greedy(const float *logp, long T, int C, int *lab, int max);
 /* prefix beam search: up to n candidates, best first; returns how many */
 int hw_ctc_beam(const float *logp, long T, int C, int beam, struct hw_cand *out, int n);
 
+/* the same, the prefixes ranked by their probability plus a language score: step() gives
+ * what label adds to the prefix `parent` making the new prefix `node` (node ids count up
+ * from 1; 0 is the empty prefix), once per prefix; end() what a prefix adds when the
+ * reading ends there; -INFINITY drops it. The candidates' scores stay the frames' alone. */
+struct hw_ctc_lm {
+	void *ctx;
+	double (*step)(void *ctx, int parent, int node, int label);
+	double (*end)(void *ctx, int node);
+};
+int hw_ctc_beam_lm(const float *logp, long T, int C, int beam, struct hw_cand *out, int n, const struct hw_ctc_lm *lm);
+
 /* Viterbi alignment of lab[0..L) to the frames: for each label, the first and last frame
  * of its own (non-blank) state, written to first/last, and the frame range it owns
  * (from[k]..to[k], blanks split between neighbours at the midpoint). Returns the path's

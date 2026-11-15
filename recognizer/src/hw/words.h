@@ -42,5 +42,8 @@ const char *hw_words_text(const struct hw_words *w, long id);
 /* the word's unigram log-probability (natural log) */
 double hw_words_unigram(const struct hw_words *w, long id);
 long hw_words_count(const struct hw_words *w);
+/* the model's words [*lo, *hi) that start with the folded prefix (n bytes), narrowed from
+ * the range given (0, hw_words_count() for all); returns whether there are any */
+int hw_words_narrow(const struct hw_words *w, const char *prefix, size_t n, long *lo, long *hi);
 
 #endif
