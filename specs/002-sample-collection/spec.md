@@ -30,10 +30,10 @@ samples, the adaptation and the donation file.
 ### Scenario 1 – Writing shown text (Priority: P1)
 
 **Given** the app is open, **When** it shows a word or sentence and the person writes it
-on the writing area and then pauses or taps Next, **Then** the written sample is shown
-next to the prompt together with what the recognizer read before it learned from it, the
-sample is kept, and the next prompt appears. The ink appears under the pen as fast as on
-the keyboard's writing paper.
+on the writing area and then pauses or taps Next, **Then** the next prompt and an empty
+writing area appear at once, the written sample is shown next to the prompt together with
+what the recognizer read before it learned from it as soon as the reading is done, and the
+sample is kept. The ink appears under the pen as fast as on the keyboard's writing paper.
 
 ### Scenario 2 – A bad sample is not kept (Priority: P1)
 

@@ -221,6 +221,46 @@ class Writing(Case):
         self.assertEqual(self.e.cli.erase(), 1)
         self.assertEqual(self.e.cli.samples(), [])
 
+    def test_next_shows_the_next_prompt_before_the_reading(self):
+        """Next takes the prompt (the next one is up at once); the reading follows with it"""
+        w = self.e.writer()
+        p1 = w.prompt
+        self.assertEqual(w.take(), p1)
+        p2 = w.prompt
+        self.assertNotEqual(p2, p1)
+        self.assertIn(p1.text, w.state.used[p1.set])
+        strokes = ink(self.rng, n=max(3, len(p1.text)))
+        sh = w.submit(strokes, "device:6.2", (0, 0, 702, 300, 96, 0), p1)
+        self.assertEqual((sh.status, sh.prompt), ("kept", p1))
+        self.assertEqual(self.e.rec.sample(sh.sample_id)["text"], p1.text)
+        self.assertEqual(w.prompt, p2)                             # not moved on a second time
+        self.assertEqual(w.redo(), p1)                             # Redo brings the taken one back
+        self.assertEqual(self.e.cli.samples(), [])
+        # a failed check: the next prompt stays up, Keep it and Skip don't move on again
+        p = w.take()
+        nxt = w.prompt
+        sh = self.write_to(w, p, fit_ok=0.99)
+        self.assertEqual(sh.status, "check")
+        self.assertEqual(w.prompt, nxt)
+        w.keep_anyway()
+        self.assertEqual((sh.status, w.prompt), ("kept", nxt))
+        p = w.take()
+        nxt = w.prompt
+        self.assertEqual(self.write_to(w, p, fit_ok=0.99).status, "check")
+        w.skip()
+        self.assertEqual(w.prompt, nxt)
+        p = w.take()
+        nxt = w.prompt
+        self.assertEqual(self.write_to(w, p, fit_ok=0.99).status, "check")
+        w.discard()
+        self.assertEqual(w.prompt, nxt)
+        self.assertNotIn(p.text, w.state.used.get(p.set, []))     # may come again
+
+    def write_to(self, w, p, fit_ok):
+        self.e.rec.close()
+        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = str(fit_ok)
+        return w.submit(ink(self.rng, n=max(3, len(p.text))), "device:6.2", (0, 0, 702, 300, 96, 0), p)
+
     def test_resumes_its_place(self):
         st = flow.State()
         st.set = "sentences"
