@@ -50,9 +50,12 @@ app's own writing).
 `device:PER_MM:RATE` (points per second). The recognizer normalizes the ink itself; the units
 only help with gestures and go into samples.
 
-`POINTS` is one stroke (pen down to pen up): points separated by spaces, each `x,y,t` or
-`x,y,t,p`: position (y pointing down), time in milliseconds (any origin, increasing), pressure 0
-to 1. All points of a stroke have the same number of values.
+`POINTS` is one stroke (pen down to pen up): points separated by spaces, each `x,y,t`,
+`x,y,t,p` or `x,y,t,p,tx,ty`: position (y pointing down), time in milliseconds (any origin,
+increasing), pressure 0 to 1, tilt in degrees from the vertical. All points of a stroke have the
+same number of values. A stored sample keeps every value as sent (written in the shortest form
+that reads back as the same number), times counted from the sample's first point, to the
+microsecond.
 
 ## Requests
 
@@ -66,11 +69,13 @@ to 1. All points of a stroke have the same number of values.
 | `remove ID S N[,N…]` | `remove ID ok REMOVED` |
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
 | `end ID S` | `end ID ok` |
-| `confirm ID S SOURCE TEXT` | `confirm ID ok SAMPLE`, or `confirm ID skip REASON` |
+| `area ID S X0,Y0,X1,Y1,LINE,ROT` | `area ID ok` |
+| `confirm ID S SOURCE TEXT [keep]` | `confirm ID ok SAMPLE` (`prompted`: `confirm ID ok SAMPLE exact\|inferred`), or `confirm ID skip REASON` |
 | `recognize ID LANGS FIELD UNITS COUNT BEFORE STROKES` | as `read`, with the verb `recognize`; or `recognize ID private` |
 | `samples ID [all]` | `samples ID K SAMPLE…` |
 | `sample ID SAMPLE` | `sample ID JSON` (the sample's line, escaped) |
-| `donate ID S TEXT` | `donate ID ok COUNT`, or `donate ID skip REASON` |
+| `donate ID S TEXT [keep]` | `donate ID ok COUNT SAMPLE`, or `donate ID skip REASON` |
+| `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
 **hello** names the contract version (1) and, optionally, the client: an application id
@@ -112,6 +117,11 @@ character (0 to 1; `-` for a space or a character not written) and `SEGMENTS` as
 `SCORE` is the mean fit of the written characters; a low one means the person wrote something
 else. `short`: too little ink for the prompt.
 
+**area** names the writing area of session `S` for the samples it makes: its box `X0,Y0` to
+`X1,Y1` and its line spacing `LINE`, in the session's units, and the screen's orientation `ROT`
+(0, 90, 180 or 270 degrees). It stays until the session ends. A box that is empty or an
+orientation that isn't one of these is `bad-area`.
+
 **remove** removes strokes by number (unknown numbers are ignored; `REMOVED` counts the ones
 removed). An undo, or the strokes a gesture covered once the client acted on it.
 
@@ -121,7 +131,15 @@ removed). An undo, or the strokes a gesture covered once the client acted on it.
 client confirms only what the person confirmed; the recognizer never stores its own guesses.
 `SAMPLE` is the sample's id (16 hex digits). Reasons for `skip`: `field` (the field doesn't
 learn), `learning` (learning is off), `empty` (no strokes or no text), `no-model`, `short` (the
-strokes can't hold the text). The strokes stay in the session.
+strokes can't hold the text), `fit SCORE` (below). The strokes stay in the session.
+
+A `prompted` sample is checked first: the strokes are aligned to `TEXT` as in `align`, and when
+the mean fit is below 0.6 the reply is `confirm ID skip fit SCORE` (the person likely wrote
+something else). The client shows that, and when the person keeps the sample all the same, sends
+the confirm again with `keep`. A sample that passed has its spans `exact`; one kept with `keep`
+has them `inferred`; the reply says which. A prompted sample also stores the writing area
+(`area`) and the reading of its strokes at that moment (up to three candidates, before any
+adaptation from it), sample format `area` and `reading`.
 
 **recognize** is `begin`, a stroke per `;`-separated part of `STROKES`, `read`, `end` in one line,
 for a client that has the whole ink at once. It stores nothing.
@@ -133,12 +151,21 @@ sample's line (sample format v1, escaped as a text field): the client's own, or 
 font from the person's writing uses.
 
 **donate** (FR-014): with a donation started (`glassine-handwriting donation start`), adds the
-session's strokes with `TEXT` (the prompt) to the donation, separate from the person's samples.
-`COUNT` is the number of donated samples. `skip off`: no donation started.
+session's strokes with `TEXT` (the prompt) to the donation, separate from the person's samples,
+checked and stored like a prompted `confirm` (`skip fit SCORE`, `keep`). `TEXT` must be one of
+the prompts shipped for the language: a line of the model's `prompts.txt` or of a `.txt` file in
+its `prompts/` directory (below); else `skip prompt`. `COUNT` is the number of donated samples,
+`SAMPLE` the donated sample's id: the same as a `confirm` of the same strokes and prompt gives, so
+a client can take both back with one `forget`. `skip off`: no donation started.
+
+**forget** takes back one of this client's samples (a Discard right after it was kept): it is
+deleted from the samples, and from the donation when it is there too. `WHERE` is `samples`,
+`donation` or `samples,donation`. A sample of another client is `denied` (unless the client is in
+`readers`); an id in neither is `unknown-sample`. Needs a client name (`no-client`).
 
 Error reasons: `bad-line` (wrong number of fields, a bad number), `bad-id`, `bad-session`,
 `bad-client`, `unknown-verb`, `bad-escape`, `bad-units`, `bad-lang`, `bad-field`, `bad-points`,
-`bad-count`, `bad-prompt` (empty or more than 512 characters), `bad-source`, `unknown-session`,
+`bad-count`, `bad-area`, `bad-prompt` (empty or more than 512 characters), `bad-source`, `unknown-session`,
 `too-many` (strokes in a session), `busy` (sessions), `no-model` (no model for any of the
 languages), `no-client`, `denied`, `unknown-sample`, `too-long`, `store` (the store can't be read
 or written; nothing changed), `memory`.
@@ -188,7 +215,8 @@ Nothing in it leaves the device except by export or a donation the person writes
   1970; `CLIENT` `-` when none was named). `ID` is the sample's id: the first 16 hex digits of a
   hash of its line, so the same sample is stored once.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
-  `state` (`SAMPLES GEN`: what the last run saw, so it doesn't run again for nothing); `log` (one
+  `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
+  sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
 - `donation/licence` (`CC0-1.0` or `CC-BY-4.0`) and `donation/samples.jsonl`.
 
@@ -202,7 +230,8 @@ sample in five (by its id) is held back; the run keeps the new head only when it
 on the held-back samples is lower than that of the head in use (the base model's, or the current
 adaptation's). Then the current one becomes `previous`. It needs 40 samples to learn from and 10
 held back, runs only when something changed, and, unless `-f`, only while charging and idle, and
-stops when the charger is unplugged. An adaptation belongs to one base model file (its hash is in
+stops when the charger is unplugged. With `-r` the person asked for it in a client (spec 002):
+charging is enough, and it runs at the lowest priority so the device stays usable. An adaptation belongs to one base model file (its hash is in
 the file); after a model update it is ignored until the next run. An erase while it runs drops its
 result.
 
@@ -216,21 +245,35 @@ or written (a message on stderr), 2 for a usage error.
 glassine-handwriting samples stats              learning, samples, per client, donation
 glassine-handwriting samples list [-c CLIENT]   ID CLIENT TIME SOURCE LANG TEXT per sample
 glassine-handwriting samples erase [-c CLIENT]  erase all samples (or one client's) and the adaptations
-glassine-handwriting samples export FILE        samples and adaptations into one file
+glassine-handwriting samples delete ID          delete one sample (the adaptations stay)
+glassine-handwriting samples export [-c CLIENT] FILE  samples and adaptations into one file
 glassine-handwriting samples import FILE        add them on another device; prints the number added
 glassine-handwriting learning [on|off]          show or set handwriting.conf's learning
-glassine-handwriting adapt [-f] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
+glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
-glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | list | write FILE | erase | prompts [LANG]
+glassine-handwriting charging                   charging or battery
+glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
 ```
+
+`export -c CLIENT` writes only that client's samples and no adaptation. `delete` deletes one
+sample by id; it counts as a change for the next adaptation (a running one drops its result), but
+the adaptation in use stays.
+
+`adapt --plan` runs nothing and prints one line, `plan TRAIN HELD NEW MIN_TRAIN MIN_HELD
+charging|battery`: the samples of the language a run would learn from and hold back, those stored
+since the last run, the minimums, and the power. `--progress` prints tab-separated lines while it
+runs instead of the sentence: `plan TRAIN HELD NEW`, then `epoch K N` per epoch, then one of
+`result kept|rejected ERROR_BEFORE ERROR_AFTER TRAIN HELD` (the held-back character error of the
+head in use and of the new one, 0 to 1) or `skip REASON` (`learning`, `charging`, `nothing-new`,
+`too-few MIN_TRAIN MIN_HELD`, `unplugged`, `erased`).
 
 `stats` prints tab-separated lines `learning on|off`, `samples N`, `client NAME N` per client,
 `donation N`. `erase` prints the number erased; every erase (also of nothing) bumps the erase
 count, so a running adaptation drops its result. `adaptation show` prints `current` and
 `previous`: `none`, or `TIME TRAIN HELD ERROR_BEFORE ERROR_AFTER`; `revert` swaps them. `donation
-add` copies one of the person's samples into the donation; `write` writes the donation as sample
+add` copies one of the person's samples into the donation; `remove` takes one out by id; `write` writes the donation as sample
 format v1 lines, each with `licence`, times from 0 and no client or time of day.
 
 **Export file:** JSON lines. The first `{"format":"glassine-handwriting-export","version":1}`;
@@ -244,7 +287,8 @@ none exists.
 One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
 `$GLASSINE_HANDWRITING_MODELS/LANG/`) with `recognizer.ghm` (the model), `README` (the recipe and
 data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
-line). `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
+line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, one per line, and
+`SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
 `glassine-train release` makes the whole directory as a release tarball
 ([`models/README.md`](../models/README.md)).
 
@@ -282,3 +326,4 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_SYSFS` | for tests: a directory laid out like `/sys/class/power_supply` |
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
+| `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |

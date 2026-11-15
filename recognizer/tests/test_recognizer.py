@@ -65,6 +65,8 @@ class Env:
             subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(self.models / "en" / "recognizer.ghm")],
                            check=True)
         (self.models / "en" / "prompts.txt").write_text("The quick brown fox jumps over the lazy dog.\n")
+        (self.models / "en" / "prompts").mkdir()
+        (self.models / "en" / "prompts" / "words.txt").write_text("hello\nwater\n")
         self.data = self.dir / "data"
         self.conf = self.dir / "conf"
         self.sysfs = self.dir / "power"
@@ -497,7 +499,13 @@ class Samples(unittest.TestCase):
         self.assertEqual(c.ask("donate", "s", "hello")[2:], ["skip", "off"])
         self.assertEqual(self.env.run("donation", "start", "MIT", check=False).returncode, 1)
         self.env.run("donation", "start", "CC-BY-4.0")
-        self.assertEqual(c.ask("donate", "s", "hello")[2:], ["ok", "1"])
+        # only texts shipped as prompts (the model's prompts.txt, the app's sets)
+        self.assertEqual(c.ask("donate", "s", "my own words")[2:], ["skip", "prompt"])
+        # the random model's alignment never fits: kept only when the person says so
+        self.assertEqual(c.ask("donate", "s", "hello")[2:4], ["skip", "fit"])
+        r = c.ask("donate", "s", "hello", "keep")
+        self.assertEqual(r[2:4], ["ok", "1"])
+        self.assertRegex(r[4], "^[0-9a-f]{16}$")
         r = self.confirm(c, INK[2], session="mine")
         c.close()
         self.assertEqual(self.env.run("samples", "list").stdout.count("\n"), 1)   # donations aren't samples
@@ -516,6 +524,145 @@ class Samples(unittest.TestCase):
         self.env.run("donation", "erase")
         self.assertEqual(self.env.run("samples", "list").stdout.count("\n"), 1)   # erasing a donation keeps samples
         self.assertIn("samples\t0", self.env.run("donation", "list").stdout)
+
+    def test_forget(self):
+        """a discarded sample goes from the samples and from the donation; only the client's own"""
+        self.env.run("donation", "start", "CC0-1.0")
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        c.write_sample(INK[1])
+        r = c.ask("confirm", "s", "prompted", "hello", "keep")
+        self.assertEqual(r[2], "ok")
+        sid = r[3]
+        d = c.ask("donate", "s", "hello", "keep")
+        self.assertEqual(d[4], sid)          # the same sample, the same id
+        self.assertEqual(c.ask("forget", sid)[2:], ["ok", "samples,donation"])
+        self.assertEqual(c.ask("forget", sid)[2:], ["unknown-sample"])
+        self.assertEqual(self.env.run("samples", "list").stdout, "")
+        self.assertIn("samples\t0", self.env.run("donation", "list").stdout)
+        gen = (self.env.store / "samples.meta").read_text().split("\n")[0]
+        self.assertEqual(c.ask("forget", "0123456789abcdef")[2:], ["unknown-sample"])
+        self.assertEqual((self.env.store / "samples.meta").read_text().split("\n")[0], gen)   # nothing changed
+        c.close()
+        o = self.env.start("-i", "0")
+        o.ask("hello", "1", "org.example.other")
+        o.write_sample(INK[2])
+        mine = o.ask("confirm", "s", "picked", esc(INK[2]["text"]))[3]
+        o.close()
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        self.assertEqual(c.ask("forget", mine)[2:], ["denied"])
+        c.close()
+        self.env.run("samples", "delete", mine)
+        self.assertEqual(self.env.run("samples", "list").stdout, "")
+        self.assertEqual(self.env.run("samples", "delete", mine, check=False).returncode, 1)
+
+    def test_export_one_client(self):
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        for s in INK[:3]:
+            c.write_sample(s)
+            self.assertEqual(c.ask("confirm", "s", "prompted", esc(s["text"]), "keep")[2], "ok")
+        c.close()
+        o = self.env.start("-i", "0")
+        o.ask("hello", "1", "org.example.other")
+        o.write_sample(INK[4])
+        o.ask("confirm", "s", "picked", esc(INK[4]["text"]))
+        o.close()
+        out = self.env.dir / "mine.export"
+        self.env.run("samples", "export", "-c", "org.example.samples", str(out))
+        rows = [json.loads(x) for x in out.read_text().splitlines()]
+        self.assertEqual(rows[0]["format"], "glassine-handwriting-export")
+        self.assertEqual({r["client"] for r in rows[1:]}, {"org.example.samples"})
+        self.assertEqual(len(rows), 4)
+        self.assertFalse(any("adaptation" in r for r in rows))
+        before = {json.dumps(r["sample"], sort_keys=True) for r in rows[1:]}
+        self.env.run("samples", "erase", "-c", "org.example.samples")
+        self.assertEqual(self.env.run("samples", "import", str(out)).stdout, "3\n")
+        self.env.run("samples", "export", "-c", "org.example.samples", str(out))
+        after = {json.dumps(r["sample"], sort_keys=True) for r in map(json.loads, out.read_text().splitlines()[1:])}
+        self.assertEqual(before, after)
+
+
+class Prompted(unittest.TestCase):
+    """prompted writing (spec 002): raw points kept as sent, the check of the alignment,
+    the writing area and the reading at the time of writing"""
+
+    def setUp(self):
+        self.env = Env(REAL)
+
+    def tearDown(self):
+        self.env.close()
+
+    def client(self, fit_ok=None):
+        if fit_ok is not None:
+            self.env.env["GLASSINE_HANDWRITING_FIT_OK"] = str(fit_ok)
+        else:
+            self.env.env.pop("GLASSINE_HANDWRITING_FIT_OK", None)
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        return c
+
+    def test_points_unaltered(self):
+        """every value as the client sent it: surface fractions, pressure, tilt, a far time origin"""
+        rng = random.Random(7)
+        c = self.client(fit_ok=0)
+        self.assertEqual(c.ask("begin", "s", "en", "normal", "device:7.5:240", "")[2], "ok")
+        self.assertEqual(c.ask("area", "s", "0,0,1404,300,96,90")[2:], ["ok"])
+        t = 1731658123456
+        sent = []
+        for k in range(4):
+            q = []
+            for i in range(40):
+                q.append((rng.randrange(0, 1404 * 256) / 256, rng.randrange(0, 300 * 256) / 256, t,
+                          rng.randrange(0, 65536) / 65535, rng.randrange(-9000, 9000) / 100, rng.randrange(-9000, 9000) / 100))
+                t += rng.choice((4, 5))
+            t += 200
+            sent.append(q)
+            self.assertEqual(c.ask("stroke", "s", " ".join(",".join(repr(v) for v in p) for p in q))[2], "ok")
+        r = c.ask("confirm", "s", "prompted", "hello")
+        self.assertEqual((r[2], r[4]), ("ok", "exact"))
+        smp = json.loads(c.ask("sample", r[3])[2].replace("\\\\", "\\"))
+        c.close()
+        t0 = sent[0][0][2]
+        self.assertEqual(smp["units"], {"xy": "device", "per_mm": 7.5, "rate": 240})
+        self.assertEqual((smp["source"], smp["spans_source"], smp["text"]), ("prompted", "exact", "hello"))
+        self.assertEqual(len(smp["spans"]), 5)
+        self.assertEqual(smp["area"], {"box": [0, 0, 1404, 300], "line": 96, "orientation": 90})
+        self.assertLessEqual(len(smp["reading"]), 3)
+        for x in smp["reading"]:
+            self.assertIsInstance(x["text"], str)
+            self.assertLessEqual(x["score"], 0)
+        self.assertEqual(len(smp["strokes"]), len(sent))
+        for q, got in zip(sent, smp["strokes"]):
+            self.assertEqual(len(q), len(got))
+            for p, g in zip(q, got):
+                self.assertEqual(g[0:2], list(p[0:2]))
+                self.assertEqual(g[2], round((p[2] - t0) / 1000, 6))
+                self.assertEqual(g[3:6], list(p[3:6]))
+
+    def test_check_and_keep(self):
+        """a sample that fails the alignment check is kept only when the person keeps it"""
+        c = self.client()
+        c.write_sample(INK[0], units="em")
+        if not REAL:            # the random model's alignment fits nothing
+            self.assertEqual(c.ask("confirm", "s", "prompted", esc(INK[0]["text"]))[2:4], ["skip", "fit"])
+        self.assertEqual(c.ask("confirm", "s", "prompted", "dog")[2:4], ["skip", "fit"])
+        r = c.ask("confirm", "s", "prompted", "dog", "keep")
+        self.assertEqual((r[2], r[4]), ("ok", "inferred"))
+        if REAL:                 # the trained model: the written text passes
+            self.assertEqual(c.ask("confirm", "s", "prompted", esc(INK[0]["text"]))[4], "exact")
+        self.assertEqual(c.ask("confirm", "s", "prompted", "x", "please")[2:], ["bad-line"])
+        self.assertEqual(c.ask("area", "s", "0,0,10,10,1,45")[2:], ["bad-area"])
+        self.assertEqual(c.ask("area", "s", "10,0,0,10,1,0")[2:], ["bad-area"])
+        self.assertEqual(c.ask("area", "nosuch", "0,0,10,10,1,0")[2:], ["unknown-session"])
+        # other sources keep their old reply and carry no reading
+        r = c.ask("confirm", "s", "corrected", esc(INK[0]["text"]))
+        self.assertEqual(len(r), 4)
+        smp = json.loads(c.ask("sample", r[3])[2].replace("\\\\", "\\"))
+        self.assertNotIn("reading", smp)
+        self.assertEqual(smp["spans_source"], "inferred")
+        c.close()
 
 
 def shapes(ch, rng):
@@ -619,6 +766,38 @@ class Adaptation(unittest.TestCase):
         self.env.conf_set("predict.conf", "learning = off\n")
         self.assertIn("learning is off", self.env.run("adapt", "-f").stdout)
         self.assertFalse((self.env.store / "adaptation" / "en" / "current").exists())
+
+    def test_requested_with_progress(self):
+        """asked for in a client (spec 002): charging is enough, the plan and progress come as
+        lines, the result has the held-back errors before and after"""
+        self.teach(100)
+        plan = self.env.run("adapt", "--plan", "--min-train", "20", "--min-held", "5").stdout.split("\t")
+        self.assertEqual(plan[0], "plan")
+        train, held, fresh = map(int, plan[1:4])
+        self.assertEqual((train + held, fresh), (100, 100))
+        self.assertEqual(plan[4:], ["20", "5", "charging\n"])
+        (self.env.dir / "load").write_text("3.5 2.0 1.0 1/100 1\n")      # busy: requested runs anyway
+        self.env.charging(False)
+        self.assertEqual(self.env.run("adapt", "-r", "--progress").stdout, "skip\tcharging\n")
+        self.assertEqual(self.env.run("charging").stdout, "battery\n")
+        self.env.charging(True)
+        self.assertEqual(self.env.run("charging").stdout, "charging\n")
+        out = self.env.run("adapt", "-r", "--progress", "--min-train", "20", "--min-held", "5", "--epochs", "20",
+                           "--lr", "1e-2").stdout.splitlines()
+        self.assertEqual(out[0].split("\t")[0], "plan")
+        self.assertEqual([x for x in out if x.startswith("epoch")][-1], "epoch\t20\t20")
+        res = out[-1].split("\t")
+        self.assertEqual(res[0:2], ["result", "kept"])
+        self.assertLess(float(res[3]), float(res[2]))
+        self.assertEqual(int(res[4]) + int(res[5]), 100)
+        plan = self.env.run("adapt", "--plan").stdout.split("\t")
+        self.assertEqual(plan[3], "0")                       # nothing since
+        # a deletion is not "new", but it is a change
+        sid = self.env.run("samples", "list").stdout.split("\t")[0]
+        self.env.run("samples", "delete", sid)
+        self.assertEqual(self.env.run("adapt", "--plan").stdout.split("\t")[3], "0")
+        self.teach(3)
+        self.assertEqual(self.env.run("adapt", "--plan").stdout.split("\t")[3], "3")
 
     def test_erase_during_adaptation(self):
         """an adaptation that started before an erase never writes what it learned"""
