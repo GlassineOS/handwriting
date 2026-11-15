@@ -45,6 +45,9 @@ int hw_samples_add(const char *json, const struct hw_meta *m);
 /* all samples, in the order they were added; *gen the erase count */
 int hw_samples_load(struct hw_entry **out, size_t *n, unsigned long *gen);
 void hw_entries_free(struct hw_entry *e, size_t n);
+/* the same entries, kept in this process and read again only when the store's files
+ * changed; borrowed: valid until the next call, not freed by the caller */
+int hw_samples_view(const struct hw_entry **out, size_t *n);
 /* erase all (client NULL) or one client's; the adaptations go too. Returns the number
  * of samples erased, -1 on error. */
 long hw_samples_erase(const char *client);
