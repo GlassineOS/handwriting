@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Handwriting
+Comment=Write shown words so handwriting recognition learns your hand
+Exec=/usr/bin/glassine-handwriting-samples
+Icon=input-tablet
+Categories=Utility;
+Keywords=handwriting;pen;samples;recognition;
+SingleMainWindow=true
+StartupWMClass=org.glassine.HandwritingSamples
+StartupNotify=false
