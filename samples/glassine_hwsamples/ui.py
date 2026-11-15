@@ -37,7 +37,13 @@ RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 THEME_FILE = RUN + "/glassine-shell.theme"
 ROTATION_FILE = "/run/glassine-rotation"
 LINE = float(os.environ.get("GLASSINE_HANDWRITING_LINE", "150"))   # the writing paper's line height
-PAUSE_MS = {"word": 1200, "character": 900, "sentence": 2200, "pangram": 2200}
+PAUSE_MS = {"word": 1500, "character": 1200, "sentence": 2500, "pangram": 2500}
+LOG = os.environ.get("GLASSINE_HWSAMPLES_LOG") == "1"      # input and flow events on stderr
+
+
+def log(*a):
+    if LOG:
+        print("hwsamples:", *a, file=sys.stderr, flush=True)
 TABS = (("write", "Write"), ("samples", "Samples"), ("coverage", "Coverage"), ("learn", "Learn"), ("donate", "Donate"))
 SET_NAMES = {P.AUTO: "What needs practice", "words": "Words", "sentences": "Sentences", "pangrams": "Pangrams",
              "letters": "Single letters", "digits": "Digits and punctuation", P.OWN: "My own words"}
@@ -99,10 +105,15 @@ class Hits:
         self.boxes.append((x, y, w, h, fn))
 
     def at(self, x, y):
+        return self.find(x, y)[1]
+
+    def find(self, x, y):
+        """(the box, what a tap on it does); the box stays the same across repaints while
+        the function is made anew each time"""
         for bx, by, bw, bh, fn in reversed(self.boxes):
             if bx <= x < bx + bw and by <= y < by + bh:
-                return fn
-        return None
+                return (round(bx), round(by), round(bw), round(bh)), fn
+        return None, None
 
 
 def pill(cr, t, hits, x, y, label, fn, primary=False, w=None, on=True):
@@ -227,6 +238,7 @@ class UI:
         self.confirm = None             # (question, yes-label, fn) for a destructive action
         self.sets_open = False
         self.demo = demo
+        self.on_idle = None
         self.work = Worker() if not demo else None
         if not demo:
             self.writer = flow.Writer(self.rec, self.cli, self.state)
@@ -243,10 +255,13 @@ class UI:
         def fin(r, err):
             self.busy = False
             if err:
+                log("error", err)
                 self.msg = "Something went wrong: %s" % err
             elif done:
                 done(r)
             self.redraw()
+            if self.on_idle:
+                self.on_idle()
         self.work.do(fn, fin)
 
     def refresh(self):
@@ -269,6 +284,8 @@ class UI:
             return self.writer.submit(strokes, units, area)
 
         def fin(sh):
+            log("kept" if sh else "nothing", sh and (sh.status, sh.sample_id, sh.why, sh.fit,
+                                                     sh.reading[:1] if sh.reading else None))
             self.msg = ""
             if sh and sh.status == "kept":
                 self.counts = (self.counts[0] + bool(sh.sample_id), self.counts[1] + bool(sh.sample_id))
@@ -512,7 +529,9 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     pills_right(cr, t, hits, w - 20, h - 64, [
         ("Clear", (lambda: canvas.clear()) if has_ink else None, False),
         ("Skip", (lambda: ui.act("skip")) if not has_ink else None, False),
-        ("Next", (lambda: canvas.submit()) if has_ink else None, True)])
+        ("Next", (lambda: canvas.submit()) if has_ink and not (canvas and canvas.queued) else None, True)])
+    if canvas and canvas.queued:
+        PT.text(cr, "Reading the last one…", t.sub, 20, 40, t.soft)
 
 
 def sets_page(cr, ui, hits, w, h):
@@ -776,12 +795,16 @@ class Panel(Gtk.DrawingArea):
         return True
 
     def press(self, x, y):
-        self.down = self.hits.at(x, y)
+        self.down = self.hits.find(x, y)[0]
+        log("tap down", round(x), round(y), self.down)
         return True
 
     def release(self, x, y):
-        fn = self.hits.at(x, y)
-        if fn and fn is self.down:
+        box, fn = self.hits.find(x, y)
+        log("tap up", round(x), round(y), box, "acts" if fn and box == self.down else "nothing")
+        # a repaint between press and release makes new functions for the same boxes:
+        # the box decides
+        if fn and box is not None and box == self.down:
             fn()
         self.down = None
         return True
@@ -804,7 +827,9 @@ class Canvas(Gtk.DrawingArea):
         super().__init__()
         self.ui, self.on_change = ui, on_change
         self.strokes, self.cur = [], None
+        self.done = []                  # the ink just submitted, shown dimmed until the pen writes again
         self.timer = None
+        self.queued = False             # Next tapped while the recognizer was busy
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
                         Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.TOUCH_MASK)
         self.connect("realize", lambda w: w.get_window().set_event_compression(False))
@@ -827,17 +852,22 @@ class Canvas(Gtk.DrawingArea):
         return d is None or d.get_source() != Gdk.InputSource.TOUCHSCREEN
 
     def on_press(self, w, e):
-        if e.button != 1 or not self.pen(e) or self.ui.busy:
+        log("press", e.button, e.get_source_device().get_source() if e.get_source_device() else None,
+            round(e.x), round(e.y))
+        if e.button != 1 or not self.pen(e):
             return True
         self.stop_timer()
+        if self.done:
+            self.done = []
+            self.queue_draw()
         self.cur = [self.point(e)]
         self.strokes.append(self.cur)
         self.queue_draw()
         return True
 
     def on_motion(self, w, e):
-        if self.cur is None or not (e.state & Gdk.ModifierType.BUTTON1_MASK):
-            return True                   # hover: not stored
+        if self.cur is None:
+            return True                   # hover (the pen above the screen): not stored
         p = self.point(e)
         last = self.cur[-1]
         self.cur.append(p)
@@ -849,6 +879,7 @@ class Canvas(Gtk.DrawingArea):
         if self.cur is None:
             return True
         self.cur.append(self.point(e))
+        log("release", len(self.cur), "points,", len(self.strokes), "strokes")
         self.cur = None
         self.on_change()
         p = self.ui.writer.prompt if self.ui.writer else None
@@ -864,12 +895,16 @@ class Canvas(Gtk.DrawingArea):
         """a pause: submitted when the ink already fits the whole prompt, else it waits for
         more ink or Next"""
         self.timer = None
-        if not self.strokes or self.ui.busy:
+        if not self.strokes or self.cur is not None:
+            return False
+        if self.ui.busy:                  # look again once the recognizer is free
+            self.timer = GLib.timeout_add(500, self.paused)
             return False
         strokes, units, area = self.payload()
         n = len(self.strokes)
 
         def fits(score):
+            log("pause: fit", score)
             if score is not None and score >= 0.6 and len(self.strokes) == n and self.cur is None:
                 self.submit()
         self.ui.probe(strokes, units, area, fits)
@@ -877,7 +912,15 @@ class Canvas(Gtk.DrawingArea):
 
     def clear(self):
         self.stop_timer()
-        self.strokes, self.cur = [], None
+        self.strokes, self.cur, self.done = [], None, []
+        self.queue_draw()
+        self.on_change()
+
+    def submitted(self, sent):
+        """the ink that was sent stays, dimmed, until the pen writes again; ink written
+        meanwhile stays as it is"""
+        self.done = sent
+        self.strokes = self.strokes[len(sent):]
         self.queue_draw()
         self.on_change()
 
@@ -911,11 +954,23 @@ class Canvas(Gtk.DrawingArea):
         return math.sqrt(g.width * g.height / (wmm * hmm))
 
     def submit(self):
-        if not self.strokes or self.ui.busy or not self.ui.writer or not self.ui.writer.prompt:
+        if not self.strokes or self.cur is not None or not self.ui.writer or not self.ui.writer.prompt:
             return
+        if self.ui.busy:                  # after the call that is running
+            self.queued = True
+            log("next: queued")
+            return
+        self.queued = False
         self.stop_timer()
+        sent = list(self.strokes)
         strokes, units, area = self.payload()
-        self.ui.submit(strokes, units, area, self.clear)
+        log("submit", len(strokes), "strokes", units)
+        self.ui.submit(strokes, units, area, lambda: self.submitted(sent))
+
+    def idle(self):
+        """the recognizer is free: a Next tapped meanwhile goes now"""
+        if self.queued:
+            self.submit()
 
     def on_draw(self, w, cr):
         t = self.ui.theme
@@ -926,6 +981,13 @@ class Canvas(Gtk.DrawingArea):
         cr.set_line_width(max(2.0, LINE / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        for s in self.done:              # sent: what was read is at the top
+            cr.set_source_rgba(*rgba(t.ink, 0.35))
+            cr.move_to(s[0][0], s[0][1])
+            for p in s[1:]:
+                cr.line_to(p[0], p[1])
+            cr.stroke()
+        cr.set_source_rgba(*rgba(t.ink))
         for s in self.strokes:
             cr.move_to(s[0][0], s[0][1])
             for p in s[1:]:
@@ -972,6 +1034,7 @@ class App(Gtk.Application):
         if not self.win:
             self.ui = UI(lambda: self.win and self.win.redraw())
             self.win = Window(self, self.ui)
+            self.ui.on_idle = self.win.canvas.idle
             self.win.show_all()
             self.win.redraw()
             self.watch_theme()
