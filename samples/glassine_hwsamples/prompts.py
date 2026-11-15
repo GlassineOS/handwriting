@@ -144,16 +144,26 @@ class Coverage:
         self.chars = {}         # char -> [samples, wrong]
         self.pairs = {}         # pair -> samples
 
-    def add(self, text, read):
+    def add(self, text, read, k=1):
+        """a sample counted in (k=-1: counted out again)"""
         wrong = char_errors(text, read) if read is not None else [0] * len(text)
         for c, w in zip(text, wrong):
             if c == " ":
                 continue
             e = self.chars.setdefault(c, [0, 0])
-            e[0] += 1
-            e[1] += w
+            e[0] += k
+            e[1] += k * w
+            if e[0] <= 0:
+                del self.chars[c]
         for p in pairs(text):
-            self.pairs[p] = self.pairs.get(p, 0) + 1
+            n = self.pairs.get(p, 0) + k
+            if n > 0:
+                self.pairs[p] = n
+            else:
+                self.pairs.pop(p, None)
+
+    def remove(self, text, read):
+        self.add(text, read, -1)
 
     def count(self, c):
         return self.chars.get(c, (0, 0))[0]
