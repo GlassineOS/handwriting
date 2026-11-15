@@ -905,6 +905,25 @@ class Adaptation(unittest.TestCase):
         self.assertIn("learning is off", self.env.run("adapt", "-f").stdout)
         self.assertFalse((self.env.store / "adaptation" / "en" / "current").exists())
 
+    def test_trained_until(self):
+        """samples confirmed before the base model's training data ended are left out of an
+        adaptation: not learned from, not held back, not in the plan"""
+        ghm = self.env.models / "en" / "recognizer.ghm"
+        raw = bytearray(ghm.read_bytes())
+
+        def until(t):
+            raw[48:56] = int(t).to_bytes(8, "little")
+            ghm.write_bytes(raw)
+        self.teach(60)
+        until(time.time() + 3600)
+        out = self.env.run("adapt", *self.ARGS).stdout
+        self.assertIn("too few samples (0 to learn from, 0 held back", out)
+        plan = self.env.run("adapt", "--plan", "--min-train", "20", "--min-held", "5").stdout.split("\t")
+        self.assertEqual(plan[1:3], ["0", "0"])
+        until(1)  # long before them: all count again
+        out = self.env.run("adapt", *self.ARGS).stdout
+        self.assertNotIn("too few", out)
+
     def test_requested_with_progress(self):
         """asked for in a client (spec 002): charging is enough, the plan and progress come as
         lines, the result has the held-back errors before and after"""

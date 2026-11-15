@@ -15,7 +15,7 @@
 #include "ctc.h"
 #include "model.h"
 
-#define HDR_WORDS 16     /* magic, version, header bytes, 8 config words, charset bytes, 4 reserved */
+#define HDR_WORDS 16     /* magic, version, header bytes, 8 config words, charset bytes, trained until (2), 2 reserved */
 
 uint64_t hw_hash(const void *p, size_t n, uint64_t h)
 {
@@ -66,6 +66,7 @@ int hw_model_load(struct hw_model *m, const char *path, char *err, size_t errlen
 	if (w[1] != HW_GHM_VERSION) { snprintf(err, errlen, "model version %u", w[1]); goto bad; }
 	*c = (struct hw_cfg){ w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10] };
 	uint32_t hdr = w[2], cs = w[11];
+	m->trained_until = (int64_t)((uint64_t)w[12] | (uint64_t)w[13] << 32);
 	if (hdr != HDR_WORDS * 4 || c->nfeat == 0 || c->nfeat > 64 || c->c1 == 0 || c->c1 > 4096 ||
 	    c->conv == 0 || c->conv > 4096 || c->nstrided > 8 || c->kernel == 0 || c->kernel > 31 ||
 	    c->kernel % 2 == 0 || c->hidden == 0 || c->hidden > 4096 || c->layers == 0 || c->layers > 8 ||
