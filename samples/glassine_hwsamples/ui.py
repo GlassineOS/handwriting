@@ -849,6 +849,9 @@ class Canvas(Gtk.DrawingArea):
                 return r[1] if r[0] else None
             return r
         p, tx, ty = axis(Gdk.AxisUse.PRESSURE), axis(Gdk.AxisUse.XTILT), axis(Gdk.AxisUse.YTILT)
+        # GTK hands tilt over normalized to -1..1 (from the pen's -90..90 degrees); the
+        # recognizer and the sample format take degrees
+        tx, ty = (None if v is None else v * 90 for v in (tx, ty))
         return (e.x, e.y, e.time, p, tx, ty)
 
     def pen(self, e):
