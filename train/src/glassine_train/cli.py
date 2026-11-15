@@ -382,6 +382,155 @@ def decode_set(m, ds, lex, kw, workers):
     return list(ds.texts[:len(ds)]), hyps
 
 
+def cmd_real(a):
+    """A person's store, split by session for training and evaluation (real.py)."""
+    from .real import prepare
+    print(json.dumps(prepare(Path(a.store), Path(a.out)), indent=1))
+
+
+def cmd_finetune(a):
+    from .data import InkSet
+    from .finetune import finetune
+    from .real import RealSet, load_split
+    data = Path("build/data")
+    sp = load_split(Path(a.real))
+    real = 1.0 - a.synth_share
+    hand = a.synth_share * a.hand_frac if a.hand else 0.0
+    sources = []
+    if real > 0:
+        sources.append({"name": "real", "ds": RealSet(sp["train"], augment=True), "share": real, "real": True})
+    if a.synth_share - hand > 0:
+        for name in a.synth:
+            sources.append({"name": name, "ds": InkSet(data / name, augment=True),
+                            "share": (a.synth_share - hand) / len(a.synth), "real": False})
+    if hand > 0:
+        sources.append({"name": a.hand, "ds": InkSet(data / a.hand, augment=True), "share": hand, "real": False})
+    out = Path("build/runs") / a.run
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "args.json").write_text(json.dumps(vars(a), default=str, indent=1))
+    res = finetune(Path(a.init), out, sources, RealSet(sp["dev"]),
+                   InkSet(data / a.synth_dev, a.synth_dev_limit) if a.synth_dev else None,
+                   a.steps, a.lr, a.batch, a.threads, a.l2sp, a.adv, a.eval_every, a.patience,
+                   a.avg, a.seed, a.workers)
+    print(json.dumps(res, indent=1))
+
+
+def cmd_realeval(a):
+    """Real held-back ink through the recognizer program (realeval.py): raw and with words,
+    the base model alone, with a given head, and with a fresh adaptation."""
+    from . import realeval as R
+    real = Path(a.real)
+    predict = Path(a.predict).resolve()
+    name = a.name or a.run
+    out = Path("build/realeval") / name
+    out.mkdir(parents=True, exist_ok=True)
+    if a.models:
+        models = Path(a.models).resolve()
+    else:
+        models = (out / "models").resolve()
+        until = json.loads((real / "split.json").read_text())["report"]["trained_until"] if a.cutoff else 0
+        R.export_ghm(_run_dir(a) / a.ckpt, models, until)
+    heads = {"base": None}
+    if a.head:
+        heads["given"] = Path(a.head).resolve()
+    res = {"models": str(models)}
+    if a.adapt:
+        info = R.adapt(models, real / a.adapt_store, predict, (out / "fresh.gha").resolve(), tuple(a.adapt_arg))
+        res["adapt"] = info
+        if "head" in info:
+            heads["fresh"] = Path(info["head"])
+    keep = {}
+    for split in a.sets:
+        for hname, head in heads.items():
+            for mode in ("raw", "words"):
+                rs = R.read_samples(models, (real / f"{split}.jsonl").resolve(), predict, mode == "raw", head)
+                p = R.per_sample(rs)
+                key = f"{split}/{hname}/{mode}"
+                res[key] = R.summary(p)
+                keep[key] = {k: v.tolist() for k, v in p.items()}
+                print(f"{name:24s} {key:20s} " + " ".join(f"{k} {v:.4f}" if isinstance(v, float) else f"{k} {v}"
+                                                          for k, v in res[key].items()), flush=True)
+    if a.synth_dev and not a.models:
+        import torch
+        from .data import InkSet
+        from .train import evaluate
+        torch.set_num_threads(a.threads)
+        m = _model(a)
+        for d in a.synth_dev:
+            res[f"synth/{d}"] = evaluate(m, InkSet(Path("build/data") / d))
+            print(f"{name:24s} synth/{d:14s} cer {res[f'synth/{d}']['cer']:.4f}", flush=True)
+    (out / "result.json").write_text(json.dumps(res, indent=1))
+    (out / "per-sample.json").write_text(json.dumps(keep))
+
+
+def _short_lines(c, max_words):
+    return [t for t in c["train"] if len(t.split()) <= max_words]
+
+
+def cmd_synthset(a):
+    """Training ink in the 158 fonts with a measured parameter preset (synth PRESETS)."""
+    from glassine_synth.ink import preset
+    raw = Path("build/text")
+    c = text.corpus(raw, seed=1)
+    prov = {"fonts": _provenance(), "text": json.loads((raw / "manifest.json").read_text())}
+    texts = _short_lines(c, a.max_words)[:a.lines]
+    out = Path("build/data") / a.name
+    build(out, texts, font_splits()["train"], preset(a.preset), a.seed, FONTS, a.workers, prov)
+
+
+def cmd_hand(a):
+    """Text rendered in a person's own letters (hand.py), from the training sessions only."""
+    from glassine_synth.ink import preset
+    from .hand import covered, shapes, tables
+    from .real import load_split
+    sp = load_split(Path(a.real))
+    sh, rep = shapes(sp["train"])
+    held = {s["text"] for s in sp["dev"] + sp["test"]}
+    raw = Path("build/text")
+    c = text.corpus(raw, seed=1)
+    rng = np.random.default_rng(a.seed)
+    pool = [w.strip() for w in (Path("../samples/prompts/en/words.txt")).read_text().splitlines() if w.strip()]
+    prompts = [w.strip() for w in Path("../models/en/prompts.txt").read_text().splitlines() if w.strip()]
+    ok = lambda t: covered(t, sh) and t not in held
+    pool, prompts = [t for t in pool if ok(t)], [t for t in prompts if ok(t)]
+    books = [t for t in _short_lines(c, 4) if ok(t)]
+    n = a.lines
+    texts = (rng.choice(pool, n // 2).tolist() + rng.choice(prompts, n // 10).tolist()
+             + books[:n - n // 2 - n // 10])
+    rng.shuffle(texts)
+    params = preset("real1", join=0.0, reverse_loop=0.0, delay=0.0, extra_lift=0.0, warp=0.015,
+                    zones=0.08, asc_scale=1.0, desc_scale=1.0, font_per_letter=1.0)
+    out = Path("build/data") / a.name
+    build(out, texts, [], params, a.seed, FONTS, a.workers, None, tables(sh, a.tables, a.seed))
+    rep.update(lines=len(texts), pool_words=len(pool), prompt_lines=len(prompts), book_lines=len(books),
+               missing=sorted(set(text.CHARS) - set(sh) - {" "}))
+    (out / "hand.json").write_text(json.dumps(rep, indent=1))
+    print(json.dumps(rep))
+
+
+def cmd_inkstats(a):
+    """Real ink measured beside generated ink of the same texts (glassine_synth.stats):
+    aggregate numbers only."""
+    from glassine_synth.ink import PRESETS, line
+    from glassine_synth.stats import measure
+    from .data import tables
+    from .real import load_split
+    sp = load_split(Path(a.real))
+    real = sp["train"] + sp["dev"]  # the held-back session stays out of every choice
+    fonts = sorted(np.random.default_rng(3).permutation(font_splits()["train"])[:a.fonts].tolist())
+    T = tables(FONTS, fonts, a.workers)
+    res = {"real": measure(real)}
+    for name in ["default"] + a.presets:
+        p = Params() if name == "default" else Params(**PRESETS[name])
+        rng = np.random.default_rng(0)
+        out = []
+        for s in real:
+            g = line(s["text"], T, rng, p)
+            out.append({"text": s["text"], "strokes": [q.tolist() for q in g["strokes"]], "spans": g["spans"]})
+        res[name] = measure(out)
+    print(json.dumps(res, indent=1))
+
+
 def main(argv=None):
     import sys
     argv = sys.argv[1:] if argv is None else argv
@@ -456,8 +605,66 @@ def main(argv=None):
     lx.add_argument("--min-count", type=int, default=50)
     lx.add_argument("--max-lines", type=int)
     lx.add_argument("--prune-from", help="instead: a smaller copy of this built lexicon")
+    rl = sub.add_parser("real", help="a person's sample store, split by writing session")
+    rl.add_argument("store", help="directory with samples.jsonl and samples.meta")
+    rl.add_argument("--out", default="build/real")
+    ft = sub.add_parser("finetune", help="fine-tune on real ink mixed with synthetic ink")
+    ft.add_argument("--run", required=True)
+    ft.add_argument("--init", default="build/runs/m2/best.pt")
+    ft.add_argument("--real", default="build/real")
+    ft.add_argument("--synth", nargs="+", default=["train-f158-var-x2"], help="synthetic datasets (equal parts)")
+    ft.add_argument("--synth-share", type=float, default=0.5, help="synthetic part of every batch (fonts + hand)")
+    ft.add_argument("--hand", help="dataset rendered in the person's own letters (glassine-train hand)")
+    ft.add_argument("--hand-frac", type=float, default=0.5, help="the hand's part of the synthetic share")
+    ft.add_argument("--synth-dev", default="dev")
+    ft.add_argument("--synth-dev-limit", type=int, default=500)
+    ft.add_argument("--steps", type=int, default=2500)
+    ft.add_argument("--lr", type=float, default=3e-4)
+    ft.add_argument("--batch", type=int, default=32)
+    ft.add_argument("--l2sp", type=float, default=0.01)
+    ft.add_argument("--adv", type=float, default=0.0, help="domain head weight (0 = none)")
+    ft.add_argument("--eval-every", type=int, default=100)
+    ft.add_argument("--patience", type=int, default=8)
+    ft.add_argument("--avg", type=int, default=5)
+    ft.add_argument("--threads", type=int, default=6)
+    ft.add_argument("--workers", type=int, default=3)
+    ft.add_argument("--seed", type=int, default=0)
+    re_ = sub.add_parser("realeval", help="real held-back ink through the recognizer program")
+    re_.add_argument("--run", default="")
+    re_.add_argument("--ckpt", default="best.pt")
+    re_.add_argument("--name", help="result name (default: the run)")
+    re_.add_argument("--models", help="a released model directory instead of exporting the run")
+    re_.add_argument("--head", help="an adaptation file to read with as well")
+    re_.add_argument("--adapt", action="store_true", help="also a fresh adaptation on the training sessions")
+    re_.add_argument("--adapt-store", default="store-trainsessions", help="the store a fresh adaptation learns from")
+    re_.add_argument("--adapt-arg", action="append", default=[], help="an option for adapt (e.g. --min-held=5)")
+    re_.add_argument("--cutoff", action="store_true", help="the exported model records its training data's end")
+    re_.add_argument("--real", default="build/real")
+    re_.add_argument("--predict", default="build/predict", help="the word predictor's models (words)")
+    re_.add_argument("--sets", nargs="+", default=["test"])
+    re_.add_argument("--synth-dev", nargs="*", default=["dev"])
+    re_.add_argument("--threads", type=int, default=4)
+    ss = sub.add_parser("synthset", help="training ink of short lines with a measured preset")
+    ss.add_argument("--name", default="train-f158-real1")
+    ss.add_argument("--preset", default="real1")
+    ss.add_argument("--lines", type=int, default=120_000)
+    ss.add_argument("--max-words", type=int, default=3)
+    ss.add_argument("--seed", type=int, default=41)
+    ss.add_argument("--workers", type=int, default=6)
+    hd = sub.add_parser("hand", help="text rendered in a person's own letters (training sessions)")
+    hd.add_argument("--name", default="hand")
+    hd.add_argument("--real", default="build/real")
+    hd.add_argument("--lines", type=int, default=40_000)
+    hd.add_argument("--tables", type=int, default=16)
+    hd.add_argument("--seed", type=int, default=43)
+    hd.add_argument("--workers", type=int, default=4)
+    ist = sub.add_parser("inkstats", help="real ink measured beside generated ink of the same texts")
+    ist.add_argument("--real", default="build/real")
+    ist.add_argument("--presets", nargs="*", default=["real1"])
+    ist.add_argument("--fonts", type=int, default=40, help="random training fonts to render with")
+    ist.add_argument("--workers", type=int, default=8)
     a = ap.parse_args(argv)
-    {"lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+    {"inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":
