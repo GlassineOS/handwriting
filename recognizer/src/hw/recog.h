@@ -39,6 +39,9 @@ struct hw_run {
 };
 
 int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r);
+/* on: hw_run keeps its last run and gives a copy for the same strokes, language and
+ * adaptation (a server answering several requests on one piece of writing) */
+void hw_run_cache(int on);
 void hw_run_free(struct hw_run *r);
 
 /* Per character of a text, its place in the strokes (from the forced alignment of the
