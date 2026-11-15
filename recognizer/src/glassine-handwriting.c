@@ -484,7 +484,8 @@ static int candidates(struct hw_lang *l, struct session *s, int raw, int want, s
 
 /* the characters of the best reading of the other strokes that the covered strokes make
  * ("A-B"), or for a caret the position before which it inserts ("@K") */
-static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, const struct hw_gesture *ge, struct buf *b)
+static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, const struct hw_gesture *ge, int raw,
+			  struct buf *b)
 {
 	size_t n = 0, *np;
 	struct hw_ink *ink = malloc(s->n * sizeof *ink);
@@ -499,8 +500,8 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 		struct hw_reading rd;
 		struct hw_charspan *cs = NULL;
 		struct hw_context x;
-		if (s->words) hw_context_of(hw_words_get(l->lang), s->before, &x);
-		if (hw_read_words(l, &r, s->words && x.w ? &x : NULL, 1, &rd) == 1) {
+		if (s->words && !raw) hw_context_of(hw_words_get(l->lang), s->before, &x);
+		if (hw_read_words(l, &r, s->words && !raw && x.w ? &x : NULL, 1, &rd) == 1) {
 			long nc = hw_align(l, &r, rd.c[0].cp, (size_t)rd.c[0].len, &cs);
 			long lo = -1, hi = -1, before = 0;
 			for (long k = 0; k < nc; k++) {
@@ -546,7 +547,7 @@ static void do_read(const char *id, struct session *s, int want, int raw)
 		for (int j = 0; j < ge->ncovers; j++) bfmt(&b, "%s%d", j ? "," : "", s->ids[ge->covers[j]]);
 		if (!ge->ncovers) bstr(&b, "-");
 		bstr(&b, "\t");
-		gesture_chars(l, s, g, ge, &b);
+		gesture_chars(l, s, g, ge, raw, &b);
 		session_remove(s, g);       /* a gesture is not ink to read */
 		bstr(&out, b.s);
 		bput(&out, "\n", 1);

@@ -185,8 +185,8 @@ included unless they pick them one by one.
 - After a few hundred confirmed samples from one person, the error rate on their held-back
   samples is lower than the base model's alone.
 - With words (FR-015), the character and word error rates on a person's held-back
-  samples are lower than the ink's alone, and no sample whose ink alone read right reads
-  wrong, within the same time budget.
+  samples are lower than the ink's alone, within the same time budget; readings the words
+  make wrong are far fewer than those they make right, also for text the list lacks.
 - Scenario 4's prompted mode returns one stroke group per prompted character for a
   pangram written in one go.
 

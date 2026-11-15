@@ -105,6 +105,9 @@ def main():
     ap.add_argument("--against")
     ap.add_argument("--per-sample", action="store_true")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the recognizer")
+    ap.add_argument("--unknown-targets", action="store_true",
+                    help="the words of every sample's text marked removed in the predictor's store, so they"
+                         " read as unknown words (names, codes): what words do to text the list lacks")
     a = ap.parse_args()
 
     tmp = Path(tempfile.mkdtemp(prefix="hw-eval-"))
@@ -119,6 +122,15 @@ def main():
         d = tmp / "data" / "glassine" / "handwriting" / "adaptation" / "en"
         d.mkdir(parents=True)
         shutil.copy(a.adaptation, d / "current")
+    if a.unknown_targets:
+        import re
+        ws = set()
+        for ln in open(a.samples, "rb").read().decode("utf-8").replace("\0", "\n").split("\n"):
+            if ln.startswith("{") and ln.endswith("}"):
+                ws |= {w.lower().replace("\u2019", "'") for w in re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)*", json.loads(ln)["text"])}
+        d = tmp / "data" / "glassine" / "predict"
+        d.mkdir(parents=True)
+        (d / "words").write_text("glassine-words 1 %d\n" % len(ws) + "".join("x * %s\n" % w for w in sorted(ws)))
     sets = sets_of(a.prompts)
     rec = Rec(a.bin, env)
     times = []
