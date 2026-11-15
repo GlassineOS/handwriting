@@ -813,6 +813,27 @@ int hw_donation_remove(const char *id)
 	return r;
 }
 
+int hw_donation_has(const char *id)
+{
+	char p[4096];
+	if (hw_store_path(p, sizeof p, "donation/samples.jsonl")) return -1;
+	struct stat st;
+	if (stat(p, &st)) return 0;
+	char *s = slurp_lines(p, NULL);
+	if (!s) return -1;
+	int r = 0;
+	for (char *c = s, *e; !r && *c; c = e) {
+		e = strchr(c, '\n');
+		if (e) *e++ = 0; else e = c + strlen(c);
+		char sid[17];
+		if (!*c) continue;
+		hw_sample_id(c, sid);
+		r = !strcmp(sid, id);
+	}
+	free(s);
+	return r;
+}
+
 int hw_donation_erase(void)
 {
 	char p[4096];

@@ -8,7 +8,7 @@
 //   glassine-handwriting learning [on|off]
 //   glassine-handwriting adapt [-f] [-l LANG] ...    one adaptation (idle and charging)
 //   glassine-handwriting adaptation [show|revert] [-l LANG]
-//   glassine-handwriting donation start LICENCE|add ID|list|write FILE|erase|prompts
+//   glassine-handwriting donation start LICENCE|add ID|list|earlier|write FILE|erase|prompts
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -795,10 +795,10 @@ static void do_sample(const char *id, const char *sid)
 
 /* whether text is one of the prompts shipped for the language: a line of LANG/prompts.txt
  * (the base model's) or of a .txt file in LANG/prompts/ (the samples app's sets) */
-static int shipped_prompt(const struct hw_lang *l, const char *text)
+static int shipped_prompt_of(const char *lang, const char *text)
 {
 	char d[4200];
-	snprintf(d, sizeof d, "%s/%s", hw_models_dir(), l->lang);
+	snprintf(d, sizeof d, "%s/%s", hw_models_dir(), lang);
 	char *files[64];
 	int nf = 0;
 	char p[4400];
@@ -829,6 +829,11 @@ static int shipped_prompt(const struct hw_lang *l, const char *text)
 		free(files[i]);
 	}
 	return found;
+}
+
+static int shipped_prompt(const struct hw_lang *l, const char *text)
+{
+	return shipped_prompt_of(l->lang, text);
 }
 
 static void do_donate(const char *id, struct session *s, const char *text, int keep)
@@ -1199,7 +1204,7 @@ static void usage(void)
 	      "       glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]\n"
 	      "       glassine-handwriting adaptation [show|revert] [-l LANG]\n"
 	      "       glassine-handwriting charging\n"
-	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | write FILE | erase | prompts [LANG]\n"
+	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | earlier [-c CLIENT] | write FILE | erase | prompts [LANG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
 }
@@ -1337,10 +1342,37 @@ static int cmd_donation(int argc, char **argv)
 		size_t n;
 		if (hw_samples_load(&es, &n, NULL)) return 1;
 		int r = 1;
-		for (size_t i = 0; i < n; i++) if (!strcmp(es[i].meta.id, argv[1])) r = hw_donation_add(es[i].json) ? 1 : 0;
+		for (size_t i = 0; i < n; i++)
+			if (!strcmp(es[i].meta.id, argv[1]))      /* once: a sample already there stays one */
+				r = hw_donation_has(argv[1]) == 1 ? 0 : hw_donation_add(es[i].json) ? 1 : 0;
 		if (r) fprintf(stderr, "glassine-handwriting: no sample %s\n", argv[1]);
 		hw_entries_free(es, n);
 		return r;
+	}
+	if (!strcmp(argv[0], "earlier") && (argc == 1 || (argc == 3 && !strcmp(argv[1], "-c")))) {
+		/* the prompted samples written to shipped prompts that the donation hasn't got:
+		 * the ones kept before donating was on, to offer (spec 002 FR-011) */
+		struct hw_entry *es;
+		size_t n;
+		if (hw_samples_load(&es, &n, NULL)) return 1;
+		for (size_t i = 0; i < n; i++) {
+			if (argc == 3 && strcmp(es[i].meta.client, argv[2])) continue;
+			if (strcmp(es[i].meta.source, "prompted") || hw_donation_has(es[i].meta.id) != 0) continue;
+			struct hw_sample smp;
+			char err[128], base[36];
+			if (hw_sample_parse(es[i].json, &smp, err, sizeof err)) continue;
+			snprintf(base, sizeof base, "%.*s", (int)strcspn(es[i].meta.lang, "-_"), es[i].meta.lang);
+			if (shipped_prompt_of(es[i].meta.lang, smp.text) || (strcmp(base, es[i].meta.lang) && shipped_prompt_of(base, smp.text))) {
+				struct buf b = { 0 };
+				bfmt(&b, "%s\t%lld\t%s\t", es[i].meta.id, es[i].meta.time, es[i].meta.lang);
+				besc(&b, smp.text);
+				puts(b.s);
+				free(b.s);
+			}
+			hw_sample_free(&smp);
+		}
+		hw_entries_free(es, n);
+		return 0;
 	}
 	if (!strcmp(argv[0], "prompts")) {
 		char p[4200];

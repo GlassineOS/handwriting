@@ -262,6 +262,10 @@ class UI:
         self.donation = (None, 0)
         self.learning = True
         self.picking_licence = False
+        self.earlier = []               # [(id, time, text)] kept before donating was on, to offer
+        self.earlier_out = set()        # ids the person leaves out
+        self.reviewing = False          # the list of the earlier samples is open
+        self.ep = 0                     # its page
         self.confirm = None             # (question, yes-label, fn) for a destructive action
         self.sets_open = False
         self.demo = demo
@@ -293,11 +297,16 @@ class UI:
         small low steps that never hold up the person's writing"""
         def get():
             rows = self.cli.samples()
-            return (self.writer.counts(rows=rows), self.cli.plan(self.state.lang), self.cli.donation(),
-                    self.cli.learning(), self.cli.adaptations(self.state.lang), rows, self.rec.sample_ids())
+            don = self.cli.donation()
+            earlier = self.cli.donation_earlier() if self.state.donating and don[0] else []
+            return (self.writer.counts(rows=rows), self.cli.plan(self.state.lang), don,
+                    self.cli.learning(), self.cli.adaptations(self.state.lang), rows, self.rec.sample_ids(), earlier)
 
         def got(r):
-            self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, ids = r
+            self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, ids, self.earlier = r
+            self.earlier_out &= {e[0] for e in self.earlier}
+            if not self.earlier:
+                self.reviewing = False
             self.fresh = self.plan["new"]
             self.loaded = True
             self.read_coverage(ids)
@@ -480,6 +489,13 @@ class UI:
             self.state.save()
         self.picking_licence = False
         self.run(go, lambda _: self.refresh())
+
+    def add_earlier(self):
+        """the earlier samples the person didn't leave out go into the donation"""
+        ids = [e[0] for e in self.earlier if e[0] not in self.earlier_out]
+        self.reviewing = False
+        self.run(lambda: self.cli.donation_add_all(ids),
+                 lambda n: (setattr(self, "msg", "%d earlier samples added to the donation." % n), self.refresh()))
 
     def write_donation(self):
         lic = self.donation[0]
@@ -786,16 +802,66 @@ def donate_page(cr, ui, hits, w, h):
         pill(cr, t, hits, 20, h - 72, "Cancel", lambda: (setattr(ui, "picking_licence", False), ui.redraw()))
         return
     on = ui.state.donating and lic
+    if on and ui.reviewing and ui.earlier:
+        earlier_review(cr, ui, hits, w, h, y)
+        return
     PT.text(cr, "Donating: %s" % ("on, " + lic if on else "off"), t.row, 20, y, t.ink, weight=600)
     y += 34
     PT.text(cr, "%d samples in this donation." % n, t.row, 20, y, t.ink)
+    y += 34
+    if on and ui.earlier:
+        # the prompted samples kept before donating was on: offered, never added unasked
+        k = len(ui.earlier)
+        PT.box(cr, 20, y, w - 40, 112, "8px", bg=t.paper, shadow="inset 0 0 0 1.5px " + t.rule)
+        PT.text(cr, "%d sample%s you kept before for shipped prompts can go into this donation too. "
+                "Review them and leave out any you like; nothing is added unless you add them."
+                % (k, "" if k == 1 else "s"), t.row, 36, y + 14, t.ink, maxw=w - 200, wrap=True)
+        pill(cr, t, hits, w - 150, y + 34, "Review", lambda: (setattr(ui, "reviewing", True), setattr(ui, "ep", 0),
+                                                            ui.redraw()),
+             primary=True)
+        y += 124
     if ui.msg:
-        PT.text(cr, ui.msg, t.sub, 20, y + 34, t.ink, maxw=w - 40, wrap=True)
+        PT.text(cr, ui.msg, t.sub, 20, y, t.ink, maxw=w - 40, wrap=True)
     pills_right(cr, t, hits, w - 20, h - 72, [
         ("Erase", (lambda: ask(ui, "Erase the donation? Your own samples stay.", "Erase", ui.erase_donation))
          if n else None, False),
         ("Write file", ui.write_donation if n and lic else None, False),
         ("Turn off", lambda: ui.donating(False), False) if on else ("Turn on", lambda: turn_on(ui), True)])
+
+
+def earlier_review(cr, ui, hits, w, h, y):
+    """the earlier samples, each in or left out by a tap; Add adds those in, Cancel none"""
+    t = ui.theme
+    keep = [e for e in ui.earlier if e[0] not in ui.earlier_out]
+    PT.text(cr, "Samples kept before: tap one to leave it out.", t.row, 20, y, t.ink, weight=600)
+    y += 40
+    rows = max(1, int(h - 100 - y) // 56)
+    pages = (len(ui.earlier) + rows - 1) // rows
+    ui.ep = min(ui.ep, pages - 1)
+    for sid, when, text in ui.earlier[ui.ep * rows:(ui.ep + 1) * rows]:
+        inside = sid not in ui.earlier_out
+        PT.box(cr, 20, y, w - 40, 48, "8px", bg=t.sheet if inside else t.paper,
+               shadow="inset 0 0 0 1.5px " + (t.ink if inside else t.rule))
+        PT.text(cr, ("✓  " if inside else "—  ") + text, t.row, 36, y + 12, t.ink if inside else t.soft,
+                maxw=w - 220)
+        PT.text(cr, time.strftime("%d %b", time.localtime(when)), t.sub, w - 36, y + 15, t.soft, align=2)
+
+        def flip(i=sid):
+            ui.earlier_out ^= {i}
+            ui.redraw()
+        hits.add(20, y, w - 40, 48, flip)
+        y += 56
+    def page(d):
+        ui.ep += d
+        ui.redraw()
+    more = []
+    if pages > 1:
+        PT.text(cr, "Page %d of %d" % (ui.ep + 1, pages), t.sub, 20, y, t.soft)
+        more = [("Back", (lambda: page(-1)) if ui.ep else None, False),
+                ("More", (lambda: page(1)) if ui.ep < pages - 1 else None, False)]
+    pills_right(cr, t, hits, w - 20, h - 72, more + [
+        ("Cancel", lambda: (setattr(ui, "reviewing", False), ui.redraw()), False),
+        ("Add %d" % len(keep), ui.add_earlier if keep else None, True)])
 
 
 def turn_on(ui):
@@ -1137,6 +1203,11 @@ def render(argv):
         ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o'clock"] * 3)]
     if page == "sets":
         ui.sets_open, page = True, "write"
+    if page in ("donate-earlier", "donate-review"):
+        ui.earlier = [("%016x" % (99 + i), 1762900000 + 3600 * i, w) for i, w in enumerate(
+            ["The quick brown fox jumps over the lazy dog", "zebra", "minimum", "fifty", "1984"] * 3)]
+        ui.earlier_out = {ui.earlier[1][0]}
+        ui.reviewing, page = page == "donate-review", "donate"
     if page == "result":
         page, ui.result = "learn", ("result", ["kept", "0.121", "0.094", "250", "62"])
     ui.page = page

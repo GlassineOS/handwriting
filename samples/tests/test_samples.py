@@ -382,6 +382,44 @@ class Donation(Case):
         self.write(w)
         self.assertEqual(self.e.cli.donation(), (None, 0))
 
+    def test_earlier_offer(self):
+        """prompted samples kept before donating was on: offered for the donation, reviewed,
+        any left out; own-list and everyday samples never in the offer"""
+        P.save_own(["Grünewald"])
+        st = flow.State()
+        st.set = "words"
+        w = self.e.writer(st)
+        before = [self.write(w)[0] for _ in range(3)]               # shipped prompts, donating off
+        w.reload_sets()
+        w.choose_set(P.OWN)
+        own, _ = self.write(w)                                     # the own list
+        r = self.e.rec
+        r.write(flow.SESSION, "en", "em", None, ink(self.rng, n=4))
+        every = r.ask("confirm", flow.SESSION, "corrected", "tabby")   # an everyday sample
+        r.end(flow.SESSION)
+        self.assertEqual(every[0], "ok", every)
+        self.assertEqual(self.e.cli.donation(), (None, 0))
+        self.e.cli.donation_start("CC0-1.0")
+        offer = self.e.cli.donation_earlier()
+        self.assertEqual([o[0] for o in offer], [sh.sample_id for sh in before])
+        self.assertEqual([o[2] for o in offer], [sh.prompt.text for sh in before])
+        self.assertNotIn(own.sample_id, [o[0] for o in offer])
+        self.assertEqual(self.e.cli.donation()[1], 0)              # nothing added by itself
+        keep = [o[0] for o in offer if o[0] != before[1].sample_id]   # one left out
+        self.assertEqual(self.e.cli.donation_add_all(keep), 2)
+        self.assertEqual(self.e.cli.donation()[1], 2)
+        self.assertEqual([o[0] for o in self.e.cli.donation_earlier()], [before[1].sample_id])  # the offer stays
+        self.e.cli.donation_add(keep[0])                           # once only
+        self.assertEqual(self.e.cli.donation()[1], 2)
+        w.state.donating = True
+        w.choose_set("words")
+        now, _ = self.write(w)                                     # donated while on: not offered
+        self.assertTrue(now.donated_id)
+        self.assertEqual([o[0] for o in self.e.cli.donation_earlier()], [before[1].sample_id])
+        self.e.cli.donation_erase()                                # a new donation offers them again
+        self.e.cli.donation_start("CC0-1.0")
+        self.assertEqual(len(self.e.cli.donation_earlier()), 4)
+
     def test_learning_off_still_donates(self):
         self.e.cli.run("learning", "off")
         self.e.cli.donation_start("CC0-1.0")
