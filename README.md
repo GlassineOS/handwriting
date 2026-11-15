@@ -39,6 +39,11 @@ The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
 - [`recognizer/`](recognizer): `glassine-handwriting`, the recognizer (C, no runtime
   beyond libc and json-c). How to talk to it and read its files:
   [`docs/recognizer.md`](docs/recognizer.md). `make -C recognizer check` runs its tests.
+- [`samples/`](samples): `glassine-handwriting-samples`, the handwriting samples app
+  ([`specs/002-sample-collection`](specs/002-sample-collection/spec.md)): write shown words
+  and sentences so the recognizer learns your hand, ask it to learn, and donate reviewed
+  samples to the base models as a file you send yourself. Python with GTK 3; its prompt sets
+  and their sources are in `samples/prompts/`. `make -C samples check` runs its tests.
 - [`train/`](train): the trainer and the base model recipe.
 - [`models/`](models): how a trained model is released (GitHub release assets, not
   files here) and each language's prompts.

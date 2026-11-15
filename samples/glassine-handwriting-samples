@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""glassine-handwriting-samples: write shown text so the recognizer learns your hand
+(GlassineOS/handwriting spec 002)."""
+import os
+import sys
+
+sys.path.insert(0, os.environ.get("GLASSINE_HWSAMPLES_LIB", "/usr/lib/glassine/handwriting-samples"))
+
+from glassine_hwsamples.ui import main  # noqa: E402
+
+sys.exit(main())
