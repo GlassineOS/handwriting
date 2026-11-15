@@ -291,7 +291,7 @@ glassine-handwriting learning [on|off]          show or set handwriting.conf's l
 glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
-glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | write FILE | erase | prompts [LANG]
+glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | earlier [-c CLIENT] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
 ```
@@ -312,7 +312,11 @@ head in use and of the new one, 0 to 1) or `skip REASON` (`learning`, `charging`
 `donation N`. `erase` prints the number erased; every erase (also of nothing) bumps the erase
 count, so a running adaptation drops its result. `adaptation show` prints `current` and
 `previous`: `none`, or `TIME TRAIN HELD ERROR_BEFORE ERROR_AFTER`; `revert` swaps them. `donation
-add` copies one of the person's samples into the donation; `remove` takes one out by id; `write` writes the donation as sample
+add` copies one of the person's samples into the donation (once: a sample already in it stays
+one); `earlier` lists the person's prompted samples written to a shipped prompt (`prompts.txt` or
+`prompts/`, the sample's language or its base) that the donation hasn't got, `ID TIME LANG TEXT`
+per sample in the order stored (`-c`: one client's), for the offer to add the samples kept before
+donating was on (spec 002 FR-011); `remove` takes one out by id; `write` writes the donation as sample
 format v1 lines, each with `licence`, times from 0 and no client or time of day.
 
 **Export file:** JSON lines. The first `{"format":"glassine-handwriting-export","version":1}`;
