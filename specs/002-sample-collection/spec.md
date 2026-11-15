@@ -152,6 +152,10 @@ export them as one file in the sample format; nothing leaves the device otherwis
 ## Success criteria
 
 - A person writes 100 prompted words in under ten minutes, including review.
+- With 10,000 samples kept, on the reference device: the next prompt shows within 150 ms
+  of the last one being taken, what became of a written sample shows within 100 ms of
+  the recognizer's reading, and every page shows within 300 ms of being opened, with its
+  figures up to date; a page is drawn again only when something on it changed.
 - Every kept prompted sample that passed the alignment check has exact spans, every kept
   sample its raw points as the pen reported them;
   a round trip through export and import gives the same samples.
