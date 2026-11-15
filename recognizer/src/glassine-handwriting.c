@@ -1161,6 +1161,7 @@ static void background_adapt(void)
 
 static int serve(int idle_s, int adapt)
 {
+	hw_run_cache(1);
 	struct sigaction sa = { 0 };
 	sa.sa_handler = on_signal;
 	sigaction(SIGTERM, &sa, NULL);
