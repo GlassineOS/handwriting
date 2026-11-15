@@ -694,9 +694,9 @@ static void do_samples(const char *id, const char *which)
 	int all = !strcmp(which, "all");
 	if (*which && !all) { reply("error\t%s\tbad-line", id); return; }
 	if (all && !reader_granted()) { reply("error\t%s\tdenied", id); return; }
-	struct hw_entry *es;
+	const struct hw_entry *es;
 	size_t n;
-	if (hw_samples_load(&es, &n, NULL)) { reply("error\t%s\tstore", id); return; }
+	if (hw_samples_view(&es, &n)) { reply("error\t%s\tstore", id); return; }
 	struct buf b = { 0 };
 	size_t k = 0;
 	for (size_t i = 0; i < n; i++) if (all || !strcmp(es[i].meta.client, client)) k++;
@@ -705,15 +705,14 @@ static void do_samples(const char *id, const char *which)
 	bstr(&out, b.s);
 	bput(&out, "\n", 1);
 	free(b.s);
-	hw_entries_free(es, n);
 }
 
 static void do_sample(const char *id, const char *sid)
 {
 	if (!strcmp(client, "-")) { reply("error\t%s\tno-client", id); return; }
-	struct hw_entry *es;
+	const struct hw_entry *es;
 	size_t n;
-	if (hw_samples_load(&es, &n, NULL)) { reply("error\t%s\tstore", id); return; }
+	if (hw_samples_view(&es, &n)) { reply("error\t%s\tstore", id); return; }
 	int found = 0;
 	for (size_t i = 0; i < n; i++) {
 		if (strcmp(es[i].meta.id, sid)) continue;
@@ -728,7 +727,6 @@ static void do_sample(const char *id, const char *sid)
 		break;
 	}
 	if (!found) reply("error\t%s\tunknown-sample", id);
-	hw_entries_free(es, n);
 }
 
 /* whether text is one of the prompts shipped for the language: a line of LANG/prompts.txt

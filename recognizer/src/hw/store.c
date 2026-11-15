@@ -276,6 +276,39 @@ void hw_entries_free(struct hw_entry *e, size_t n)
 	free(e);
 }
 
+static int same_file(const struct stat *a, const struct stat *b)
+{
+	return a->st_dev == b->st_dev && a->st_ino == b->st_ino && a->st_size == b->st_size &&
+	       a->st_mtim.tv_sec == b->st_mtim.tv_sec && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec;
+}
+
+int hw_samples_view(const struct hw_entry **out, size_t *n)
+{
+	/* a running recognizer answers one sample after the other (the samples app reads them
+	 * all at its start): reading and hashing the whole store for each was seconds per
+	 * dozen on the device */
+	static struct hw_entry *es;
+	static size_t ne;
+	static struct stat js, ms;
+	static int have;
+	char pj[4096], pm[4096];
+	if (hw_store_path(pj, sizeof pj, "samples.jsonl") || hw_store_path(pm, sizeof pm, "samples.meta")) return -1;
+	struct stat j, m;
+	memset(&j, 0, sizeof j); memset(&m, 0, sizeof m);
+	int jok = !stat(pj, &j), mok = !stat(pm, &m);
+	if (!jok) memset(&j, 0, sizeof j);
+	if (!mok) memset(&m, 0, sizeof m);
+	if (!have || !same_file(&j, &js) || !same_file(&m, &ms)) {
+		struct hw_entry *x;
+		size_t nx;
+		if (hw_samples_load(&x, &nx, NULL)) return -1;
+		if (have) hw_entries_free(es, ne);
+		es = x; ne = nx; js = j; ms = m; have = 1;
+	}
+	*out = es; *n = ne;
+	return 0;
+}
+
 int hw_samples_load(struct hw_entry **out, size_t *n, unsigned long *gen)
 {
 	char p[4096];
@@ -370,12 +403,11 @@ static int add_locked(const char *json, const struct hw_meta *m0)
 {
 	struct hw_meta m = *m0;
 	hw_sample_id(json, m.id);
-	struct hw_entry *es;
+	const struct hw_entry *es;
 	size_t n;
-	if (hw_samples_load(&es, &n, NULL)) return -1;
+	if (hw_samples_view(&es, &n)) return -1;
 	int have = 0;
 	for (size_t i = 0; i < n; i++) if (!strcmp(es[i].meta.id, m.id)) have = 1;
-	hw_entries_free(es, n);
 	if (have) return 1;
 	sanitize(m.client); sanitize(m.source); sanitize(m.lang);
 	char *line = malloc(strlen(json) + 2), meta[256];
