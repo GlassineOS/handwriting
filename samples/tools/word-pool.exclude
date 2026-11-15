@@ -1,0 +1,10 @@
+# words the English pool never takes (word-pool.py --exclude): old forms, spellings and
+# fragments of the books that people don't write today, words that are mostly names in
+# the books, and words not fit to ask someone to write
+# (fragments of contractions never come: words with apostrophes are skipped)
+thou thee thy thine ye hath doth saith art ere nigh yonder whilst wherein whereof thereof
+thereby whereby hitherto hence thence whence divers tis fro th em ve ll re un de ma eh hee
+doe mr mrs st ain shalt wilt dost canst unto amongst aught naught behold beheld oft le
+alas anon perchance methinks betwixt twixt prithee mayst hast hadst wouldst couldst
+mamma papa
+hell bloody damn damned
