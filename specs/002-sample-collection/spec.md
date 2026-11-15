@@ -68,6 +68,11 @@ one file into a folder among the person's own files, for them to send themselves
 FR-014). Turning donating off or erasing the donation never touches
 the samples used for their own adaptation.
 
+**Given** the person already kept prompted samples before turning donating on, **When**
+they turn it on, **Then** the app offers to add those earlier samples too, shows how many
+there are, and lets the person review the list and leave any out before they are added;
+declining adds none of them, and the offer can be taken up later from the donation page.
+
 ### Scenario 6 – The person stays in charge (Priority: P1)
 
 **Given** stored samples, **When** the person opens the app's sample view, **Then** they see
@@ -111,9 +116,11 @@ export them as one file in the sample format; nothing leaves the device otherwis
   kept to go back to). The app shows progress and the before and after error rates, and
   the device stays usable while it runs.
 - **FR-011**: Donating (Scenario 5) is off until the person turns it on; the licence
-  (CC0 or CC BY 4.0) is chosen once per donation; only samples written to shipped prompts
-  while donating is on are added, never samples written to the person's own word list or
-  from normal use, unless the person adds such a sample one by one (spec 001 FR-014). The
+  (CC0 or CC BY 4.0) is chosen once per donation; samples written to shipped prompts are
+  added while donating is on, and earlier ones only when the person accepts the offer to
+  add them after reviewing the list (Scenario 5), under the licence of this donation;
+  samples written to the person's own word list or from normal use are never added in
+  bulk, only when the person adds such a sample one by one (spec 001 FR-014). The
   donation file follows spec 001 FR-014 (no client, wall-clock time, device or person in
   it), states its licence, and is written into a folder among the person's own files; how
   it reaches the project is up to the person.
