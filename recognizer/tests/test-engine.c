@@ -350,7 +350,7 @@ static void test_words(const char *tmp)
 	CHECK(!strcmp(t0, "jaciet") && rd.c[0].from == HW_FROM_INK, "no words: the ink's best first");
 
 	/* a word one edit away that the ink reads only far behind (ten other letters there
-	 * first): offered, never first */
+	 * first): found by the guided search (or offered as a near word), not first */
 	frames_of(&l, "jaciet", 3, 'k', -5.5f, lp, &r.T);
 	for (const char *o = "lbdfhmnrtv"; *o; o++) lp[6 * r.C + hw_class_of(&l.model, (unsigned char)*o)] = -1.5f;
 	hw_read_words(&l, &r, &x, 3, &rd);
@@ -358,7 +358,7 @@ static void test_words(const char *tmp)
 	int offered = 0;
 	for (int i = 0; i < rd.n; i++) {
 		reading_text(&rd, i, t1);
-		if (!strcmp(t1, "jacket")) offered = rd.c[i].from == HW_FROM_WORDS && i > 0;
+		if (!strcmp(t1, "jacket")) offered = (rd.c[i].from == HW_FROM_WORDS || rd.c[i].from == HW_FROM_GUIDED) && i > 0;
 	}
 	CHECK(!strcmp(t0, "jaciet") && rd.c[0].from == HW_FROM_INK, "the ink's best stays first (%s)", t0);
 	CHECK(offered, "the near word offered beside it");

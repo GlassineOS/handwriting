@@ -482,7 +482,7 @@ class Samples(unittest.TestCase):
         near = m.group(0).lower() + "q"            # one letter added: one edit away
         proposed = raw[0][:m.start()] + (m.group(0) + "q") + raw[0][m.end():]
         self.env.words([near])
-        self.env.env["GLASSINE_HANDWRITING_WORDS"] = "minlen=1,near=1e9"
+        self.env.env["GLASSINE_HANDWRITING_WORDS"] = "minlen=1,near=1e9,guided=0"
         self.env.env["GLASSINE_HANDWRITING_FIT_OK"] = "2"   # no fit passes
         c = self.env.start("-i", "0")
         c.ask("hello", "1", "org.example.app")

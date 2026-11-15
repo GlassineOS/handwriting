@@ -410,3 +410,22 @@ double hw_words_unigram(const struct hw_words *w, long id)
 }
 
 long hw_words_count(const struct hw_words *w) { return w && w->h ? (long)w->h->nvocab : 0; }
+
+int hw_words_narrow(const struct hw_words *w, const char *prefix, size_t n, long *lo, long *hi)
+{
+	if (!w || !w->h) { *lo = *hi = 0; return 0; }
+	long a = *lo, b = *hi;
+	/* the keys are sorted by their bytes, so those with the prefix are one run */
+	while (a < b) {
+		long m = a + (b - a) / 2;
+		if (strncmp(w->str + w->v[m].key, prefix, n) < 0) a = m + 1; else b = m;
+	}
+	long c = a, d = *hi;
+	while (c < d) {
+		long m = c + (d - c) / 2;
+		if (strncmp(w->str + w->v[m].key, prefix, n) <= 0) c = m + 1; else d = m;
+	}
+	*lo = a;
+	*hi = c;
+	return c > a;
+}
