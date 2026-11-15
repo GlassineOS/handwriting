@@ -8,6 +8,7 @@ GTK ink module (GLASSINE_INK_WIDGETS names its type) and ink appears under the p
   glassine-handwriting-samples --render OUT.png [--page P] [--theme T] [--size WxH]
                                                draw one page into a PNG (no display needed)
 """
+import itertools
 import math
 import os
 import queue
@@ -188,15 +189,17 @@ def guides(cr, t, w, h, line, ctl=40):
 
 
 class Worker:
-    """one thread for the recognizer's calls; results come back on GTK's main loop"""
+    """one thread for the recognizer's calls; results come back on GTK's main loop. Low
+    calls (reading the coverage, in small steps) go only when nothing else waits"""
 
     def __init__(self):
-        self.q = queue.Queue()
+        self.q = queue.PriorityQueue()
+        self.seq = itertools.count()
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
         while True:
-            fn, done = self.q.get()
+            _, _, fn, done = self.q.get()
             try:
                 r, err = fn(), None
             except Exception as e:      # shown on the page, the app keeps running
@@ -204,8 +207,8 @@ class Worker:
             if done:                    # bound now: the next call rebinds these before the main loop runs
                 GLib.idle_add(lambda done=done, r=r, err=err: (done(r, err), False)[1])
 
-    def do(self, fn, done=None):
-        self.q.put((fn, done))
+    def do(self, fn, done=None, low=False):
+        self.q.put((int(low), next(self.seq), fn, done))
 
 
 class UI:
@@ -221,6 +224,9 @@ class UI:
         self.theme = Theme(read_file(THEME_FILE) or "white")
         self.msg = ""
         self.busy = 0                   # calls queued or running in the worker
+        self.loaded = demo              # counts, plan, donation, learning, adaptations are in
+        self.cov_loaded = demo          # the coverage is read
+        self.cov_ids = None             # the samples to read the coverage of (None: no run)
         self.cache = {}
         self.counts = (0, 0)
         self.fresh = 0
@@ -262,17 +268,47 @@ class UI:
         self.work.do(fn, fin)
 
     def refresh(self):
-        """counts, coverage, the donation, the adaptation (in the background)"""
+        """counts, the donation, the adaptation (in the background); then the coverage, in
+        small low steps that never hold up the person's writing"""
         def get():
-            cov = self.writer.load_coverage(self.cache)
-            return (self.writer.counts(), self.cli.plan(self.state.lang), self.cli.donation(), self.cli.learning(),
-                    self.cli.adaptations(self.state.lang), self.cli.samples(), cov)
+            rows = self.cli.samples()
+            return (self.writer.counts(rows=rows), self.cli.plan(self.state.lang), self.cli.donation(),
+                    self.cli.learning(), self.cli.adaptations(self.state.lang), rows, self.rec.sample_ids())
 
         def got(r):
-            self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, _ = r
+            self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, ids = r
             self.fresh = self.plan["new"]
-            # the person may have chosen the set before coverage came in: keep their prompt
+            self.loaded = True
+            self.read_coverage(ids)
         self.run(get, got)
+
+    def read_coverage(self, ids):
+        running = self.cov_ids is not None
+        self.cov_ids = ids              # a run going on reads the newest list
+        if running:
+            return
+
+        def step():
+            ids = self.cov_ids
+            left = self.writer.read_coverage(ids, self.cache, 16)
+            if not left:
+                self.writer.set_coverage(ids, self.cache)
+            return ids, left
+
+        def stepped(r, err):
+            if err:
+                log("coverage", err)
+                self.cov_ids = None
+                return
+            ids, left = r
+            if left or ids is not self.cov_ids:
+                self.work.do(step, stepped, low=True)
+                return
+            self.cov_ids = None
+            self.cov_loaded = True
+            log("coverage read", len(ids))
+            self.redraw()
+        self.work.do(step, stepped, low=True)
 
     # ---------------------------------------------------------- writing
 
@@ -324,13 +360,19 @@ class UI:
     def delete_sample(self, sid):
         def go():
             self.rec.forget(sid)
+            self.writer.forgotten(sid)
         self.detail = None
         self.confirm = None
         self.run(go, lambda _: self.refresh())
 
     def erase_all(self):
         self.confirm = None
-        self.run(self.cli.erase, lambda n: (setattr(self, "msg", "%d samples erased." % n), self.refresh()))
+
+        def go():
+            n = self.cli.erase()
+            self.writer.forgotten()
+            return n
+        self.run(go, lambda n: (setattr(self, "msg", "%d samples erased." % n), self.refresh()))
 
     def export(self):
         path = free_name(os.path.join(documents_dir(), "Handwriting"), "handwriting-samples", ".jsonl")
@@ -522,7 +564,8 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     PT.fill(cr, 0, 0, w, h, t.paper)
     PT.rule(cr, 0, 0, w, "1px solid " + t.ink)
     today, total = ui.counts
-    PT.text(cr, "Today %d · total %d · new since learning %d" % (today, total, ui.fresh), t.sub, 20, 16, t.soft)
+    PT.text(cr, "Today %d · total %d · new since learning %d" % (today, total, ui.fresh) if ui.loaded else "Loading…",
+            t.sub, 20, 16, t.soft)
     has_ink = bool(canvas and canvas.strokes)
     pills_right(cr, t, hits, w - 20, h - 64, [
         ("Clear", (lambda: canvas.clear()) if has_ink else None, False),
@@ -757,9 +800,19 @@ def confirm_sheet(cr, ui, hits, w, h):
 PAGES = {"samples": samples_page, "coverage": coverage_page, "learn": learn_page, "donate": donate_page}
 
 
+def loading_page(cr, ui, hits, w, h):
+    """before the first values are in: nothing that looks like a fact"""
+    t = ui.theme
+    PT.fill(cr, 0, 0, w, h, t.paper)
+    header(cr, ui, hits, w)
+    PT.text(cr, ui.msg or "Loading…", t.row, 20, 84, t.soft, maxw=w - 40, wrap=True)
+
+
 def paint_full(cr, ui, hits, w, h):
     if ui.sets_open:
         sets_page(cr, ui, hits, w, h)
+    elif not ui.loaded or (ui.page == "coverage" and not ui.cov_loaded):
+        loading_page(cr, ui, hits, w, h)
     else:
         PAGES[ui.page](cr, ui, hits, w, h)
     if ui.confirm:

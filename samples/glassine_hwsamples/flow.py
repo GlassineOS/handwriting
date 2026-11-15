@@ -83,6 +83,7 @@ class Writer:
         self.shown = None
         self.prompt = None
         self.kept_now = 0
+        self.recent = {}                # {id: (text, read)} kept here since the coverage was read
         self.prompt = self._restore() or self.next_prompt()
 
     # ------------------------------------------------------------ prompts
@@ -184,7 +185,9 @@ class Writer:
         sh.status = "kept" if sh.sample_id or sh.donated_id else "not-kept"
         if sh.sample_id:
             with self.lock:
-                self.cov.add(p.text, sh.reading[0][0] if sh.reading else "")
+                pair = (p.text, sh.reading[0][0] if sh.reading else "")
+                self.cov.add(*pair)
+                self.recent[sh.sample_id] = pair
                 self.kept_now += 1
 
     def _advance(self, p):
@@ -198,6 +201,7 @@ class Writer:
         if sh.sample_id:
             with self.lock:
                 self.kept_now -= 1
+                self.recent.pop(sh.sample_id, None)
         sh.sample_id = sh.donated_id = None
 
     def redo(self):
@@ -258,23 +262,51 @@ class Writer:
         """coverage from this app's samples (their text and the reading at the time of
         writing); cache: {id: (text, read)} kept by the caller between calls"""
         cache = {} if cache is None else cache
+        ids = self.rec.sample_ids()
+        self.read_coverage(ids, cache)
+        return self.set_coverage(ids, cache)
+
+    def read_coverage(self, ids, cache, limit=None):
+        """reads up to limit of the samples not in cache yet; the number still to read"""
+        todo = [sid for sid in ids if sid not in cache]
+        for sid in todo[:limit]:
+            try:
+                s = self.rec.sample(sid)
+            except Error:
+                cache[sid] = None       # gone meanwhile: not asked again
+                continue
+            rd = s.get("reading") or []
+            cache[sid] = (s.get("text", ""), rd[0]["text"] if rd else None)
+        return max(0, len(todo) - len(todo[:limit]))
+
+    def set_coverage(self, ids, cache):
+        """the coverage from the samples read, and those kept here since the ids were listed"""
         cov = P.Coverage()
-        for sid in self.rec.sample_ids():
-            if sid not in cache:
-                try:
-                    s = self.rec.sample(sid)
-                except Error:
-                    continue
-                rd = s.get("reading") or []
-                cache[sid] = (s.get("text", ""), rd[0]["text"] if rd else None)
-            cov.add(*cache[sid])
-        self.cov = cov
+        ids = set(ids)
+        with self.lock:
+            for sid in ids:
+                pair = cache[sid] if sid in cache else self.recent.get(sid)
+                if pair:
+                    cov.add(*pair)
+            for sid, pair in self.recent.items():
+                if sid not in ids:
+                    cov.add(*pair)
+            self.recent = {sid: pair for sid, pair in self.recent.items() if sid not in cache}
+            self.cov = cov
         return cov
 
-    def counts(self, now=None):
-        """(today, total) of this app's samples"""
+    def forgotten(self, sid=None):
+        """a sample deleted elsewhere (None: all of them): not counted from here on"""
+        with self.lock:
+            if sid is None:
+                self.recent = {}
+            else:
+                self.recent.pop(sid, None)
+
+    def counts(self, now=None, rows=None):
+        """(today, total) of this app's samples; rows: cli.samples() when the caller has them"""
         now = time.time() if now is None else now
         lt = time.localtime(now)
         day0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-        rows = self.cli.samples()
+        rows = self.cli.samples() if rows is None else rows
         return sum(1 for r in rows if r[1] >= day0), len(rows)
