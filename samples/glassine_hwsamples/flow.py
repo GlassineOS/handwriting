@@ -84,6 +84,10 @@ class Writer:
         self.prompt = None
         self.kept_now = 0
         self.recent = {}                # {id: (text, read)} kept here since the coverage was read
+        # samples whose check failed, waiting for the person (Keep it, Redo, Skip): shown
+        # one after the other, oldest first, before any sample read after them, so none
+        # goes unseen while the person writes on
+        self.checks = []
         self.prompt = self._restore() or self.next_prompt()
 
     # ------------------------------------------------------------ prompts
@@ -107,7 +111,7 @@ class Writer:
 
     def choose_set(self, name):
         self.state.set = name
-        self.shown = None
+        self.shown = self.checks[0] if self.checks else None
         return self.next_prompt()
 
     def reload_sets(self):
@@ -131,7 +135,6 @@ class Writer:
         p = prompt or self.prompt
         if not p or not strokes:
             return None
-        self.shown = None
         self.rec.write(SESSION, p.lang, units, area, strokes)
         try:
             reading = self.rec.read(SESSION)
@@ -140,10 +143,18 @@ class Writer:
         finally:
             self.rec.end(SESSION)
         with self.lock:
-            self.shown = sh
+            if sh.status == "check":
+                self.checks.append(sh)
+            self.shown = self.checks[0] if self.checks else sh
             if sh.status != "check" and not advanced:
                 self._advance(p)
         return sh
+
+    def _resolved(self, sh, then=None):
+        """the person acted on sh: the next waiting check shows, else then"""
+        if sh in self.checks:
+            self.checks.remove(sh)
+        self.shown = self.checks[0] if self.checks else then
 
     def keep_anyway(self):
         """the check failed and the person says they wrote the prompt"""
@@ -155,8 +166,10 @@ class Writer:
             self._store(sh, keep=True)
         finally:
             self.rec.end(SESSION)
-        if not sh.advanced:
-            self._advance(sh.prompt)
+        with self.lock:
+            if not sh.advanced:
+                self._advance(sh.prompt)
+            self._resolved(sh, sh)
         return sh
 
     def _store(self, sh, keep):
@@ -214,7 +227,7 @@ class Writer:
             used = self.state.used.get(sh.prompt.set, [])
             if sh.prompt.text in used:
                 used.remove(sh.prompt.text)
-            self.shown = None
+            self._resolved(sh)
             self.prompt = sh.prompt
             self.state.current = (sh.prompt.set, sh.prompt.text)
             self.state.save()
@@ -230,7 +243,7 @@ class Writer:
             used = self.state.used.get(sh.prompt.set, [])
             if sh.prompt.text in used:
                 used.remove(sh.prompt.text)
-            self.shown = None
+            self._resolved(sh)
             if sh.status == "check":
                 if not sh.advanced:
                     self._advance(sh.prompt)
@@ -247,7 +260,7 @@ class Writer:
         if sh:
             self._take_back(sh)
             with self.lock:
-                self.shown = None
+                self._resolved(sh)
                 if sh.status == "check" and not sh.advanced:
                     self._advance(sh.prompt)
                 self.state.save()

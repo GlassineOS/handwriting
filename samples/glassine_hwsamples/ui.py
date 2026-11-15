@@ -45,6 +45,20 @@ LOG = os.environ.get("GLASSINE_HWSAMPLES_LOG") == "1"      # input and flow even
 def log(*a):
     if LOG:
         print("hwsamples:", *a, file=sys.stderr, flush=True)
+
+
+def note(sh):
+    """what became of a written sample, always on stderr (the session log): the sample's id,
+    or why nothing was kept; no handwriting and no text"""
+    if not sh:
+        return
+    p = sh.prompt
+    what = ("kept %s" % sh.sample_id if sh.sample_id else
+            "check failed, fit %.2f (waiting: Keep it, Redo or Skip)" % (sh.fit or 0) if sh.status == "check" else
+            "donated %s" % sh.donated_id if sh.donated_id else "not kept: %s" % (sh.why or sh.status))
+    if sh.donated_id and sh.sample_id:
+        what += ", donated %s" % sh.donated_id
+    print("glassine-handwriting-samples: %s sample: %s" % (p.set if p else "-", what), file=sys.stderr, flush=True)
 TABS = (("write", "Write"), ("samples", "Samples"), ("coverage", "Coverage"), ("learn", "Learn"), ("donate", "Donate"))
 SET_NAMES = {P.AUTO: "What needs practice", "words": "Words", "sentences": "Sentences", "pangrams": "Pangrams",
              "letters": "Single letters", "digits": "Digits and punctuation", P.OWN: "My own words"}
@@ -210,6 +224,13 @@ class Worker:
     def do(self, fn, done=None, low=False):
         self.q.put((int(low), next(self.seq), fn, done))
 
+    def drain(self, timeout):
+        """waits until the calls queued now (not the low ones) are done: at exit, a sample
+        written last is still read and kept"""
+        ev = threading.Event()
+        self.q.put((0, next(self.seq), ev.set, None))
+        return ev.wait(timeout)
+
 
 class UI:
     """the pages' state and actions; redraw() repaints"""
@@ -260,7 +281,7 @@ class UI:
         def fin(r, err):
             self.busy -= 1
             if err:
-                log("error", err)
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
                 self.msg = "Something went wrong: %s" % err
             elif done:
                 done(r)
@@ -321,6 +342,7 @@ class UI:
         def fin(sh):
             log("kept" if sh else "nothing", sh and (sh.status, sh.sample_id, sh.why, sh.fit,
                                                      sh.reading[:1] if sh.reading else None))
+            note(sh)
             self.msg = ""
             if sh and sh.status == "kept":
                 self.counts = (self.counts[0] + bool(sh.sample_id), self.counts[1] + bool(sh.sample_id))
@@ -343,8 +365,14 @@ class UI:
 
     def act(self, name):
         fn = getattr(self.writer, name)
+        was = self.writer.shown
 
         def fin(_):
+            if was and name == "keep_anyway":
+                note(was)
+            elif was:
+                print("glassine-handwriting-samples: %s sample: %s (%s)" % (
+                    was.prompt.set, name, was.sample_id or "nothing kept"), file=sys.stderr, flush=True)
             self.refresh()
         self.run(fn, fin)
 
@@ -1074,6 +1102,8 @@ class App(Gtk.Application):
 
     def do_shutdown(self):
         if self.win:
+            if self.ui.work and not self.ui.work.drain(60):
+                print("glassine-handwriting-samples: exit before the last samples were kept", file=sys.stderr, flush=True)
             self.ui.rec.close()
         Gtk.Application.do_shutdown(self)
 
