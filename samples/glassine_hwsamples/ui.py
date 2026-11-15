@@ -842,8 +842,12 @@ class Canvas(Gtk.DrawingArea):
     @staticmethod
     def point(e):
         def axis(a):
-            ok, v = e.get_axis(a)
-            return v if ok else None
+            # PyGObject returns (found, value) on some versions, the value alone
+            # (None when the device has no such axis) on others
+            r = e.get_axis(a)
+            if isinstance(r, tuple):
+                return r[1] if r[0] else None
+            return r
         p, tx, ty = axis(Gdk.AxisUse.PRESSURE), axis(Gdk.AxisUse.XTILT), axis(Gdk.AxisUse.YTILT)
         return (e.x, e.y, e.time, p, tx, ty)
 
