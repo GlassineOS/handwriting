@@ -49,7 +49,7 @@ struct hw_sample {
 	struct hw_area area;
 	struct hw_reading_text reading;
 	int pick_rank;                  /* a picked candidate: its place (1 = first); 0 none */
-	char pick_from[8];              /* where it came from: ink, beam, words, guided */
+	char pick_from[8];              /* where it came from: ink, beam, words, guided, split */
 };
 
 void hw_ink_free(struct hw_ink *k);

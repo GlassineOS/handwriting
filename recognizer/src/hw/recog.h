@@ -64,8 +64,9 @@ int *hw_span_strokes(const struct hw_run *r, const struct hw_charspan *c, size_t
 /* Candidates: up to n readings, best first. */
 #define HW_READ_MAX 16
 /* the ink's best reading, another reading of the ink, a word of the list one edit from a
- * reading, a reading found with the words guiding the search */
-enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS, HW_FROM_GUIDED };
+ * reading, a reading found with the words guiding the search, a reading split into words
+ * of the list where the pen left a gap */
+enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS, HW_FROM_GUIDED, HW_FROM_SPLIT };
 struct hw_reading {
 	int n;
 	struct {
@@ -84,6 +85,9 @@ struct hw_words;
 struct hw_context {
 	const struct hw_words *w;
 	long prev2, prev1;
+	/* the strokes read (for the gaps between words); NULL: none known */
+	const struct hw_stroke *st;
+	size_t nst;
 };
 void hw_context_of(const struct hw_words *w, const char *before, struct hw_context *x);
 /* readings ranked with the words: the ink's readings re-scored by the words they make and

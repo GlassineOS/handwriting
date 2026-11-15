@@ -369,6 +369,41 @@ static void test_words(const char *tmp)
 	reading_text(&rd, 0, t0);
 	CHECK(!strcmp(t0, "with"), "a reading of words stays first (%s)", t0);
 
+	/* two words of the list written together: split where the pen left a gap, not
+	 * where the strokes touch */
+	frames_of(&l, "blackjacket", -1, 'a', 0, lp, &r.T);
+	static struct hw_origin org[64];
+	for (long k = 0; k < r.T; k++) org[k] = (struct hw_origin){ k < 10 ? 0 : 1, 0 };
+	r.org = org; r.rows = r.T; r.down = 1;
+	double sx[2][9], sy[2][9], stt[2][9];
+	struct hw_stroke st[2];
+	for (double gap = 0.1; gap < 2; gap += 1.4) {
+		for (int k = 0; k < 2; k++) {
+			for (int q = 0; q < 9; q++) {
+				sx[k][q] = k * (2.5 + gap) + q * 2.5 / 8;
+				sy[k][q] = q & 1 ? 1 : 0;
+				stt[k][q] = k * 9 + q;
+			}
+			st[k] = (struct hw_stroke){ 9, sx[k], sy[k], stt[k] };
+		}
+		double tilt, core, mid, x0;
+		hw_line_metrics(st, 2, &tilt, &core, &mid, &x0);
+		hw_context_of(w, "", &x);
+		x.st = st; x.nst = 2;
+		hw_read_words(&l, &r, &x, 3, &rd);
+		int split = -1;
+		for (int i = 0; i < rd.n; i++) {
+			reading_text(&rd, i, t1);
+			if (rd.c[i].from == HW_FROM_SPLIT) split = !strcmp(t1, "black jacket") ? i : 99;
+		}
+		reading_text(&rd, 0, t0);
+		if (gap > 1)
+			CHECK(split == 0, "a gap of %.1f x-heights: the words, first (%s)", gap / core, t0);
+		else
+			CHECK(split < 0, "strokes %.1f x-heights apart: no split (%s)", gap / core, t0);
+	}
+	r.org = NULL; r.rows = 0; r.down = 0;
+
 	/* learned and removed words from the predictor's store */
 	char sd[400], sf[420];
 	snprintf(sd, sizeof sd, "%s/glassine", data); mkdir(data, 0700); mkdir(sd, 0700);
