@@ -254,8 +254,8 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 
 /* the weights (natural log units); $GLASSINE_HANDWRITING_WORDS="lm=0.3,margin=2,..."
  * replaces them (tuning) */
-static struct { double lm, word, chr, margin, near; int beam, nbest, minlen, guided; } W = {
-	0.3, 0, -4.5, 2.5, 6.0, 16, 10, 4, 1 };
+static struct { double lm, word, chr, margin, near, gap; int beam, nbest, minlen, guided; } W = {
+	0.3, 0, -4.5, 2.5, 6.0, 0.6, 16, 10, 4, 1 };
 #define POOL 32                 /* readings scored at most: the ink's, the guided search's, near words */
 
 static void weights(void)
@@ -278,6 +278,7 @@ static void weights(void)
 		else if (!strcmp(k, "nbest")) W.nbest = (int)v;
 		else if (!strcmp(k, "minlen")) W.minlen = (int)v;
 		else if (!strcmp(k, "guided")) W.guided = (int)v;
+		else if (!strcmp(k, "gap")) W.gap = v;
 		p += used;
 		if (*p == ',') p++;
 	}
@@ -359,6 +360,8 @@ static double text_words(const struct hw_context *x, const unsigned *cp, int n, 
 void hw_context_of(const struct hw_words *w, const char *before, struct hw_context *x)
 {
 	x->w = w;
+	x->st = NULL;
+	x->nst = 0;
 	x->prev2 = HW_NO_WORD;
 	x->prev1 = HW_BOS;              /* nothing before: a sentence starts */
 	if (!w || !before) return;
@@ -617,6 +620,65 @@ static int guided_read(const struct hw_lang *l, const struct hw_run *r, const st
 	return g.bad ? 0 : k;
 }
 
+/* ---------------------------------------------------------------- word gaps */
+
+/* the gap the pen left between characters [a, i) and [i, b) of an aligned reading, in
+ * x-heights; 0 when a stroke has a part in both, -1 when it can't be told */
+static double gap_at(const struct hw_run *r, const struct hw_context *x, const struct hw_charspan *cs, int a, int i,
+		     int b, double core, unsigned char *mark)
+{
+	if (!x->st || core <= 0) return -1;
+	memset(mark, 0, x->nst);
+	for (int k = a; k < b; k++) {
+		if (cs[k].r0 < 0) continue;
+		for (long row = cs[k].r0; row <= cs[k].r1; row++) {
+			int st = r->org[row].stroke;
+			if (st < 0 || (size_t)st >= x->nst) continue;
+			mark[st] |= k < i ? 1 : 2;
+		}
+	}
+	double left = -INFINITY, right = INFINITY;
+	for (size_t st = 0; st < x->nst; st++) {
+		if (mark[st] == 3) return 0;
+		for (size_t q = 0; q < x->st[st].n; q++) {
+			if (mark[st] == 1 && x->st[st].x[q] > left) left = x->st[st].x[q];
+			if (mark[st] == 2 && x->st[st].x[q] < right) right = x->st[st].x[q];
+		}
+	}
+	if (!isfinite(left) || !isfinite(right)) return -1;
+	return (right - left) / core;
+}
+
+/* the unknown word cp[a..b) as two to four words of the list: the split points (after
+ * them a space goes), best by their probabilities alone; 0: none */
+static int split_words(const struct hw_context *x, const unsigned *cp, int a, int b, int *at)
+{
+	int n = b - a;
+	if (n < 4 || n > HW_WORD_MAX) return 0;
+	double best[HW_WORD_MAX + 1];
+	int from[HW_WORD_MAX + 1], parts[HW_WORD_MAX + 1];
+	best[0] = 0;
+	parts[0] = 0;
+	for (int j = 1; j <= n; j++) {
+		best[j] = -INFINITY;
+		for (int i = j - 1; i >= 0; i--) {
+			if (!isfinite(best[i]) || parts[i] >= 4) continue;
+			int len = j - i, known;
+			/* a word of one letter only as the list's "a" and "I" */
+			if (len == 1 && hw_fold_cp(cp[a + i]) != 'a' && hw_fold_cp(cp[a + i]) != 'i') continue;
+			long id = word_id(x->w, cp + a + i, len, &known);
+			if (!known || id < 0) continue;
+			double v = best[i] + hw_words_unigram(x->w, id);
+			if (v > best[j]) { best[j] = v; from[j] = i; parts[j] = parts[i] + 1; }
+		}
+	}
+	if (!isfinite(best[n]) || parts[n] < 2) return 0;
+	int k = 0, cut[4];
+	for (int j = n; j > 0; j = from[j]) if (from[j] > 0) cut[k++] = a + from[j];
+	for (int q = 0; q < k; q++) at[q] = cut[k - 1 - q];
+	return k;
+}
+
 static int cmp_total(const void *a, const void *b)
 {
 	const struct scored *x = a, *y = b;
@@ -666,6 +728,64 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 			ns++;
 		}
 	}
+	/* an unknown word of the best readings that is words of the list written together, with
+	 * the pen leaving a gap (W.gap x-heights or more) at each space: the words, as a reading
+	 * of the same ink (the model reads spaces from the gaps of its training, a person's may
+	 * be narrower) */
+	if (ns && W.gap > 0) {
+		double tilt, core = 0, mid, x0;
+		if (x->st && x->nst && hw_line_metrics(x->st, x->nst, &tilt, &core, &mid, &x0)) core = 0;
+		unsigned char *mark = x->st && x->nst ? malloc(x->nst) : NULL;
+		int top[3], nt = 0;
+		for (int i = 0; i < ns; i++) {
+			int at = nt < 3 ? nt++ : -1;
+			for (int q = 0; q < nt; q++) if (at < 0 && s[i].total > s[top[q]].total) at = q;
+			if (at < 0) continue;
+			if (at < nt - 1) memmove(top + at + 1, top + at, (size_t)(nt - 1 - at) * sizeof *top);
+			top[at] = i;
+		}
+		int added = 0;
+		for (int t = 0; t < nt && added < 2 && ns < POOL - 2; t++) {
+			const struct scored *c = &s[top[t]];
+			struct scored *p = &s[ns];
+			int m = 0, any = 0, gapped = 1;
+			struct hw_charspan *cs = NULL;
+			long ncs = -1;
+			for (int a = 0; a < c->len;) {
+				if (!is_wordch(c->cp, c->len, a)) { if (m < HW_MAX_LABELS) p->cp[m++] = c->cp[a]; a++; continue; }
+				int b = a;
+				while (b < c->len && is_wordch(c->cp, c->len, b)) b++;
+				int known, cut[4], k = 0;
+				word_id(x->w, c->cp + a, b - a, &known);
+				if (!known) k = split_words(x, c->cp, a, b, cut);
+				if (k && ncs == -1) ncs = hw_align(l, r, c->cp, (size_t)c->len, &cs);
+				int prev = a;
+				for (int q = 0; q < k; q++) {
+					double g = ncs == c->len && mark ? gap_at(r, x, cs, prev, cut[q], q + 1 < k ? cut[q + 1] : b, core, mark) : -1;
+					if (g < W.gap) gapped = 0;
+					prev = cut[q];
+				}
+				for (int q = a, z = 0; q < b && m < HW_MAX_LABELS - 1; q++) {
+					if (z < k && q == cut[z]) { p->cp[m++] = ' '; z++; }
+					p->cp[m++] = c->cp[q];
+				}
+				any |= k > 0;
+				a = b;
+			}
+			free(cs);
+			if (!any || !gapped) continue;      /* a space only where the pen left a gap */
+			p->len = m;
+			int dup = 0;
+			for (int q = 0; q < ns; q++) dup |= same(&s[q], p->cp, m);
+			if (dup) continue;
+			p->from = HW_FROM_SPLIT;
+			p->fwd = c->fwd;            /* the same letters of the same ink; the space is the gap's */
+			score(x, p);
+			ns++;
+			added++;
+		}
+		free(mark);
+	}
 	/* words of the list near an unknown word of the ink's best readings */
 	int props = 0, nink = ns;
 	for (int i = 0; i < nink && i < 3 && props < 2; i++) {
@@ -703,7 +823,9 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 	 * best isn't all words; a word from the list is never first */
 	int first = 0;
 	for (int i = 1; i < ns; i++)
-		if ((s[i].from == HW_FROM_BEAM || s[i].from == HW_FROM_GUIDED) && s[i].total > s[first].total) first = i;
+		if ((s[i].from == HW_FROM_BEAM || s[i].from == HW_FROM_GUIDED || s[i].from == HW_FROM_SPLIT) &&
+		    s[i].total > s[first].total)
+			first = i;
 	if (first && (s[0].allwords || s[first].total - s[0].total < W.margin)) first = 0;
 	struct scored head = s[first], ink = s[0];
 	int rest = 0;

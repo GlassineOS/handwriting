@@ -453,7 +453,7 @@ static int candidates(struct hw_lang *l, struct session *s, int raw, int want, s
 		r.npoints = np;
 		struct hw_reading rd;
 		struct hw_context x;
-		if (s->words && !raw) hw_context_of(hw_words_get(l->lang), s->before, &x);
+		if (s->words && !raw) { hw_context_of(hw_words_get(l->lang), s->before, &x); x.st = st; x.nst = n; }
 		hw_read_words(l, &r, s->words && !raw && x.w ? &x : NULL, want, &rd);
 		*ncand = rd.n;
 		cands_clear(s);
@@ -500,7 +500,7 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 		struct hw_reading rd;
 		struct hw_charspan *cs = NULL;
 		struct hw_context x;
-		if (s->words && !raw) hw_context_of(hw_words_get(l->lang), s->before, &x);
+		if (s->words && !raw) { hw_context_of(hw_words_get(l->lang), s->before, &x); x.st = st; x.nst = n; }
 		if (hw_read_words(l, &r, s->words && !raw && x.w ? &x : NULL, 1, &rd) == 1) {
 			long nc = hw_align(l, &r, rd.c[0].cp, (size_t)rd.c[0].len, &cs);
 			long lo = -1, hi = -1, before = 0;
@@ -723,11 +723,11 @@ static void do_confirm(const char *id, struct session *s, const char *source, co
 	int rank = 0, from = -1;
 	if (!strcmp(src, "confirmed"))
 		for (int i = 0; i < s->ncand && !rank; i++) if (!strcmp(s->cand[i], text)) { rank = i + 1; from = s->cand_from[i]; }
-	int gate = from == HW_FROM_WORDS || from == HW_FROM_GUIDED;
-	static const char *froms[] = { "ink", "beam", "words", "guided" };
+	int gate = from == HW_FROM_WORDS || from == HW_FROM_GUIDED || from == HW_FROM_SPLIT;
+	static const char *froms[] = { "ink", "beam", "words", "guided", "split" };
 	double fit = 0;
 	char *line = make_sample(l, s, text, src, prompted, keep && !gate, gate, rank,
-				 from >= 0 && from < 4 ? froms[from] : "", &exact, &fit, &why);
+				 from >= 0 && from < 5 ? froms[from] : "", &exact, &fit, &why);
 	if (!line && why == 3) { reply("confirm\t%s\tskip\tfit\t%.2f", id, fit); return; }
 	if (!line) { reply("confirm\t%s\tskip\t%s", id, why == 1 ? "empty" : "short"); return; }
 	struct hw_meta m = { 0 };

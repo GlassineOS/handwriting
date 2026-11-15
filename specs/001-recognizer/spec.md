@@ -157,6 +157,9 @@ included unless they pick them one by one.
     more likely with its words, and it is then still among the first two.
   - A word of the list one edit from a reading that isn't a word may be offered beside
     that reading, never in its place and never first.
+  - A reading that isn't a word but is two to four words of the list written together
+    is also offered split into them, when the pen left a gap at every place a space
+    goes; as a reading of the same ink it may come first like the others.
   - No words at all in a private field, or in a field for digits, numbers, phone numbers,
     dates, times, addresses (email, web), passwords, PINs or a terminal, or with any hint
     other than prose hints; nor when the person turns words off. The person's learned
