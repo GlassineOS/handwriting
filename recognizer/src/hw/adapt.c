@@ -6,6 +6,7 @@
 // only when it reads those better than the head in use, which then becomes the previous.
 #include <dirent.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,6 +193,7 @@ static void train(struct hw_head *h, struct item *it, size_t n, const struct hw_
 	for (int ep = 0; ep < o->epochs; ep++) {
 		double eploss = 0;
 		if (!o->force && !hw_charging()) { *aborted = 1; break; }
+		if (o->progress) { printf("epoch\t%d\t%d\n", ep + 1, o->epochs); fflush(stdout); }
 		for (size_t i = n; i > 1; i--) {      /* shuffle (xorshift) */
 			seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
 			size_t j = (size_t)(seed % i), t = order[i - 1];
@@ -224,14 +226,81 @@ out:
 
 static uint64_t id_value(const char *id) { return strtoull(id, NULL, 16); }
 
+static void progress(const struct hw_adapt_opts *o, const char *fmt, ...)
+{
+	if (!o->progress) return;
+	va_list ap;
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+	putchar('\n');
+	fflush(stdout);
+}
+
+/* state: USABLE GEN TIME ID of the last run: TIME and ID of the newest sample it saw (since
+ * this version) */
+struct state { unsigned long usable, gen; long long time; char id[17]; };
+
+static void read_state(const char *lang, struct state *st)
+{
+	char statep[4096], buf[128];
+	memset(st, 0, sizeof *st);
+	st->time = -1;
+	hw_store_adaptation_path(statep, sizeof statep, lang, "state");
+	FILE *sf = fopen(statep, "re");
+	if (sf) { if (fgets(buf, sizeof buf, sf)) sscanf(buf, "%lu %lu %lld %16s", &st->usable, &st->gen, &st->time, st->id); fclose(sf); }
+}
+
+/* samples stored after the newest one the last run saw (all, when there was none) */
+static long fresh_since(const struct hw_entry *es, size_t ne, const char *lang, const struct state *st)
+{
+	long k = 0;
+	size_t from = 0;
+	int found = 0;
+	for (size_t i = 0; st->id[0] && i < ne; i++) if (!strcmp(es[i].meta.id, st->id)) { from = i + 1; found = 1; }
+	for (size_t i = from; i < ne; i++)
+		k += !strcmp(es[i].meta.lang, lang) && (found || es[i].meta.time > st->time);
+	return k;
+}
+
+int hw_adapt_plan(const char *lang, long *train, long *held, long *fresh)
+{
+	struct hw_entry *es;
+	size_t ne;
+	unsigned long gen;
+	*train = *held = *fresh = 0;
+	if (hw_samples_load(&es, &ne, &gen)) return -1;
+	struct hw_lang *l = hw_lang_get(lang);
+	for (size_t i = 0; i < ne; i++) {
+		if (strcmp(es[i].meta.lang, lang)) continue;
+		struct hw_sample s;
+		char err[128];
+		if (hw_sample_parse(es[i].json, &s, err, sizeof err)) continue;
+		unsigned cp[HW_MAX_LABELS];
+		size_t nc = hw_utf8_decode(s.text, cp, HW_MAX_LABELS);
+		int ok = nc && nc <= HW_MAX_LABELS;
+		for (size_t k = 0; ok && l && k < nc; k++) ok = hw_class_of(&l->model, cp[k]) != 0;
+		hw_sample_free(&s);
+		if (!ok) continue;
+		if (strtoull(es[i].meta.id, NULL, 16) % 5 == 0) (*held)++; else (*train)++;
+	}
+	struct state st;
+	read_state(lang, &st);
+	*fresh = fresh_since(es, ne, lang, &st);
+	hw_entries_free(es, ne);
+	return 0;
+}
+
 int hw_adapt_run(const struct hw_adapt_opts *o)
 {
 	if (!hw_learning_on()) {
 		if (o->verbose) printf("adapt %s: learning is off\n", o->lang);
+		progress(o, "skip\tlearning");
 		return 2;
 	}
-	if (!o->force && (!hw_charging() || !hw_idle())) {
-		if (o->verbose) printf("adapt %s: waiting (not idle and charging)\n", o->lang);
+	if (!o->force && (!hw_charging() || (!o->requested && !hw_idle()))) {
+		if (o->verbose) printf("adapt %s: waiting (not %s)\n", o->lang, o->requested ? "charging" : "idle and charging");
+		progress(o, "skip\tcharging");
 		return 2;
 	}
 	struct hw_lang *l = hw_lang_get(o->lang);
@@ -276,20 +345,22 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 		if (id_value(es[i].meta.id) % 5 == 0) he[nhe++] = x; else tr[ntr++] = x;
 	}
 	/* nothing new since the last run: don't spend the battery's charge again */
-	char statep[4096], cur[4096], prev[4096], rel[128], buf[64];
-	hw_store_adaptation_path(statep, sizeof statep, o->lang, "state");
+	char cur[4096], prev[4096], rel[128], buf[64];
 	hw_store_adaptation_path(cur, sizeof cur, o->lang, "current");
 	hw_store_adaptation_path(prev, sizeof prev, o->lang, "previous");
-	FILE *sf = fopen(statep, "re");
-	unsigned long last = 0, lastgen = 0;
-	if (sf) { if (fgets(buf, sizeof buf, sf)) sscanf(buf, "%lu %lu", &last, &lastgen); fclose(sf); }
-	if (!o->force && last == usable && lastgen == gen) {
+	struct state sta;
+	read_state(o->lang, &sta);
+	long fresh = fresh_since(es, ne, o->lang, &sta);
+	progress(o, "plan\t%zu\t%zu\t%ld", ntr, nhe, fresh);
+	if (!o->force && sta.usable == usable && sta.gen == gen && !fresh) {
 		if (o->verbose) printf("adapt %s: nothing new (%zu samples)\n", o->lang, usable);
+		progress(o, "skip\tnothing-new");
 		ret = 2; goto out;
 	}
 	if ((int)ntr < o->min_train || (int)nhe < o->min_held) {
 		if (o->verbose) printf("adapt %s: too few samples (%zu to learn from, %zu held back; need %d and %d)\n",
 				       o->lang, ntr, nhe, o->min_train, o->min_held);
+		progress(o, "skip\ttoo-few\t%d\t%d", o->min_train, o->min_held);
 		ret = 2; goto out;
 	}
 	const struct hw_head *inuse = hw_lang_head(l);
@@ -300,6 +371,7 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 	train(&cand, tr, ntr, o, &aborted);
 	if (aborted) {
 		if (o->verbose) printf("adapt %s: stopped (unplugged)\n", o->lang);
+		progress(o, "skip\tunplugged");
 		hw_head_free(&cand);
 		ret = 2; goto out;
 	}
@@ -312,11 +384,16 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 	if (hw_store_generation() != gen) {
 		/* erased while this ran: what it learned came from samples that are gone */
 		if (o->verbose) printf("adapt %s: samples erased meanwhile, dropped\n", o->lang);
+		progress(o, "skip\terased");
 		ret = 0;
 	} else if (hw_store_mkdir(rel)) {
 		ret = -1;
 	} else {
-		int n = snprintf(buf, sizeof buf, "%zu %lu\n", usable, gen);
+		long long newest = -1;
+		const char *nid = "-";
+		for (size_t i = 0; i < ne; i++)
+			if (!strcmp(es[i].meta.lang, o->lang)) { if (es[i].meta.time > newest) newest = es[i].meta.time; nid = es[i].meta.id; }
+		int n = snprintf(buf, sizeof buf, "%zu %lu %lld %s\n", usable, gen, newest, nid);
 		char srel[160];
 		snprintf(srel, sizeof srel, "%s/state", rel);
 		hw_store_replace(srel, buf, (size_t)n);
@@ -342,6 +419,8 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 		} else {
 			ret = 0;
 		}
+		progress(o, "result\t%s\t%.4f\t%.4f\t%zu\t%zu", ret == 1 ? "kept" : ret == 0 ? "rejected" : "error",
+			 before, after, ntr, nhe);
 		if (o->verbose)
 			printf("adapt %s: %s (held-back error %.1f%% -> %.1f%%, %zu learned from, %zu held back)\n", o->lang,
 			       ret == 1 ? "kept" : "not kept", 100 * before, 100 * after, ntr, nhe);

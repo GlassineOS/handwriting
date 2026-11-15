@@ -30,7 +30,13 @@ struct hw_adapt_opts {
 	int epochs, rank, batch;
 	float lr;
 	int verbose;
+	int requested;          /* the person asked in a client: charging is enough, idle isn't needed */
+	int progress;           /* tab-separated progress lines on stdout (docs/recognizer.md) */
 };
+
+/* What a run would use, without running: samples of the language to learn from and held
+ * back, and how many came since the last run. 0, or -1 when the store can't be read. */
+int hw_adapt_plan(const char *lang, long *train, long *held, long *fresh);
 
 /* Runs one adaptation for opts->lang. Returns 1 kept (better), 0 not kept, 2 nothing to
  * do (too few samples, nothing new, not idle or not charging), -1 error. A line saying
