@@ -5,6 +5,7 @@ Shipped prompt sets live beside the base model, LANG/prompts/SET.txt (one prompt
 with LANG/prompts/SOURCES naming each file's source and licence. The person's own word list
 is a file in their data directory; it is never shipped and never donated as a set."""
 
+import functools
 import math
 import os
 from dataclasses import dataclass
@@ -173,9 +174,28 @@ class Coverage:
                 for c in charset if c != " "]
 
 
-def score(p, cov):
-    """how much writing p would teach: its weakest units count most, its length a little"""
-    units = [cov.need(c) for c in set(p.text) if c != " "] + [cov.pair_need(x) for x in set(pairs(p.text))]
+@functools.lru_cache(maxsize=8192)
+def units_of(text):
+    """the characters and letter pairs of a text, once each"""
+    return tuple(c for c in set(text) if c != " "), tuple(set(pairs(text)))
+
+
+def score(p, cov, memo=None):
+    """how much writing p would teach: its weakest units count most, its length a little;
+    memo: {unit: need} shared while scoring many prompts against the same coverage"""
+    chars, prs = units_of(p.text)
+    if memo is None:
+        memo = {}
+    units = []
+    for c in chars:
+        if c not in memo:
+            memo[c] = cov.need(c)
+        units.append(memo[c])
+    for x in prs:
+        k = ("pair", x)
+        if k not in memo:
+            memo[k] = cov.pair_need(x)
+        units.append(memo[k])
     if not units:
         return 0.0
     units.sort(reverse=True)
@@ -200,7 +220,8 @@ def choose(sets, which, cov, used):
         pool.extend(fresh)
     if not pool:
         return None
-    best = max(range(len(pool)), key=lambda i: (score(pool[i], cov), -i))
+    memo = {}
+    best = max(range(len(pool)), key=lambda i: (score(pool[i], cov, memo), -i))
     return pool[best]
 
 

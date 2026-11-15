@@ -1,6 +1,6 @@
 # Prompt sets of the handwriting samples app, English. FILE<TAB>LICENCE<TAB>SOURCE.
 # Every text may be used in donated training data (spec 002 FR-002).
-words.txt	CC0-1.0	written for GlassineOS/handwriting (common English words, names of days, months and places, forms with apostrophes, hyphens, digits and punctuation)
+words.txt	CC0-1.0	written for GlassineOS/handwriting (common English words, names of days, months and places, forms with apostrophes, hyphens, digits and punctuation); after them, common words chosen by samples/tools/word-pool.py (word-pool.exclude left out) so the frequent letter pairs come up several times, how common counted in public-domain books of Project Gutenberg (ebooks 11 16 35 36 43 45 55 74 84 98 120 145 158 219 236 345 514 768 863 1260 1342 1400 1661 1952 2097 2701 2852 3207 4300 5200); only the choice of words is taken from them
 sentences.txt	CC0-1.0	written for GlassineOS/handwriting (the first lines are also in models/en/prompts.txt)
 pangrams.txt	public domain	traditional English pangrams, in wide use without known authors (also in capitals)
 letters.txt	CC0-1.0	the Latin alphabet in both cases
