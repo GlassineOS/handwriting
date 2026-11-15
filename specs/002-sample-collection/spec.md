@@ -63,8 +63,9 @@ characters, digits and punctuation, or their own list of words.
 **Given** a person who wants their prompted writing to help the base models, **When** they
 turn on donating in the app and choose a licence once, **Then** every prompted sample they
 keep from then on, already reviewed in Scenario 1, is also added to their donation, the
-app shows the donation's size, and on request writes the donation file for them to send
-themselves (spec 001 FR-014). Turning donating off or erasing the donation never touches
+app shows the donation's size, and on request writes the donation, with its licence, as
+one file into a folder among the person's own files, for them to send themselves (spec 001
+FR-014). Turning donating off or erasing the donation never touches
 the samples used for their own adaptation.
 
 ### Scenario 6 – The person stays in charge (Priority: P1)
@@ -114,7 +115,8 @@ export them as one file in the sample format; nothing leaves the device otherwis
   while donating is on are added, never samples written to the person's own word list or
   from normal use, unless the person adds such a sample one by one (spec 001 FR-014). The
   donation file follows spec 001 FR-014 (no client, wall-clock time, device or person in
-  it).
+  it), states its licence, and is written into a folder among the person's own files; how
+  it reaches the project is up to the person.
 - **FR-012**: Sessions are short and resumable: the app keeps its place in the prompt set,
   shows counts (today, total, since the last adaptation), and asks nothing before the
   first prompt.
