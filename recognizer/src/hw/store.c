@@ -217,6 +217,19 @@ static char *slurp(const char *path, size_t *len)
 	return b;
 }
 
+/* a file of lines (samples, their meta, the donation): after a crash or a power loss a run
+ * of zero bytes can stand where an append never reached the disk; zero bytes end a line
+ * like a newline, so every line around them stays readable (a string stopped at the first
+ * one, and all lines after it were lost) */
+static char *slurp_lines(const char *path, size_t *len)
+{
+	size_t n;
+	char *b = slurp(path, &n);
+	if (b) for (size_t i = 0; i < n; i++) if (!b[i]) b[i] = '\n';
+	if (len) *len = n;
+	return b;
+}
+
 /* meta lines: ID TAB CLIENT TAB TIME TAB SOURCE TAB LANG */
 static int parse_meta(char *line, struct hw_meta *m)
 {
@@ -269,7 +282,7 @@ int hw_samples_load(struct hw_entry **out, size_t *n, unsigned long *gen)
 	*out = NULL; *n = 0;
 	if (gen) *gen = 0;
 	if (hw_store_path(p, sizeof p, "samples.meta")) return -1;
-	char *meta = slurp(p, NULL);
+	char *meta = slurp_lines(p, NULL);
 	if (gen) *gen = read_gen(meta);
 	struct hw_meta *mm = NULL;
 	size_t nm = 0, cm = 0;
@@ -283,13 +296,15 @@ int hw_samples_load(struct hw_entry **out, size_t *n, unsigned long *gen)
 	}
 	free(meta);
 	if (hw_store_path(p, sizeof p, "samples.jsonl")) { free(mm); return -1; }
-	char *data = slurp(p, NULL);
+	char *data = slurp_lines(p, NULL);
 	struct hw_entry *es = NULL;
 	size_t ne = 0, ce = 0;
 	for (char *s = data, *e; s && *s; s = e) {
 		e = strchr(s, '\n');
 		if (e) *e++ = 0; else e = s + strlen(s);
 		if (!*s) continue;
+		size_t l = strlen(s);
+		if (*s != '{' || s[l - 1] != '}') continue;    /* a line cut short by a crash */
 		if (ne == ce) { ce = ce ? ce * 2 : 64; struct hw_entry *x = realloc(es, ce * sizeof *x); if (!x) break; es = x; }
 		struct hw_entry *x = &es[ne];
 		memset(x, 0, sizeof *x);
@@ -314,16 +329,26 @@ static int append(const char *rel, const char *line)
 {
 	char p[4096];
 	if (hw_store_path(p, sizeof p, rel)) return -1;
-	int fd = open(p, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+	int fd = open(p, O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
 	if (fd < 0) return -1;
 	fchmod(fd, 0600);
-	size_t len = strlen(line), done = 0;
-	while (done < len) {
-		ssize_t w = write(fd, line + done, len - done);
-		if (w < 0 && errno == EINTR) continue;
-		if (w <= 0) { close(fd); return -1; }
-		done += (size_t)w;
+	/* a line cut short by a crash doesn't take this one with it */
+	struct stat st;
+	char last = '\n';
+	if (!fstat(fd, &st) && st.st_size > 0 && pread(fd, &last, 1, st.st_size - 1) != 1) last = '\n';
+	const char *parts[2] = { last == '\n' ? "" : "\n", line };
+	for (int k = 0; k < 2; k++) {
+		size_t len = strlen(parts[k]), done = 0;
+		while (done < len) {
+			ssize_t w = write(fd, parts[k] + done, len - done);
+			if (w < 0 && errno == EINTR) continue;
+			if (w <= 0) { close(fd); return -1; }
+			done += (size_t)w;
+		}
 	}
+	/* on the disk before the call answers: a crash right after a sample was kept must not
+	 * leave zero bytes in its place */
+	if (fdatasync(fd)) { close(fd); return -1; }
 	return close(fd);
 }
 
@@ -683,9 +708,10 @@ long hw_donation_count(void)
 {
 	char p[4096];
 	if (hw_store_path(p, sizeof p, "donation/samples.jsonl")) return 0;
-	char *s = slurp(p, NULL);
+	size_t len;
+	char *s = slurp_lines(p, &len);
 	long n = 0;
-	for (char *c = s; c && *c; c++) n += *c == '\n';
+	for (size_t i = 0; s && i < len; i++) n += s[i] != '\n' && (i + 1 == len || s[i + 1] == '\n');
 	free(s);
 	return n;
 }
@@ -694,7 +720,7 @@ int hw_donation_write(const char *path)
 {
 	char p[4096], lic[16];
 	if (!hw_donation_licence(lic, sizeof lic) || hw_store_path(p, sizeof p, "donation/samples.jsonl")) return -1;
-	char *s = slurp(p, NULL);
+	char *s = slurp_lines(p, NULL);
 	if (!s) return -1;
 	char tmp[4200];
 	snprintf(tmp, sizeof tmp, "%s.tmp", path);
@@ -731,7 +757,7 @@ int hw_donation_remove(const char *id)
 	int fd = hw_store_lock();
 	if (fd < 0) return -1;
 	size_t len;
-	char *s = slurp(p, &len);
+	char *s = slurp_lines(p, &len);
 	int r = 0;
 	if (s) {
 		char *o = malloc(len + 1);
@@ -743,6 +769,7 @@ int hw_donation_remove(const char *id)
 			char sid[17];
 			hw_sample_id(c, sid);
 			if (*c && !strcmp(sid, id)) { r = 1; continue; }
+			if (!*c) continue;          /* an empty line (or a run of zero bytes) goes */
 			size_t l = strlen(c);
 			memcpy(o + ol, c, l); o[ol + l] = '\n'; ol += l + 1;
 		}
