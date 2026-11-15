@@ -169,6 +169,15 @@ included unless they pick them one by one.
   - Words never make reading miss FR-004's time budget, and a client can ask for the
     ink's reading alone.
 
+- **FR-016**: The samples stay quick to work with however many there are: keeping a
+  sample, listing them (with their text and the reading at the time of writing), counting
+  them, looking one up, and taking one back take the same time with ten thousand samples
+  as with ten, and none of them reads the strokes of other samples. A sample taken back
+  (FR-010, FR-014) is gone from the stored files when the request returns, not at a later
+  cleanup. A store written by an earlier version keeps working as it is, and a crash or
+  power loss at any point leaves every confirmed sample readable and no taken-back one
+  readable again.
+
 ## Key entities
 
 - **Stroke**: points between pen down and pen up (x, y, time, pressure).
@@ -203,6 +212,9 @@ included unless they pick them one by one.
   make wrong are far fewer than those they make right, also for text the list lacks.
 - Scenario 4's prompted mode returns one stroke group per prompted character for a
   pangram written in one go.
+- With 10,000 samples stored, on the reference device: a prompted sample is kept within
+  100 ms of its confirmation beyond the reading itself, the listing of a client's samples
+  answers within 100 ms, and taking a sample back within 100 ms (FR-016).
 
 ## Device scope and risk
 
