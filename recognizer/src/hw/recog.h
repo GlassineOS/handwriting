@@ -62,15 +62,35 @@ void hw_span_text(const struct hw_run *r, const struct hw_charspan *c, const int
 int *hw_span_strokes(const struct hw_run *r, const struct hw_charspan *c, size_t nchars, size_t k);
 
 /* Candidates: up to n readings, best first. */
+#define HW_READ_MAX 16
+enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS };      /* the ink's best reading, another
+							  * reading of the ink, a word from the list */
 struct hw_reading {
 	int n;
 	struct {
 		unsigned cp[HW_MAX_LABELS];
 		int len;
-		double score;
-	} c[8];
+		double score;           /* log-probability of the text given the ink */
+		int from;
+	} c[HW_READ_MAX];
 };
+/* the ink's own readings (prefix beam search), up to n (at most 8) */
 int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_reading *out);
+
+/* The words around a reading: the language's words and the two before it (from the text
+ * before the cursor). */
+struct hw_words;
+struct hw_context {
+	const struct hw_words *w;
+	long prev2, prev1;
+};
+void hw_context_of(const struct hw_words *w, const char *before, struct hw_context *x);
+/* readings ranked with the words: the ink's readings re-scored by the words they make and
+ * the words before, plus up to two words of the list one edit from a reading that isn't one
+ * (never first); the ink's best reading stays first unless another one wins by a clear
+ * margin and it isn't all words, and it is among the first two. x NULL: hw_read. */
+int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct hw_context *x, int n,
+		  struct hw_reading *out);
 
 /* Character error rate helpers */
 size_t hw_edit(const unsigned *a, size_t na, const unsigned *b, size_t nb);

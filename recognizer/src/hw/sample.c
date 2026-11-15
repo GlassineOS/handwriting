@@ -168,6 +168,17 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 			s->reading.score[s->reading.n++] = d;
 		}
 	}
+	if (json_object_object_get_ex(o, "pick", &v)) {
+		json_object *x, *y;
+		if (!json_object_is_type(v, json_type_object) || !json_object_object_get_ex(v, "rank", &x) ||
+		    !json_object_is_type(x, json_type_int) || json_object_get_int(x) < 1 ||
+		    !json_object_object_get_ex(v, "from", &y) || !json_object_is_type(y, json_type_string) ||
+		    (strcmp(json_object_get_string(y), "ink") && strcmp(json_object_get_string(y), "beam") &&
+		     strcmp(json_object_get_string(y), "words")))
+			FAIL("bad pick");
+		s->pick_rank = json_object_get_int(x);
+		snprintf(s->pick_from, sizeof s->pick_from, "%s", json_object_get_string(y));
+	}
 	if (!json_object_object_get_ex(o, "spans", &sp) || !json_object_is_type(sp, json_type_array)) FAIL("no spans");
 	size_t nc = hw_utf8_decode(s->text, NULL, 0);
 	if (json_object_array_length(sp) != nc) FAIL("spans don't match the text");
@@ -266,6 +277,12 @@ char *hw_sample_format(const struct hw_sample *s)
 			json_object_array_add(a, c);
 		}
 		json_object_object_add(o, "reading", a);
+	}
+	if (s->pick_rank > 0 && *s->pick_from) {
+		json_object *k = json_object_new_object();
+		json_object_object_add(k, "rank", json_object_new_int(s->pick_rank));
+		json_object_object_add(k, "from", json_object_new_string(s->pick_from));
+		json_object_object_add(o, "pick", k);
 	}
 	char *r = strdup(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
 	json_object_put(o);

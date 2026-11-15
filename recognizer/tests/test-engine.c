@@ -6,12 +6,16 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "../src/hw/ctc.h"
 #include "../src/hw/featurize.h"
 #include "../src/hw/model.h"
+#include "../src/hw/recog.h"
 #include "../src/hw/sample.h"
+#include "../src/hw/words.h"
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
@@ -231,6 +235,157 @@ static void test_head_grad(void)
 	hw_head_free(&h);
 }
 
+/* ---------------------------------------------------------------- words */
+
+/* a predictor model (format 1) with these words, sorted, unigram q each; bigram
+ * successors for one context word */
+static int write_gpm(const char *path, const char **words, const unsigned char *q, int n, int ctx, int succ,
+		     unsigned char sq)
+{
+	uint32_t h[25] = { 0 };
+	memcpy(h, "GLPM", 4);
+	h[1] = 1;
+	memcpy(&h[2], "en", 2);
+	char str[1024];
+	uint32_t len = 0, keys[32];
+	for (int i = 0; i < n; i++) { keys[i] = len; strcpy(str + len, words[i]); len += (uint32_t)strlen(words[i]) + 1; }
+	while (len % 4) str[len++] = 0;
+	uint32_t off = sizeof h;
+	h[4] = (uint32_t)n;
+	h[5] = off; off += (uint32_t)n * 12;                     /* vocab */
+	h[6] = off; h[7] = len; off += len;                      /* strings */
+	h[8] = off; off += (uint32_t)(n + 2) * 4;                /* bi */
+	h[9] = off; h[10] = 1; off += 4;                         /* bisucc */
+	h[11] = off; h[12] = 0;                                  /* tri */
+	h[13] = off; h[14] = 0;
+	h[15] = off; h[16] = 0;
+	FILE *f = fopen(path, "wb");
+	if (!f) return -1;
+	fwrite(h, sizeof h, 1, f);
+	for (int i = 0; i < n; i++) {
+		uint32_t w[3] = { keys[i], keys[i], q[i] };
+		fwrite(w, sizeof w, 1, f);
+	}
+	fwrite(str, len, 1, f);
+	for (int i = 0; i < n + 2; i++) { uint32_t b = i > ctx ? 1 : 0; fwrite(&b, 4, 1, f); }
+	uint32_t e = (uint32_t)succ << 8 | sq;
+	fwrite(&e, 4, 1, f);
+	return fclose(f);
+}
+
+/* frames that read text: each character a peak of `peak` (the rest share what's left),
+ * blanks between; alt: at character alt_at, the second choice alt_cp with alt_lp */
+static void frames_of(const struct hw_lang *l, const char *text, int alt_at, unsigned alt_cp, float alt_lp, float *lp,
+		      long *T)
+{
+	int C = (int)l->model.cfg.nclass;
+	long t = 0;
+	for (int i = 0; text[i]; i++) {
+		for (int r = 0; r < 2; r++, t++) {
+			int want = r ? 0 : hw_class_of(&l->model, (unsigned char)text[i]);
+			float *row = lp + t * C;
+			for (int k = 0; k < C; k++) row[k] = -12.0f;
+			row[want] = -0.05f;
+			if (!r && i == alt_at) { row[want] = -0.4f; row[hw_class_of(&l->model, alt_cp)] = alt_lp; }
+		}
+	}
+	*T = t;
+}
+
+static void reading_text(const struct hw_reading *rd, int i, char *o)
+{
+	int k = 0;
+	for (; k < rd->c[i].len; k++) o[k] = (char)rd->c[i].cp[k];
+	o[k] = 0;
+}
+
+static void test_words(const char *tmp)
+{
+	char dir[256], path[300], data[300];
+	snprintf(dir, sizeof dir, "%s.d", tmp);
+	mkdir(dir, 0700);
+	snprintf(path, sizeof path, "%s/en.gpm", dir);
+	/* sorted by folded key; "the" -> "jacket" a likely pair */
+	const char *words[] = { "a", "black", "jacket", "the", "with" };
+	const unsigned char q[] = { 40, 90, 110, 30, 50 };
+	CHECK(!write_gpm(path, words, q, 5, 3, 2, 8), "test model written");
+	snprintf(data, sizeof data, "%s/data", dir);
+	setenv("GLASSINE_PREDICT_MODELS", dir, 1);
+	setenv("XDG_DATA_HOME", data, 1);
+	hw_words_forget_all();
+	const struct hw_words *w = hw_words_get("en");
+	CHECK(w != NULL, "words loaded");
+	if (!w) return;
+	int known;
+	CHECK(hw_words_find(w, "jacket", &known) == 2 && known, "a word of the model");
+	CHECK(hw_words_find(w, "jaciet", &known) < 0 && !known, "not a word");
+	CHECK(hw_words_get("en-GB") != NULL, "a regional language uses the base one's words");
+	CHECK(hw_words_get("de") == NULL, "no words for a language without a model");
+
+	struct hw_lang l;
+	memset(&l, 0, sizeof l);
+	const char *cs = "abcdefghijklmnopqrstuvwxyz '";
+	for (int k = 0; cs[k]; k++) l.model.charset[k] = (unsigned char)cs[k];
+	l.model.cfg.nclass = (uint32_t)strlen(cs) + 1;
+	static float lp[64 * 32];
+	struct hw_run r;
+	memset(&r, 0, sizeof r);
+	r.C = (int)l.model.cfg.nclass;
+	r.logp = lp;
+	struct hw_context x;
+	struct hw_reading rd;
+	char t0[64], t1[64];
+
+	/* the ink reads "jaciet", "jacket" close behind: the word wins, the ink's best second */
+	frames_of(&l, "jaciet", 3, 'k', -1.2f, lp, &r.T);
+	hw_context_of(w, "", &x);
+	hw_read_words(&l, &r, &x, 3, &rd);
+	reading_text(&rd, 0, t0); reading_text(&rd, 1, t1);
+	CHECK(rd.n == 3 && !strcmp(t0, "jacket") && rd.c[0].from == HW_FROM_BEAM, "a likely word first (%s)", t0);
+	CHECK(!strcmp(t1, "jaciet") && rd.c[1].from == HW_FROM_INK, "the ink's best second (%s)", t1);
+	CHECK(rd.c[0].score < rd.c[1].score, "scores stay the ink's");
+	/* without words, or raw: the ink's order */
+	hw_read_words(&l, &r, NULL, 3, &rd);
+	reading_text(&rd, 0, t0);
+	CHECK(!strcmp(t0, "jaciet") && rd.c[0].from == HW_FROM_INK, "no words: the ink's best first");
+
+	/* a word one edit away that the ink reads only far behind (ten other letters there
+	 * first): offered, never first */
+	frames_of(&l, "jaciet", 3, 'k', -5.5f, lp, &r.T);
+	for (const char *o = "lbdfhmnrtv"; *o; o++) lp[6 * r.C + hw_class_of(&l.model, (unsigned char)*o)] = -1.5f;
+	hw_read_words(&l, &r, &x, 3, &rd);
+	reading_text(&rd, 0, t0);
+	int offered = 0;
+	for (int i = 0; i < rd.n; i++) {
+		reading_text(&rd, i, t1);
+		if (!strcmp(t1, "jacket")) offered = rd.c[i].from == HW_FROM_WORDS && i > 0;
+	}
+	CHECK(!strcmp(t0, "jaciet") && rd.c[0].from == HW_FROM_INK, "the ink's best stays first (%s)", t0);
+	CHECK(offered, "the near word offered beside it");
+
+	/* the ink's best all words: never replaced */
+	frames_of(&l, "with", 0, 'y', -0.6f, lp, &r.T);
+	hw_read_words(&l, &r, &x, 3, &rd);
+	reading_text(&rd, 0, t0);
+	CHECK(!strcmp(t0, "with"), "a reading of words stays first (%s)", t0);
+
+	/* learned and removed words from the predictor's store */
+	char sd[400], sf[420];
+	snprintf(sd, sizeof sd, "%s/glassine", data); mkdir(data, 0700); mkdir(sd, 0700);
+	snprintf(sd, sizeof sd, "%s/glassine/predict", data); mkdir(sd, 0700);
+	snprintf(sf, sizeof sf, "%s/words", sd);
+	FILE *f = fopen(sf, "w");
+	if (f) { fputs("glassine-words 1 2\nw en zork 3 1\nx * jacket\n", f); fclose(f); }
+	w = hw_words_get("en");
+	CHECK(w && hw_words_find(w, "zork", &known) < 0 && known, "a learned word is known");
+	CHECK(w && (hw_words_find(w, "jacket", &known), !known), "a removed word isn't known");
+	unlink(sf); rmdir(sd);
+	snprintf(sd, sizeof sd, "%s/glassine", data); rmdir(sd); rmdir(data);
+	unlink(path); rmdir(dir);
+	hw_words_forget_all();
+	unsetenv("GLASSINE_PREDICT_MODELS");
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -254,6 +409,7 @@ int main(int argc, char **argv)
 	test_engine(dir, "tiny.json", tmp);
 	test_ctc();
 	test_head_grad();
+	test_words(tmp);
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 	printf("test-engine: ok\n");
 	return 0;
