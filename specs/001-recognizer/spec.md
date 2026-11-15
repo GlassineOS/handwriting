@@ -112,7 +112,10 @@ included unless they pick them one by one.
   Adaptation runs while the device is idle and charging, or when the person asks for it
   in a client (spec 002) while the device charges; either way it is checked against a
   held-back part of the person's own samples, kept only when it does better than the one
-  in use, and reported to the client that asked; the previous adaptation stays available
+  in use, and reported to the client that asked. Samples a base model was trained on
+  (FR-012) are not used by an adaptation for that model, neither to learn from nor to
+  check against: the model records when its training data ends, and only samples
+  confirmed after that count, with the same minimum numbers; the previous adaptation stays available
   to go back to.
 - **FR-010**: Control: learning on or off (on by default); erase everything (samples and
   adaptation) in one action; counts per client; export and import of samples and
@@ -122,10 +125,13 @@ included unless they pick them one by one.
   from a client follows the learning setting, and the per-client counts let the person
   see and erase what each app taught. A client that reads samples (Scenario 4) gets only
   those it sent itself unless the person grants it all of them.
-- **FR-012**: Base models are trained only on data the project may use and redistribute
-  (data under a suitable licence, and text rendered as synthetic handwriting); the
-  training recipe, the data sources and their licences ship with the models. No sample of
-  any person is part of a base model, except samples donated under FR-014.
+- **FR-012**: Base models are trained only on data the project may use: data under a
+  suitable licence, text rendered as synthetic handwriting, and samples a person gave for
+  it (donated under FR-014, or given to the project by their writer for training). The
+  training recipe, the data sources and their licences ship with the models; a model
+  trained on real handwriting says so and from how many writers. The samples themselves
+  are never published with a model or in the project's repositories, only aggregate
+  measurements of them. No other sample of any person is part of a base model.
 - **FR-013**: No device names in the program; what differs per device (the pen's units,
   pressure, rate) comes from the client's stroke data.
 - **FR-014**: Donation: off unless the person starts it. Donated samples are prompted
