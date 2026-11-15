@@ -75,13 +75,15 @@ Everything runs on the device; the program opens no network connection. Samples 
 only from a person's confirmation in a client, never from the recognizer's own
 unconfirmed output and never from a private field. They stay in the person's data
 directory, readable only by them, and leave the device only through an export the person
-starts. No person's samples are ever part of a base model.
+starts. A person's samples are part of a base model only when that person gave them for
+it (Models and data).
 
 ### Models and data
 
-Base models are trained only on data the project may use and redistribute (under a
-suitable licence, or synthetic). Every model ships with its training recipe, its data
-sources and their licences. No vendor engine, model or resource is committed or shipped.
+Base models are trained only on data the project may use: under a suitable licence,
+synthetic, or samples their writer gave for training. Such samples are never committed or
+published; only the trained model and aggregate measurements are. Every model ships with
+its training recipe, its data sources and their licences. No vendor engine, model or resource is committed or shipped.
 
 ### Tests and hardware
 
@@ -105,4 +107,4 @@ under them and they go stale; pull requests and commit messages record how somet
 built and why. An interface other repositories depend on is the exception: it is
 specified and versioned by its owner (principle IV).
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-12 | **Last Amended**: 2026-11-12
+**Version**: 1.1.0 | **Ratified**: 2026-11-12 | **Last Amended**: 2026-11-12

@@ -263,6 +263,13 @@ static long fresh_since(const struct hw_entry *es, size_t ne, const char *lang, 
 	return k;
 }
 
+/* a sample confirmed before the base model's training data ended: the model learned from it
+ * already, so an adaptation neither learns from it nor checks against it */
+static int in_base(const struct hw_model *m, const struct hw_entry *e)
+{
+	return m->trained_until > 0 && e->meta.time <= m->trained_until;
+}
+
 int hw_adapt_plan(const char *lang, long *train, long *held, long *fresh)
 {
 	struct hw_entry *es;
@@ -272,7 +279,7 @@ int hw_adapt_plan(const char *lang, long *train, long *held, long *fresh)
 	if (hw_samples_load(&es, &ne, &gen)) return -1;
 	struct hw_lang *l = hw_lang_get(lang);
 	for (size_t i = 0; i < ne; i++) {
-		if (strcmp(es[i].meta.lang, lang)) continue;
+		if (strcmp(es[i].meta.lang, lang) || (l && in_base(&l->model, &es[i]))) continue;
 		struct hw_sample s;
 		char err[128];
 		if (hw_sample_parse(es[i].json, &s, err, sizeof err)) continue;
@@ -315,7 +322,7 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 	int ret = -1;
 	if (!tr || !he) goto out;
 	for (size_t i = 0; i < ne; i++) {
-		if (strcmp(es[i].meta.lang, o->lang)) continue;
+		if (strcmp(es[i].meta.lang, o->lang) || in_base(m, &es[i])) continue;
 		struct hw_sample s;
 		char err[128];
 		if (hw_sample_parse(es[i].json, &s, err, sizeof err)) continue;

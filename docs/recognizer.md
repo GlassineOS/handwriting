@@ -261,8 +261,11 @@ A running recognizer picks up a new adaptation at its next reading.
 ## Adaptation (FR-009)
 
 `glassine-handwriting adapt` trains a small head (a residual adapter on the encoder's output and
-the output layer; the encoder stays as shipped) on the person's samples of one language. One
-sample in five (by its id) is held back; the run keeps the new head only when its character error
+the output layer; the encoder stays as shipped) on the person's samples of one language. Samples
+the base model was trained on (confirmed at or before the time its file records, below) are left
+out: neither learned from nor held back, so a head learns only what the base model hasn't seen and
+its check isn't made on samples the base model already knows. Of the rest, one sample in five (by
+its id) is held back; the run keeps the new head only when its character error
 on the held-back samples is lower than that of the head in use (the base model's, or the current
 adaptation's). Then the current one becomes `previous`. It needs 40 samples to learn from and 10
 held back, runs only when something changed, and, unless `-f`, only while charging and idle, and
@@ -331,7 +334,9 @@ line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, o
 **ghm, version 1** (little-endian). A 64-byte header: `GHWM`, then fifteen 32-bit unsigned
 integers: version (1), header bytes (64), features per row `F`, first convolution's channels
 `C1`, the other convolutions' channels `C`, strided convolutions `S`, kernel width `K`, LSTM
-hidden size `H`, LSTM layers `L`, classes `N`, charset bytes, and four zeros. Then the charset
+hidden size `H`, LSTM layers `L`, classes `N`, charset bytes, the training data's end (64-bit,
+two words, low first: the confirmation time, seconds since 1970, of the newest person's sample the
+model was trained on; 0 when it was trained on none) and two zeros. Then the charset
 (UTF-8; class `k+1` is its `k`-th character, class 0 the CTC blank), padded with zeros to a
 multiple of 4. Then 32-bit floats, each tensor row-major in this order:
 

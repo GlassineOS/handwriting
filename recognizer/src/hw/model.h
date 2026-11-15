@@ -31,6 +31,7 @@ struct hw_model {
 	uint32_t charset[HW_MAX_CLASSES];       /* class k+1 = charset[k]; 0 = CTC blank */
 	char lang[32];
 	uint64_t hash;                          /* of the whole file: ties an adaptation to it */
+	int64_t trained_until;                  /* newest person's sample it was trained on (s), 0 = none */
 	float *data;
 	size_t ndata;
 	const float *scale, *c1w, *c1b;
