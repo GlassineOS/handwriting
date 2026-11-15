@@ -52,6 +52,10 @@ def esc(s):
     return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
 
 
+def unesc(s):
+    return s.replace("\\t", "\t").replace("\\n", "\n").replace("\\r", "\r").replace("\\\\", "\\")
+
+
 class Env:
     """A model directory and a person's home of their own."""
 
@@ -75,8 +79,32 @@ class Env:
                         XDG_CONFIG_HOME=str(self.conf), HOME=str(self.dir / "home"),
                         GLASSINE_HANDWRITING_SYSFS=str(self.sysfs), GLASSINE_HANDWRITING_LOADAVG=str(self.dir / "load"))
         (self.dir / "load").write_text("0.10 0.20 0.30 1/100 1\n")
+        # the word predictor's models: none unless a test writes one (an installed one never counts)
+        self.predict = self.dir / "predict"
+        self.predict.mkdir()
+        self.env["GLASSINE_PREDICT_MODELS"] = str(self.predict)
         self.env.pop("LC_ALL", None)
         self.env["LANG"] = "en_US.UTF-8"
+
+    def words(self, words, lang="en"):
+        """a word predictor model (format 1, shell docs/predictor.md) with these words, all
+        likely, no context"""
+        import struct
+        ws = sorted({w.lower() for w in words})
+        strs, keys = b"", []
+        for w in ws:
+            keys.append(len(strs))
+            strs += w.encode() + b"\0"
+        strs += b"\0" * (-len(strs) % 4)
+        n, off = len(ws), 84
+        vocab, off_str = off, off + 12 * n
+        off_bi = off_str + len(strs)
+        end = off_bi + 4 * (n + 2)
+        hdr = struct.pack("<4sI8s13I4I", b"GLPM", 1, lang.encode(), n, vocab, off_str, len(strs), off_bi,
+                          end, 0, end, 0, end, 0, end, 0, 0, 0, 0, 0)
+        assert len(hdr) == off
+        body = b"".join(struct.pack("<IIB3x", k, k, 24) for k in keys) + strs + b"\0" * (4 * (n + 2))
+        (self.predict / f"{lang}.gpm").write_bytes(hdr + body)
 
     @property
     def store(self):
@@ -384,6 +412,88 @@ class Samples(unittest.TestCase):
         self.env.conf_set("predict.conf", "addresses = learn\n")
         c = self.env.start("-i", "0")
         self.assertEqual(self.confirm(c, INK[0], field="email")[2], "ok")
+        c.close()
+
+    def test_words(self):
+        """words rank the readings in prose fields only (FR-015): with the ink's other readings
+        made words, a prose field reads differently from `read … raw`; every other field, and
+        the setting off, reads as raw"""
+        c = self.env.start("-i", "0")
+        raws = []
+        for s in INK[:6]:
+            c.write_sample(s)
+            raws.append([t for t, _, _ in parse_text(c.ask("read", "s", "8", "raw"))])
+            c.ask("end", "s")
+        c.close()
+        # every all-letter reading but the ink's best is a likely word
+        self.env.words([t for r in raws for t in r[1:] if t.isalpha()] + ["the"])
+        nonprose = ["digits", "number", "phone", "url", "email", "terminal", "date", "alpha", "name",
+                    "normal,someunknownhint"]
+
+        def reads(field):
+            c = self.env.start("-i", "0")
+            out = []
+            for s in INK[:6]:
+                c.write_sample(s, field=field, before="I saw the")
+                out.append([t for t, _, _ in parse_text(c.ask("read", "s", "8"))])
+                self.assertEqual(c.ask("read", "s", "8", "bogus")[2], "bad-line")
+                c.ask("end", "s")
+            c.close()
+            return out
+
+        prose = reads("normal")
+        self.assertNotEqual(prose, raws, "words change a prose reading")
+        for a, b in zip(prose, raws):
+            self.assertIn(b[0], a[:2], "the ink's best reading stays among the first two")
+        self.assertEqual(reads("-"), prose, "outside a text field: prose")
+        for field in nonprose:
+            self.assertEqual(reads(field), raws, field)
+        self.env.conf_set("handwriting.conf", "words = off\n")
+        self.assertEqual(reads("normal"), raws, "words = off")
+
+    def test_pick_recorded(self):
+        """a picked candidate of the last reading records its place and origin (sample `pick`)"""
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.app")
+        c.write_sample(INK[1])
+        cands = [t for t, _, _ in parse_text(c.ask("read", "s", "3"))]
+        r = c.ask("confirm", "s", "picked", esc(cands[-1]))
+        self.assertEqual(r[2], "ok", r)
+        smp = json.loads(unesc(c.ask("sample", r[3])[2]))
+        self.assertEqual(smp["pick"], {"rank": len(cands), "from": "beam" if len(cands) > 1 else "ink"})
+        # a text that wasn't a candidate: no pick
+        c.write_sample(INK[1])
+        r = c.ask("confirm", "s", "corrected", esc("not a candidate"))
+        smp = json.loads(unesc(c.ask("sample", r[3])[2]))
+        self.assertNotIn("pick", smp)
+        c.close()
+
+    def test_pick_from_words_must_fit(self):
+        """a picked word that the word list proposed (not the ink) makes a sample only when
+        the strokes fit it; `keep` doesn't override that; a pick of the ink's own reading
+        isn't checked"""
+        import re
+        c = self.env.start("-i", "0")
+        c.write_sample(INK[1])
+        raw = [t for t, _, _ in parse_text(c.ask("read", "s", "8", "raw"))]
+        c.close()
+        m = re.search(r"[A-Za-z]+", raw[0])
+        self.assertTrue(m, raw[0])
+        near = m.group(0).lower() + "q"            # one letter added: one edit away
+        proposed = raw[0][:m.start()] + (m.group(0) + "q") + raw[0][m.end():]
+        self.env.words([near])
+        self.env.env["GLASSINE_HANDWRITING_WORDS"] = "minlen=1,near=1e9"
+        self.env.env["GLASSINE_HANDWRITING_FIT_OK"] = "2"   # no fit passes
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.app")
+        c.write_sample(INK[1])
+        cands = [t for t, _, _ in parse_text(c.ask("read", "s", "8"))]
+        self.assertIn(proposed, cands[1:], "the near word offered, not first")
+        self.assertEqual(c.ask("confirm", "s", "picked", esc(proposed))[2:4], ["skip", "fit"])
+        self.assertEqual(c.ask("confirm", "s", "picked", esc(proposed), "keep")[2:4], ["skip", "fit"])
+        self.assertFalse(self.env.store.exists())
+        r = c.ask("confirm", "s", "picked", esc(cands[0]))
+        self.assertEqual(r[2], "ok", "a pick of the ink's reading isn't checked")
         c.close()
 
     def test_no_sample_without_confirmation(self):

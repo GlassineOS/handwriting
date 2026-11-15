@@ -64,7 +64,7 @@ microsecond.
 | `hello ID VERSION [CLIENT]` | `hello ID 1` |
 | `begin ID S LANGS FIELD UNITS BEFORE` | `begin ID ok`, or `begin ID private` (nothing is kept) |
 | `stroke ID S POINTS` | `stroke ID ok N`: the stroke's number in this session |
-| `read ID S [COUNT]` | `read ID text K {TEXT SCORE ALIGN}×K`, `read ID gesture …` (below), `read ID empty`, or `drop ID` |
+| `read ID S [COUNT [raw]]` | `read ID text K {TEXT SCORE ALIGN}×K`, `read ID gesture …` (below), `read ID empty`, or `drop ID` |
 | `align ID S PROMPT` | `align ID SCORE K {FIT SEGMENTS}×K`, or `align ID short` |
 | `remove ID S N[,N…]` | `remove ID ok REMOVED` |
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
@@ -84,13 +84,15 @@ the client confirms; `samples` needs it. It is what the client says it is (the r
 the person's own process and can't check it).
 
 **begin** opens session `S` (an existing one of that name is ended first). At most 16 sessions at
-once (`busy`). `BEFORE` is the text before the cursor; this version doesn't use it for ranking yet.
+once (`busy`). `BEFORE` is the text before the cursor; in a prose field the words before it rank
+the readings (below, Words).
 In a private field (below) no session is kept: strokes sent to it get `unknown-session`.
 
 **stroke** adds a stroke. Stroke numbers count up from 0 and are never reused in a session, also
 after `remove`. At most 4096 strokes of 100000 points each.
 
-**read** reads the strokes so far, up to `COUNT` candidates (1 to 8, default 3), best first. A
+**read** reads the strokes so far, up to `COUNT` candidates (1 to 8, default 3), best first; with
+`raw`, the ink's reading alone, without words. A
 client may read after every stroke (writing in progress, FR-004); a reading of the same strokes is
 the same whether they came one by one or at once. When several `read` requests of one session are
 read together (the client was faster than the recognizer), only the newest is answered; the older
@@ -140,6 +142,33 @@ the confirm again with `keep`. A sample that passed has its spans `exact`; one k
 has them `inferred`; the reply says which. A prompted sample also stores the writing area
 (`area`) and the reading of its strokes at that moment (up to three candidates, before any
 adaptation from it), sample format `area` and `reading`.
+
+A `picked` or `confirmed` text that was one of the candidates of the session's last reading is
+stored with its place among them and where it came from (sample format `pick`). When it was a
+word of the list (`words`, below) rather than the ink's, it is checked like a prompted sample,
+and also every written character must fit at least 0.3; failing, the reply is
+`confirm ID skip fit SCORE` and `keep` doesn't override it (the client shows nothing).
+
+## Words (FR-015)
+
+In a prose field (purpose `normal` or `-`, hints only those that change nothing, see Fields) the
+readings use the keyboard's word predictor's words for the language
+(`$GLASSINE_PREDICT_MODELS/LANG.gpm` or `/usr/share/glassine/predict/LANG.gpm`, the base language
+when there is none for a regional one; shell `docs/predictor.md`) and the person's learned words
+(`$XDG_DATA_HOME/glassine/predict/words`, removed words left out), read only, picked up again when
+they change. Without either, readings are the ink's alone. The setting `words = off` turns them
+off. Every other field, and `read … raw`, reads without them.
+
+- The ink's ten best readings are scored again: the ink's log-probability, plus 0.3 × (for each
+  word of the list, the natural log of its probability after the two words before, from `BEFORE`
+  and the reading itself; for every other character but a space, −4.5).
+- The ink's best reading stays first, unless another of its readings scores 3 more and the best
+  isn't all words of the list; the ink's best then comes second. The rest follow by score.
+- For an unknown word of four letters or more in the three best readings, up to two of the most
+  frequent words of the list one edit away (a letter changed, left out, added, or two swapped)
+  are added, in the written word's case, when the ink scores them within 6 of its best; never
+  first.
+- `SCORE` stays the ink's log-probability of the text.
 
 **recognize** is `begin`, a stroke per `;`-separated part of `STROKES`, `read`, `end` in one line,
 for a client that has the whole ink at once. It stores nothing.
@@ -196,6 +225,7 @@ letters, `_` and `,` is `bad-field`.
 | `learning` | `off` (also `false`, `0`) stores no samples and adapts nothing | on |
 | `languages` | languages in order (`en,de`), used when a request's `LANGS` is `-` or empty | unset: the locale, then `en` |
 | `readers` | client names, comma-separated, that may read every client's samples | none |
+| `words` | `off`: readings without words (Words) | on |
 
 The keyboard's `predict.conf` (`learning`, `addresses`) counts too: learning is off when either
 file says so, so the keyboard's one learning switch covers handwriting (shell spec 006 FR-008).
@@ -327,3 +357,5 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
+| `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
+| `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…` replace the Words weights |
