@@ -110,6 +110,7 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 	if (str(o, "source", s->source, sizeof s->source, 1)) FAIL("bad source");
 	if (str(o, "spans_source", s->spans_source, sizeof s->spans_source, 1)) FAIL("bad spans_source");
 	if (str(o, "licence", s->licence, sizeof s->licence, 0)) FAIL("bad licence");
+	if (str(o, "donor", s->donor, sizeof s->donor, 0)) FAIL("bad donor");
 	if (!json_object_object_get_ex(o, "units", &v) || !json_object_is_type(v, json_type_object)) FAIL("no units");
 	if (str(v, "xy", s->units.xy, sizeof s->units.xy, 1)) FAIL("bad units");
 	json_object *u;
@@ -229,6 +230,7 @@ char *hw_sample_format(const struct hw_sample *s)
 	json_object_object_add(o, "source", json_object_new_string(s->source));
 	json_object_object_add(o, "spans_source", json_object_new_string(s->spans_source));
 	if (s->licence[0]) json_object_object_add(o, "licence", json_object_new_string(s->licence));
+	if (s->donor[0]) json_object_object_add(o, "donor", json_object_new_string(s->donor));
 	json_object *u = json_object_new_object();
 	json_object_object_add(u, "xy", json_object_new_string(s->units.xy));
 	if (s->units.per_mm > 0) json_object_object_add(u, "per_mm", jnum(s->units.per_mm));
