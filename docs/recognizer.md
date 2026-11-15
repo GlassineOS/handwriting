@@ -161,8 +161,8 @@ off. Every other field, and `read … raw`, reads without them.
 
 - The ink's ten best readings are scored again: the ink's log-probability, plus 0.3 × (for each
   word of the list, the natural log of its probability after the two words before, from `BEFORE`
-  and the reading itself; for every other character but a space, −6).
-- The ink's best reading stays first, unless another of its readings scores 2 more and the best
+  and the reading itself; for every other character but a space, −4.5).
+- The ink's best reading stays first, unless another of its readings scores 3 more and the best
   isn't all words of the list; the ink's best then comes second. The rest follow by score.
 - For an unknown word of four letters or more in the three best readings, up to two of the most
   frequent words of the list one edit away (a letter changed, left out, added, or two swapped)

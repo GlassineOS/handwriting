@@ -468,6 +468,34 @@ class Samples(unittest.TestCase):
         self.assertNotIn("pick", smp)
         c.close()
 
+    def test_pick_from_words_must_fit(self):
+        """a picked word that the word list proposed (not the ink) makes a sample only when
+        the strokes fit it; `keep` doesn't override that; a pick of the ink's own reading
+        isn't checked"""
+        import re
+        c = self.env.start("-i", "0")
+        c.write_sample(INK[1])
+        raw = [t for t, _, _ in parse_text(c.ask("read", "s", "8", "raw"))]
+        c.close()
+        m = re.search(r"[A-Za-z]+", raw[0])
+        self.assertTrue(m, raw[0])
+        near = m.group(0).lower() + "q"            # one letter added: one edit away
+        proposed = raw[0][:m.start()] + (m.group(0) + "q") + raw[0][m.end():]
+        self.env.words([near])
+        self.env.env["GLASSINE_HANDWRITING_WORDS"] = "minlen=1,near=1e9"
+        self.env.env["GLASSINE_HANDWRITING_FIT_OK"] = "2"   # no fit passes
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.app")
+        c.write_sample(INK[1])
+        cands = [t for t, _, _ in parse_text(c.ask("read", "s", "8"))]
+        self.assertIn(proposed, cands[1:], "the near word offered, not first")
+        self.assertEqual(c.ask("confirm", "s", "picked", esc(proposed))[2:4], ["skip", "fit"])
+        self.assertEqual(c.ask("confirm", "s", "picked", esc(proposed), "keep")[2:4], ["skip", "fit"])
+        self.assertFalse(self.env.store.exists())
+        r = c.ask("confirm", "s", "picked", esc(cands[0]))
+        self.assertEqual(r[2], "ok", "a pick of the ink's reading isn't checked")
+        c.close()
+
     def test_no_sample_without_confirmation(self):
         c = self.env.start("-i", "0")
         c.write_sample(INK[2])

@@ -254,7 +254,7 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 
 /* the weights (natural log units); $GLASSINE_HANDWRITING_WORDS="lm=0.3,margin=2,..."
  * replaces them (tuning) */
-static struct { double lm, word, chr, margin, near; int beam, nbest, minlen; } W = { 0.3, 0, -6.0, 2.0, 6.0, 16, 10, 4 };
+static struct { double lm, word, chr, margin, near; int beam, nbest, minlen; } W = { 0.3, 0, -4.5, 3.0, 6.0, 16, 10, 4 };
 
 static void weights(void)
 {
@@ -477,7 +477,7 @@ static int near_words(const struct hw_lang *l, const struct hw_context *x, const
 				}
 				int known;
 				long id = word_id(x->w, t, m, &known);
-				if (id < 0) continue;
+				if (id < 0 || !known) continue;      /* not removed by the person */
 				double u = hw_words_unigram(x->w, id);
 				int dup = 0;
 				for (int g = 0; g < got; g++) dup |= outlen[g] == m && !memcmp(out[g], t, (size_t)m * sizeof *t);
