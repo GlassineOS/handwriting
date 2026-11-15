@@ -126,7 +126,9 @@ export them as one file in the sample format; nothing leaves the device otherwis
   it reaches the project is up to the person.
 - **FR-012**: Sessions are short and resumable: the app keeps its place in the prompt set,
   shows counts (today, total, since the last adaptation), and asks nothing before the
-  first prompt.
+  first prompt except once, on the first start: a short introduction that lets the person
+  try one prompt (kept as an ordinary prompted sample) and asks whether to donate
+  (Scenario 5), where declining is as easy as accepting.
 - **FR-013**: No device names in the app; the pen's properties come with its stroke data.
 
 ## Key entities
