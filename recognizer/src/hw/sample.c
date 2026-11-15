@@ -9,11 +9,16 @@
 
 void hw_ink_free(struct hw_ink *k)
 {
-	free(k->x); free(k->y); free(k->t); free(k->p);
+	free(k->x); free(k->y); free(k->t); free(k->p); free(k->tx); free(k->ty);
 	memset(k, 0, sizeof *k);
 }
 
 int hw_ink_add(struct hw_ink *k, double x, double y, double t, double p)
+{
+	return hw_ink_add_tilt(k, x, y, t, p, NAN, NAN);
+}
+
+int hw_ink_add_tilt(struct hw_ink *k, double x, double y, double t, double p, double tx, double ty)
 {
 	if (k->n == k->cap) {
 		size_t c = k->cap ? k->cap * 2 : 64;
@@ -21,9 +26,12 @@ int hw_ink_add(struct hw_ink *k, double x, double y, double t, double p)
 		a = realloc(k->y, c * sizeof *a); if (!a) return -1; k->y = a;
 		a = realloc(k->t, c * sizeof *a); if (!a) return -1; k->t = a;
 		a = realloc(k->p, c * sizeof *a); if (!a) return -1; k->p = a;
+		a = realloc(k->tx, c * sizeof *a); if (!a) return -1; k->tx = a;
+		a = realloc(k->ty, c * sizeof *a); if (!a) return -1; k->ty = a;
 		k->cap = c;
 	}
 	k->x[k->n] = x; k->y[k->n] = y; k->t[k->n] = t; k->p[k->n] = p;
+	k->tx[k->n] = tx; k->ty[k->n] = ty;
 	k->n++;
 	return 0;
 }
@@ -35,6 +43,7 @@ void hw_sample_free(struct hw_sample *s)
 	free(s->strokes);
 	for (size_t i = 0; i < s->nspans; i++) free(s->spans[i]);
 	free(s->spans);
+	for (int i = 0; i < s->reading.n; i++) free(s->reading.text[i]);
 	memset(s, 0, sizeof *s);
 }
 
@@ -125,10 +134,40 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 			if (w != width) FAIL("points of different lengths");
 			double c[6];
 			for (int j = 0; j < w; j++) if (num(json_object_array_get_idx(pt, (size_t)j), &c[j])) FAIL("bad number");
-			if (hw_ink_add(&s->strokes[i], c[0], c[1], c[2], w >= 4 ? c[3] : NAN)) FAIL("out of memory");
+			if (hw_ink_add_tilt(&s->strokes[i], c[0], c[1], c[2], w >= 4 ? c[3] : NAN, w == 6 ? c[4] : NAN,
+					    w == 6 ? c[5] : NAN))
+				FAIL("out of memory");
 		}
 	}
 	s->pressure = width >= 4;
+	s->tilt = width == 6;
+	if (json_object_object_get_ex(o, "area", &v)) {
+		json_object *b, *x;
+		if (!json_object_is_type(v, json_type_object) || !json_object_object_get_ex(v, "box", &b) ||
+		    !json_object_is_type(b, json_type_array) || json_object_array_length(b) != 4)
+			FAIL("bad area");
+		for (size_t k = 0; k < 4; k++) if (num(json_object_array_get_idx(b, k), &s->area.box[k])) FAIL("bad area");
+		if (json_object_object_get_ex(v, "line", &x) && num(x, &s->area.line)) FAIL("bad area");
+		if (json_object_object_get_ex(v, "orientation", &x)) {
+			if (!json_object_is_type(x, json_type_int)) FAIL("bad area");
+			s->area.orientation = json_object_get_int(x);
+			if (s->area.orientation % 90 || s->area.orientation < 0 || s->area.orientation >= 360) FAIL("bad area");
+		}
+		s->area.set = 1;
+	}
+	if (json_object_object_get_ex(o, "reading", &v)) {
+		if (!json_object_is_type(v, json_type_array) || json_object_array_length(v) > 8) FAIL("bad reading");
+		for (size_t k = 0; k < json_object_array_length(v); k++) {
+			json_object *c = json_object_array_get_idx(v, k), *t, *sc;
+			double d;
+			if (!json_object_is_type(c, json_type_object) || !json_object_object_get_ex(c, "text", &t) ||
+			    !json_object_is_type(t, json_type_string) || !json_object_object_get_ex(c, "score", &sc) || num(sc, &d))
+				FAIL("bad reading");
+			s->reading.text[s->reading.n] = strdup(json_object_get_string(t));
+			if (!s->reading.text[s->reading.n]) FAIL("out of memory");
+			s->reading.score[s->reading.n++] = d;
+		}
+	}
 	if (!json_object_object_get_ex(o, "spans", &sp) || !json_object_is_type(sp, json_type_array)) FAIL("no spans");
 	size_t nc = hw_utf8_decode(s->text, NULL, 0);
 	if (json_object_array_length(sp) != nc) FAIL("spans don't match the text");
@@ -158,11 +197,15 @@ bad:
 	return -1;
 }
 
-/* a number as JSON, short and exact enough (%.17g would be noisy) */
+/* a number as JSON: the shortest form that reads back as the same double, so points stay
+ * exactly as the pen reported them (%.17g would be noisy) */
 static json_object *jnum(double v)
 {
 	char b[40];
-	snprintf(b, sizeof b, "%.9g", v);
+	for (int p = 9; p <= 17; p++) {
+		snprintf(b, sizeof b, "%.*g", p, v);
+		if (strtod(b, NULL) == v) break;
+	}
 	return json_object_new_double_s(v, b);
 }
 
@@ -189,7 +232,11 @@ char *hw_sample_format(const struct hw_sample *s)
 			json_object_array_add(pt, jnum(k->x[j]));
 			json_object_array_add(pt, jnum(k->y[j]));
 			json_object_array_add(pt, jnum(k->t[j]));
-			if (s->pressure) json_object_array_add(pt, jnum(isnan(k->p[j]) ? 0 : k->p[j]));
+			if (s->pressure || s->tilt) json_object_array_add(pt, jnum(isnan(k->p[j]) ? 0 : k->p[j]));
+			if (s->tilt) {
+				json_object_array_add(pt, jnum(isnan(k->tx[j]) ? 0 : k->tx[j]));
+				json_object_array_add(pt, jnum(isnan(k->ty[j]) ? 0 : k->ty[j]));
+			}
 			json_object_array_add(q, pt);
 		}
 		json_object_array_add(st, q);
@@ -202,6 +249,24 @@ char *hw_sample_format(const struct hw_sample *s)
 		json_object_array_add(sp, a);
 	}
 	json_object_object_add(o, "spans", sp);
+	if (s->area.set) {
+		json_object *a = json_object_new_object(), *b = json_object_new_array();
+		for (int k = 0; k < 4; k++) json_object_array_add(b, jnum(s->area.box[k]));
+		json_object_object_add(a, "box", b);
+		if (s->area.line > 0) json_object_object_add(a, "line", jnum(s->area.line));
+		json_object_object_add(a, "orientation", json_object_new_int(s->area.orientation));
+		json_object_object_add(o, "area", a);
+	}
+	if (s->reading.n) {
+		json_object *a = json_object_new_array();
+		for (int k = 0; k < s->reading.n; k++) {
+			json_object *c = json_object_new_object();
+			json_object_object_add(c, "text", json_object_new_string(s->reading.text[k]));
+			json_object_object_add(c, "score", jnum(s->reading.score[k]));
+			json_object_array_add(a, c);
+		}
+		json_object_object_add(o, "reading", a);
+	}
 	char *r = strdup(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
 	json_object_put(o);
 	return r;

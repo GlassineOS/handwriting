@@ -389,7 +389,23 @@ static void rm_tree(const char *p)
 	rmdir(p);
 }
 
+static long erase_where(const char *client, const char *id, const char *owner, int *denied);
+
 long hw_samples_erase(const char *client)
+{
+	return erase_where(client, NULL, NULL, NULL);
+}
+
+int hw_samples_delete(const char *id, const char *owner)
+{
+	int denied = 0;
+	long r = erase_where(NULL, id, owner, &denied);
+	return denied ? -2 : r < 0 ? -1 : r > 0;
+}
+
+/* erases the samples of a client (NULL: all) or the one with an id (owned by owner unless
+ * NULL); the adaptations go only with an erase, a deletion leaves them */
+static long erase_where(const char *client, const char *id, const char *owner, int *denied)
 {
 	char p[4096];
 	if (hw_store_path(p, sizeof p, "")) return -1;
@@ -409,7 +425,9 @@ long hw_samples_erase(const char *client)
 	mlen = (size_t)snprintf(meta, mcap, "%s 1 %lu\n", META_HEAD, gen + 1);
 	erased = 0;
 	for (size_t i = 0; i < n; i++) {
-		if (!client || !strcmp(es[i].meta.client, client)) { erased++; continue; }
+		if (id ? !strcmp(es[i].meta.id, id) && (!owner || !strcmp(es[i].meta.client, owner))
+		       : !client || !strcmp(es[i].meta.client, client)) { erased++; continue; }
+		if (id && denied && !strcmp(es[i].meta.id, id)) *denied = 1;
 		size_t l = strlen(es[i].json) + 1;
 		if (len + l + 1 > cap) { cap = (len + l + 1) * 2; char *x = realloc(data, cap); if (!x) { erased = -1; break; } data = x; }
 		memcpy(data + len, es[i].json, l - 1); data[len + l - 1] = '\n'; len += l; data[len] = 0;
@@ -420,13 +438,17 @@ long hw_samples_erase(const char *client)
 		memcpy(meta + mlen, ml, (size_t)k + 1); mlen += (size_t)k;
 	}
 	hw_entries_free(es, n);
+	if (id && erased == 0) {        /* nothing to delete: nothing changes */
+		free(data); free(meta);
+		goto out;
+	}
 	if (erased >= 0) {
 		/* the generation first: a running adaptation sees it and drops its result */
 		if (hw_store_replace("samples.meta", meta, mlen) ||
 		    hw_store_replace("samples.jsonl", len ? data : NULL, len))
 			erased = -1;
 		char a[4096];
-		if (!hw_store_path(a, sizeof a, "adaptation")) rm_tree(a);
+		if (!id && !hw_store_path(a, sizeof a, "adaptation")) rm_tree(a);
 	}
 	free(data); free(meta);
 out:
@@ -469,7 +491,7 @@ static unsigned char *b64dec(const char *s, size_t *n)
 	return o;
 }
 
-int hw_export(const char *path)
+int hw_export(const char *path, const char *client)
 {
 	struct hw_entry *es;
 	size_t n;
@@ -484,6 +506,7 @@ int hw_export(const char *path)
 	if (!f) goto out;
 	fprintf(f, "{\"format\":\"%s\",\"version\":1}\n", EXPORT_FORMAT);
 	for (size_t i = 0; i < n; i++) {
+		if (client && strcmp(es[i].meta.client, client)) continue;
 		json_object *o = json_object_new_object();
 		json_object_object_add(o, "client", json_object_new_string(es[i].meta.client));
 		json_object_object_add(o, "confirmed", json_object_new_int64(es[i].meta.time));
@@ -492,7 +515,7 @@ int hw_export(const char *path)
 		json_object_put(o);
 	}
 	char ad[4096];
-	if (!hw_store_path(ad, sizeof ad, "adaptation")) {
+	if (!client && !hw_store_path(ad, sizeof ad, "adaptation")) {
 		DIR *d = opendir(ad);
 		struct dirent *e;
 		while (d && (e = readdir(d))) {
@@ -698,6 +721,36 @@ int hw_donation_write(const char *path)
 	if (f && fclose(f)) r = -1;
 	if (!r && rename(tmp, path)) r = -1;
 	if (r) unlink(tmp);
+	return r;
+}
+
+int hw_donation_remove(const char *id)
+{
+	char p[4096];
+	if (hw_store_path(p, sizeof p, "donation/samples.jsonl")) return -1;
+	int fd = hw_store_lock();
+	if (fd < 0) return -1;
+	size_t len;
+	char *s = slurp(p, &len);
+	int r = 0;
+	if (s) {
+		char *o = malloc(len + 1);
+		size_t ol = 0;
+		if (!o) r = -1;
+		for (char *c = s, *e; o && *c; c = e) {
+			e = strchr(c, '\n');
+			if (e) *e++ = 0; else e = c + strlen(c);
+			char sid[17];
+			hw_sample_id(c, sid);
+			if (*c && !strcmp(sid, id)) { r = 1; continue; }
+			size_t l = strlen(c);
+			memcpy(o + ol, c, l); o[ol + l] = '\n'; ol += l + 1;
+		}
+		if (r == 1 && hw_store_replace("donation/samples.jsonl", o, ol)) r = -1;
+		free(o);
+		free(s);
+	}
+	hw_store_unlock(fd);
 	return r;
 }
 

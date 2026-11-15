@@ -19,6 +19,8 @@ sample per line (JSON lines, UTF-8).
 | `provenance` | object | synthetic only | Fonts used: name, licence, source, upstream commit |
 | `fonts` | list of strings | synthetic only | Font id per character of `text` |
 | `licence` | string | donated only | Licence the person chose for the sample (`CC0-1.0` or `CC-BY-4.0`) |
+| `area` | object | no | The writing area it was written in (prompted writing): `box` `[x0, y0, x1, y1]` and `line` (the line spacing), in the units of `x` and `y`; `orientation`, the screen's rotation in degrees (0, 90, 180, 270) |
+| `reading` | list | no | What the recognizer read when it was written, before learning from it: candidates best first, each `{"text": …, "score": …}` (`score` the log-probability, ≤ 0) |
 
 A point is a list `[x, y, t]` or `[x, y, t, pressure]` or `[x, y, t, pressure, tilt_x,
 tilt_y]`. All strokes of one sample use the same length.
@@ -37,6 +39,8 @@ tilt_y]`. All strokes of one sample use the same length.
 
 ## Rules
 
+- Points are the pen's values as reported: no smoothing, resampling or cleaning. Hover
+  positions (the pen above the screen) are not part of a stroke.
 - Nothing identifies the writer or the device: no device name, serial, user name, client
   name or wall-clock time in a sample. Times start at 0 for each sample.
 - On the device, a stored sample also has its client and the time it was confirmed (spec

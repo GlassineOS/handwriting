@@ -16,4 +16,5 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src -w /src alpine:3.24 sh -euc '
             apk add -q build-base pkgconf json-c-dev python3 py3-numpy
-            make -C recognizer OUT=/tmp check'
+            make -C recognizer OUT=/tmp check
+            make -C samples check HW_BIN=/tmp/glassine-handwriting'
