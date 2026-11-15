@@ -151,19 +151,34 @@ def finetune(init: Path, out: Path, sources: list[dict], dev: torch.utils.data.D
     counts[np.argmax(shares)] += batch - counts.sum()
     pools = [feasible(s["ds"]) if not s["real"] else np.arange(len(s["ds"])) for s in sources]
     is_real = torch.tensor([bool(s["real"]) for s in sources])
+    top = []  # (dev cer, step, state)
+    best, since, step = 9.0, 0, 0
+    resume = out / "resume.pt"
+    if resume.exists():  # an interrupted run goes on from its last read of dev
+        ck = torch.load(resume, weights_only=False)
+        m.load_state_dict(ck["model"])
+        opt.load_state_dict(ck["opt"])
+        sched.load_state_dict(ck["sched"])
+        if dom is not None:
+            dom.load_state_dict(ck["dom"])
+        top, best, since, step = ck["top"], ck["best"], ck["since"], ck["step"]
+        torch.set_rng_state(ck["rng"])
+        print(f"resumed at step {step}", flush=True)
     dl = torch.utils.data.DataLoader(Mixed([s["ds"] for s in sources]),
-                                     batch_sampler=MixedBatches(pools, counts.tolist(), seed),
+                                     batch_sampler=MixedBatches(pools, counts.tolist(), seed + step),
                                      collate_fn=_collate, num_workers=workers,
                                      persistent_workers=workers > 0, prefetch_factor=4 if workers else None)
-    log = open(out / "log.jsonl", "w")
-    first = read(m, dev)
-    first.update(step=0)
-    if synth_dev is not None:
-        first["synth_dev"] = read(m, synth_dev)
-    log.write(json.dumps(first) + "\n")
-    print("step 0", json.dumps(first), flush=True)
-    top = []  # (dev cer, step, state)
-    best, since, step, run, t0 = 9.0, 0, 0, 0.0, time.time()
+    log = open(out / "log.jsonl", "a" if step else "w")
+    if step:
+        first = json.loads((out / "log.jsonl").read_text().splitlines()[0])
+    else:
+        first = read(m, dev)
+        first.update(step=0)
+        if synth_dev is not None:
+            first["synth_dev"] = read(m, synth_dev)
+        log.write(json.dumps(first) + "\n")
+        print("step 0", json.dumps(first), flush=True)
+    run, t0, step0 = 0.0, time.time(), step
     for x, lens, y, ylens, _, src in dl:
         m.train()
         if dom is not None:
@@ -197,7 +212,7 @@ def finetune(init: Path, out: Path, sources: list[dict], dev: torch.utils.data.D
             log.write(json.dumps(r) + "\n")
             log.flush()
             print(f"step {step} dev cer {r['cer']:.4f} synth {r.get('synth_dev', {}).get('cer', 0):.4f} "
-                  f"loss {run:.3f} dom {float(dl_.detach()):.3f} {step / (time.time() - t0):.2f} step/s", flush=True)
+                  f"loss {run:.3f} dom {float(dl_.detach()):.3f} {(step - step0) / (time.time() - t0):.2f} step/s", flush=True)
             st = {k: v.detach().clone() for k, v in m.state_dict().items()}
             top.append((r["cer"], step, st))
             top = sorted(top, key=lambda z: (z[0], -z[1]))[:avg]
@@ -207,6 +222,11 @@ def finetune(init: Path, out: Path, sources: list[dict], dev: torch.utils.data.D
                 since += 1
             if (since >= patience and step >= min_steps) or step >= steps:
                 break
+            ck = {"model": m.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
+                  "dom": dom.state_dict() if dom is not None else None, "top": top, "best": best,
+                  "since": since, "step": step, "rng": torch.get_rng_state()}
+            torch.save(ck, out / "resume.tmp")
+            (out / "resume.tmp").rename(resume)
     # the kept model: the average of the best checkpoints, or the single best
     cfg = m.cfg
     single = top[0]
@@ -225,4 +245,5 @@ def finetune(init: Path, out: Path, sources: list[dict], dev: torch.utils.data.D
         res["start_synth_dev"] = first["synth_dev"]["cer"]
     torch.save({"cfg": cfg, "state": state, "step": step, "val": res}, out / "best.pt")
     (out / "result.json").write_text(json.dumps(res, indent=1))
+    resume.unlink(missing_ok=True)
     return res
