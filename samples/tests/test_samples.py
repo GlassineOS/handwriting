@@ -60,7 +60,8 @@ class Env:
         self.env = dict(os.environ, GLASSINE_HANDWRITING_MODELS=str(models), XDG_DATA_HOME=str(self.dir / "data"),
                         XDG_CONFIG_HOME=str(self.dir / "conf"), XDG_STATE_HOME=str(self.dir / "state"),
                         HOME=str(self.dir / "home"), GLASSINE_HANDWRITING_SYSFS=str(self.dir / "power"),
-                        GLASSINE_HANDWRITING_LOADAVG=str(self.dir / "load"), GLASSINE_HANDWRITING_FIT_OK="0")
+                        GLASSINE_HANDWRITING_LOADAVG=str(self.dir / "load"), GLASSINE_HANDWRITING_FIT_OK="0",
+                        GLASSINE_PREDICT_MODELS=str(self.dir / "predict"))
         bat = self.dir / "power" / "battery"
         bat.mkdir(parents=True)
         (bat / "type").write_text("Battery\n")

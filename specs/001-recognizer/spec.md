@@ -104,7 +104,11 @@ included unless they pick them one by one.
   alignment, the language, the client that sent it and the time. Samples come only from a
   person's confirmation in a client (a picked alternative, a correction, a prompt written
   in prompted mode), never from the recognizer's own unconfirmed output, never from a
-  private field. They are stored in the person's data directory, readable only by them.
+  private field. A picked candidate that the word list proposed rather than the ink
+  (FR-015) is stored only when its strokes fit it as well as prompted writing must
+  (FR-007's check), with no character fitting badly; otherwise no sample is made, and the
+  client is not interrupted. A picked sample records which candidate it was (its place
+  and whether it came from the ink or the word list). They are stored in the person's data directory, readable only by them.
   Adaptation runs while the device is idle and charging, or when the person asks for it
   in a client (spec 002) while the device charges; either way it is checked against a
   held-back part of the person's own samples, kept only when it does better than the one
@@ -133,6 +137,24 @@ included unless they pick them one by one.
   person takes outside this program. Donations are separate from the samples used for
   the person's own adaptation, and stopping or erasing a donation never touches those.
 
+- **FR-015**: Words: in prose fields (the purpose is plain text, or there is no text field)
+  the recognizer reads with the language's words and the person's learned words, the
+  keyboard's word predictor's (`GlassineOS/shell` docs/predictor.md), and the text before
+  the cursor:
+  - Candidates are ranked by the ink and by how likely their words are after the text
+    before; text that isn't a known word (names, numbers, codes) stays readable at a cost
+    per character, never forced into a word.
+  - The ink's best reading stays first unless another reading of the same ink is clearly
+    more likely with its words, and it is then still among the first two.
+  - A word of the list one edit from a reading that isn't a word may be offered beside
+    that reading, never in its place and never first.
+  - No words at all in a private field, or in a field for digits, numbers, phone numbers,
+    dates, times, addresses (email, web), passwords, PINs or a terminal, or with any hint
+    other than prose hints; nor when the person turns words off. The person's learned
+    words are only read, never written.
+  - Words never make reading miss FR-004's time budget, and a client can ask for the
+    ink's reading alone.
+
 ## Key entities
 
 - **Stroke**: points between pen down and pen up (x, y, time, pressure).
@@ -151,6 +173,7 @@ included unless they pick them one by one.
 | Base model package (model, language, recipe, data sources and licences) | owned (this program) | 1 | FR-005, FR-012 |
 | Writing paper and corrections | consumer (`GlassineOS/shell` spec 006) | — | shell spec 006 FR-011–FR-013a |
 | Settings: learning, erase, counts, export/import | consumer (the shell's settings app) | — | shell spec 006 FR-008 |
+| Word predictor model and learned words | consumer (`GlassineOS/shell` docs/predictor.md) | 1 | FR-015 |
 
 ## Success criteria
 
@@ -161,6 +184,9 @@ included unless they pick them one by one.
   to the next.
 - After a few hundred confirmed samples from one person, the error rate on their held-back
   samples is lower than the base model's alone.
+- With words (FR-015), the character and word error rates on a person's held-back
+  samples are lower than the ink's alone, within the same time budget; readings the words
+  make wrong are far fewer than those they make right, also for text the list lacks.
 - Scenario 4's prompted mode returns one stroke group per prompted character for a
   pangram written in one go.
 
@@ -180,7 +206,10 @@ Device-neutral; it needs a pen that reports positions over time.
 Host level: the interface against recorded stroke files (recognize, streaming, prompted
 alignment, gestures); the sample rules (no sample without confirmation, none from a
 private field, erase and export/import round trip); an adaptation that does worse is
-rejected; a donation file holds only reviewed samples and no client, time or device.
+rejected; a donation file holds only reviewed samples and no client, time or device;
+words (FR-015) off in every non-prose field, a list word never first, a proposed pick
+that doesn't fit makes no sample; error rates with and without words on held-back
+samples.
 
 Hardware: supervised: writing on the keyboard's paper in English; an adaptation
 after a day of use, compared on held-back samples.
