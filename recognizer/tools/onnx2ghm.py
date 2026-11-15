@@ -40,7 +40,7 @@ def fail(msg):
     raise SystemExit(f"onnx2ghm: {msg}")
 
 
-def convert(model: onnx.ModelProto, charset: str) -> bytes:
+def convert(model: onnx.ModelProto, charset: str, trained_until: int = 0) -> bytes:
     g = model.graph
     init = {i.name: numpy_helper.to_array(i) for i in g.initializer}
     consts = {}
@@ -138,7 +138,7 @@ def convert(model: onnx.ModelProto, charset: str) -> bytes:
 
     cs = charset.encode()
     hdr = MAGIC + struct.pack("<15I", VERSION, 64, nfeat, c1, conv or c1, nstrided, k0, hidden, len(lstms), nclass,
-                              len(cs), 0, 0, 0, 0)
+                              len(cs), trained_until & 0xFFFFFFFF, trained_until >> 32, 0, 0)
     body = cs + b"\0" * ((-len(cs)) % 4)
     data = np.concatenate([scale] + out).astype("<f4").tobytes()
     return hdr + body + data
@@ -151,9 +151,11 @@ def main(argv=None):
     cs.add_argument("--charset")
     cs.add_argument("--charset-from", type=Path, help="the trainer's text.py (its CHARS)")
     ap.add_argument("-o", type=Path, required=True)
+    ap.add_argument("--trained-until", type=int, default=0,
+                    help="confirmation time (s since 1970) of the newest person's sample in the training data")
     a = ap.parse_args(argv)
     charset = a.charset if a.charset is not None else charset_from(a.charset_from)
-    data = convert(onnx.load(str(a.onnx)), charset)
+    data = convert(onnx.load(str(a.onnx)), charset, a.trained_until)
     a.o.write_bytes(data)
     print(f"{a.o}: {len(data)} bytes", file=sys.stderr)
 
