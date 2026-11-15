@@ -63,7 +63,7 @@ device otherwise.
 ### Scenario 7 – Donating samples to the base model (Priority: P3)
 
 **Given** a person who wants to help the base models, **When** they start donating in the
-settings, **Then** they are shown public-domain sentences to write, see each written
+handwriting samples app (spec 002), **Then** they are shown public-domain sentences to write, see each written
 sentence again before it is kept, choose a licence once, and get one file they send
 themselves; nothing is donated without that review, and their own samples are never
 included unless they pick them one by one.
@@ -105,9 +105,11 @@ included unless they pick them one by one.
   person's confirmation in a client (a picked alternative, a correction, a prompt written
   in prompted mode), never from the recognizer's own unconfirmed output, never from a
   private field. They are stored in the person's data directory, readable only by them.
-  Adaptation runs only while the device is idle and charging, is checked against a
-  held-back part of the person's own samples, and is kept only when it does better than
-  the one in use; the previous adaptation stays available to go back to.
+  Adaptation runs while the device is idle and charging, or when the person asks for it
+  in a client (spec 002) while the device charges; either way it is checked against a
+  held-back part of the person's own samples, kept only when it does better than the one
+  in use, and reported to the client that asked; the previous adaptation stays available
+  to go back to.
 - **FR-010**: Control: learning on or off (on by default); erase everything (samples and
   adaptation) in one action; counts per client; export and import of samples and
   adaptation as one file, by the person only. These are offered by the settings app; the
