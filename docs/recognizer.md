@@ -145,7 +145,7 @@ adaptation from it), sample format `area` and `reading`.
 
 A `picked` or `confirmed` text that was one of the candidates of the session's last reading is
 stored with its place among them and where it came from (sample format `pick`). When the words
-put it there (a near word or the guided search, below) rather than the ink, it is checked like a
+put it there (a near word, the guided search or a split, below) rather than the ink, it is checked like a
 prompted sample,
 and also every written character must fit at least 0.3; failing, the reply is
 `confirm ID skip fit SCORE` and `keep` doesn't override it (the client shows nothing).
@@ -174,6 +174,11 @@ off. Every other field, and `read … raw`, reads without them.
   frequent words of the list one edit away (a letter changed, left out, added, or two swapped)
   are added, in the written word's case, when the ink scores them within 6 of its best; never
   first.
+- An unknown word in the three best readings that is two to four words of the list written
+  together (a one-letter part only `a` or `i`; the most likely split by the words alone) is
+  added split into them, at most two such readings, when the strokes on either side of every
+  new space are 0.6 x-heights apart or more (no stroke spans it). It counts as a reading of the
+  ink (its log-probability is that of the letters) and may come first as above.
 - `SCORE` stays the ink's log-probability of the text.
 
 **recognize** is `begin`, a stroke per `;`-separated part of `STROKES`, `read`, `end` in one line,
@@ -369,4 +374,4 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
+| `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,gap=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
