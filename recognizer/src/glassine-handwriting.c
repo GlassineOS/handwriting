@@ -619,7 +619,7 @@ static double fit_ok(void)
 /* keep: the person kept the sample although the alignment failed the check (its spans are
  * then inferred); without it such a sample isn't made (*reason 3, *fit its score) */
 /* gate: a pick the ink alone didn't read (a word from the list, proposed one edit from a
- * reading) is kept only when its alignment passes the check and no character fits below
+ * reading, or found with the words guiding the search) is kept only when its alignment passes the check and no character fits below
  * PICK_MIN; failing, no sample (*reason 3). pick_rank > 0: the candidate picked (1 = the
  * first) and where it came from. */
 #define PICK_MIN 0.3
@@ -723,11 +723,11 @@ static void do_confirm(const char *id, struct session *s, const char *source, co
 	int rank = 0, from = -1;
 	if (!strcmp(src, "confirmed"))
 		for (int i = 0; i < s->ncand && !rank; i++) if (!strcmp(s->cand[i], text)) { rank = i + 1; from = s->cand_from[i]; }
-	int gate = from == HW_FROM_WORDS;
-	static const char *froms[] = { "ink", "beam", "words" };
+	int gate = from == HW_FROM_WORDS || from == HW_FROM_GUIDED;
+	static const char *froms[] = { "ink", "beam", "words", "guided" };
 	double fit = 0;
 	char *line = make_sample(l, s, text, src, prompted, keep && !gate, gate, rank,
-				 from >= 0 && from < 3 ? froms[from] : "", &exact, &fit, &why);
+				 from >= 0 && from < 4 ? froms[from] : "", &exact, &fit, &why);
 	if (!line && why == 3) { reply("confirm\t%s\tskip\tfit\t%.2f", id, fit); return; }
 	if (!line) { reply("confirm\t%s\tskip\t%s", id, why == 1 ? "empty" : "short"); return; }
 	struct hw_meta m = { 0 };

@@ -104,7 +104,7 @@ included unless they pick them one by one.
   alignment, the language, the client that sent it and the time. Samples come only from a
   person's confirmation in a client (a picked alternative, a correction, a prompt written
   in prompted mode), never from the recognizer's own unconfirmed output, never from a
-  private field. A picked candidate that the word list proposed rather than the ink
+  private field. A picked candidate that the words put there rather than the ink alone
   (FR-015) is stored only when its strokes fit it as well as prompted writing must
   (FR-007's check), with no character fitting badly; otherwise no sample is made, and the
   client is not interrupted. A picked sample records which candidate it was (its place
@@ -141,9 +141,12 @@ included unless they pick them one by one.
   the recognizer reads with the language's words and the person's learned words, the
   keyboard's word predictor's (`GlassineOS/shell` docs/predictor.md), and the text before
   the cursor:
+  - The ink is searched with the words guiding it, beside the ink's own search, so a word
+    the ink reads only a little less well than a non-word is found; text that isn't a
+    known word (names, numbers, codes) stays readable at a cost per character, never
+    forced into a word.
   - Candidates are ranked by the ink and by how likely their words are after the text
-    before; text that isn't a known word (names, numbers, codes) stays readable at a cost
-    per character, never forced into a word.
+    before.
   - The ink's best reading stays first unless another reading of the same ink is clearly
     more likely with its words, and it is then still among the first two.
   - A word of the list one edit from a reading that isn't a word may be offered beside
