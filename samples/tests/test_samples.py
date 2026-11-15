@@ -256,6 +256,27 @@ class Writing(Case):
         self.assertEqual(w.prompt, nxt)
         self.assertNotIn(p.text, w.state.used.get(p.set, []))     # may come again
 
+    def test_failed_checks_wait_their_turn(self):
+        """a failed check stays shown while later samples are read, until the person acts;
+        two of them show one after the other"""
+        w = self.e.writer()
+        p1 = w.take()
+        sh1 = self.write_to(w, p1, fit_ok=0.99)
+        p2 = w.take()
+        sh2 = self.write_to(w, p2, fit_ok=0)                       # kept, read after it
+        self.assertEqual((sh1.status, sh2.status), ("check", "kept"))
+        self.assertIs(w.shown, sh1)
+        p3 = w.take()
+        sh3 = self.write_to(w, p3, fit_ok=0.99)
+        self.assertIs(w.shown, sh1)
+        w.skip()
+        self.assertIs(w.shown, sh3)                                # the next one waiting
+        w.keep_anyway()
+        self.assertEqual(sh3.status, "kept")
+        self.assertIs(w.shown, sh3)
+        self.assertEqual(w.checks, [])
+        self.assertEqual(len(self.e.cli.samples()), 2)
+
     def write_to(self, w, p, fit_ok):
         self.e.rec.close()
         self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = str(fit_ok)
