@@ -505,9 +505,15 @@ class Samples(unittest.TestCase):
         c.close()
         self.assertIn("samples\t3\n", self.env.run("samples", "stats").stdout)
         self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()], ids)
-        # a delete rewrites the file without the damage
+        # a delete rewrites the file without the damage; a running recognizer sees it
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        self.assertEqual(c.ask("samples")[2:], ["3", *ids])
         self.env.run("samples", "delete", ids[0])
         self.assertNotIn(b"\0", (st / "samples.jsonl").read_bytes())
+        self.assertEqual(c.ask("samples")[2:], ["2", *ids[1:]])
+        self.assertEqual(c.ask("sample", ids[0])[2:], ["unknown-sample"])
+        c.close()
         self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()], ids[1:])
 
     def test_erase_with_nothing_stored(self):

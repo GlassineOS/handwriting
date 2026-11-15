@@ -285,6 +285,35 @@ class Writing(Case):
         self.assertEqual(sum(cov.count(c) for c in texts), 3)
         self.assertEqual(len(cache), 3)
 
+    def test_coverage_in_steps(self):
+        """the coverage is read a few samples at a time; samples kept meanwhile count, those
+        taken back don't, and one gone meanwhile isn't asked for again"""
+        st = flow.State()
+        st.set = "letters"
+        w = self.e.writer(st)
+        texts = []
+        for _ in range(5):
+            texts.append(w.prompt.text)
+            self.write(w)
+        ids = self.e.rec.sample_ids()
+        self.e.cli.delete(ids[0])                                  # gone before it is read
+        cache = {}
+        self.assertEqual(w.read_coverage(ids, cache, 2), 3)
+        self.assertEqual(w.read_coverage(ids, cache, 2), 1)
+        texts.append(w.prompt.text)
+        sh, _ = self.write(w)                                      # kept while it is read
+        p = w.prompt
+        sh2, _ = self.write(w)
+        w.redo()                                                   # taken back
+        self.assertEqual(w.prompt, p)
+        self.assertEqual(w.read_coverage(ids, cache, 2), 0)
+        self.assertIsNone(cache[ids[0]])
+        cov = w.set_coverage(ids, cache)
+        self.assertEqual(sum(cov.count(c) for c in set(texts[1:])), 5)
+        self.assertEqual(w.read_coverage(ids, cache, 2), 0)        # nothing asked again
+        cov = w.set_coverage(self.e.rec.sample_ids(), cache)       # the next listing has it
+        self.assertEqual(sum(cov.count(c) for c in set(texts[1:])), 5)
+
 
 class Donation(Case):
     def test_rules(self):
