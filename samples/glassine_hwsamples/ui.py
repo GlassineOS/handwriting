@@ -201,8 +201,8 @@ class Worker:
                 r, err = fn(), None
             except Exception as e:      # shown on the page, the app keeps running
                 r, err = None, e
-            if done:
-                GLib.idle_add(lambda: (done(r, err), False)[1])
+            if done:                    # bound now: the next call rebinds these before the main loop runs
+                GLib.idle_add(lambda done=done, r=r, err=err: (done(r, err), False)[1])
 
     def do(self, fn, done=None):
         self.q.put((fn, done))
@@ -220,7 +220,7 @@ class UI:
         self.page = "write"
         self.theme = Theme(read_file(THEME_FILE) or "white")
         self.msg = ""
-        self.busy = False
+        self.busy = 0                   # calls queued or running in the worker
         self.cache = {}
         self.counts = (0, 0)
         self.fresh = 0
@@ -238,7 +238,6 @@ class UI:
         self.confirm = None             # (question, yes-label, fn) for a destructive action
         self.sets_open = False
         self.demo = demo
-        self.on_idle = None
         self.work = Worker() if not demo else None
         if not demo:
             self.writer = flow.Writer(self.rec, self.cli, self.state)
@@ -249,19 +248,17 @@ class UI:
     def run(self, fn, done=None):
         if self.demo:
             return
-        self.busy = True
+        self.busy += 1
         self.redraw()
 
         def fin(r, err):
-            self.busy = False
+            self.busy -= 1
             if err:
                 log("error", err)
                 self.msg = "Something went wrong: %s" % err
             elif done:
                 done(r)
             self.redraw()
-            if self.on_idle:
-                self.on_idle()
         self.work.do(fn, fin)
 
     def refresh(self):
@@ -279,9 +276,11 @@ class UI:
 
     # ---------------------------------------------------------- writing
 
-    def submit(self, strokes, units, area, done):
+    def submit(self, strokes, units, area, prompt):
+        """the ink written to prompt (taken by Next, the next prompt is already up) is read
+        and kept in the background"""
         def go():
-            return self.writer.submit(strokes, units, area)
+            return self.writer.submit(strokes, units, area, prompt)
 
         def fin(sh):
             log("kept" if sh else "nothing", sh and (sh.status, sh.sample_id, sh.why, sh.fit,
@@ -292,7 +291,6 @@ class UI:
                 self.fresh += bool(sh.sample_id)
                 if sh.donated_id:
                     self.donation = (self.donation[0], self.donation[1] + 1)
-            done()
         self.run(go, fin)
 
     def probe(self, strokes, units, area, done):
@@ -529,9 +527,7 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     pills_right(cr, t, hits, w - 20, h - 64, [
         ("Clear", (lambda: canvas.clear()) if has_ink else None, False),
         ("Skip", (lambda: ui.act("skip")) if not has_ink else None, False),
-        ("Next", (lambda: canvas.submit()) if has_ink and not (canvas and canvas.queued) else None, True)])
-    if canvas and canvas.queued:
-        PT.text(cr, "Reading the last one…", t.sub, 20, 40, t.soft)
+        ("Next", (lambda: canvas.submit()) if has_ink else None, True)])
 
 
 def sets_page(cr, ui, hits, w, h):
@@ -827,9 +823,7 @@ class Canvas(Gtk.DrawingArea):
         super().__init__()
         self.ui, self.on_change = ui, on_change
         self.strokes, self.cur = [], None
-        self.done = []                  # the ink just submitted, shown dimmed until the pen writes again
         self.timer = None
-        self.queued = False             # Next tapped while the recognizer was busy
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
                         Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.TOUCH_MASK)
         self.connect("realize", lambda w: w.get_window().set_event_compression(False))
@@ -864,9 +858,6 @@ class Canvas(Gtk.DrawingArea):
         if e.button != 1 or not self.pen(e):
             return True
         self.stop_timer()
-        if self.done:
-            self.done = []
-            self.queue_draw()
         self.cur = [self.point(e)]
         self.strokes.append(self.cur)
         self.queue_draw()
@@ -909,25 +900,20 @@ class Canvas(Gtk.DrawingArea):
             return False
         strokes, units, area = self.payload()
         n = len(self.strokes)
+        p = self.ui.writer.prompt
 
         def fits(score):
             log("pause: fit", score)
-            if score is not None and score >= 0.6 and len(self.strokes) == n and self.cur is None:
+            # still the same ink (Next clears it) to the same prompt (Redo brings one back)
+            if score is not None and score >= 0.6 and len(self.strokes) == n and self.cur is None \
+                    and self.ui.writer.prompt is p:
                 self.submit()
         self.ui.probe(strokes, units, area, fits)
         return False
 
     def clear(self):
         self.stop_timer()
-        self.strokes, self.cur, self.done = [], None, []
-        self.queue_draw()
-        self.on_change()
-
-    def submitted(self, sent):
-        """the ink that was sent stays, dimmed, until the pen writes again; ink written
-        meanwhile stays as it is"""
-        self.done = sent
-        self.strokes = self.strokes[len(sent):]
+        self.strokes, self.cur = [], None
         self.queue_draw()
         self.on_change()
 
@@ -961,23 +947,17 @@ class Canvas(Gtk.DrawingArea):
         return math.sqrt(g.width * g.height / (wmm * hmm))
 
     def submit(self):
-        if not self.strokes or self.cur is not None or not self.ui.writer or not self.ui.writer.prompt:
+        """Next: the next prompt and an empty page at once; the ink goes to the recognizer,
+        whose result shows at the top with the ink (the worker reads one call after the other)"""
+        wr = self.ui.writer
+        if not self.strokes or self.cur is not None or not wr or not wr.prompt:
             return
-        if self.ui.busy:                  # after the call that is running
-            self.queued = True
-            log("next: queued")
-            return
-        self.queued = False
         self.stop_timer()
-        sent = list(self.strokes)
         strokes, units, area = self.payload()
+        p = wr.take()
         log("submit", len(strokes), "strokes", units)
-        self.ui.submit(strokes, units, area, lambda: self.submitted(sent))
-
-    def idle(self):
-        """the recognizer is free: a Next tapped meanwhile goes now"""
-        if self.queued:
-            self.submit()
+        self.clear()
+        self.ui.submit(strokes, units, area, p)
 
     def on_draw(self, w, cr):
         t = self.ui.theme
@@ -988,13 +968,6 @@ class Canvas(Gtk.DrawingArea):
         cr.set_line_width(max(2.0, LINE / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
-        for s in self.done:              # sent: what was read is at the top
-            cr.set_source_rgba(*rgba(t.ink, 0.35))
-            cr.move_to(s[0][0], s[0][1])
-            for p in s[1:]:
-                cr.line_to(p[0], p[1])
-            cr.stroke()
-        cr.set_source_rgba(*rgba(t.ink))
         for s in self.strokes:
             cr.move_to(s[0][0], s[0][1])
             for p in s[1:]:
@@ -1041,7 +1014,6 @@ class App(Gtk.Application):
         if not self.win:
             self.ui = UI(lambda: self.win and self.win.redraw())
             self.win = Window(self, self.ui)
-            self.ui.on_idle = self.win.canvas.idle
             self.win.show_all()
             self.win.redraw()
             self.watch_theme()

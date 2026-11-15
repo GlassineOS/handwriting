@@ -5,6 +5,7 @@ Redo, Skip and Discard act on the shown sample until the next one is kept."""
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -66,11 +67,16 @@ class Shown:
     exact: bool = False
     fit: float = None
     why: str = ""                    # not-kept: why (learning off, ...)
+    advanced: bool = False           # the next prompt was shown before the reading
     notes: list = field(default_factory=list)
 
 
 class Writer:
     def __init__(self, rec, cli, state, sets=None, coverage=None):
+        # Next picks the next prompt in the UI thread while the reading of the last one runs
+        # in the worker: the prompt state (used, current, coverage) changes under this lock,
+        # never held across a recognizer call (Next would wait for it)
+        self.lock = threading.RLock()
         self.rec, self.cli, self.state = rec, cli, state
         self.sets = sets if sets is not None else P.load(state.lang)
         self.cov = coverage or P.Coverage()
@@ -91,11 +97,12 @@ class Writer:
         return None
 
     def next_prompt(self):
-        p = P.choose(self.sets, self.state.set, self.cov, self.state.used)
-        self.prompt = p
-        self.state.current = (p.set, p.text) if p else None
-        self.state.save()
-        return p
+        with self.lock:
+            p = P.choose(self.sets, self.state.set, self.cov, self.state.used)
+            self.prompt = p
+            self.state.current = (p.set, p.text) if p else None
+            self.state.save()
+            return p
 
     def choose_set(self, name):
         self.state.set = name
@@ -107,22 +114,34 @@ class Writer:
 
     # ------------------------------------------------------------ writing
 
-    def submit(self, strokes, units, area):
-        """the person wrote the prompt (paused or tapped Next): read, check, keep"""
-        p = self.prompt
+    def take(self):
+        """Next: the prompt on screen is written; the next one shows at once, the reading
+        of the ink (submit with this prompt) follows"""
+        with self.lock:
+            p = self.prompt
+            if p:
+                self._advance(p)
+            return p
+
+    def submit(self, strokes, units, area, prompt=None):
+        """the person wrote the prompt (paused or tapped Next): read, check, keep;
+        prompt: the one handed out by take() (already followed by the next)"""
+        advanced = prompt is not None
+        p = prompt or self.prompt
         if not p or not strokes:
             return None
         self.shown = None
         self.rec.write(SESSION, p.lang, units, area, strokes)
         try:
             reading = self.rec.read(SESSION)
-            sh = Shown(p, strokes, units, area, reading, "kept")
+            sh = Shown(p, strokes, units, area, reading, "kept", advanced=advanced)
             self._store(sh, keep=False)
         finally:
             self.rec.end(SESSION)
-        self.shown = sh
-        if sh.status != "check":
-            self._advance(p)
+        with self.lock:
+            self.shown = sh
+            if sh.status != "check" and not advanced:
+                self._advance(p)
         return sh
 
     def keep_anyway(self):
@@ -135,7 +154,8 @@ class Writer:
             self._store(sh, keep=True)
         finally:
             self.rec.end(SESSION)
-        self._advance(sh.prompt)
+        if not sh.advanced:
+            self._advance(sh.prompt)
         return sh
 
     def _store(self, sh, keep):
@@ -163,18 +183,21 @@ class Writer:
                 sh.notes.append("donation: " + d[1])
         sh.status = "kept" if sh.sample_id or sh.donated_id else "not-kept"
         if sh.sample_id:
-            self.cov.add(p.text, sh.reading[0][0] if sh.reading else "")
-            self.kept_now += 1
+            with self.lock:
+                self.cov.add(p.text, sh.reading[0][0] if sh.reading else "")
+                self.kept_now += 1
 
     def _advance(self, p):
-        P.mark_used(self.state.used, p)
-        self.next_prompt()
+        with self.lock:
+            P.mark_used(self.state.used, p)
+            self.next_prompt()
 
     def _take_back(self, sh):
         for i in {sh.sample_id, sh.donated_id} - {None}:
             self.rec.forget(i)
         if sh.sample_id:
-            self.kept_now -= 1
+            with self.lock:
+                self.kept_now -= 1
         sh.sample_id = sh.donated_id = None
 
     def redo(self):
@@ -183,14 +206,15 @@ class Writer:
         if not sh:
             return self.prompt
         self._take_back(sh)
-        used = self.state.used.get(sh.prompt.set, [])
-        if sh.prompt.text in used:
-            used.remove(sh.prompt.text)
-        self.shown = None
-        self.prompt = sh.prompt
-        self.state.current = (sh.prompt.set, sh.prompt.text)
-        self.state.save()
-        return self.prompt
+        with self.lock:
+            used = self.state.used.get(sh.prompt.set, [])
+            if sh.prompt.text in used:
+                used.remove(sh.prompt.text)
+            self.shown = None
+            self.prompt = sh.prompt
+            self.state.current = (sh.prompt.set, sh.prompt.text)
+            self.state.save()
+            return self.prompt
 
     def discard(self):
         """the shown sample goes; its prompt may come again in this round"""
@@ -198,17 +222,19 @@ class Writer:
         if not sh:
             return self.prompt
         self._take_back(sh)
-        used = self.state.used.get(sh.prompt.set, [])
-        if sh.prompt.text in used:
-            used.remove(sh.prompt.text)
-        self.shown = None
-        if sh.status == "check":
-            self._advance(sh.prompt)
+        with self.lock:
             used = self.state.used.get(sh.prompt.set, [])
             if sh.prompt.text in used:
                 used.remove(sh.prompt.text)
-        self.state.save()
-        return self.prompt
+            self.shown = None
+            if sh.status == "check":
+                if not sh.advanced:
+                    self._advance(sh.prompt)
+                used = self.state.used.get(sh.prompt.set, [])
+                if sh.prompt.text in used:
+                    used.remove(sh.prompt.text)
+            self.state.save()
+            return self.prompt
 
     def skip(self):
         """nothing is kept: the shown sample goes (if any), and the prompt isn't asked again
@@ -216,11 +242,12 @@ class Writer:
         sh = self.shown
         if sh:
             self._take_back(sh)
-            self.shown = None
-            if sh.status == "check":
-                self._advance(sh.prompt)
-            self.state.save()
-            return self.prompt
+            with self.lock:
+                self.shown = None
+                if sh.status == "check" and not sh.advanced:
+                    self._advance(sh.prompt)
+                self.state.save()
+                return self.prompt
         if self.prompt:
             self._advance(self.prompt)
         return self.prompt
