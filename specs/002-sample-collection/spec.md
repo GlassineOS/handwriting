@@ -100,7 +100,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
 - **FR-007**: A kept sample is `prompted`, its text the prompt, its spans `exact` (taken
   from the order of writing against the prompt, checked by the recognizer's prompted
   alignment, spec 001 FR-007); a sample whose alignment fails the check is shown as such
-  and kept only if the person confirms it.
+  and kept only if the person confirms it, with its spans `inferred`.
 - **FR-008**: Each sample also keeps the recognizer's reading at the time of writing
   (best candidate and alternatives, before any adaptation from it), so errors can be
   studied and future models tested against what this one got wrong.
@@ -143,7 +143,8 @@ export them as one file in the sample format; nothing leaves the device otherwis
 ## Success criteria
 
 - A person writes 100 prompted words in under ten minutes, including review.
-- Every kept prompted sample has exact spans and its raw points as the pen reported them;
+- Every kept prompted sample that passed the alignment check has exact spans, every kept
+  sample its raw points as the pen reported them;
   a round trip through export and import gives the same samples.
 - After an adaptation from a few hundred prompted samples, the error rate on the person's
   held-back samples is lower than before, and is shown in the app.
