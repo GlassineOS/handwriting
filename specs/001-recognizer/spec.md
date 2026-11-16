@@ -182,9 +182,10 @@ included unless they pick them one by one.
   letters, so a lone mark and a lone letter, and the two cases of a letter whose forms
   differ mainly in size, are told apart:
   - The reference is the person's typical letter heights (small letters, capitals, and
-    each when written alone), learned from their confirmed samples without storing
-    anything new; without enough samples, the writing area's line height when the client
-    gives one; else the ink's own reading alone, as before.
+    each when written alone), measured from their confirmed samples; the measurements are
+    kept beside the samples, and a sample taken back or erased takes its measurement with
+    it (FR-010, FR-016). Without enough samples, the writing area's line height when the
+    client gives one; else the ink's own reading alone, as before.
   - A mark far below the small-letter height reads as a mark (`.`, `,`, `'`, `-`), and a
     letter or digit is not offered first for it; the marks the model can write are among
     the candidates even when the ink's own search finds none of them.
@@ -197,8 +198,9 @@ included unless they pick them one by one.
   - The same size-aware reading is used for candidates, for prompted writing's fit
     (FR-007), and for the check of a pick (FR-009); size only ever helps a fit, never
     lowers it below what the ink alone gives. Words and sentences read as they do without
-    it; only a mark set apart at their end may read differently. Readings stay the same for
-    the same strokes and reference.
+    it; only a mark set apart at their end, or ink the model reads as one or two
+    characters, may read differently. Readings stay the same for the same strokes and
+    reference.
 - **FR-018**: Base models keep the ink's absolute size: the model reads ink scaled by a
   reference height (the person's letter height when known, else the line height) rather
   than by the ink's own height, takes the size as an input of its own, and is trained with
