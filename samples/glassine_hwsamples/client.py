@@ -325,6 +325,15 @@ class Cli:
         if ids:
             self.run("letters", "mark", kind, char, *ids)
 
+    def letters_marks(self):
+        """the person's marks: [(id, char, kind)] (spec 003 FR-031)"""
+        out = []
+        for line in self.run("letters", "marks").splitlines():
+            f = line.split("\t")
+            if f[0] == "mark" and len(f) >= 4:
+                out.append((f[1], unesc(f[2]), f[3]))
+        return out
+
     def letters_samples(self, char):
         """where char is written in the prompted samples: [(id, place, state, version, text)],
         state usable, out, way-out, unread, joined-before, joined-after or odd"""
