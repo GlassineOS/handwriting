@@ -138,7 +138,7 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 			num(&b, x->width);
 			sput(&b, ",\"weight\":");
 			num(&b, x->weight);
-			sput(&b, ",\"members\":%d,\"strokes\":[", x->members);
+			sput(&b, ",\"members\":%d,\"use\":%d,\"strokes\":[", x->members, x->use);
 			for (size_t j = 0; j < x->nstrokes; j++) {
 				sput(&b, "%s[", j ? "," : "");
 				for (size_t p = 0; p < x->s[j].n; p++) {
@@ -152,7 +152,13 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 			}
 			sput(&b, "]}");
 		}
-		sput(&b, "]}\n");
+		sput(&b, "]");
+		if (l->nvar) {
+			sput(&b, ",\"slots\":[");
+			for (int k = 0; k < HW_LETTERS_SLOTS; k++) sput(&b, "%s%d", k ? "," : "", l->slot[k]);
+			sput(&b, "]");
+		}
+		sput(&b, "}\n");
 	}
 	if (len) *len = b.n;
 	return b.s;
@@ -215,6 +221,7 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 					w->width = jnum(x, "width", 0);
 					w->weight = jnum(x, "weight", 0);
 					w->members = (int)jnum(x, "members", 0);
+					w->use = (int)jnum(x, "use", 1);
 					if (!json_object_object_get_ex(x, "strokes", &st)) continue;
 					w->nstrokes = json_object_array_length(st);
 					w->s = calloc(w->nstrokes + 1, sizeof *w->s);
@@ -231,6 +238,13 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 						}
 					}
 				}
+			}
+			json_object *sl;
+			int have = json_object_object_get_ex(o, "slots", &sl) && json_object_is_type(sl, json_type_array) &&
+				   json_object_array_length(sl) == HW_LETTERS_SLOTS;
+			for (int k = 0; k < HW_LETTERS_SLOTS; k++) {
+				int v = have ? json_object_get_int(json_object_array_get_idx(sl, k)) : (l->nvar ? k % l->nvar : 0);
+				l->slot[k] = (unsigned char)(v >= 0 && v < l->nvar ? v : 0);
 			}
 		}
 		json_object_put(o);
@@ -430,6 +444,9 @@ static double rdist(const double *a, const double *b, int total)
 #define TAU 0.30        /* distance (x-heights, RMS) within which versions are one shape */
 #define SIGMA 0.15      /* the kernel of a variant around its seed */
 #define DIFF_MIN 0.06   /* a further variant must differ at least this much */
+#define WAY_TAU 0.60    /* within a stroke count, versions this close (x-heights, RMS) are one way of writing it */
+
+static void letter_slots(struct hw_letter *l);
 
 /* builds one variant around a seed from its group */
 static int make_variant(struct inst *in, const struct group *g, int seed, struct hw_variant *v)
@@ -1187,69 +1204,118 @@ int hw_letters_build(struct hw_letters *L)
 				cx /= gr->total; cy /= gr->total;
 				for (int q = 0; q < gr->total; q++) { x->rs[2 * q] -= cx; x->rs[2 * q + 1] -= cy; }
 			}
-			/* consistency: closeness to the group's medoid, the group's share of all */
-			int med = -1;
-			double best = INFINITY;
-			for (int i = 0; i < gr->n; i++) {
-				double s = 0;
-				for (int k = 0; k < gr->n; k++) s += rdist(in[gr->members[i]].rs, in[gr->members[k]].rs, gr->total);
-				if (s < best - 1e-12) { best = s; med = gr->members[i]; }
-			}
-			double share = (double)gr->n / nv;
-			for (int i = 0; i < gr->n && med >= 0; i++) {
-				struct inst *x = &in[gr->members[i]];
-				double d = rdist(x->rs, in[med].rs, gr->total);
-				double c = exp(-(d / (2 * TAU / 3)) * (d / (2 * TAU / 3)));
-				x->w *= (c < 0.15 ? 0.15 : c) * (0.5 + 0.5 * share);
-			}
 		}
-		/* the main way of writing it: the stroke count with the most weight; another one
-		 * gives variants only when it is about as strong (an extra stroke that is a slip, a
-		 * lead-in or a neighbour's part stays out) */
-		double gw[16] = { 0 };
-		int main = 0;
+		/* the ways of writing it (FR-006): within a stroke count, versions of one rough shape
+		 * and stroke order (within WAY_TAU of each other), the most supported first */
+		struct way { int g, seed, n; double w; } W[64];
+		int nw = 0;
+		int *way = malloc((size_t)nin * sizeof *way);
+		if (!way) { for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); } free(v); continue; }
+		for (int i = 0; i < nv; i++) way[v[i]] = -1;
 		for (int g = 0; g < ng; g++) {
-			for (int i = 0; i < G[g].n; i++) gw[g] += in[G[g].members[i]].w;
-			if (gw[g] > gw[main] + 1e-12) main = g;
+			struct group *gr = &G[g];
+			if (!gr->members || !gr->pts || !gr->total) continue;
+			for (;;) {
+				int bi = -1, bs = 0;
+				for (int i = 0; i < gr->n; i++) {
+					int x = gr->members[i];
+					if (way[x] >= 0 || !in[x].rs) continue;
+					int sup = 0;
+					for (int k = 0; k < gr->n; k++) {
+						int y = gr->members[k];
+						if (way[y] < 0 && in[y].rs && rdist(in[x].rs, in[y].rs, gr->total) <= WAY_TAU) sup++;
+					}
+					if (sup > bs || (sup == bs && bi >= 0 && in[x].w > in[bi].w + 1e-12)) { bs = sup; bi = x; }
+				}
+				if (bi < 0 || nw == 64) break;
+				W[nw] = (struct way){ g, bi, 0, 0 };
+				for (int k = 0; k < gr->n; k++) {
+					int y = gr->members[k];
+					if (way[y] < 0 && in[y].rs && rdist(in[bi].rs, in[y].rs, gr->total) <= WAY_TAU) { way[y] = nw; W[nw].n++; }
+				}
+				nw++;
+			}
 		}
-		/* seeds: the strongest version, then strong versions that differ from the chosen */
+		/* consistency: closeness to the typical shape of its way */
+		for (int i = 0; i < nv; i++) {
+			struct inst *x = &in[v[i]];
+			if (way[v[i]] < 0) continue;
+			const struct way *wy = &W[way[v[i]]];
+			double d = rdist(x->rs, in[wy->seed].rs, G[wy->g].total);
+			double c = exp(-(d / (2 * TAU / 3)) * (d / (2 * TAU / 3)));
+			x->w *= c < 0.15 ? 0.15 : c;
+		}
+		for (int i = 0; i < nv; i++) if (way[v[i]] >= 0) W[way[v[i]]].w += in[v[i]].w;
+		/* a way gives a variant when it is used often enough: 3 versions and a tenth of
+		 * them (a slip, a lead-in or a neighbour's part stays out); with none, the most used */
+		int ord[64], nq = 0;
+		for (int k = 0; k < nw; k++) if (W[k].n >= HW_LETTERS_MIN && W[k].n * HW_LETTERS_WAY_SHARE >= nv) ord[nq++] = k;
+		if (!nq) for (int k = 0; k < nw; k++) if (!nq || W[k].n > W[ord[0]].n) { ord[0] = k; nq = 1; }
+		for (int a2 = 1; a2 < nq; a2++)
+			for (int b2 = a2; b2 > 0; b2--) {
+				const struct way *x = &W[ord[b2]], *y = &W[ord[b2 - 1]];
+				if (x->n > y->n || (x->n == y->n && x->w > y->w + 1e-12)) { int t = ord[b2]; ord[b2] = ord[b2 - 1]; ord[b2 - 1] = t; }
+				else break;
+			}
+		/* seeds: one per way, the most used first; then, up to three, further shapes of the
+		 * ways (repeated letters don't look stamped) */
 		int seeds[HW_LETTERS_VARIANTS], nsd = 0, sgr[HW_LETTERS_VARIANTS];
-		while (nsd < HW_LETTERS_VARIANTS) {
+		for (int k = 0; k < nq && nsd < HW_LETTERS_VARIANTS; k++) { seeds[nsd] = W[ord[k]].seed; sgr[nsd] = W[ord[k]].g; nsd++; }
+		while (nsd < 3) {
 			double bs = -1;
 			int bi = -1, bg = -1;
-			/* a way of writing it that is about as strong gets its first version before the
-			 * main way gets more (an i with its dot and one without) */
-			int want = -1;
-			for (int g = 0; g < ng && nsd && want < 0; g++) {
-				int has = 0;
-				for (int k = 0; k < nsd; k++) has |= sgr[k] == g;
-				if (g != main && !has && G[g].n >= 3 && gw[g] >= 0.5 * gw[main]) want = g;
-			}
-			for (int g = 0; g < ng; g++) {
-				if (want >= 0 && g != want) continue;
-				if (g != main && (!nsd || G[g].n < 3 || gw[g] < 0.5 * gw[main])) continue;
-				for (int i = 0; i < G[g].n; i++) {
-					int x = G[g].members[i];
+			for (int k = 0; k < nq; k++) {
+				const struct way *wy = &W[ord[k]];
+				const struct group *gr = &G[wy->g];
+				for (int i = 0; i < gr->n; i++) {
+					int x = gr->members[i];
+					if (way[x] != ord[k]) continue;
 					double dmin = 1;
-					for (int k = 0; k < nsd; k++) {
-						if (seeds[k] == x) dmin = 0;
-						else if (sgr[k] == g) { double d = rdist(in[x].rs, in[seeds[k]].rs, G[g].total) / TAU; if (d < dmin) dmin = d; }
+					for (int q2 = 0; q2 < nsd; q2++) {
+						if (seeds[q2] == x) dmin = 0;
+						else if (sgr[q2] == wy->g) { double d = rdist(in[x].rs, in[seeds[q2]].rs, gr->total) / TAU; if (d < dmin) dmin = d; }
 					}
-					if (nsd && dmin * TAU < DIFF_MIN) continue;
+					if (dmin * TAU < DIFF_MIN) continue;
 					/* support: other versions of the group near it */
 					int sup = 0;
-					for (int k = 0; k < G[g].n; k++) if (rdist(in[x].rs, in[G[g].members[k]].rs, G[g].total) <= 2 * SIGMA) sup++;
-					if (nsd && sup < 2) continue;
-					double score = in[x].w * (nsd ? dmin : 1) * gw[g] / gw[main];
-					if (score > bs + 1e-12) { bs = score; bi = x; bg = g; }
+					for (int q2 = 0; q2 < gr->n; q2++) if (rdist(in[x].rs, in[gr->members[q2]].rs, gr->total) <= 2 * SIGMA) sup++;
+					if (sup < 2) continue;
+					double score = in[x].w * dmin * wy->n / nv;
+					if (score > bs + 1e-12) { bs = score; bi = x; bg = wy->g; }
 				}
 			}
 			if (bi < 0) break;
 			seeds[nsd] = bi; sgr[nsd] = bg; nsd++;
 		}
+		/* use: each version of a way that gives variants counts for the nearest seed with its
+		 * strokes */
+		int use[HW_LETTERS_VARIANTS] = { 0 };
+		for (int i = 0; i < nv; i++) {
+			int x = v[i], q = 0;
+			if (way[x] < 0) continue;
+			for (int k = 0; k < nq; k++) q |= ord[k] == way[x];
+			if (!q) continue;
+			int bk = -1;
+			double bd = INFINITY;
+			for (int k = 0; k < nsd; k++) {
+				if (sgr[k] != W[way[x]].g) continue;
+				double d = rdist(in[x].rs, in[seeds[k]].rs, G[sgr[k]].total);
+				if (d < bd - 1e-12) { bd = d; bk = k; }
+			}
+			if (bk >= 0) use[bk]++;
+		}
+		/* the most used first (the font's own glyph for the character) */
+		for (int a2 = 1; a2 < nsd; a2++)
+			for (int b2 = a2; b2 > 0 && use[b2] > use[b2 - 1]; b2--) {
+				int t = seeds[b2]; seeds[b2] = seeds[b2 - 1]; seeds[b2 - 1] = t;
+				t = sgr[b2]; sgr[b2] = sgr[b2 - 1]; sgr[b2 - 1] = t;
+				t = use[b2]; use[b2] = use[b2 - 1]; use[b2 - 1] = t;
+			}
 		for (int k = 0; k < nsd; k++)
-			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar])) l->nvar++;
+			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar])) l->var[l->nvar++].use = use[k];
 			else variant_free(&l->var[l->nvar]);
+		letter_slots(l);
+		free(way);
 		if (!l->nvar) l->covered = 0;
 		for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); }
 		free(v);
@@ -1306,13 +1372,26 @@ fail:
 
 /* ---------------------------------------------------------------- runs */
 
-int hw_letters_rotate(int prev, int n)
+int hw_letters_step(int prev)
 {
-	if (prev < 0 || n < 2) return 0;
-	if (prev == 0) return 1;
-	if (prev == 1 && n == 3) return 2;
-	if (prev == 2 && n == 2) return 1;
-	return 0;
+	return prev < 0 ? 0 : (prev + 1) % HW_LETTERS_SLOTS;
+}
+
+/* the cycle of a letter's variants, each as often as it is used, spread out (smooth
+ * weighted round robin: the same uses give the same cycle) */
+static void letter_slots(struct hw_letter *l)
+{
+	long cur[HW_LETTERS_VARIANTS] = { 0 }, tot = 0;
+	for (int v = 0; v < l->nvar; v++) tot += l->var[v].use > 0 ? l->var[v].use : 1;
+	for (int k = 0; k < HW_LETTERS_SLOTS; k++) {
+		int best = 0;
+		for (int v = 0; v < l->nvar; v++) {
+			cur[v] += l->var[v].use > 0 ? l->var[v].use : 1;
+			if (cur[v] > cur[best]) best = v;
+		}
+		cur[best] -= tot;
+		l->slot[k] = (unsigned char)(l->nvar ? best : 0);
+	}
 }
 
 int hw_letters_run(const struct hw_letters_opts *o)

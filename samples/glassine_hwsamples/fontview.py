@@ -32,19 +32,24 @@ def parse(text):
     return out
 
 
-def rotate(prev, n):
-    """the variant at a character, as the font's contextual alternates pick it (letters.h
-    hw_letters_rotate): prev the variant before in the run, None at its start or after a
-    character the font lacks"""
-    if prev is None or n < 2:
-        return 0
-    if prev == 0:
-        return 1
-    if prev == 1 and n == 3:
-        return 2
-    if prev == 2 and n == 2:
-        return 1
-    return 0
+SLOTS = 10      # letters.h HW_LETTERS_SLOTS
+
+
+def step(prev):
+    """the step of the font's cycle at a character or space, as its contextual alternates
+    give it (letters.h hw_letters_step): prev the step before in the run, None at its start
+    or after a character the font lacks"""
+    return 0 if prev is None else (prev + 1) % SLOTS
+
+
+def slots(d):
+    """the variant a character shows at each step (the model's cycle, each variant about as
+    often as it is used; a model without one: in turn)"""
+    n = len(d["variants"])
+    s = d.get("slots")
+    if isinstance(s, list) and len(s) == SLOTS and all(isinstance(v, int) and 0 <= v < n for v in s):
+        return s
+    return [k % n for k in range(SLOTS)]
 
 
 def variants(model, text):
@@ -53,16 +58,15 @@ def variants(model, text):
     for c in text:
         if c == " ":
             out.append(0)
-            prev = 0
+            prev = step(prev)
             continue
         d = model["chars"].get(c) if model else None
         if not d or not d.get("covered") or not d.get("variants"):
             out.append(None)
             prev = None
             continue
-        v = rotate(prev, len(d["variants"]))
-        out.append(v)
-        prev = v
+        prev = step(prev)
+        out.append(slots(d)[prev])
     return out
 
 

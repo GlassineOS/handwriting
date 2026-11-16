@@ -696,15 +696,22 @@ class Pages(Case):
         self.assertEqual(st["state"], "current")
         self.assertEqual({c for c, _, ok in fontview.coverage(model) if ok}, set("abcdefghijklmno"))
         # the preview picks the variants the font's alternates pick
-        n = {c: len(d["variants"]) for c, d in model["chars"].items() if d["covered"]}
-        self.assertGreaterEqual(n["l"], 2)
+        cov = {c: d for c, d in model["chars"].items() if d["covered"]}
+        self.assertGreaterEqual(len(cov["l"]["variants"]), 2)
         text = "llll ab lxl"
         want, prev = [], None
         for c in text:
-            v = TL.rotate(prev, n.get(c, 1)) if c == " " or c in n else None
-            want.append(v)
-            prev = v
+            if c == " ":
+                want.append(0)
+                prev = TL.step(prev)
+            elif c in cov:
+                prev = TL.step(prev)
+                want.append(cov[c]["slots"][prev])
+            else:
+                want.append(None)
+                prev = None
         self.assertEqual(fontview.variants(model, text), want)
+        self.assertGreater(len(set(want[:4])), 1)                 # 'llll' isn't stamped
         lay = fontview.layout(model, text)
         self.assertIsNone(lay[text.index("x")][1])            # x: the system's font
         self.assertTrue(all(lay[i][2] < lay[i + 1][2] for i in range(len(lay) - 1)))
