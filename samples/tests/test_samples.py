@@ -714,6 +714,55 @@ class Pages(Case):
         u.remove_font()
         self.settle(u, lambda: u.font["status"]["font"] is None)
 
+    def test_neaten_page(self):
+        """spec 003 Scenario 4 in the app: what is written comes back with the same strokes,
+        the original stays, a strength change neatens again, nothing becomes a sample"""
+        u = self.make()
+        u.wizard_done()
+        before = len(self.e.cli.samples())
+        u.open_best("intro")
+        u.open_neat()
+        self.assertEqual((u.page, u.tab), ("neat", "learn"))
+        self.assertTrue(self.U.writing(u))
+        line, first = 150, 93
+        strokes = ink(self.rng, n=4) + [[(x, y + line, *r) for x, y, *r in s] for s in ink(self.rng, n=3)]
+        area = (0, 0, 702, 600, line, 0, first)
+        u.neaten((strokes, "device:6.2", area))
+        self.settle(u, lambda: not u.neat_busy and u.neat_shown)
+        self.assertEqual(sorted(u.neat_shown), list(range(len(strokes))))
+        for i, s in enumerate(strokes):
+            self.assertEqual(len(u.neat_shown[i]), len(s))
+        self.assertEqual(self.U.neat_view(u, strokes), [u.neat_shown[i] for i in range(len(strokes))])
+        u.show_original(True)
+        self.assertEqual(self.U.neat_view(u, strokes), strokes)
+        # strength 0 gives the ink back as written
+        u.set_strength(0.0, (strokes, "device:6.2", area))
+        self.settle(u, lambda: not u.neat_busy)
+        for i, s in enumerate(strokes):
+            for a, b in zip(u.neat_shown[i], s):
+                self.assertAlmostEqual(a[0], b[0], places=3)
+                self.assertAlmostEqual(a[1], b[1], places=3)
+        # the same ink again: no new call for lines that didn't change
+        n = self.e.rec.n
+        u.neaten((strokes, "device:6.2", area))
+        self.settle(u, lambda: not u.neat_busy)
+        self.assertEqual(self.e.rec.n, n)
+        # cleared while a call runs: its result is dropped
+        u.neaten((strokes[:2], "device:6.2", area))
+        u.neat_cleared()
+        self.settle(u, lambda: not u.neat_busy)
+        self.assertEqual(u.neat_shown, {})
+        u.go("write")
+        self.assertIsNone(u.neat)
+        self.settle(u)
+        self.assertEqual(len(self.e.cli.samples()), before)
+
+    def test_neat_lines(self):
+        from glassine_hwsamples import neat
+        s = lambda y: [(0, y - 10, 0), (5, y, 5), (9, y + 10, 9)]
+        self.assertEqual(neat.lines([s(80), s(93), s(100), s(200), s(240), s(400)], 150, 93),
+                         {0: [0, 1, 2], 1: [3, 4], 2: [5]})
+
 
 @unittest.skipUnless(os.environ.get("GLASSINE_HWSAMPLES_WINDOW_TEST") == "1", "opens a window (CI runs it on Xvfb)")
 class Window(Case):
