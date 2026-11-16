@@ -442,9 +442,28 @@ fonts; held-out fonts = 1000 lines each, greedy.
   writer's geometry; instead fit a timing model (for example sigma-lognormal) to real ink of
   many writers and sample its timing and dynamics, keeping the shapes broad (the fonts),
   not one writer's.
-- **A test set of other real writers' ink** as soon as donations with donor IDs give one:
+- **A test set of other real writers' ink** as soon as contributions with contributor numbers give one:
   the synthetic held-out fonts only stand in for other hands; report the base model's
   real-ink error per writer.
+- **Spacing as people write it.** The generator spaces letters evenly by their boxes. Use
+  the letter model's ink profiles and pair gaps (`../docs/recognizer.md`, letter spacing)
+  instead, drawn from the spread of real gaps (one writer's varies by about 0.22
+  x-heights), not the mean, so touching and overlapping letters, crossings into the next
+  letter and varying word gaps appear in training; one writer's spacing is at most one
+  style among many.
+- **Flatten part of the text.** Text drawn only with the language's letter statistics
+  teaches the CTC model a character model of its own, which the decoder's character
+  model then counts twice, and real codes and names read worse. Draw part of the
+  pseudo-words at a higher temperature beside the plain ones and keep the small share of
+  uniform strings; check codes, names and unusual words separately against model 2 with
+  the character model. Pseudo-words come only from the training books, never the test
+  book.
+- **Contributors as synthetic writers.** A contributor's letter model (versions in
+  proportion of use, spacing, fitted timing) describes one writer completely; the
+  generator can write any text in that style. With contributions from several people,
+  each becomes one more writer for the base model, where the contribution's licence
+  covers derived models; a contributor in the real test set is never one of the
+  generator's writers.
 - Real ink from more writers (`../docs/samples.md`): one writer improves that writer
   but costs other hands (see above).
 - Joined script in the generator: connect letters within a word into pen-down strokes
