@@ -173,6 +173,9 @@ class UI:
         self.font = None                # the font page: {"status": cli.letters(), "model": fontview.parse()}
         self.font_busy = None           # "making" while the letter model and the font are built
         self.font_name = None           # a name chosen before the font is installed
+        self.letters_job = None         # (done, total) while the letter model is built
+        self.letters_loading = 0        # letters status reads running (off the worker)
+        self.letters_then = []          # what waits for the build running now
         self.pick = None                # {"a": (id, strokes, k), "b": ..., "chosen": i}
         self.pick_loading = False
         self.neat = None                # Neaten my writing: a neat.Neat while the page is open
@@ -603,30 +606,92 @@ class UI:
         self.best = "font"
         self.msg = ""
         self.redraw()
-        self.load_font()
+        self.load_font(build=True)
 
-    def load_font(self):
+    def letters_bg(self, fn, done):
+        """the letter model's calls on a thread of their own: a count or a build of the
+        letters can take a while, and the recognizer's worker stays free for writing"""
+        def go():
+            try:
+                r, err = fn(), None
+            except Exception as e:      # shown on the page, the app keeps running
+                r, err = None, e
+            GLib.idle_add(lambda: (done(r, err), False)[1])
+        threading.Thread(target=go, daemon=True).start()
+
+    def load_font(self, build=False):
+        """the counts and the model as they are now (spec 003 FR-030); build: a missing or
+        out-of-date model is built in the background (FR-008)"""
+        if self.demo:
+            return
+
         def get():
             st = self.cli.letters()
             text = self.cli.letters_model() if st["state"] != "none" else ""
             return {"status": st, "model": fontview.parse(text) if text else None}
 
-        def got(r):
-            self.font = r
-        self.run(get, got)
+        def got(r, err):
+            self.letters_loading -= 1
+            if err:
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
+                self.msg = "Your letters couldn’t be read: %s" % err
+            else:
+                self.font = r
+                st = r["status"]
+                if build and st["state"] != "current" and st["samples"] and not self.letters_job:
+                    self.build_letters()
+            self.redraw()
+        self.letters_loading += 1
+        self.letters_bg(get, got)
+
+    def build_letters(self, then=None):
+        """the letter model built now, at the lowest priority, with its progress on the page;
+        never the font (FR-011). then(ok) runs once it is done (also when a build was running)"""
+        if then:
+            self.letters_then.append(then)
+        if self.letters_job or self.demo:
+            return
+        self.letters_job = (0, 0)
+
+        def progress(done, total):
+            def show():
+                if self.letters_job:
+                    step = (lambda j: int(10 * j[0] / j[1]) if j[1] else 0)
+                    old, self.letters_job = self.letters_job, (done, total)
+                    if step(old) != step(self.letters_job):     # a repaint per tenth, no more
+                        self.redraw()
+                return False
+            GLib.idle_add(show)
+
+        def fin(r, err):
+            self.letters_job = None
+            then, self.letters_then = self.letters_then, []
+            if err:
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
+                self.msg = "Your letters couldn’t be learned: %s" % err
+            if self.best == "font" or self.page == "neat":
+                self.load_font()
+            for f in then:
+                f(not err)
+            self.redraw()
+        self.letters_bg(lambda: self.cli.letters_build(progress), fin)
+        self.redraw()
+
+    def letters_progress(self):
+        """0 to 1 while the letter model is built, None when it isn't"""
+        if not self.letters_job:
+            return None
+        done, total = self.letters_job
+        return done / total if total else 0.0
 
     def make_font(self):
         """the letter model brought up to date, then the font built and installed (under its
         name; the first time, the name chosen here or the default)"""
-        if self.font_busy:
+        if self.font_busy or self.demo:
             return
         self.font_busy = "making"
         self.msg = ""
         name = self.font_name
-
-        def go():
-            self.cli.letters_build()
-            return self.cli.font_install(name)
 
         def fin(r, err):
             self.busy -= 1
@@ -639,10 +704,14 @@ class UI:
                 self.msg = "Installed as %s. It is in the font lists of your apps." % r[0]
                 self.load_font()
             self.redraw()
-        if self.demo:
-            return
-        self.busy += 1
-        self.work.do(go, fin)
+
+        def built(ok):
+            if not ok:
+                self.font_busy = None
+                return
+            self.busy += 1
+            self.work.do(lambda: self.cli.font_install(name), fin)
+        self.build_letters(then=built)
         self.redraw()
 
     def ask_remove_font(self):
@@ -683,7 +752,8 @@ class UI:
 
     def write_missing(self):
         """the characters the font lacks, one at a time, written with care"""
-        miss = fontview.missing((self.font or {}).get("model"))
+        f = self.font or {}
+        miss = fontview.missing(f.get("model"), status=f.get("status"))
         if not miss:
             return
         self.best = None
@@ -693,11 +763,13 @@ class UI:
     # ---------------------------------------------------------- Neaten my writing
 
     def open_neat(self):
-        """Neaten my writing: free writing, shown neatened; nothing becomes a sample"""
+        """Neaten my writing: free writing, shown neatened; nothing becomes a sample. It
+        neatens towards the letter model: a missing or out-of-date one is built meanwhile"""
         self.neat = N.Neat(self.rec, self.state.lang)
         self.neat_shown, self.neat_text, self.neat_orig = {}, "", False
         self.page, self.tab, self.best = "neat", "learn", None
         self.msg = ""
+        self.load_font(build=True)
         self.redraw()
 
     def close_neat(self):
@@ -1351,7 +1423,8 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "wizard.licence", "wizard.ready", "write.prompt", "write.ink", "write.kept", "write.check", "write.sentence",
            "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
-           "best.pick", "best.font", "best.neat", "best.font-new", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
+           "best.pick", "best.font", "best.neat", "best.font-new", "best.font-none", "best.font-building",
+           "best.neat-learning", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
 DEMO_WORDS = ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o’clock", "garden", "bright",
               "yellow", "Thursday", "minimum", "fifty"]
 
@@ -1395,8 +1468,9 @@ def demo_font(installed):
         chars[c] = {"char": c, "samples": n, "covered": n >= 3, "variants": vs}
     model = {"head": {}, "metrics": {"cap_height": 1.5, "ascender": 1.6, "descender": -0.5, "slant": 0.1,
                                      "letter_spacing": 0.2, "word_spacing": 0.9, "ink_width": 0.08}, "chars": chars}
+    counts = {c: (d["samples"] + (1 if installed else 0), len(d["variants"])) for c, d in chars.items() if d["samples"]}
     status = {"state": "outdated" if installed else "current", "covered": sum(1 for d in chars.values() if d["covered"]),
-              "font": ("My handwriting", 3) if installed else None}
+              "samples": 40, "chars": counts, "font": ("My handwriting", 3) if installed else None}
     return {"status": status, "model": model}
 
 
@@ -1484,13 +1558,23 @@ def demo(screen, voice="white"):
         if sub == "intro":
             ui.page = ui.tab = "learn"
             ui.best = "intro"
-        elif sub in ("font", "font-new"):
+        elif sub in ("font", "font-new", "font-none", "font-building"):
             ui.page = ui.tab = "learn"
             ui.best = "font"
-            ui.font = demo_font(sub == "font")
-        elif sub == "neat":
+            ui.font = demo_font(sub in ("font", "font-building"))
+            if sub == "font-none":      # samples written, the letter model not built yet
+                ui.font["status"].update(state="none", font=None)
+                ui.font["model"] = None
+            if sub == "font-building":
+                ui.letters_job = (24, 60)
+        elif sub in ("neat", "neat-learning"):
             ui.page, ui.tab = "neat", "learn"
-            ui.neat_text = "quiet"
+            if sub == "neat":
+                ui.neat_text = "quiet"
+            else:
+                ui.font = demo_font(False)
+                ui.font["status"].update(state="none")
+                ui.letters_job = (10, 60)
         elif sub == "pick":
             ui.page = ui.tab = "learn"
             ui.best = "pick"
