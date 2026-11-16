@@ -17,7 +17,8 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src -w /src alpine:3.24 sh -euc '
             apk add -q build-base pkgconf json-c-dev python3 py3-numpy \
-              py3-gobject3 py3-cairo gtk+3.0 font-dejavu xvfb git
+              py3-gobject3 py3-cairo gtk+3.0 font-dejavu xvfb git \
+              py3-fonttools harfbuzz-utils fontconfig
             # the samples app draws with glassine_ui: the commit the packages build
             git clone -q https://github.com/GlassineOS/ui /tmp/ui
             git -C /tmp/ui checkout -q 77ed45f37ff8fbc1ce2acf8321a17b87a64cbbc5

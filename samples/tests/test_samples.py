@@ -661,6 +661,59 @@ class Pages(Case):
         self.assertEqual(len(self.e.rec.preferences()), 1)
         self.assertEqual(u.picks_today(), 1)
 
+    def test_your_font(self):
+        """spec 003 Scenario 3: the letters it has, the preview's variants as the font's, the
+        missing ones written now, install, a rebuild under a new name, remove"""
+        from glassine_hwsamples import fontview
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
+        rnd = random.Random(2)
+        ss = [TL.sample(t, rnd) for t in ["abcde", "fghij", "klmno"] * 3]
+        ss += [TL.sample("l", rnd, styles={"l": k % 3}) for k in range(9)]
+        f = self.e.dir / "in.jsonl"
+        f.write_text("\n".join([json.dumps({"format": "glassine-handwriting-export", "version": 1})] +
+                               [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
+                                            "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
+        self.e.cli.run("samples", "import", str(f))
+        u = self.make()
+        u.wizard_done()
+        u.open_font()
+        self.settle(u, lambda: u.font is not None)
+        self.assertEqual(u.font["status"]["state"], "none")      # no letter model before the first make
+        u.make_font()
+        self.settle(u, lambda: not u.font_busy and u.font and u.font["status"]["font"])
+        st, model = u.font["status"], u.font["model"]
+        self.assertEqual(st["font"], ("My handwriting", 1))
+        self.assertEqual(st["state"], "current")
+        self.assertEqual({c for c, _, ok in fontview.coverage(model) if ok}, set("abcdefghijklmno"))
+        # the preview picks the variants the font's alternates pick
+        n = {c: len(d["variants"]) for c, d in model["chars"].items() if d["covered"]}
+        self.assertGreaterEqual(n["l"], 2)
+        text = "llll ab lxl"
+        want, prev = [], None
+        for c in text:
+            v = TL.rotate(prev, n.get(c, 1)) if c == " " or c in n else None
+            want.append(v)
+            prev = v
+        self.assertEqual(fontview.variants(model, text), want)
+        lay = fontview.layout(model, text)
+        self.assertIsNone(lay[text.index("x")][1])            # x: the system's font
+        self.assertTrue(all(lay[i][2] < lay[i + 1][2] for i in range(len(lay) - 1)))
+        # the missing ones, one at a time, written with care
+        u.write_missing()
+        self.settle(u)
+        self.assertEqual(u.page, "write")
+        self.assertEqual((u.writer.prompt.text, u.writer.prompt.written), ("p", "careful"))
+        # a new name: made again under it, the version counts on
+        u.open_best("intro")
+        u.open_font()
+        self.settle(u, lambda: u.font is not None)
+        u.font_name = "Notes hand"
+        u.make_font()
+        self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Notes hand", 2))
+        u.remove_font()
+        self.settle(u, lambda: u.font["status"]["font"] is None)
+
 
 @unittest.skipUnless(os.environ.get("GLASSINE_HWSAMPLES_WINDOW_TEST") == "1", "opens a window (CI runs it on Xvfb)")
 class Window(Case):

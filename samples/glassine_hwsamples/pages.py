@@ -9,7 +9,7 @@ import time
 import cairo
 from glassine_ui import paint as PT
 
-from . import prompts as P
+from . import fontview as FV, prompts as P
 from .look import (BTN_H, LAND, PAD, bar, btn, btn_w, btns_right, card, checkbox, chevron_row, dialog, draw_ink,
                    footer, header, icon, icon_rows, lbl, note, page_head, radio, sep, soft_box, tabs)
 
@@ -794,6 +794,8 @@ def learn_page(cr, ui, hits, w, h):
         return best_intro(cr, ui, hits, w, h)
     if ui.best == "pick":
         return best_pick(cr, ui, hits, w, h)
+    if ui.best == "font":
+        return best_font(cr, ui, hits, w, h)
     y = chrome(cr, ui, hits, w)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Learn", "How it’s learning", None, small=True, land_hide=True)
     st = learn_state(ui)
@@ -913,7 +915,18 @@ def best_intro(cr, ui, hits, w, h):
         icon(cr, "chevron_right", 24, PAD + cw - 30, y + ch / 2, k.ink)
         hits.add(PAD, y, cw, ch, fn)
         y += ch + 14
-    t = "A font made from your handwriting, and tidying notes you wrote in a hurry. What you teach it now is kept for then."
+    desc = "Your letters as a font for any app. See which ones it has, then install it."
+    _, th = PT.measure(cr, desc, k["sub"], maxw=cw - 230, wrap=True)
+    ch = max(108, th + 60)
+    card(cr, k, PAD, y, cw, ch)
+    soft_box(cr, k, PAD + 18, y + 16, 132, ch - 32)
+    script_word(cr, k, "Aa Bb", PAD + 28, y + ch / 2 - 22, 30)
+    PT.text(cr, "Your font", k["row"], PAD + 168, y + 28, k.ink, weight=600, maxw=cw - 230)
+    PT.text(cr, desc, k["sub"], PAD + 168, y + 54, k.ink, maxw=cw - 230, wrap=True)
+    icon(cr, "chevron_right", 24, PAD + cw - 30, y + ch / 2, k.ink)
+    hits.add(PAD, y, cw, ch, ui.open_font)
+    y += ch + 14
+    t = "Tidying notes you wrote in a hurry. What you teach it now is kept for then."
     _, th = PT.measure(cr, t, k["sub"], maxw=cw - 70, wrap=True)
     soft_box(cr, k, PAD, y, cw, th + 46)
     icon(cr, "schedule", 22, PAD + 26, y + 26, k.ink)
@@ -969,6 +982,145 @@ def best_pick(cr, ui, hits, w, h):
     n = ui.picks_today()
     PT.text(cr, "%d pick%s today" % (n, "" if n == 1 else "s"), k["sub"], PAD, by + 15, k.soft)
     btns_right(cr, k, hits, w - PAD, by, [("Both fine", ui.next_pick, False), ("Skip", ui.next_pick, False)])
+
+
+def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
+    """text in the person's font as it will look (fontview.layout), wrapped at spaces; a
+    character the font lacks in the system's font. y: the first baseline. -> the last
+    baseline"""
+    m = model["metrics"]
+    line_h = xh * (m.get("ascender", 1.5) - m.get("descender", -0.5)) * 1.15
+    words, cur = [], []
+    for c in text:
+        cur.append(c)
+        if c == " ":
+            words.append("".join(cur))
+            cur = []
+    if cur:
+        words.append("".join(cur))
+    lines, ln = [], ""
+    for wd in words:
+        tryw = FV.layout(model, (ln + wd).rstrip())
+        width = (tryw[-1][2] + tryw[-1][3]) * xh if tryw else 0
+        if ln and width > maxw:
+            lines.append(ln)
+            ln = wd
+        else:
+            ln += wd
+    lines.append(ln)
+    ink = max(1.5, m.get("ink_width", 0.07) * xh)
+    cr.save()
+    cr.set_line_width(ink)
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    for i, ln in enumerate(lines):
+        by = y + i * line_h
+        for c, strokes, cx, adv in FV.layout(model, ln.rstrip()):
+            if strokes is None:
+                PT.text(cr, c, "400 %dpx/1 sans-serif" % max(8, int(xh * 1.5)), x + cx * xh, by - xh * 1.25,
+                        k.soft)
+                continue
+            cr.set_source_rgba(*PT.color(col or k.pen))
+            for st in strokes:
+                if not st:
+                    continue
+                cr.move_to(x + (cx + st[0][0]) * xh, by - st[0][1] * xh)
+                for px, py in st[1:]:
+                    cr.line_to(x + (cx + px) * xh, by - py * xh)
+                if len(st) == 1:
+                    cr.rel_line_to(0.1, 0)
+                cr.stroke()
+    cr.restore()
+    return y + (len(lines) - 1) * line_h
+
+
+def best_font(cr, ui, hits, w, h):
+    """Your font (spec 003 Scenario 3): a preview in the font, which letters it has, what is
+    missing with a way to write it now, the name, make and install"""
+    k = ui.theme
+    y = chrome(cr, ui, hits, w)
+    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Your font",
+                  "A letter is in it once you have written it on its own 3 times; the rest comes from the usual font.",
+                  small=True)
+    cw = w - 2 * PAD
+    by = h - 20 - BTN_H
+    f = ui.font or {}
+    st, model = f.get("status") or {}, f.get("model")
+    if not ui.font:
+        PT.text(cr, "Looking at your letters…", k["row"], PAD, y, k.soft, maxw=cw, wrap=True)
+        btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
+        return
+    # the preview
+    ph = 112
+    soft_box(cr, k, PAD, y, cw, ph)
+    lbl(cr, k, "Preview" if model else "No font yet", PAD + 18, y + 14)
+    if model and any(c[2] for c in FV.coverage(model)):
+        draw_hand(cr, k, model, FV.PREVIEW, PAD + 18, y + 66, 14, cw - 36)
+    else:
+        PT.text(cr, "Write a few words with care first: once letters have 3 samples, they show here.", k["sub"],
+                PAD + 18, y + 44, k.ink, maxw=cw - 36, wrap=True)
+    y += ph + 16
+    # the letters
+    cov = FV.coverage(model)
+    have = sum(1 for c in cov if c[2])
+    lbl(cr, k, "In your font: %d of %d" % (have, len(cov)), PAD, y)
+    y += 22
+    cols = 26 if w > 900 else 13
+    gap = 5
+    cwid = (cw - gap * (cols - 1)) / cols
+    chh = 38
+    for i, (c, n, ok) in enumerate(cov):
+        cx, cy = PAD + (i % cols) * (cwid + gap), y + (i // cols) * (chh + gap)
+        if ok:
+            PT.box(cr, cx, cy, cwid, chh, k["cellR"], bg=k.paper, shadow="inset 0 0 0 1px " + k.rule)
+            PT.text(cr, c, k["row"], cx + cwid / 2, cy + 8, k.ink, align=1)
+        else:
+            PT.box(cr, cx, cy, cwid, chh, k["cellR"], bg=k.hi if n else k.paper,
+                   shadow="inset 0 0 0 1.5px " + k.soft)
+            PT.text(cr, c, k["sub"], cx + cwid / 2, cy + 2, k.soft, align=1)
+            PT.text(cr, "%d/%d" % (min(n, FV.MIN), FV.MIN), k["mono"], cx + cwid / 2, cy + chh - 17, k.soft,
+                    align=1)
+    y += ((len(cov) + cols - 1) // cols) * (chh + gap) + 10
+    miss = FV.missing(model)
+    if miss:
+        t = "Not in it yet: " + " ".join(miss[:24]) + (" …" if len(miss) > 24 else "")
+        bw = btn_w(cr, k, "Write these now", "edit")
+        _, th = PT.measure(cr, t, k["sub"], maxw=cw - bw - 16, wrap=True)
+        PT.text(cr, t, k["sub"], PAD, y + 4, k.ink, maxw=cw - bw - 16, wrap=True)
+        btn(cr, k, hits, PAD + cw - bw, y, "Write these now", ui.write_missing, icon_name="edit", w=bw)
+        y += max(th, BTN_H) + 14
+    # the name and what is installed
+    sep(cr, k, PAD, y, cw)
+    y += 14
+    name = ui.font_shown_name()
+    tw, _ = lbl(cr, k, "Name", PAD, y + 15)
+    PT.text(cr, name, k["row"], PAD + tw + 14, y + 11, k.ink, weight=600, maxw=cw - tw - 160)
+    rw = btn_w(cr, k, "Rename")
+    btn(cr, k, hits, PAD + cw - rw, y, "Rename", ui.rename_font if not ui.font_busy else None, w=rw)
+    y += BTN_H + 10
+    inst = st.get("font")
+    if ui.font_busy:
+        foot = "Making your font… The tablet stays usable meanwhile."
+    elif inst and st.get("state") == "current":
+        foot = "Installed, version %d. Apps show it in their font lists." % inst[1]
+    elif inst:
+        foot = "Installed, version %d. You wrote more since: Update makes it again under the same name." % inst[1]
+    elif have:
+        foot = "Not installed yet. Only you have it on this tablet; it is never donated."
+    else:
+        foot = ""
+    btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
+    btns = []
+    if inst and not ui.font_busy:
+        btns.append(("Remove", ui.ask_remove_font, False))
+    label = "Update" if inst else "Install"
+    can = have and not ui.font_busy and not (inst and st.get("state") == "current" and not ui.font_name)
+    btns.append((label, ui.make_font if can else None, True))
+    btns_right(cr, k, hits, w - PAD, by, btns)
+    if ui.msg:
+        msg_line(cr, ui, by - 30, w)
+    elif foot:
+        PT.text(cr, foot, k["sub"], PAD, by - 30, k.soft, maxw=cw, wrap=True)
 
 
 # ---------------------------------------------------------------- Donate
