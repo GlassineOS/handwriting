@@ -27,15 +27,22 @@ struct hw_size_ref {
 	int pending;                    /* the person's letters not looked up yet */
 	char lang[36];
 	double per_mm;                  /* the session's points per mm (0: not known) */
+	int noweigh;                    /* the reference for the model only, no weighing ("noweigh") */
 };
 
 /* The reference for a session: the person's letters (their confirmed samples of the
  * language, newest first; nothing is stored) in the session's units, else the line
  * (area LINE, or 1 for em), else none. base: the area's first guide line, NAN when the
  * client didn't say. $GLASSINE_HANDWRITING_SIZE ("x,c[,xs,cs]" in the session's units)
- * replaces the person's letters (tests, measurements). */
+ * replaces the person's letters (tests, measurements); "noweigh" (alone or after them) keeps
+ * the reference for a model that reads it (ghm version 2) but weighs nothing. */
 void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw_area *a, double base,
 		     struct hw_size_ref *out);
+
+/* The reference height a model that reads it (ghm version 2) scales the ink by: the
+ * person's small letters, else HW_LINE_XH lines; 0 without either. *base: the guide line
+ * the ink sits on (the first at or below the median of its y), NAN without guides. */
+double hw_size_ref_height(const struct hw_size_ref *ref, const struct hw_stroke *s, size_t ns, double *base);
 
 /* a sample taken back: its measurement out of the store's `size` (the caller holds the
  * store's lock); 0 or -1 */
@@ -53,6 +60,7 @@ enum { HW_GLYPH_BIG, HW_GLYPH_DOT, HW_GLYPH_FLAT, HW_GLYPH_THIN };
  * set apart at the end of longer ink, have their classes weighed by the glyph's size
  * within the model's chance of a character there (a blank stays as likely). The ink's own
  * log-probabilities stay in r->logp0 for the fit. Without a reference, plain hw_run. */
+/* For a model that reads the reference height, the run is made with it (hw_run_at). */
 int hw_run_sized(struct hw_lang *l, const struct hw_stroke *s, size_t ns, const struct hw_size_ref *ref,
 		 struct hw_run *r);
 

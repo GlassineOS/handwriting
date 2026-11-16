@@ -114,7 +114,8 @@ def check_chars(rng):
 
 
 def main():
-    features = load("features").features
+    fm = load("features")
+    features, features_ref = fm.features, fm.features_ref
     text_chars = chars()
     mk = (HERE / "mkmodel.py").read_text()
     if f'CHARS = "{text_chars}"' not in mk:
@@ -132,6 +133,16 @@ def main():
                       "features": np.round(f, 7).tolist()})
         # strokes as written to the case (rounded): the features of exactly those
         cases[-1]["features"] = np.round(features([np.asarray(q, float).reshape(-1, 3) for q in cases[-1]["strokes"]]), 7).tolist()
+    # the reference-height features (ghm version 2): a reference from a tenth to ten times the
+    # ink's height, a baseline or none
+    for i in range(300):
+        s = ink(rng)
+        st = [np.asarray(np.round(q, 6), float).reshape(-1, 3) for q in s]
+        pts = np.concatenate([q for q in st if len(q)]) if any(len(q) for q in st) else np.zeros((1, 3))
+        h = float(np.round(max(np.ptp(pts[:, 1]), 1e-3) * 10 ** rng.uniform(-1, 1), 6))
+        base = None if rng.random() < 0.3 else float(np.round(np.quantile(pts[:, 1], rng.uniform(0, 1)), 6))
+        cases.append({"name": f"reference {i}", "strokes": [q.tolist() for q in st], "h": h, "base": base,
+                      "features": np.round(features_ref(st, h, base), 7).tolist()})
     with tempfile.NamedTemporaryFile("w", suffix=".json") as fh:
         json.dump(cases, fh)
         fh.flush()

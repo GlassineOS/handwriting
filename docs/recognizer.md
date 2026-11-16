@@ -229,9 +229,10 @@ without it.
 
 ## Size (FR-017)
 
-The model reads every piece of ink scaled to its own height, so on its own it can't tell a lone
+A version 1 model reads every piece of ink scaled to its own height, so on its own it can't tell a lone
 `.` from an `O` or a lone `o` from an `O`. The recognizer compares the ink's real size with a
-reference and weighs the model's reading by it.
+reference and weighs the model's reading by it. A version 2 model reads the ink at this
+reference itself (Base models); the weighing below applies to both.
 
 - **Reference.** The person's letters: from their newest samples of the language (up to 48 of
   three characters or more and 48 of one letter or digit), the height of each small letter
@@ -831,6 +832,16 @@ trainer's (`train/`, `features.py`); the recognizer computes the same features t
 rounding, checked by `make check`. `R` feature rows give `ceil(R / 2^S)` frames; frame `f` is
 centred on row `f·2^S`.
 
+**ghm, version 2** (FR-018): the same layout as version 1, `F` = 6, for a model that reads the
+ink scaled by a reference height instead of its own (the trainer's `features_ref`): every length
+in reference heights, y above the baseline of the guide the ink sits on, and a sixth input, the
+ink's size, log(max(height, width / 4) / reference), clipped to ±4, the same in every row. The
+reference is the person's small letters in the session's units (Size, below), else 0.2 of the
+area's line (or of 1 em); the baseline the area's guide line at or below the median of the ink's
+y (`BASE`; a stored sample's guides are at two thirds of each of its area's lines), else the
+median of its y. Without any reference the ink's own core height stands in. A version 1 model
+reads as before; the recognizer reads both.
+
 **gclm, version 1** (the character model, little-endian), made by the trainer's
 `glassine-train charlm` (`train/src/glassine_train/charlm.py`, from the training books' text,
 never the test texts). A 48-byte header: `GHCM`, then eleven 32-bit unsigned integers: version
@@ -863,7 +874,7 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
-| `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size |
+| `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` (alone or after the letters) the reference for a version 2 model only, no weighing |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check (comma-separated) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |

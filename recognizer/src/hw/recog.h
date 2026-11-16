@@ -33,6 +33,7 @@ void hw_lang_forget_all(void);
 struct hw_run {
 	long rows, T;
 	int C, down;                    /* classes; input rows per frame */
+	int nfeat;                      /* features per row */
 	float *feats, *logp, *frames;
 	struct hw_origin *org;
 	size_t nstrokes;
@@ -43,6 +44,10 @@ struct hw_run {
 };
 
 int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r);
+/* hw_run with the ink's reference height h and baseline (the ink's y of it, NAN: none), in
+ * the ink's units, for a model that reads them (ghm version 2); without one (h <= 0) the
+ * ink's own core height. A version 1 model ignores them. */
+int hw_run_at(struct hw_lang *l, const struct hw_stroke *s, size_t ns, double h, double base, struct hw_run *r);
 /* on: hw_run keeps its last run and gives a copy for the same strokes, language and
  * adaptation (a server answering several requests on one piece of writing) */
 void hw_run_cache(int on);
