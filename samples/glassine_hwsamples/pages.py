@@ -1108,7 +1108,8 @@ def best_font(cr, ui, hits, w, h):
     k = ui.theme
     y = chrome(cr, ui, hits, w)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Your font",
-                  "A letter is in it once you have written it on its own 3 times; the rest comes from the usual font.",
+                  "A letter is in your font once 3 of your samples show it clearly, in words or on its own; "
+                  "the rest comes from the usual font.",
                   small=True)
     cw = w - 2 * PAD
     by = h - 20 - BTN_H
