@@ -184,6 +184,15 @@ class Recognizer:
         f = lambda v: None if v == "-" else int(v)
         return [(r[1 + 4 * i], r[2 + 4 * i], f(r[3 + 4 * i]), f(r[4 + 4 * i])) for i in range(n)]
 
+    def neaten(self, session, strength, text=None):
+        """(text, [(stroke, how, POINTS)]): the session's ink neatened (docs/recognizer.md,
+        Neatening); the session itself is unchanged"""
+        r = self.ask("neaten", session, fmt(strength), *([esc(text)] if text else []))
+        if r[0] != "ok":
+            raise Error("neaten " + r[0])
+        k = int(r[2])
+        return unesc(r[1]), [(int(r[3 + 3 * i]), r[4 + 3 * i], r[5 + 3 * i]) for i in range(k)]
+
     def end(self, session):
         try:
             self.ask("end", session)
