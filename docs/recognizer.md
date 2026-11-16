@@ -572,7 +572,8 @@ shows a page about the letters, spec 003 FR-008). `-f` makes it even when nothin
   samples are marked so (one per character) counts 2 times its use in the cycle.
 
 Marks name samples rather than versions, so they keep their meaning when the versions are made
-again: the client marks a version's `ids` (below). A change of marks makes the model outdated;
+again: the client marks a version's `ids` (below); a model whose versions have no `ids` (built
+before the marks) is outdated. A change of marks makes the model outdated;
 it changes the font only at the next `font install`.
 
 **One character (FR-032).** `letters build -c CHAR` learns one character again from its samples
@@ -593,7 +594,9 @@ make them now, at once.
 **Model file** (`letters/model`, `letters show`): JSON lines. The first
 `{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
 then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"slant":…,
-"letter_spacing":…,"word_spacing":…,"ink_width":…}}` (the spacing's typical and word gaps), then
+"letter_spacing":…,"word_spacing":…,"ink_width":…,"x_height_per_line":…,"base_below_guide":…,
+"x_height_mm":…}}` (the spacing's typical and word gaps; the last three what a sample without
+letters to measure its x-height or baseline from takes, which a one-character build reuses), then
 `{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N],…],
 "sides":[[RIGHT,LEFT,GAP,N],…],"left_shapes":[[…8],…],"right_shapes":[[…8],…]}}`, then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
