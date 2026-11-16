@@ -48,6 +48,14 @@ def pts(stroke, t0=0.0):
     return " ".join(f"{p[0]:.4f},{p[1]:.4f},{(p[2] - t0) * 1000:.1f}" for p in stroke)
 
 
+def fnv(b):
+    """a sample's id: the first 16 hex digits of the 64-bit FNV-1a of its line"""
+    h = 1469598103934665603
+    for x in b:
+        h = ((h ^ x) * 1099511628211) & (2 ** 64 - 1)
+    return "%016x" % h
+
+
 def esc(s):
     return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
 
@@ -598,6 +606,85 @@ class Samples(unittest.TestCase):
         bad.write_text('{"format":"something-else","version":1}\n')
         self.assertNotEqual(self.env.run("samples", "import", str(bad), check=False).returncode, 0)
 
+    def test_marks_and_preferences(self):
+        """spec 003: a session's marking goes into the samples it keeps; a preference goes with
+        its samples: listed, removed with either, exported and imported with both, donated
+        only with both, naming the samples by their ids in that file"""
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        pair = "0123456789abcdef"
+        c.write_sample(INK[0], session="q")
+        self.assertEqual(c.ask("mark", "q", "sloppy", "-")[2:], ["bad-mark"])
+        self.assertEqual(c.ask("mark", "q", "quick", "x" * 16)[2:], ["bad-mark"])
+        self.assertEqual(c.ask("mark", "q", "quick", pair)[2:], ["ok"])
+        q = c.ask("confirm", "q", "picked", esc(INK[0]["text"]))[3]
+        c.write_sample(INK[1], session="k")
+        c.ask("mark", "k", "careful", pair)
+        k = c.ask("confirm", "k", "picked", esc(INK[1]["text"]))[3]
+        plain = self.confirm(c, INK[2], session="p")[3]
+        line = lambda sid: json.loads(unesc(c.ask("sample", sid)[2]))
+        self.assertEqual((line(q)["written"], line(q)["pair"]), ("quick", pair))
+        self.assertEqual((line(k)["written"], line(k)["pair"]), ("careful", pair))
+        self.assertFalse({"written", "pair"} & set(line(plain)))
+        self.assertEqual(c.ask("marked")[2:], ["2", q, "quick", pair, k, "careful", pair])
+        # preferences: of the client's own samples, a character by its place in the text
+        self.assertEqual(c.ask("prefer", k, q)[2:], ["ok"])
+        self.assertEqual(c.ask("prefer", k, plain, "0", "1")[2:], ["ok"])
+        self.assertEqual(c.ask("prefer", k, plain, "99", "0")[2:], ["bad-char"])
+        self.assertEqual(c.ask("prefer", k, k)[2:], ["bad-char"])
+        self.assertEqual(c.ask("prefer", k, "f" * 16)[2:], ["unknown-sample"])
+        self.assertEqual(c.ask("preferences")[2:], ["2", k, q, "-", "-", k, plain, "0", "1"])
+        o = self.env.start("-i", "0")
+        o.ask("hello", "1", "org.example.other")
+        self.assertEqual(o.ask("prefer", q, k)[2:], ["denied"])
+        self.assertEqual(o.ask("preferences")[2:], ["0"])
+        self.assertEqual(o.ask("marked")[2:], ["0"])
+        o.close()
+        c.close()
+        # the index made again from the file keeps the marking
+        (self.env.store / "samples.index").unlink()
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        self.assertEqual(c.ask("marked")[2:], ["2", q, "quick", pair, k, "careful", pair])
+        c.close()
+        # a donation holds a preference only with both of its samples
+        self.env.run("donation", "start", "CC0-1.0")
+        self.env.run("donation", "add", k)
+        self.env.run("donation", "add", q)
+        out = self.env.dir / "donation.jsonl"
+        self.env.run("donation", "write", str(out))
+        lines = out.read_text().splitlines()
+        rows = [json.loads(x) for x in lines]
+        smp = [x for x in rows if "preference" not in x]
+        prefs = [x["preference"] for x in rows if "preference" in x]
+        self.assertEqual({(x["written"], x["pair"]) for x in smp}, {("quick", pair), ("careful", pair)})
+        ids = {fnv(x.encode()): json.loads(x) for x in lines if '"preference"' not in x}
+        self.assertEqual(len(prefs), 1)
+        self.assertEqual((ids[prefs[0]["chosen"]]["written"], ids[prefs[0]["other"]]["written"]), ("careful", "quick"))
+        self.assertNotIn("chosen_char", prefs[0])
+        # export and import carry them with their samples
+        exp = self.env.dir / "export.jsonl"
+        self.env.run("samples", "export", str(exp))
+        other = Env()
+        try:
+            other.run("samples", "import", str(exp))
+            oc = other.start("-i", "0")
+            oc.ask("hello", "1", "org.example.samples")
+            self.assertEqual(oc.ask("preferences")[2:], ["2", k, q, "-", "-", k, plain, "0", "1"])
+            self.assertEqual(oc.ask("marked")[2:], ["2", q, "quick", pair, k, "careful", pair])
+            oc.close()
+        finally:
+            other.close()
+        # deleting a sample takes its preferences; its pair partner stays
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        self.assertEqual(c.ask("forget", q)[2:], ["ok", "samples,donation"])
+        self.assertEqual(c.ask("preferences")[2:], ["1", k, plain, "0", "1"])
+        self.assertEqual(c.ask("marked")[2:], ["1", k, "careful", pair])
+        c.close()
+        self.env.run("samples", "erase", "-c", "org.example.samples")
+        self.assertFalse((self.env.store / "preferences").read_text().strip() if (self.env.store / "preferences").exists() else "")
+
     def test_store_survives_a_lost_append(self):
         """a crash can leave zero bytes where an append never reached the disk, or a line cut
         short: every other sample stays readable, and the next one starts on its own line"""
@@ -662,7 +749,7 @@ class Samples(unittest.TestCase):
             else:
                 ix.write_bytes(damage)
             self.assertEqual(self.env.run("samples", "list").stdout, before)
-        self.assertTrue(ix.read_text().startswith("glassine-handwriting-index 1 "))
+        self.assertTrue(ix.read_text().startswith("glassine-handwriting-index 2 "))
 
     def test_store_of_an_earlier_version(self):
         """a store without an index, and lines an earlier version appended behind the index's
@@ -764,6 +851,9 @@ class Samples(unittest.TestCase):
         c.close()
         self.assertEqual(self.env.run("samples", "list").stdout.count("\n"), 1)   # donations aren't samples
         self.env.run("donation", "add", r[3])            # one of the person's own, picked
+        self.env.run("donation", "add", r[3])            # once
+        self.assertEqual(len(self.env.run("donation", "samples").stdout.split()), 2)
+        self.assertEqual(self.env.run("donation", "samples").stdout.split()[1], r[3])
         out = self.env.dir / "donation.jsonl"
         self.env.run("donation", "write", str(out))
         rows = [json.loads(x) for x in out.read_text().splitlines()]
