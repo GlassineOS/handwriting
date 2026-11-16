@@ -11,18 +11,25 @@ import cairo
 from glassine_ui import paint as PT
 
 from . import fontview as FV, neat as N, prompts as P
-from .look import (BTN_H, LAND, PAD, bar, btn, btn_w, btns_right, card, checkbox, chevron_row, dialog, draw_ink,
+from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_w, btns_right, card, checkbox, chevron_row, dialog, draw_ink,
                    footer, header, icon, icon_rows, ink_bounds, lbl, note, page_head, radio, sep, soft_box, tabs)
 
 SUB = "Teach the tablet your hand"
 SET_NAMES = {P.AUTO: "What needs practice", "words": "Words", "sentences": "Sentences", "pangrams": "Pangrams",
              "letters": "Single letters", "digits": "Digits and punctuation", P.OWN: "My own words"}
+SET_NAMES.update({"best": "Write it your best", "pick": "Which one is nicer?"})
 SETS = ((P.AUTO, "A mix, weighted towards what it knows least about your hand", "auto_awesome"),
         ("words", "Common words, one at a time", "short_text"), ("sentences", "Short everyday sentences", "notes"),
         ("pangrams", "Sentences that use every letter", "abc"), ("letters", "Each letter, small and capital",
                                                                "match_case"),
         ("digits", "0 to 9, and marks like , . ? ! :", "pin"),
         (P.OWN, "A list you keep in your files. Never contributed.", "person_edit"))
+# a guest's sets (spec 002 FR-018): the shipped ones, and the careful samples and the picks, which
+# are on Learn in the owner's session; no word list of their own
+GSETS = ((P.AUTO, "A mix, weighted towards what you have written least", "auto_awesome"),
+         *(x for x in SETS if x[0] not in (P.AUTO, P.OWN)),
+         ("best", "A word written slowly and carefully, sometimes once quickly first", "draw"),
+         ("pick", "Two of your own versions side by side; tap the nicer one", "compare"))
 LICENCES = (("CC0-1.0", "Free for anyone", "CC0",
              "Anyone may use, change and share your samples for anything, with no conditions."),
             ("CC-BY-4.0", "Free, with a mention", "CC BY 4.0",
@@ -32,11 +39,13 @@ LIC = {k: (n, c) for k, n, c, _ in LICENCES}
 # what a contribution holds, as hw_donation_write writes it (docs/samples.md)
 HOLDS = ["The pen strokes you write for the words the app shows", "Those words themselves",
          "The size of the writing area, and which way the tablet was turned",
-         "What the tablet read when you wrote it", "Quick or careful, and your picks (with both versions)",
-         "A random contributor number, the same in all your contributions"]
+         "What the tablet read when you wrote it", "Quick or careful, and your picks (with both versions)"]
+# the contributor number is in the list nowhere: it has a card of its own (donor_row)
 NEVER = ["Your name, or anything else about you", "Anything else about this tablet", "Dates and times",
          "Anything you write in other apps, or words from your own list unless you add them one by one",
          "A font made from your handwriting"]
+GNEVER = ["Your name, or the name this tablet knows you by", "Your age, or anything else about you",
+          "Anything about this tablet or its owner", "Dates and times", "Anything you write outside this session"]
 WIZ = ("w-welcome", "w-try", "w-private", "w-learning", "w-share")
 WIZ_NAMES = ("Welcome", "Try one", "Your samples", "Learning", "Contributing")
 WIZ_STEP = {"w-try-done": 1, "w-licence": 4, "w-ready": 4}
@@ -73,11 +82,44 @@ def fill(cr, k, w, h):
     PT.fill(cr, 0, 0, w, h, k.paper)
 
 
+def head(cr, ui, hits, w, sub=None, **kw):
+    """the app's head; on its right the way into the other writers in the owner's session, or
+    whose session it is and Finish in a guest's, on every page (spec 002 FR-015) -> height"""
+    k = ui.theme
+    if ui.guest:
+        sub = "A guest’s session" if k.name == "white" else "a guest’s session"
+        kw = {}
+    h = header(cr, k, w, sub or SUB, **kw)
+    if kw.get("steps") or ui.page == "others" or not ui.loaded and not ui.guest:
+        return h
+    bh = 44
+    y = (h - bh) / 2
+    if ui.guest:
+        fw = btn_w(cr, k, "Finish")
+        btn(cr, k, hits, w - PAD - fw, y, "Finish", ui.finish, pri=True, w=fw, h=bh)
+        name_chip(cr, k, w - PAD - fw - 10, y, bh, ui.session.name, maxw=min(280, w - fw - 290))
+    elif ui.page != "wizard":
+        bw = btn_w(cr, k, "Someone else writes", "group")
+        btn(cr, k, hits, w - PAD - bw, y, "Someone else writes", ui.open_others, icon_name="group", w=bw, h=bh)
+    return h
+
+
+def name_chip(cr, k, right, y, h, name, maxw=280):
+    """the writer whose writing is collected: their name, ending at right"""
+    tw = min(PT.measure(cr, name, k["row"], weight=600)[0], maxw - 56)
+    cw = tw + 56
+    PT.box(cr, right - cw, y, cw, h, k["btnR"], bg=k.paper, shadow="inset 0 0 0 2px " + k.ink)
+    icon(cr, "person", 22, right - cw + 21, y + h / 2, k.ink)
+    _, th = PT.measure(cr, name, k["row"], weight=600)
+    PT.text(cr, name, k["row"], right - cw + 40, y + (h - th) / 2, k.ink, weight=600, maxw=tw + 1)
+    return cw
+
+
 def chrome(cr, ui, hits, w):
     """head and tabs of a page; -> the y below"""
     k = ui.theme
-    y = header(cr, k, w, SUB)
-    return tabs(cr, k, hits, w, y, ui.tab, ui.go)
+    y = head(cr, ui, hits, w)
+    return tabs(cr, k, hits, w, y, ui.tab, ui.go, GUEST_TABS if ui.guest else TABS)
 
 
 def msg_line(cr, ui, y, w):
@@ -191,8 +233,10 @@ def write_head(cr, ui, hits, w, h=None):
     k = ui.theme
     if h:
         fill(cr, k, w, h)
-    if ui.page == "wizard":
+    if ui.page == "wizard" and not ui.guest:
         return header(cr, k, w, "Getting started" if k.name == "white" else "getting started", steps=True, step_i=1)
+    if ui.page == "wizard":
+        return head(cr, ui, hits, w)
     return chrome(cr, ui, hits, w)
 
 
@@ -206,8 +250,12 @@ def write_top(cr, ui, hits, w, h=None, head=True):
     p = wr.prompt if wr else None
     best = bool(wr and wr.best is not None)
     y += 20
+    if ui.done and not ui.guest and head:
+        y += done_note(cr, ui, hits, PAD, y, w - 2 * PAD) + 20
     lbl(cr, k, ("Your best" if k.name == "white" else "your best") if best else k["writeThis"], PAD, y + 12)
-    if best:
+    if best and ui.guest:               # a set there (spec 002 FR-018)
+        dropdown(cr, k, hits, w - PAD, y, "Write it your best", ui.open_sets)
+    elif best:
         dropdown(cr, k, hits, w - PAD, y, "Your handwriting", lambda: ui.open_best("intro"))
     else:
         dropdown(cr, k, hits, w - PAD, y, SET_NAMES.get(ui.state.set, ui.state.set), ui.open_sets)
@@ -253,6 +301,8 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     if wr and wr.best is not None:
         n = ui.careful_today()
         line = "%d careful sample%s today" % (n, "" if n == 1 else "s")
+    elif ui.loaded and ui.guest:         # the writer's own counts; nothing about learning
+        line = "Today %d · %d in all" % ui.counts
     elif ui.loaded:
         line = "Today %d · %d in all · %d new to learn from" % (ui.counts[0], ui.counts[1], ui.fresh)
     else:
@@ -349,9 +399,9 @@ def try_top(cr, ui, hits, w, h=None, head=True):
     if h:
         fill(cr, k, w, h)
     if head:
-        y = wizard_head(cr, ui, w, 1)
+        y = wizard_head(cr, ui, hits, w, 1)
     else:
-        lbl(cr, k, k.eyebrow(2, WIZ_NAMES[1]), PAD, 26)
+        lbl(cr, k, k.eyebrow(2, WIZ_NAMES[1], 3 if ui.guest else 5), PAD, 26)
         y = 52
     y = page_head(cr, k, PAD, y, w - 2 * PAD, None, "Try one now", "Write the word on the line below, the way you "
                   "always write.", small=True)
@@ -424,8 +474,17 @@ def tips(cr, k, x, y, w, rows):
 WIZ_FOOT = 84
 
 
-def wizard_head(cr, ui, w, i):
+GWIZ_NAMES = ("Hello", "Try one", "Contributing")       # a guest's introduction (spec 002 FR-019)
+GWIZ_STEP = {"g-hello": 0, "w-try": 1, "w-share": 2, "g-age": 2, "w-licence": 2}
+
+
+def wizard_head(cr, ui, hits, w, i):
     k = ui.theme
+    if ui.guest:                            # whose session it is and Finish, from the first step on
+        hh = head(cr, ui, hits, w)
+        i = GWIZ_STEP.get(ui.wstep, 0)
+        lbl(cr, k, k.eyebrow(i + 1, GWIZ_NAMES[i], 3), PAD, hh + 26)
+        return hh + 52
     hh = header(cr, k, w, "Getting started" if k.name == "white" else "getting started", steps=True, step_i=i,
                 done=ui.wstep == "w-ready")
     if ui.wstep == "w-ready":
@@ -434,7 +493,36 @@ def wizard_head(cr, ui, w, i):
     return hh + 52
 
 
+def guest_foot(cr, ui, hits, w, h):
+    """a guest's introduction: no Back on Hello, Skip to writing up to Try one, Not now beside
+    Continue on 18 or older"""
+    k = ui.theme
+    s = ui.wstep
+    land = w > h
+    status = {"w-share": "Either way is fine; change it any time in Contribute." if land else "Your choice, either way",
+              "w-licence": "" if ui.licence_pick else "Pick one to go on"}.get(s, "")
+    label = {"g-age": "Continue to the licence", "w-licence": "Contribute with this licence"}.get(s, "Continue")
+    nxt = ui.wizard_next
+    if s == "g-age" and not ui.adult or s == "w-licence" and not ui.licence_pick:
+        nxt = None
+    if s == "w-try" and ui.tried and not (ui.writer and ui.writer.shown):
+        nxt = None                       # its reading is still coming
+    if s == "w-share":
+        label = None
+    choices = []
+    if s == "w-share" and land:
+        choices = [("Not now", "schedule", ui.wizard_decline),
+                   ("Yes, I’d like to contribute", "volunteer_activism", lambda: ui.wizard_to("g-age"))]
+    elif s == "g-age":
+        choices = [("Not now", "schedule", ui.wizard_decline)]
+    footer(cr, k, hits, w, h - WIZ_FOOT, WIZ_FOOT, choices=choices,
+           back=ui.guest_back if s != "g-hello" else None, status=status,
+           skip=ui.wizard_skip if s in ("g-hello", "w-try") else None, next_=nxt, next_label=label)
+
+
 def wizard_foot(cr, ui, hits, w, h):
+    if ui.guest:
+        return guest_foot(cr, ui, hits, w, h)
     k = ui.theme
     s = ui.wstep
     back = {"w-try": "w-welcome", "w-try-done": "w-welcome", "w-private": "w-try", "w-learning": "w-private",
@@ -462,8 +550,11 @@ def wizard_page(cr, ui, hits, w, h):
     fill(cr, k, w, h)
     s = ui.wstep
     i = WIZ_STEP.get(s, WIZ.index(s) if s in WIZ else 0)
-    y = wizard_head(cr, ui, w, i)
+    y = wizard_head(cr, ui, hits, w, i)
     cw = w - 2 * PAD
+    if ui.guest and s in ("g-hello", "g-age", "w-share"):
+        guest_step(cr, ui, hits, w, h, y)
+        return wizard_foot(cr, ui, hits, w, h)
     if s == "w-welcome":
         y = page_head(cr, k, PAD, y, cw, None, "Teach this tablet your handwriting",
                       "You write a few words it shows you. It learns how you write, so it reads you better everywhere "
@@ -564,18 +655,86 @@ def wizard_page(cr, ui, hits, w, h):
     wizard_foot(cr, ui, hits, w, h)
 
 
-def holds_lists(cr, k, x, y, w):
+def guest_step(cr, ui, hits, w, h, y):
+    """a guest's Hello, the question asked of them, and 18 or older (spec 002 FR-019): it
+    promises nothing a guest's session doesn't do, and says plainly what the owner can do"""
+    k = ui.theme
+    cw = w - 2 * PAD
+    s = ui.wstep
+    land = w > h
+    name = ui.session.name or ""
+    if s == "g-hello":
+        y = page_head(cr, k, PAD, y, cw, None, "Hello, " + name, None if land else
+                      "The tablet’s owner has asked you to write a few words here. This is what happens to them.",
+                      small=land)
+        if not land:
+            art = "This is %s’s session. What you write here is kept apart from the owner’s writing." % name
+            wt = 600 if k.name == "white" else 400
+            _, th = PT.measure(cr, art, k["row"], weight=wt, maxw=cw - 110, wrap=True)
+            ah = max(88, th + 40)
+            soft_box(cr, k, PAD, y, cw, ah)
+            icon(cr, "person", 44, PAD + 46, y + ah / 2, k.ink)
+            PT.text(cr, art, k["row"], PAD + 92, y + (ah - th) / 2, k.ink, weight=wt, maxw=cw - 110, wrap=True)
+            y += ah + 18
+        icon_rows(cr, k, PAD, y, cw, [
+            ("edit", "Write what it shows", "A word or a short sentence at a time. Stop whenever you like: Finish, at the "
+             "top, hands the tablet back."),
+            ("inventory_2", "Your samples are kept here, apart", "On this tablet, in a place of their own, apart from the "
+             "owner’s and from anyone else’s."),
+            ("block", "Nothing here learns from them", "Your writing isn’t used to read anyone’s handwriting on this "
+             "tablet."),
+            ("visibility", "The owner can open them", "There is no password. The tablet’s owner can open your session and "
+             "your samples without you, and remove them."),
+            ("volunteer_activism", "Contributing is up to you", "Next, you can choose whether to contribute your samples. "
+             "It is off unless you turn it on.")])
+    elif s == "g-age":
+        y = page_head(cr, k, PAD, y, cw, None, "Are you 18 or older?", "Please answer this yourself, before you choose a "
+                      "licence.", small=land)
+        sub = "Only an adult can agree to a licence for their own handwriting."
+        _, th = PT.measure(cr, sub, k["sub"], maxw=cw - 100, wrap=True)
+        bh = max(80, th + 52)
+        card(cr, k, PAD, y, cw, bh, on=ui.adult)
+        checkbox(cr, k, PAD + 18, y + (bh - 30) / 2, ui.adult, sz=30)
+        PT.text(cr, "I am 18 or older", k["row"], PAD + 64, y + 16, k.ink, weight=600, maxw=cw - 84)
+        PT.text(cr, sub, k["sub"], PAD + 64, y + 42, k.soft, maxw=cw - 84, wrap=True)
+        hits.add(PAD, y, cw, bh, ui.toggle_adult)
+        y += bh + 18
+        icon_rows(cr, k, PAD, y, cw, [
+            ("visibility_off", "Your answer isn’t kept", "It is asked once, here, and saved nowhere: not with your samples "
+             "and not in a contribution."),
+            ("schedule", "Younger, or not sure?", "Choose Not now. You go on writing as before; nothing of yours is "
+             "contributed."),
+            ("volunteer_activism", "You can come back to it", "Contribute offers this question again, whenever you like.")])
+    else:
+        y = page_head(cr, k, PAD, y, cw, None, "Would you like to contribute your samples?",
+                      "The handwriting reader in GlassineOS is open source. It learns to read everyone from handwriting "
+                      "that people choose to contribute. Only you can say yes for your samples.", small=True)
+        y = holds_lists(cr, k, PAD, y, cw, never=GNEVER) + 14
+        y = how_note(cr, k, PAD, y, cw, "outgoing_mail", "Nothing is sent by itself. Contributing sets a copy aside on the "
+                     "tablet. Finish, or Save as a file, puts it in one file in this tablet’s Documents, for the owner to "
+                     "send to the project.") + 18
+        if land:
+            return
+        bw = (cw - 14) / 2
+        btn(cr, k, hits, PAD, y, "Not now", ui.wizard_decline, icon_name="schedule", w=bw, h=60)
+        btn(cr, k, hits, PAD + bw + 14, y, "Yes, I’d like to contribute", lambda: ui.wizard_to("g-age"),
+            icon_name="volunteer_activism", w=bw, h=60)
+        PT.text(cr, "Either way is fine. You can change your mind any time in Contribute.", k["sub"], w / 2, y + 76, k.soft,
+                align=1)
+
+
+def holds_lists(cr, k, x, y, w, never=NEVER):
     """what a contribution holds and what it never holds, side by side; -> the y below"""
     cw = (w - 14) / 2
     hs = []
-    for head, items in (("What a contribution holds", HOLDS), ("What it never holds", NEVER)):
+    for head, items in (("What a contribution holds", HOLDS), ("What it never holds", never)):
         hh = 40
         for it in items:
             hh += PT.measure(cr, it, k["sub"], maxw=cw - 52, wrap=True)[1] + 10
         hs.append(hh + 8)
     h = max(hs)
     for i, (head, items, ic) in enumerate((("What a contribution holds", HOLDS, "check"),
-                                          ("What it never holds", NEVER, "remove"))):
+                                          ("What it never holds", never, "remove"))):
         bx = x + i * (cw + 14)
         card(cr, k, bx, y, cw, h)
         lbl(cr, k, head, bx + 12, y + 14)
@@ -622,16 +781,20 @@ def sets_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
     y = chrome(cr, ui, hits, w)
+    g = ui.guest
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Write", "What to write",
                   "Choose what the prompts are made of. “What needs practice” mixes everything and favours the letters "
-                  "you have written least, or that it reads wrong most often.", small=True, keep_lead=True)
+                  "you have written least" + ("." if g else ", or that it reads wrong most often."), small=True,
+                  keep_lead=True)
     cols = 2 if LAND[0] else 1
     cw = (w - 2 * PAD - 10 * (cols - 1)) / cols
     y0 = y
-    for i, (name, desc, ic) in enumerate(SETS):
-        on = ui.state.set == name
+    sets = GSETS if g else SETS
+    rh = 54 if g else 62
+    for i, (name, desc, ic) in enumerate(sets):
+        best = bool(ui.writer and ui.writer.best is not None)
+        on = name == "best" if best else ui.state.set == name
         n = len(ui.writer.sets.get(name, [])) if ui.writer and name not in (P.AUTO,) else None
-        rh = 62
         x, y = PAD + (i % cols) * (cw + 10), y0 + (i // cols) * (rh + 4)
         if on:
             st = k["sel"]
@@ -639,10 +802,15 @@ def sets_page(cr, ui, hits, w, h):
             icon(cr, "check", 22, x + cw - 22, y + rh / 2, k.ink)
         icon(cr, ic, 22, x + 20, y + rh / 2, k.ink)
         label = SET_NAMES[name] + ("" if n is None or name != P.OWN else "  (%d)" % n)
-        PT.text(cr, label, k["row"], x + 48, y + 10, k.ink, maxw=cw - 100)
-        PT.text(cr, desc, k["sub"], x + 48, y + 34, k.soft, maxw=cw - 100)
+        PT.text(cr, label, k["row"], x + 48, y + rh / 2 - 21, k.ink, maxw=cw - 100)
+        PT.text(cr, desc, k["sub"], x + 48, y + rh / 2 + 3, k.soft, maxw=cw - 100)
         hits.add(x, y, cw, rh, lambda name=name: ui.choose_set(name))
-    y = y0 + ((len(SETS) + cols - 1) // cols) * (62 + 4)
+    y = y0 + ((len(sets) + cols - 1) // cols) * (rh + 4)
+    if g:                                # what a guest's session doesn't have, said once
+        how_note(cr, k, PAD, y + 6, w - 2 * PAD, "info", "No learning, font, neatening or own word list here: those are "
+                 "the owner’s.")
+        btn(cr, k, hits, PAD, h - 20 - BTN_H, "Back", ui.close_sets, icon_name="arrow_back")
+        return
     path = P.own_words_path()
     home = os.path.expanduser("~")
     path = "~" + path[len(home):] if path.startswith(home + "/") else path
@@ -698,13 +866,14 @@ def samples_page(cr, ui, hits, w, h):
     rows = list(reversed(ui.samples))
     n = len(rows)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Samples", "%d sample%s" % (n, "" if n == 1 else "s"),
-                  "Everything you have written here, newest first. Tap one to look at it or delete it." if n else
+                  ("Everything you have written here, newest first. Tap one to look at it or delete it." +
+                   (" Export takes a copy of them with you, as one file." if ui.guest else "")) if n else
                   "Nothing written yet. Write shows the first prompt.", small=True)
     cols = grid_cols(w)
     gap = 10
     tw = (w - 2 * PAD - gap * (cols - 1)) / cols
     th = 82
-    per_col = max(1, int((h - y - 100) // (th + gap)))
+    per_col = max(1, int((h - y - 100 - (0 if ui.guest else 30)) // (th + gap)))
     per = cols * per_col
     pages = max(1, (n + per - 1) // per)
     ui.sp = min(ui.sp, pages - 1)
@@ -716,10 +885,17 @@ def samples_page(cr, ui, hits, w, h):
     by = h - 20 - BTN_H
     if pages > 1:
         pager(cr, ui, hits, PAD, by, ui.sp, pages, ui.samples_page)
-    btns_right(cr, k, hits, w - PAD, by, [
-        ("Import", ui.import_latest, False), ("Export", ui.export if n else None, False),
-        ("Erase all", ui.ask_erase_all if n else None, False)])
-    msg_line(cr, ui, by - 30, w)
+    # a guest store takes no import; the owner's Erase all and Export are the owner's samples
+    # alone (spec 002 FR-024)
+    btns_right(cr, k, hits, w - PAD, by, ([] if ui.guest else [("Import", ui.import_latest, False)]) + [
+        ("Export", ui.export if n else None, False), ("Erase all", ui.ask_erase_all if n else None, False)])
+    if ui.guest:
+        msg_line(cr, ui, by - 30, w)
+        return
+    icon(cr, "group", 20, PAD + 10, by - 22, k.soft)
+    PT.text(cr, "Only your samples. Other writers’ are kept apart, in their own sessions.", k["sub"], PAD + 30, by - 32,
+            k.soft, maxw=w - 2 * PAD - 30)
+    msg_line(cr, ui, by - 62, w)
 
 
 def orientation(a):
@@ -758,10 +934,10 @@ def sample_detail(cr, ui, hits, w, h, y):
         sep(cr, k, PAD, y, w - 2 * PAD)
     by = h - 20 - BTN_H
     if ui.asking_delete:
-        text = ("It’s removed from your samples, and from your contribution, for good. What the tablet has already "
-                "learned from it stays until it learns again." if don else
-                "It’s removed from your samples for good. What the tablet has already learned from it stays until it "
-                "learns again.")
+        text = ("It’s removed from your samples, and from your contribution, for good." if don else
+                "It’s removed from your samples for good.")
+        if not ui.guest:
+            text += " What the tablet has already learned from it stays until it learns again."
         _, th = PT.measure(cr, text, k["sub"], maxw=w - 2 * PAD - 40, wrap=True)
         nh = 20 + 30 + th + 16 + BTN_H + 16
         ny = h - 14 - nh
@@ -792,8 +968,8 @@ def coverage_page(cr, ui, hits, w, h):
     fill(cr, k, w, h)
     y = chrome(cr, ui, hits, w)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Coverage", "How much of each character",
-                  "The number is how many of your samples have it. Shaded ones could use more; a dot marks the ones it "
-                  "often reads wrong.", small=True)
+                  "The number is how many of your samples have it. Shaded ones could use more; a dot marks the ones " +
+                  ("the reader often gets wrong." if ui.guest else "it often reads wrong."), small=True)
     cov = ui.writer.cov if ui.writer else P.Coverage()
     cols = 26 if w > 900 else 13
     gap = 5
@@ -1919,72 +2095,97 @@ def donate_page(cr, ui, hits, w, h):
         return
     if on and ui.reviewing:
         return earlier_review(cr, ui, hits, w, h, y)
+    g = ui.guest
+    never = GNEVER if g else NEVER
     if not on:
         y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "Help the reader for everyone",
                       "The handwriting reader is open source. It learns from handwriting people choose to contribute. "
-                      "Contributing is off unless you turn it on.", small=True)
+                      "Contributing is off unless you turn it on" + (", here." if g else "."), small=True)
         card(cr, k, PAD, y, cw, 62)
         icon(cr, "toggle_off", 26, PAD + 28, y + 31, k.ink)
         PT.text(cr, "Contributing is off", k["row"], PAD + 54, y + 10, k.ink, weight=600)
-        PT.text(cr, "Nothing is set aside. Your samples stay yours alone.", k["sub"], PAD + 54, y + 34, k.soft,
-                maxw=cw - 70)
-        y = holds_lists(cr, k, PAD, y + 76, cw) + 14
-        y = how_note(cr, k, PAD, y, cw, "folder", "Nothing is sent by itself. When you choose, the app saves your "
-                     "contribution as one file in your Documents, and you send it yourself.") + 14
+        PT.text(cr, "Nothing is set aside. Your samples stay here, in your session." if g else
+                "Nothing is set aside. Your samples stay yours alone.", k["sub"], PAD + 54, y + 34, k.soft, maxw=cw - 70)
+        y = holds_lists(cr, k, PAD, y + 76, cw, never=never) + 14
+        y = how_note(cr, k, PAD, y, cw, "folder", "Nothing is sent by itself. When you choose, your contribution is saved "
+                     "as one file in this tablet’s Documents, for the owner to send to the project." if g else
+                     "Nothing is sent by itself. When you choose, the app saves your contribution as one file in your "
+                     "Documents, and you send it yourself.") + 14
         y = donor_row(cr, ui, hits, PAD, y, cw, donor)
         msg_line(cr, ui, by - 30, w)
         bw = btn_w(cr, k, "Turn on…")
         btn(cr, k, hits, w - PAD - bw, by, "Turn on…", ui.turn_on, w=bw)
         return
     y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "Thank you for contributing",
-                  None if ui.saved else "Every sample you keep for a word or sentence the app shows is added. Samples "
-                  "you wrote before can be added too, below.", small=True, land_hide=True)
+                  None if ui.saved or g else "Every sample you keep for a word or sentence the app shows is added. "
+                  "Samples you wrote before can be added too, below.", small=True, land_hide=True)
     if ui.saved:
-        card(cr, k, PAD, y, cw, 62)
-        icon(cr, "check_circle", 24, PAD + 26, y + 31, k.ink)
-        PT.text(cr, "Saved as " + os.path.basename(ui.saved), k["row"], PAD + 52, y + 10, k.ink, maxw=cw - 70)
+        # right after saving, which file was saved for whom (spec 002 FR-021)
         folder = os.path.basename(os.path.dirname(ui.saved))
-        PT.text(cr, "In Documents › %s. Send it to the project whenever it suits you." % folder, k["sub"],
-                PAD + 52, y + 34, k.soft, maxw=cw - 70)
-        y += 76
-    soft_box(cr, k, PAD, y, cw, 76)
-    icon(cr, "volunteer_activism", 26, PAD + 28, y + 38, k.ink)
+        t1 = "Saved as " + os.path.basename(ui.saved) + (", for " + ui.session.name if g else "")
+        t2 = ("In Documents › %s, beside the owner’s. Your next contribution starts empty, with the same licence and "
+              "number." % folder if g else "In Documents › %s. Send it to the project whenever it suits you." % folder)
+        _, h1 = PT.measure(cr, t1, k["row"], maxw=cw - 70)
+        _, h2 = PT.measure(cr, t2, k["sub"], maxw=cw - 70, wrap=True)
+        ch = h1 + h2 + 26
+        card(cr, k, PAD, y, cw, ch)
+        icon(cr, "check_circle", 24, PAD + 26, y + ch / 2, k.ink)
+        PT.text(cr, t1, k["row"], PAD + 52, y + 10, k.ink, maxw=cw - 70)
+        PT.text(cr, t2, k["sub"], PAD + 52, y + 14 + h1, k.soft, maxw=cw - 70, wrap=True)
+        y += ch + 14
+    on_t = "%s (%s). New samples are added as you write" % LIC.get(lic, (lic, lic)) + ("; Finish saves them." if g else ".")
+    _, oh = PT.measure(cr, on_t, k["sub"], maxw=cw - 190, wrap=True)
+    bh = max(76, oh + 58)
+    soft_box(cr, k, PAD, y, cw, bh)
+    icon(cr, "volunteer_activism", 26, PAD + 28, y + bh / 2, k.ink)
     PT.text(cr, "Contributing is on", k["row"], PAD + 54, y + 16, k.ink, weight=600)
-    PT.text(cr, "%s (%s). New samples are added as you write." % LIC.get(lic, (lic, lic)), k["sub"], PAD + 54, y + 42,
-            k.soft, maxw=cw - 190)
-    PT.text(cr, str(n), k["num"], PAD + cw - 18, y + 12, k.ink, align=2)
-    PT.text(cr, "sample" if n == 1 else "samples", k["mono"], PAD + cw - 18, y + 50, k.ink, align=2)
-    y += 90
+    PT.text(cr, on_t, k["sub"], PAD + 54, y + 42, k.soft, maxw=cw - 190, wrap=True)
+    PT.text(cr, str(n), k["num"], PAD + cw - 18, y + bh / 2 - 26, k.ink, align=2)
+    PT.text(cr, "sample" if n == 1 else "samples", k["mono"], PAD + cw - 18, y + bh / 2 + 12, k.ink, align=2)
+    y += bh + 14
     # what a contribution holds: shown when there is room for it (it was shown before turning on)
-    rest = (62 + 12 if ui.earlier else 0) + 60 + 30
+    y = donor_row(cr, ui, hits, PAD, y, cw, donor)
+    rest = (62 + 12 if ui.earlier else 0) + 30
     probe = cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
-    if holds_lists(probe, k, PAD, y, cw) + 14 + rest <= by - 10:
-        y = holds_lists(cr, k, PAD, y, cw) + 14
+    if holds_lists(probe, k, PAD, y, cw, never=never) + 14 + rest <= by - 10:
+        y = holds_lists(cr, k, PAD, y, cw, never=never) + 14
     if ui.earlier:
         e = len(ui.earlier)
         y += chevron_row(cr, k, hits, PAD, y, cw, "add_to_photos", "Add earlier samples",
                          "%d sample%s written before contributing %s not in it. Look through them, if you like." % (
                              e, "" if e == 1 else "s", "is" if e == 1 else "are"), ui.review_earlier, shaded=False) + 12
-    y = donor_row(cr, ui, hits, PAD, y, cw, donor)
     msg_line(cr, ui, by - 30, w)
     btns_right(cr, k, hits, w - PAD, by, [
         ("Erase contribution", ui.ask_erase_donation if n else None, False), ("Turn off", ui.ask_turn_off, False),
         ("Save as a file", ui.write_donation if n else None, True)])
 
 
+def donor_label(donor):
+    """the contributor number as shown: its first eight characters"""
+    d = donor.replace("-", "").upper()
+    return d[:4] + "-" + d[4:8]
+
+
 def donor_row(cr, ui, hits, x, y, w, donor):
-    """quiet: what the contributor number is, and a way to count as another writer from now on"""
+    """the contributor number, the owner's and each writer's shown alike (spec 002 FR-020),
+    and a way to count as another writer from now on"""
     if not donor:
         return y
     k = ui.theme
-    t = "Contributor number: %s… — random, the same in all your contributions, so they count as one writer's. It says " \
-        "nothing about you." % donor[:4]
-    gw, _ = PT.measure(cr, "Get a new one", k["sub"])
-    _, th = PT.text(cr, t, k["sub"], x, y, k.soft, maxw=w - gw - 30, wrap=True)
-    PT.text(cr, "Get a new one", k["sub"], x + w, y, k.ink, align=2)
-    PT.rule(cr, x + w - gw, y + 20, gw, "1px solid " + k.ink)
-    hits.add(x + w - gw - 10, y - 10, gw + 20, 44, ui.ask_new_donor)
-    return y + max(th, 24) + 14
+    sub = "Your contributions carry this instead of a name. It isn’t made from anything about you."
+    bw = btn_w(cr, k, "Get a new one")
+    tw = w - 56 - bw - 26
+    _, th = PT.measure(cr, sub, k["sub"], maxw=tw, wrap=True)
+    nw, nh = PT.measure(cr, "Your contributor number", k["row"])
+    ch = max(64, nh + th + 20)
+    PT.box(cr, x, y, w, ch, k["cardR"], bg=k.paper, shadow=k["cardFlat"])
+    tw_, th_ = PT.measure(cr, "#", k["row"], weight=600)
+    PT.text(cr, "#", k["row"], x + 29 - tw_ / 2, y + (ch - th_) / 2, k.ink, weight=600)
+    PT.text(cr, "Your contributor number", k["row"], x + 56, y + 8, k.ink, maxw=tw)
+    PT.text(cr, donor_label(donor), k["mono"], x + 66 + nw, y + 10, k.ink)
+    PT.text(cr, sub, k["sub"], x + 56, y + 10 + nh, k.soft, maxw=tw, wrap=True)
+    btn(cr, k, hits, x + w - 8 - bw, y + (ch - 44) / 2, "Get a new one", ui.ask_new_donor, w=bw, h=44)
+    return y + ch + 14
 
 
 def earlier_review(cr, ui, hits, w, h, y):
@@ -2025,17 +2226,268 @@ def earlier_review(cr, ui, hits, w, h, y):
          ui.add_earlier if keep else ui.close_review, True)])
 
 
+# ---------------------------------------------------------------- other writers (spec 002 FR-014 to FR-025)
+
+
+OTHER_NOTES = (("lock", "Kept apart", "Their samples never mix with yours or with each other’s, and nothing here learns "
+                "from them."),
+               ("volunteer_activism", "Contributing is theirs to choose", "Only the writer can turn it on, in their own "
+                "session."),
+               ("label", "The name stays here", "It is a label in this list, never in a sample, an export or a "
+                "contribution."),
+               ("lock_open", "No password", "Whoever holds the tablet can open any writer’s session. Finish, in theirs, "
+                "brings back yours."))
+
+
+def plural(n, one, many=None):
+    return "%d %s" % (n, one if n == 1 else many or one + "s")
+
+
+def writer_sub(ui, wid):
+    n, _, on = ui.wcounts.get(wid, (0, 0, False))
+    t = plural(n, "sample") if n else "No samples yet"
+    return t + " · contributing" if on else t
+
+
+def others_page(cr, ui, hits, w, h):
+    """Someone else writes: each writer with their samples, open, rename, remove; Add a
+    writer; what a writer is, said plainly"""
+    k = ui.theme
+    fill(cr, k, w, h)
+    y = head(cr, ui, hits, w)
+    land = w > h
+    cw = w - 2 * PAD
+    y = page_head(cr, k, PAD, y + 18, cw, "Other writers" if k.name == "white" else "other writers",
+                  "Someone else writes", "Let family or friends write here too. Each writer gets samples and a contribution "
+                  "of their own, kept apart from yours.", small=True, keep_lead=True)
+    nw = 340 if land else cw
+    lw = cw - nw - 24 if land else cw
+    items = ui.writers.items
+    lbl(cr, k, "Writers", PAD, y)
+    if items:
+        PT.text(cr, "%d besides you" % len(items), k["sub"], PAD + lw, y - 2, k.soft, align=2)
+    y0 = y = y + 26
+    by = h - 20 - BTN_H
+    if not items:
+        t = "Add one when someone would like to write here. You can add as many as you like."
+        _, th = PT.measure(cr, t, k["sub"], maxw=lw - 110, wrap=True)
+        bh = max(88, th + 60)
+        card(cr, k, PAD, y, lw, bh)
+        icon(cr, "group", 52, PAD + 44, y + bh / 2, k.ink)
+        PT.text(cr, "No other writers yet", k["row"], PAD + 88, y + (bh - th) / 2 - 14, k.ink, maxw=lw - 110)
+        PT.text(cr, t, k["sub"], PAD + 88, y + (bh - th) / 2 + 12, k.soft, maxw=lw - 110, wrap=True)
+        y += bh + 14
+    else:
+        rh = 68
+        # as many rows as fit above the notes (portrait) or the Back button (landscape)
+        room = (by - 20 - y) if land else (by - 24 - y - 66 - notes_height(cr, k, nw))
+        per = max(1, int(room // rh))
+        sep(cr, k, PAD, y, lw)
+        for it in items[:per]:
+            wid = it["id"]
+            PT.box(cr, PAD, y + 1, lw, rh - 2, "0", bg=k.paper)
+            icon(cr, "person", 26, PAD + 18, y + rh / 2, k.ink)
+            tw = lw - 200
+            PT.text(cr, it["name"], k["row"], PAD + 46, y + 12, k.ink, weight=600, maxw=tw)
+            PT.text(cr, writer_sub(ui, wid), k["sub"], PAD + 46, y + 38, k.soft, maxw=tw)
+            icon(cr, "chevron_right", 24, PAD + lw - 126, y + rh / 2, k.ink)
+            hits.add(PAD, y, lw - 116, rh, lambda wid=wid: ui.open_writer(wid))
+            btn(cr, k, hits, PAD + lw - 102, y + 10, "", lambda wid=wid: ui.ask_name(wid), icon_name="edit", w=48)
+            btn(cr, k, hits, PAD + lw - 48, y + 10, "", lambda wid=wid: ui.ask_remove(wid), icon_name="delete", w=48)
+            y += rh
+            sep(cr, k, PAD, y, lw)
+        if len(items) > per:
+            PT.text(cr, "and %d more" % (len(items) - per), k["sub"], PAD, y + 8, k.soft)
+            y += 30
+        y += 14
+    btn(cr, k, hits, PAD, y, "Add a writer", ui.ask_name, pri=not items, icon_name="person_add", h=52)
+    nx, ny = (PAD + lw + 24, y0 - 26) if land else (PAD, y + 52 + 18)
+    other_notes(cr, k, nx, ny, nw)
+    btn(cr, k, hits, PAD, by, "Back to your writing", lambda: ui.go("write"), icon_name="arrow_back")
+    msg_line(cr, ui, by - 30, w)
+    if ui.naming:
+        name_dialog(cr, ui, hits, w, h)
+    elif ui.removing:
+        remove_dialog(cr, ui, hits, w, h)
+
+
+def notes_height(cr, k, w):
+    return other_notes(_probe(), k, 0, 0, w)
+
+
+def _probe():
+    return cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
+
+
+def other_notes(cr, k, x, y, w):
+    """the side card: what a writer is -> its height"""
+    hs = []
+    for ic, label, sub in OTHER_NOTES:
+        _, h1 = PT.measure(cr, label, k["row"], maxw=w - 76)
+        _, h2 = PT.measure(cr, sub, k["sub"], maxw=w - 76, wrap=True)
+        hs.append(h1 + h2 + 20)
+    total = sum(hs) + 8
+    PT.box(cr, x, y, w, total, k["cardR"], bg=k.sheet)
+    yy = y + 4
+    for i, (ic, label, sub) in enumerate(OTHER_NOTES):
+        if i:
+            sep(cr, k, x + 18, yy, w - 36)
+        icon(cr, ic, 22, x + 30, yy + 18, k.ink)
+        _, h1 = PT.text(cr, label, k["row"], x + 56, yy + 8, k.ink, maxw=w - 76)
+        PT.text(cr, sub, k["sub"], x + 56, yy + 10 + h1, k.soft, maxw=w - 76, wrap=True)
+        yy += hs[i]
+    return total
+
+
+NAME_ERR = {"taken": "There’s already a writer called “%s”. Pick another name.",
+            "long": "That’s more than 40 characters. Pick a shorter name."}
+
+
+def name_dialog(cr, ui, hits, w, h):
+    """a writer's name, in the page's upper half (the keyboard takes the lower): a private
+    field, 1 to 40 characters, unique (FR-014); the window puts its field over the box"""
+    k = ui.theme
+    n = ui.naming
+    hits.add(0, 0, w, h, lambda: None)
+    fill(cr, k, w, h)
+    head(cr, ui, hits, w)
+    hh = PT.px(k["headH"])
+    dw = w - 2 * PAD
+    x, y = PAD, hh + 20
+    rename = n["kind"] == "rename"
+    old = ui.writers.name(n["id"]) if rename else None
+    prob = ui.name_problem()
+    note = ("Only the label changes. Their samples, contribution and contributor number stay as they are." if rename else
+            "Only a label in this list, 1 to 40 characters. It never goes into a sample, an export or a contribution.")
+    err = NAME_ERR[prob].replace("%s", n["text"].strip()) if prob in NAME_ERR else None
+    _, nh = PT.measure(cr, note, k["sub"], maxw=dw - 44, wrap=True)
+    eh = PT.measure(cr, err, k["row"], weight=600, maxw=dw - 80, wrap=True)[1] + 12 if err else 0
+    dh = 20 + 34 + 26 + 56 + 14 + eh + nh + 16 + BTN_H + 20
+    PT.box(cr, x, y, dw, dh, k["cardR"], bg=k.paper, shadow=k["dialogSh"])
+    PT.text(cr, "Rename " + old if rename else "A new writer", k["row"], x + 22, y + 20, k.ink, weight=600, maxw=dw - 44)
+    yy = y + 62
+    lbl(cr, k, "Name", x + 22, yy)
+    yy += 22
+    fw = dw - 44
+    PT.box(cr, x + 22, yy, fw, 56, k["btnR"], bg=k.paper, shadow="inset 0 0 0 2px " + k.ink)
+    pw, ph = PT.measure(cr, "Private", k["sub"])
+    PT.text(cr, "Private", k["sub"], x + 22 + fw - 12 - pw, yy + (56 - ph) / 2, k.soft)
+    icon(cr, "lock", 18, x + 22 + fw - 24 - pw, yy + 28, k.soft)
+    ui.name_rect = (x + 26, yy + 4, fw - pw - 52, 48)
+    if ui.demo:                          # the drawn screens show the typed name (the window's field does)
+        PT.text(cr, n["text"], k["row"], x + 38, yy + 15, k.ink, maxw=fw - pw - 70)
+    yy += 56 + 14
+    if err:
+        icon(cr, "error", 22, x + 33, yy + 12, k.ink)
+        PT.text(cr, err, k["row"], x + 54, yy, k.ink, weight=600, maxw=dw - 80, wrap=True)
+        yy += eh
+    PT.text(cr, note, k["sub"], x + 22, yy, k.soft, maxw=dw - 44, wrap=True)
+    btns_right(cr, k, hits, x + dw - 22, y + dh - 20 - BTN_H, [
+        ("Cancel", ui.cancel_name, False),
+        ("Use this name" if rename else "Add writer", ui.use_writer_name if not prob else None, True)])
+    kb = 230 if w > h else 330
+    PT.box(cr, PAD, h - 20 - kb, dw, kb, k["cardR"], bg=k.sheet, shadow=k["cardFlat"])
+    icon(cr, "keyboard", 28, w / 2, h - 20 - kb / 2 - 30, k.ink)
+    PT.text(cr, "The keyboard comes up here, as for a password field:", k["sub"], w / 2, h - 20 - kb / 2 - 6, k.soft, align=1)
+    PT.text(cr, "no suggestions, and it learns nothing from what is typed.", k["sub"], w / 2, h - 20 - kb / 2 + 20, k.soft,
+            align=1)
+
+
+def remove_dialog(cr, ui, hits, w, h):
+    """what goes for good and what stays (FR-023); Save their contribution first while one is
+    not saved, the question staying open after it"""
+    k = ui.theme
+    rm = ui.removing
+    who = rm["name"]
+    goes = [("Their %s" % plural(rm["samples"], "sample")) if rm["samples"] else "Their samples (none yet)"]
+    if rm["unsaved"]:
+        goes.append("Their contribution not saved as a file yet: %s" % plural(rm["unsaved"], "sample"))
+    if rm["donor"]:
+        goes.append("Their contributor number")
+    goes.append("Where they are in the prompts")
+    f = rm["files"]
+    stays = ["The %s already saved for them, in Documents › %s" % (plural(f, "contribution file"), CONTRIB) if f else
+             "Contribution files saved earlier, in Documents › %s" % CONTRIB, "Your own samples, and every other writer’s"]
+    saved = ("Saved %s for %s, in Documents › %s." % (os.path.basename(rm["saved"]), who, CONTRIB)) if rm["saved"] else None
+    dw = w - 2 * PAD
+    tw = dw - 44 - 30
+
+    def rows_h(items):
+        return sum(PT.measure(cr, t, k["sub"], maxw=tw, wrap=True)[1] + 8 for t in items)
+    sh = PT.measure(cr, saved, k["sub"], maxw=dw - 44 - 50, wrap=True)[1] + 22 + 12 if saved else 0
+    dh = 20 + 34 + sh + 24 + rows_h(goes) + 12 + 24 + rows_h(stays) + 16 + BTN_H + 20
+    hits.add(0, 0, w, h, lambda: None)
+    x, y = PAD, h - 20 - dh
+    PT.box(cr, x, y, dw, dh, k["cardR"], bg=k.paper, shadow=k["dialogSh"])
+    PT.text(cr, "Remove %s?" % who, k["row"], x + 22, y + 20, k.ink, weight=600, maxw=dw - 44)
+    yy = y + 54
+    if saved:
+        bh = sh - 12
+        PT.box(cr, x + 22, yy, dw - 44, bh, k["cardR"], bg=k.sheet)
+        icon(cr, "check_circle", 22, x + 44, yy + bh / 2, k.ink)
+        PT.text(cr, saved, k["sub"], x + 66, yy + 11, k.ink, maxw=dw - 44 - 50, wrap=True)
+        yy += sh
+    for head_, items, ic in (("Goes for good", goes, "remove"), ("Stays as it is", stays, "check")):
+        lbl(cr, k, head_, x + 22, yy)
+        yy += 24
+        for t in items:
+            icon(cr, ic, 20, x + 32, yy + 10, k.ink)
+            _, th = PT.text(cr, t, k["sub"], x + 52, yy, k.ink, maxw=tw, wrap=True)
+            yy += th + 8
+        yy += 12
+    btns_right(cr, k, hits, x + dw - 22, y + dh - 20 - BTN_H, [("Cancel", ui.cancel_remove, False)] +
+               ([("Save their contribution first", ui.save_for_removal, False)] if rm["unsaved"] else []) +
+               [("Remove", ui.remove_writer, True)])
+
+
+CONTRIB = "Handwriting contributions"
+
+
+def done_note(cr, ui, hits, x, y, w):
+    """after Finish, on the owner's Write page: what was saved for whom, that the writer is
+    kept, Remove beside it (FR-022) -> its height"""
+    k = ui.theme
+    d = ui.done
+    who = d["name"]
+    if d.get("busy"):
+        text = "Saving what %s wrote…" % who
+    elif d.get("error"):
+        text = "Their contribution couldn’t be saved: %s. %s is kept for next time." % (d["error"], who)
+    elif d["saved"]:
+        text = "Saved %s for %s, in Documents › %s. %s is kept for next time." % (
+            os.path.basename(d["saved"]), who, CONTRIB, who)
+    else:
+        n = d["samples"] or 0
+        text = ("Nothing to save. " if d.get("donating", True) else "Nothing to save: %s isn’t contributing. " % who) + \
+            "Their %s %s kept for next time." % (plural(n, "sample"), "is" if n == 1 else "are")
+    bw = btn_w(cr, k, "Remove") + btn_w(cr, k, "OK") + 10
+    narrow = w < 560
+    tw = w - 32 - 40 - (0 if narrow else bw + 16)
+    _, t1 = PT.measure(cr, who + " has finished", k["row"], weight=600, maxw=tw)
+    _, t2 = PT.measure(cr, text, k["sub"], maxw=tw, wrap=True)
+    nh = max(BTN_H, t1 + t2 + 4) + 24 + (BTN_H + 12 if narrow else 0)
+    PT.box(cr, x, y, w, nh, k["cardR"], bg=k.paper, shadow=k["noteSh"])
+    icon(cr, "check_circle" if d["saved"] else "person", 26, x + 30, y + 12 + (nh - (BTN_H + 12 if narrow else 0) - 24) / 2,
+         k.ink)
+    PT.text(cr, who + " has finished", k["row"], x + 56, y + 12, k.ink, weight=600, maxw=tw)
+    PT.text(cr, text, k["sub"], x + 56, y + 14 + t1, k.soft, maxw=tw, wrap=True)
+    btns_right(cr, k, hits, x + w - 14, y + nh - 12 - BTN_H if narrow else y + (nh - BTN_H) / 2, [
+        ("Remove", (lambda: ui.ask_remove(d["id"])) if not d.get("busy") else None, False), ("OK", ui.close_done, False)])
+    return nh
+
+
 # ---------------------------------------------------------------- the whole window
 
 
 def loading_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
-    y = header(cr, k, w, SUB)
+    y = head(cr, ui, hits, w)
     PT.text(cr, ui.msg or "Loading…", k["row"], PAD, y + 24, k.soft, maxw=w - 2 * PAD, wrap=True)
 
 
-PAGES = {"samples": samples_page, "coverage": coverage_page, "learn": learn_page, "donate": donate_page}
+PAGES = {"samples": samples_page, "coverage": coverage_page, "learn": learn_page, "donate": donate_page,
+         "others": others_page}
 
 
 def paint_full(cr, ui, hits, w, h):

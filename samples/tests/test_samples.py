@@ -572,7 +572,7 @@ class Pages(Case):
     is nicer?, deleting from the samples and the donation (needs GTK and glassine_ui)"""
 
     def setUp(self):
-        super().setUp()
+        Case.setUp(self)
         try:
             import gi
             gi.require_version("Gtk", "3.0")
@@ -962,15 +962,320 @@ class Pages(Case):
                          {0: [0, 1, 2], 1: [3, 4], 2: [5]})
 
 
+class Writers(Case):
+    """the owner's list of other writers (spec 002 FR-014, FR-025): private, unique, 1 to 40
+    characters, and the name in no store, no file name and no argument"""
+
+    def test_list(self):
+        from glassine_hwsamples import writers as WR
+        wl = WR.Writers()
+        self.assertEqual(wl.items, [])
+        self.assertEqual(wl.problem(""), "empty")
+        self.assertEqual(wl.problem("   "), "empty")
+        self.assertEqual(wl.problem("x" * 41), "long")
+        self.assertIsNone(wl.problem("x" * 40))
+        wid = self.e.cli.writer_new()
+        wl.add(wid, "  Garden   Neighbour ")
+        self.assertEqual(wl.name(wid), "Garden Neighbour")
+        self.assertEqual(wl.problem("garden neighbour"), "taken")
+        self.assertIsNone(wl.problem("garden neighbour", wid))     # renaming to itself
+        with self.assertRaises(ValueError):
+            wl.add("0123456789abcdef", "GARDEN NEIGHBOUR")
+        with self.assertRaises(ValueError):
+            wl.add("Neighbour", "Someone")                            # only a store's id goes in the list
+        wl.rename(wid, "Neighbour")
+        self.assertEqual(WR.Writers().items, [{"id": wid, "name": "Neighbour"}])
+        st = os.stat(wl.path)
+        self.assertEqual(st.st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(wl.path)).st_mode & 0o777, 0o700)
+        store = self.e.dir / "data" / "glassine" / "handwriting-writers"
+        self.assertTrue((store / wid).is_dir())
+        self.assertFalse(Path(wl.path).resolve().is_relative_to(store.resolve()))
+        self.assertFalse(Path(wl.path).resolve().is_relative_to((self.e.dir / "data" / "glassine" / "handwriting")
+                                                                 .resolve()))
+        self.assertEqual(set(self.e.cli.writers()), {wid})
+        wl.remove(wid)
+        self.assertEqual(WR.Writers().items, [])
+
+    def test_guest_requests_name_their_store(self):
+        """every process and command of a guest's session carries --writer ID first"""
+        from glassine_hwsamples import writers as WR
+        wid = self.e.cli.writer_new()
+        seen = []
+        popen, run = subprocess.Popen, subprocess.run
+
+        def rec_popen(argv, *a, **kw):
+            seen.append(list(argv))
+            return popen(argv, *a, **kw)
+
+        def rec_run(argv, *a, **kw):
+            seen.append(list(argv))
+            return run(argv, *a, **kw)
+        subprocess.Popen, subprocess.run = rec_popen, rec_run
+        self.addCleanup(setattr, subprocess, "Popen", popen)
+        self.addCleanup(setattr, subprocess, "run", run)
+        s = WR.Session(wid, "Neighbour", binary=BIN, env=self.e.env)
+        self.addCleanup(s.close)
+        w = s.writer
+        p = w.take()
+        sh = w.submit(ink(self.rng, n=max(3, len(p.text))), "device:6.2", (0, 0, 702, 300, 96, 0), p)
+        self.assertEqual(sh.status, "kept")
+        s.cli.samples()
+        s.cli.donation()
+        s.cli.donation_start("CC0-1.0")
+        s.cli.export(str(self.e.dir / "out.jsonl"))
+        with self.assertRaises(client.Error):
+            s.cli.writers()                                    # the list is the owner's alone
+        self.assertTrue(seen)
+        for argv in seen:
+            self.assertEqual(argv[:3], [BIN, "--writer", wid], argv)
+            self.assertNotIn("Neighbour", " ".join(argv))
+        self.assertEqual(len(self.e.rec.list()), 0)            # nothing reached the owner's store
+        self.assertEqual(len(s.rec.list()), 1)
+
+
+class Guests(Case):
+    """a guest's session in the UI object: the owner adds a writer, opens their session, the
+    introduction, writing, contributing, Finish, Remove"""
+
+    setUp, settle, submit = Pages.setUp, Pages.settle, Pages.submit
+
+    def make(self):
+        u = self.U.UI(lambda: None, kw={"binary": BIN, "env": self.e.env})
+        u.rec.close()
+        u.rec, u.cli = self.e.rec, self.e.cli
+        u.writer = flow.Writer(u.rec, u.cli, u.state)
+        u.refresh()
+        self.settle(u, lambda: u.loaded)
+        u.wizard_done()
+        return u
+
+    def add(self, u, name):
+        u.open_others()
+        u.ask_name()
+        u.name_text = lambda: name
+        u.use_writer_name()
+        self.settle(u, lambda: u.writers.items and name in [w["name"] for w in u.writers.items])
+        return next(w["id"] for w in u.writers.items if w["name"] == name)
+
+    def record(self):
+        """every argument list the app starts a program with, and what it logs"""
+        import contextlib
+        import io
+        seen = []
+        popen, run = subprocess.Popen, subprocess.run
+
+        def rec_popen(argv, *a, **kw):
+            seen.append(list(argv))
+            return popen(argv, *a, **kw)
+
+        def rec_run(argv, *a, **kw):
+            seen.append(list(argv))
+            return run(argv, *a, **kw)
+        subprocess.Popen, subprocess.run = rec_popen, rec_run
+        self.addCleanup(setattr, subprocess, "Popen", popen)
+        self.addCleanup(setattr, subprocess, "run", run)
+        err = io.StringIO()
+        cm = contextlib.redirect_stderr(err)
+        cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        return seen, err
+
+    def test_guest_session(self):
+        from glassine_hwsamples import look, pages
+        u = self.make()
+        seen, err = self.record()
+        name = "Grandmother Rose"
+        wid = self.add(u, name)
+        self.settle(u, lambda: wid in u.wcounts)
+        self.assertEqual(u.wcounts[wid][:2], (0, 0))
+        u.open_writer(wid)
+        self.assertTrue(u.guest)
+        self.settle(u, lambda: u.loaded)
+        self.assertEqual((u.page, u.wstep, u.gflow), ("wizard", "g-hello", "intro"))
+        self.assertEqual([t for t, *_ in look.GUEST_TABS], ["write", "samples", "coverage", "donate"])
+        # the header's Finish on every page, the intro's too; four tabs, nothing of the owner's
+        import cairo
+        for page in ("wizard", "write", "samples", "coverage", "donate", "learn", "others"):
+            if page != "wizard":
+                u.go(page)
+            self.assertNotIn(u.page, ("learn", "others"))
+            hits = self.U.Hits()
+            pages.paint_full(cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 702, 936)), u, hits, 702, 936)
+            self.assertTrue(any(getattr(fn, "__func__", None) is self.U.UI.finish for *_, fn in hits.boxes), page)
+        for a in ("adapt", "open_font", "open_neat", "import_latest"):
+            getattr(u, a)()
+            self.assertNotIn(u.page, ("learn", "neat"))
+        # the introduction: hello, try, share, 18 or older, licence; the age is kept nowhere
+        u.page, u.gflow = "wizard", "intro"
+        u.wizard_to("g-hello")
+        u.wizard_next()
+        self.assertEqual(u.wstep, "w-try")
+        sh = self.submit(u)
+        self.assertEqual(sh.status, "kept")
+        u.wizard_next()
+        self.assertEqual(u.wstep, "w-share")
+        u.wizard_next()
+        self.assertEqual(u.wstep, "g-age")
+        u.wizard_next()                                       # not ticked: stays
+        self.assertEqual(u.wstep, "g-age")
+        files = lambda: {p: p.read_bytes() for p in self.e.dir.rglob("*") if p.is_file() and "models" not in p.parts}
+        before = files()
+        u.toggle_adult()
+        self.assertTrue(u.adult)
+        self.assertEqual(files(), before)                     # ticking writes nothing anywhere
+        u.wizard_next()
+        self.assertEqual(u.wstep, "w-licence")
+        self.assertFalse(u.adult)
+        u.pick_licence("CC0-1.0")
+        u.wizard_next()
+        self.settle(u, lambda: u.donation[0] == "CC0-1.0")
+        self.assertEqual(u.page, "write")
+        for p, b in files().items():
+            self.assertNotIn(b"adult", b, p)
+            if p.name != "writers.json":                       # the list, the name's one place
+                self.assertNotIn(name.encode(), b, p)
+            self.assertNotIn(name, str(p))
+        sh = self.submit(u)
+        self.assertTrue(sh.sample_id and sh.donated_id)
+        self.assertEqual(self.e.cli.samples(), [])            # the owner's store untouched
+        # Finish: the contribution saved, back in the owner's session, the done note
+        u.finish()
+        self.assertFalse(u.guest)
+        self.settle(u, lambda: u.done and not u.done.get("busy"))
+        saved = u.done["saved"]
+        self.assertTrue(saved and os.path.isfile(saved), u.done)
+        self.assertEqual(os.path.basename(os.path.dirname(saved)), self.U.CONTRIB_DIR)
+        self.assertRegex(os.path.basename(saved), r"^handwriting-contribution-\d+\.jsonl$")
+        self.assertNotIn(name, Path(saved).read_text(encoding="utf-8"))
+        self.assertEqual(u.done["samples"], 2)
+        gc = client.Cli(BIN, env=self.e.env, writer=wid)
+        self.assertEqual(gc.donation()[:2], ("CC0-1.0", 0))  # the next one starts empty, same licence
+        # opened again: no introduction, the place kept
+        u.close_done()
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded)
+        self.assertEqual(u.page, "write")
+        self.assertEqual(u.counts[1], 2)
+        u.finish()
+        self.settle(u, lambda: u.done and not u.done.get("busy"))
+        self.assertIsNone(u.done["saved"])                    # nothing new to save
+        u.ask_name(wid)
+        u.name_text = lambda: name + " B"
+        u.use_writer_name()
+        u.ask_remove(wid)
+        self.settle(u, lambda: u.removing)
+        u.remove_writer()
+        self.settle(u, lambda: not u.writers.items)
+        # the name in no argument and no log line, through add, the session, Finish, rename, Remove
+        self.assertTrue(seen)
+        for argv in seen:
+            self.assertNotIn("Rose", " ".join(map(str, argv)), argv)
+            if "--writer" in argv:
+                self.assertEqual(argv[1:3], ["--writer", wid])
+        self.assertTrue(any("--writer" in a for a in seen))
+        self.assertNotIn("Rose", err.getvalue())
+
+    def test_owner_learning_across_a_guest(self):
+        """the owner's learning run, started before a guest's session opens, ends as the
+        owner's: Learn is not left running after Finish"""
+        u = self.make()
+        for _ in range(3):
+            self.submit(u)
+        wid = self.add(u, "Pat")
+        u.start_adapt()
+        self.assertTrue(u.adapting)
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded and not u.adapting)
+        self.assertTrue(u.guest)
+        u.finish()
+        self.settle(u, lambda: u.done and not u.done.get("busy"))
+        self.assertIsNone(u.adapting)
+        self.assertIsNotNone(u.result)
+        self.assertEqual(client.Cli(BIN, env=self.e.env, writer=wid).samples(), [])
+
+    def test_finish_during_intro_and_decline(self):
+        u = self.make()
+        wid = self.add(u, "Sam")
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded)
+        self.assertEqual(u.wstep, "g-hello")
+        u.finish()                                            # Finish works during the introduction
+        self.assertFalse(u.guest)
+        self.settle(u, lambda: u.done and not u.done.get("busy"))
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded)
+        self.assertEqual(u.page, "write")                     # shown once
+        u.go("donate")
+        u.turn_on()
+        self.assertEqual((u.wstep, u.gflow), ("g-age", "tab"))
+        u.wizard_decline()                                    # Not now is one tap, as Continue is
+        self.settle(u)
+        self.assertEqual(u.page, "donate")
+        self.assertFalse(u.state.donating)
+        self.assertEqual(client.Cli(BIN, env=self.e.env, writer=wid).run("donation", "donor").strip(), "-")
+
+    def test_remove(self):
+        u = self.make()
+        wid = self.add(u, "Kim")
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded)
+        u.guest_done()
+        u.state.donating = True
+        u.cli.donation_start("CC0-1.0")
+        self.submit(u)
+        self.submit(u)
+        st_path = flow.state_path(wid)
+        self.assertTrue(os.path.exists(st_path))
+        u.enter(u.owner)                                     # left without Finish: unsaved stays
+        u.ask_remove(wid)
+        self.settle(u, lambda: u.removing)
+        rm = u.removing
+        self.assertEqual((rm["name"], rm["samples"], rm["unsaved"]), ("Kim", 2, 2))
+        u.save_for_removal()
+        self.settle(u, lambda: rm["saved"])
+        self.assertTrue(os.path.isfile(rm["saved"]))
+        self.assertEqual((rm["unsaved"], rm["files"]), (0, 1))
+        self.assertIs(u.removing, rm)                         # the question stays open
+        u.remove_writer()
+        self.settle(u, lambda: not u.writers.items)
+        self.assertEqual(self.e.cli.writers(), {})
+        self.assertFalse(os.path.exists(st_path))
+        self.assertTrue(os.path.isfile(rm["saved"]))          # the saved file stays
+        self.assertFalse(self.e.cli.writer_remove(wid))       # gone: unknown-writer
+
+    def test_owner_erase_all_keeps_writers(self):
+        u = self.make()
+        self.submit(u)
+        wid = self.add(u, "Lee")
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded)
+        u.guest_done()
+        self.submit(u)
+        u.finish()
+        self.settle(u, lambda: u.done and not u.done.get("busy"))
+        u.refresh()
+        self.settle(u, lambda: u.samples)
+        u.ask_erase_all()
+        self.assertIn("Other writers’ samples are kept.", u.confirm[1])
+        u.confirm[3]()
+        self.settle(u, lambda: not u.samples)
+        self.assertEqual(self.e.cli.samples(), [])
+        self.assertEqual(len(client.Cli(BIN, env=self.e.env, writer=wid).samples()), 1)
+        self.assertEqual(self.e.cli.writers()[wid][0], 1)
+
+
 @unittest.skipUnless(os.environ.get("GLASSINE_HWSAMPLES_WINDOW_TEST") == "1", "opens a window (CI runs it on Xvfb)")
 class Window(Case):
     """the real window: the introduction opens on an empty store, Try one places the
-    writing area, and the window turns without the parts holding its size"""
+    writing area, and the window turns without the parts holding its size; a second start
+    shows this window (one instance, on the session bus); a guest writer added in the private
+    field, their session entered, written in, and finished"""
 
     def test_window(self):
         import gi
         gi.require_version("Gtk", "3.0")
-        from gi.repository import GLib
+        from gi.repository import GLib, Gtk
         import functools
         from glassine_hwsamples import ui
         rec, cli = client.Recognizer, client.Cli
@@ -980,6 +1285,10 @@ class Window(Case):
         self.addCleanup(setattr, client, "Cli", cli)
         app = ui.App()
         seen = []
+        acts = []
+        app.connect("activate", lambda a: acts.append(a.win))
+        second = []
+        guest = {}
 
         def step():
             w = app.win
@@ -1019,14 +1328,54 @@ class Window(Case):
                 w.entry.set_text("Garden letters")
                 u.use_name()
                 seen.append(("named", u.font_name, w.entry.get_visible()))
+                # opened again while it runs: the same window, as it is
+                second.append(subprocess.Popen([sys.executable, "-c", "import sys; from glassine_hwsamples import ui; "
+                                                "sys.exit(ui.App().run(['glassine-handwriting-samples']))"],
+                                               env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))))
+                return True
+            if second and not seen[6:]:
+                if second[0].poll() is None or len(acts) < 2:
+                    return True
+                seen.append(("again", second[0].returncode, acts[-1] is w, u.page))
+                u.open_others()
+                u.ask_name()
+                return True
+            if seen[6:] and not seen[7:] and w.name_entry.get_visible():
+                ne = w.name_entry
+                seen.append(("private", ne.get_input_purpose() == Gtk.InputPurpose.PASSWORD, ne.get_visibility(),
+                             bool(ne.get_input_hints() & Gtk.InputHints.NO_SPELLCHECK)))
+                ne.set_text("Rose")
+                ne.activate()
+                return True
+            if seen[7:] and not seen[8:] and u.writers.items and not u.busy:
+                guest["id"] = u.writers.items[0]["id"]
+                seen.append(("added", u.writers.name(guest["id"]), w.name_entry.get_visible(),
+                             w.name_entry.get_text()))
+                u.open_writer(guest["id"])
+                return True
+            if seen[8:] and not seen[9:] and u.loaded and u.guest:
+                seen.append(("guest", u.page, u.wstep))
+                u.guest_done()
+                p = u.writer.take()
+                u.submit(ink(self.rng, n=max(3, len(p.text))), "device:6.2", (0, 0, 702, 300, 96, 0), p)
+                return True
+            if seen[9:] and not seen[10:] and not u.busy and u.writer.shown:
+                seen.append(("wrote", u.writer.shown.status))
+                u.finish()
+                return True
+            if seen[10:] and u.done and not u.done.get("busy"):
+                seen.append(("finished", u.guest, u.done["name"], u.done["samples"], app.win is w))
                 app.quit()
                 return False
             return True
         GLib.timeout_add(200, step)
-        GLib.timeout_add(30000, app.quit)
+        GLib.timeout_add(60000, app.quit)
         app.run(["glassine-handwriting-samples"])
         self.assertEqual(seen, ["full", ("try", "write", True), ("turned", True), ("sheet", "Q", True),
-                                ("rename", "full", True, "My handwriting"), ("named", "Garden letters", False)])
+                                ("rename", "full", True, "My handwriting"), ("named", "Garden letters", False),
+                                ("again", 0, True, "learn"), ("private", True, True, True), ("added", "Rose", False, ""),
+                                ("guest", "wizard", "g-hello"), ("wrote", "kept"), ("finished", False, "Rose", 1, True)])
+        self.assertEqual(self.e.cli.samples(), [])          # the guest's sample is in their store alone
 
 
 class Drawn(unittest.TestCase):

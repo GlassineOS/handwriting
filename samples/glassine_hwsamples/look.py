@@ -45,10 +45,11 @@ class Look(dict):
     def caps(self):
         return (self["lblVar"], self["lblCase"])
 
-    def eyebrow(self, i, name):
-        """the wizard's step line, in the voice's own way of numbering"""
+    def eyebrow(self, i, name, total=5):
+        """the wizard's step line, in the voice's own way of numbering (a guest's introduction
+        has three steps)"""
         if self.name == "white":
-            return "Step %d of 5 · %s" % (i, name)
+            return "Step %d of %d · %s" % (i, total, name)
         if self.name == "editorial":
             return "§ %s · %s" % (self["nums"][i - 1], name.lower())
         return "%s. %s" % (self["nums"][i - 1], name.lower())
@@ -82,6 +83,12 @@ PT.ICONS.update({k: v for k, v in {
     "check_box_outline_blank": ["checkbox-symbolic"],
     "star_border": ["non-starred-symbolic", "starred-symbolic"],
     "block": ["action-unavailable-symbolic", "process-stop-symbolic", "dialog-error-symbolic"],
+    "group": ["system-users-symbolic", "avatar-default-symbolic"],
+    "person_add": ["contact-new-symbolic", "list-add-symbolic"],
+    "label": ["bookmark-new-symbolic", "tag-symbolic", "text-x-generic-symbolic"],
+    "lock_open": ["changes-allow-symbolic", "system-lock-screen-symbolic"],
+    "tag": ["insert-text-symbolic", "format-text-strikethrough-symbolic", "text-x-generic-symbolic"],
+    "compare": ["view-dual-symbolic", "object-flip-horizontal-symbolic"],
 }.items() if k not in PT.ICONS})
 
 
@@ -271,6 +278,7 @@ def bar(cr, k, x, y, w, n, on, h=10):
 
 TABS = (("write", "Write"), ("samples", "Samples"), ("coverage", "Coverage"), ("learn", "Learn"),
         ("donate", "Contribute"))
+GUEST_TABS = tuple(t for t in TABS if t[0] != "learn")     # a guest's session: no Learn (spec 002 FR-018)
 
 
 def brand_mark(cr, k, cx, cy, col):
@@ -309,12 +317,12 @@ def header(cr, k, w, sub, steps=None, step_i=None, done=False):
 TAB_H = 56
 
 
-def tabs(cr, k, hits, w, y, cur, go):
-    """the five pages, one tap away; -> the y below"""
+def tabs(cr, k, hits, w, y, cur, go, items=TABS):
+    """the pages, one tap away; -> the y below"""
     PT.fill(cr, 0, y, w, TAB_H, k.paper)
-    n = len(TABS)
+    n = len(items)
     cw = (w - 24) / n
-    for i, (key, label) in enumerate(TABS):
+    for i, (key, label) in enumerate(items):
         x = 12 + i * cw
         on = key == cur
         if on:
