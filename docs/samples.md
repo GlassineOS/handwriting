@@ -2,7 +2,8 @@
 
 One format for every handwriting sample: the generator's synthetic lines, samples a person
 confirms on the device, samples they donate, and what the trainer reads. A file holds one
-sample per line (JSON lines, UTF-8).
+sample per line (JSON lines, UTF-8). "Donation" and `donor` are the internal names of what
+the person sees as a contribution and their contributor number.
 
 ## Fields
 
