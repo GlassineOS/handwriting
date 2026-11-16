@@ -256,6 +256,39 @@ class Cli:
     def delete(self, sample_id):
         self.run("samples", "delete", sample_id)
 
+    # the letter model and the font (spec 003)
+
+    def letters(self):
+        """{"state": none|current|outdated, "covered": K, "font": (name, version) or None}"""
+        d = {"state": "none", "covered": 0, "font": None}
+        for line in self.run("letters", "status").splitlines():
+            f = line.split("\t")
+            if f[0] == "state":
+                d["state"] = f[1]
+            elif f[0] == "covered":
+                d["covered"] = int(f[1])
+            elif f[0] == "font" and len(f) >= 3:
+                d["font"] = (unesc(f[1]), int(f[2]))
+        return d
+
+    def letters_model(self):
+        """the letter model's file text ("" when there is none)"""
+        return self.run("letters", "show")
+
+    def letters_build(self):
+        """asked for by the person: built, or skip with the reason"""
+        return self.run("letters", "build", "-r").strip().split("\t")
+
+    def font_install(self, name=None):
+        """builds and installs the font (under its name, or this one): its (name, version)"""
+        f = self.run("font", "install", *(["-n", name] if name else [])).strip().split("\t")
+        if f[0] != "installed":
+            raise Error("no font: " + (f[1] if len(f) > 1 else "?"))
+        return f[1], int(f[2])
+
+    def font_remove(self):
+        self.run("font", "remove")
+
     def erase(self):
         return int(self.run("samples", "erase", "-c", self.client).strip() or 0)
 
