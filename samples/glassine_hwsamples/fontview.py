@@ -90,14 +90,24 @@ def layout(model, text):
     return out
 
 
-def coverage(model, chars=TARGET):
-    """[(char, usable samples, in the font)] for the characters the page shows"""
+def coverage(model, chars=TARGET, status=None):
+    """[(char, usable samples, in the font)] for the characters the page shows: the usable
+    samples as the samples hold them now (letters status, spec 003 FR-030; the model's own
+    count without a status), in the font as the model was built"""
+    counts = (status or {}).get("chars")
     out = []
     for c in chars:
         d = model["chars"].get(c, {}) if model else {}
-        out.append((c, int(d.get("samples", 0)), bool(d.get("covered") and d.get("variants"))))
+        n = counts.get(c, (0, 0))[0] if counts is not None else int(d.get("samples", 0))
+        out.append((c, n, bool(d.get("covered") and d.get("variants"))))
     return out
 
 
-def missing(model, chars=TARGET):
-    return [c for c, _, ok in coverage(model, chars) if not ok]
+def missing(model, chars=TARGET, status=None):
+    """the characters that still need writing: fewer than MIN usable samples"""
+    return [c for c, n, _ in coverage(model, chars, status) if n < MIN]
+
+
+def pending(model, chars=TARGET, status=None):
+    """the characters written often enough that the next build puts them in"""
+    return [c for c, n, ok in coverage(model, chars, status) if n >= MIN and not ok]
