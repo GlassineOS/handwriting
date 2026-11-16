@@ -149,7 +149,10 @@ export them as one file in the sample format; nothing leaves the device otherwis
   (best candidate and alternatives, before any adaptation from it), so errors can be
   studied and future models tested against what this one got wrong.
 - **FR-009**: Redo, Skip and Discard (Scenario 2) act before a sample is kept or on the
-  last kept sample; deleting any sample later is in the sample view (Scenario 6).
+  last kept sample; deleting any sample later is in the sample view (Scenario 6), and in a
+  character of the font page, which also writes a kept sample again (spec 003 FR-033). A
+  deletion is the same wherever it is asked: the whole sample goes, with every character it
+  writes, from the letter model and the font at their next build and from adaptation.
 - **FR-010**: Adapt (Scenario 3) asks the recognizer for an adaptation run; the run
   follows spec 001 FR-009's check (held-back samples, kept only if better, previous one
   kept to go back to). The app shows progress and the before and after error rates, and
