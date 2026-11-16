@@ -24,6 +24,15 @@ trains. Dev is then whole sessions, the latest ones besides the test sessions, u
 least DEV_MIN samples; train is the rest. A new pull of the store gives the same test set
 and moves only the newest sessions into dev.
 
+Test texts stay out of training: a train or dev sample whose text is a test sample's, or
+nearly (near_test: the same after case, marks and spaces are dropped, or at least NEAR
+alike by difflib for texts of 4 characters or more), is left out (`near_test`).
+
+No test sample ever trains, an adaptation included: the split writes its test ids to
+test-ids.txt, and every reader of training ink (load_split, check_store, the stores the
+split writes) checks its samples' ids against them and against any further ids file given
+(`guard`), and stops when one is there. The test samples are read only by evaluation.
+
 Real ink is kept as strokes, not features: rotation, point jitter, resampling, time warp
 and stroke dropout act on the pen's points, so the features are computed per draw.
 """
@@ -39,6 +48,7 @@ from .features import features
 from .text import CHARS
 
 SESSION_GAP = 1800  # s
+NEAR = 0.85
 BLOCK_GAP = 600  # s
 DEV_MIN = 80
 
@@ -71,6 +81,56 @@ def read_store(store: Path) -> list[dict]:
         sid = "%016x" % fnv1a64(ln.encode("utf-8"))
         out.append({"id": sid, "time": meta.get(sid), "line": ln, "sample": s})
     return out
+
+
+def _norm(t: str) -> str:
+    import re
+    return " ".join(re.sub(r"[^\w\s]", "", t.casefold()).split())
+
+
+def near_test(text: str, tests: list[str]) -> bool:
+    """A text the same as a test text, or nearly (module docstring)."""
+    import difflib
+    n = _norm(text)
+    for t in tests:
+        m = _norm(t)
+        if n == m:
+            return True
+        if len(text) >= 4 and len(t) >= 4 and difflib.SequenceMatcher(None, n, m).ratio() >= NEAR:
+            return True
+    return False
+
+
+def line_id(ln: str) -> str:
+    return "%016x" % fnv1a64(ln.encode("utf-8"))
+
+
+def test_ids(split_dir: Path, extra: Path | None = None) -> set[str]:
+    """The ids no training may see: the split's test set (test-ids.txt, split.json) and an
+    ids file given."""
+    ids = set()
+    if (split_dir / "test-ids.txt").exists():
+        ids |= set(kept_test_ids(split_dir / "test-ids.txt"))
+    if (split_dir / "split.json").exists():
+        ids |= set(json.loads((split_dir / "split.json").read_text())["ids"]["test"])
+    if extra:
+        ids |= set(kept_test_ids(Path(extra)))
+    if not ids:
+        raise SystemExit(f"{split_dir}: no test ids to guard against (test-ids.txt, split.json)")
+    return ids
+
+
+def guard(lines: list[str], ids: set[str], what: str):
+    """Stop when a line to train on is a test sample."""
+    bad = sum(line_id(ln) in ids for ln in lines)
+    if bad:
+        raise SystemExit(f"STOP: {bad} test sample(s) in {what}: test samples never train (real.py)")
+
+
+def check_store(store: Path, ids: set[str]):
+    """A recognizer store an adaptation learns from: none of its samples is a test sample."""
+    raw = (store / "samples.jsonl").read_bytes().decode("utf-8").replace("\0", "\n").split("\n")
+    guard([ln for ln in raw if ln.startswith("{")], ids, str(store))
 
 
 def sessions(times: list[int], gap: float = SESSION_GAP) -> list[int]:
@@ -226,10 +286,17 @@ class RealSet(torch.utils.data.Dataset):
         return torch.from_numpy(feature_augment(f, rng)), text
 
 
-def load_split(path: Path) -> dict[str, list[dict]]:
-    """The prepared split (`glassine-train real`): {train, dev, test} -> samples."""
-    return {k: [json.loads(ln) for ln in (path / f"{k}.jsonl").read_text().splitlines() if ln]
-            for k in ("train", "dev", "test")}
+def load_split(path: Path, extra_test_ids: Path | None = None) -> dict[str, list[dict]]:
+    """The prepared split (`glassine-train real`): {train, dev, test} -> samples; train and
+    dev checked against the test ids (guard)."""
+    ids = test_ids(path, extra_test_ids)
+    out = {}
+    for k in ("train", "dev", "test"):
+        lines = [ln for ln in (path / f"{k}.jsonl").read_text().splitlines() if ln]
+        if k != "test":
+            guard(lines, ids, f"{path}/{k}.jsonl")
+        out[k] = [json.loads(ln) for ln in lines]
+    return out
 
 
 def kept_test_ids(path: Path) -> list[str]:
@@ -246,27 +313,36 @@ def prepare(store: Path, out: Path, keep_test: list[str] | None = None) -> dict:
     the host: the samples are a person's handwriting. With `keep_test`, the test set is
     those ids (split_kept)."""
     recs = read_store(store)
+    by = {r["id"]: r for r in recs}
     sp = split(recs, keep_test)
     left_out = sp.pop("left_out", None)
-    by = {r["id"]: r for r in recs}
+    tests = [by[i]["sample"]["text"] for i in sp["test"]]
+    tid = set(sp["test"])
+    # the sessions stay as split (dev may fall below DEV_MIN rather than take a training session)
+    near = {k: [i for i in sp[k] if near_test(by[i]["sample"]["text"], tests)] for k in ("train", "dev")}
+    for k in near:
+        sp[k] = [i for i in sp[k] if i not in set(near[k])]
     out.mkdir(parents=True, exist_ok=True)
     for k, ids in sp.items():
         (out / f"{k}.jsonl").write_text("".join(by[i]["line"] + "\n" for i in ids))
-    # the test session in two halves by time: an adaptation learns from the first (with
-    # everything before it), and is read on the second, as on a device after an update
+    # the test session in two halves by time, for reading only
     tt_ = sorted(sp["test"], key=lambda i: by[i]["time"])
     half = {"test-a": tt_[:len(tt_) // 2], "test-b": tt_[len(tt_) // 2:]}
     for k, ids in half.items():
         (out / f"{k}.jsonl").write_text("".join(by[i]["line"] + "\n" for i in ids))
     meta = (store / "samples.meta").read_text().splitlines()
     lines = {ln.split("\t")[0]: ln for ln in meta[1:]}
-    # recognizer stores: the training sessions, and those plus the test session's first half
-    for name, ids in (("store-trainsessions", sp["train"] + sp["dev"]),
-                      ("store-plus-test-a", sp["train"] + sp["dev"] + half["test-a"])):
+    # the recognizer store an adaptation learns from: the training sessions only (no test
+    # sample ever trains, an adaptation included)
+    (out / "test-ids.txt").write_text("".join(i + "\n" for i in sp["test"]))
+    for name, ids in (("store-trainsessions", sp["train"] + sp["dev"]),):
         st = out / name
         st.mkdir(exist_ok=True)
         (st / "samples.jsonl").write_text("".join(by[i]["line"] + "\n" for i in ids))
         (st / "samples.meta").write_text(meta[0] + "\n" + "".join(lines[i] + "\n" for i in ids))
+        check_store(st, tid)
+    for k in ("train", "dev"):
+        guard([by[i]["line"] for i in sp[k]], tid, k)
     rep = {k: len(v) for k, v in sp.items()}
     rep["unusable"] = {k: sum(not usable(by[i]["sample"]) for i in v) for k, v in sp.items()}
     rep["single_chars"] = {k: sum(len(by[i]["sample"]["text"]) == 1 for i in v) for k, v in sp.items()}
@@ -276,7 +352,9 @@ def prepare(store: Path, out: Path, keep_test: list[str] | None = None) -> dict:
     rep["sessions"] = max(sessions([r["time"] for r in recs if r["time"] is not None])) + 1
     tt = {k: {by[i]["sample"]["text"] for i in v} for k, v in sp.items()}
     rep["test_texts_also_in_train_or_dev"] = len(tt["test"] & (tt["train"] | tt["dev"]))
+    rep["near_test_left_out"] = {k: len(v) for k, v in near.items()}
     ids = dict(sp)
+    ids["near_test"] = near["train"] + near["dev"]
     if left_out is not None:
         rep["kept_test"] = True
         rep["left_out"] = len(left_out)

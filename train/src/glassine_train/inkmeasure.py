@@ -215,3 +215,51 @@ def _qs(v):
     if not len(v):
         return {"n": 0}
     return {f"p{p}": round(float(np.percentile(v, p)), 3) for p in (10, 25, 50, 75, 90)} | {"n": int(len(v))}
+
+
+def alignment(samples_xh) -> dict:
+    """How steadily letters sit on the line: per word, the bottoms and tops of the x-height
+    letters (XLET) off a straight line through them (residual sd, x-heights), and the
+    gaps after a capital (capital, small letter) by ink profiles."""
+    from .spacing import Profile, gap
+    bot, top, cap = [], [], []
+    for strokes, spans, text in samples_xh:
+        own = owners(strokes, spans, text)
+        wd = word_of(text)
+        per = {}
+        for ci, c in enumerate(text):
+            js = [j for j, o in enumerate(own) if o == ci]
+            if not js:
+                continue
+            xs = np.concatenate([strokes[j][:, 0] for j in js])
+            ys = np.concatenate([strokes[j][:, 1] for j in js])
+            per[ci] = (xs, ys)
+            if c in XLET:
+                pass
+        words = {}
+        for ci, (xs, ys) in per.items():
+            if text[ci] in XLET:
+                words.setdefault(wd[ci], []).append((xs.mean(), ys.max(), ys.min()))
+        for v in words.values():
+            if len(v) >= 3:
+                a = np.array(v)
+                for k, out in ((1, bot), (2, top)):
+                    c = np.polyfit(a[:, 0], a[:, k], 1)
+                    out += (a[:, k] - np.polyval(c, a[:, 0])).tolist()
+        base = _baseline(strokes, own, text)
+        if base is None:
+            continue
+        for ci in range(len(text) - 1):
+            a, b = text[ci], text[ci + 1]
+            if a.isupper() and b.islower() and ci in per and ci + 1 in per:
+                pa, pb = Profile(), Profile()
+                for j in [j for j, o in enumerate(own) if o == ci]:
+                    pa.add(strokes[j][:, 0], base - strokes[j][:, 1])
+                for j in [j for j, o in enumerate(own) if o == ci + 1]:
+                    pb.add(strokes[j][:, 0], base - strokes[j][:, 1])
+                g = gap(pa, pb)
+                if -0.6 <= g <= 1.6:
+                    cap.append(g)
+    sd = lambda v: round(float(np.std(v)), 3) if len(v) else None
+    return {"bottom_sd": sd(bot), "top_sd": sd(top), "bottom": _qs(np.abs(bot)), "n": len(bot),
+            "capital_gap": _qs(np.array(cap))}

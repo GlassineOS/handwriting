@@ -43,6 +43,7 @@ from .timing import RATE, Fit, Timing, WriterTiming, draw_writer
 XH_LINE = (0.14, 0.4, 0.06, 0.35)
 
 DOT_CHARS = "ij"
+GAP_SD = 0.15  # median spread of a writer's gaps pair to pair (x-heights)
 GAP_MIN = -0.12  # x-heights: letters touch, cross or overlap a little, never sit on each other
 BAR_CHARS = "tfAEFHT"
 
@@ -65,15 +66,37 @@ class Style:
     one_font: bool = True
 
 
+# Where the fonts' own spacing is moved to (spec 001 FR-020: spacing as written, not as
+# typeset): their typical letter gaps and word gaps, ranked, onto these distributions, so
+# each font keeps its place (tight fonts stay the tighter writers) while the spread matches
+# real ink broadly (one writer measured: letter gaps median 0.42 x-heights, sd 0.29, 7 %
+# touching; word gaps about 1.4). Letter gaps normal (median, sd); word gaps lognormal
+# (median, sigma), in x-heights.
+CALIB = {"gap": (0.45, 0.09), "word": (1.35, 0.2)}
+
+
+def calibrate(styles: list[tuple[float, float]], calib: dict | None = None) -> list[tuple[float, float]]:
+    """The fonts' (gap, word) styles moved onto CALIB by rank."""
+    from scipy.stats import norm
+    c = CALIB if calib is None else calib
+    n = len(styles)
+    if not n:
+        return []
+    q = lambda v: norm.ppf((np.argsort(np.argsort(v, kind="stable")) + 0.5) / n)
+    g = c["gap"][0] + c["gap"][1] * q(np.array([x for x, _ in styles]))
+    w = c["word"][0] * np.exp(c["word"][1] * q(np.array([y for _, y in styles])))
+    return [(float(a), float(b)) for a, b in zip(g, w)]
+
+
 def draw_style(rng, pool: list[tuple[float, float]], rate_jitter: bool = True, broaden: dict | None = None) -> Style:
     """A writer: typical letter and word gaps from a style of the pool (each (gap, word) in
     x-heights), the rest drawn broadly."""
     from .timing import BROADEN
     g, w = pool[int(rng.integers(len(pool)))]
     a, sd, lo, hi = XH_LINE
-    g = float(g + rng.normal(0, 0.12))
+    g = float(g + rng.normal(0, 0.05))
     w = max(w, g + 0.35)  # words stand further apart than letters, whatever the style
-    return Style(gap=g, gap_sd=float(np.clip(rng.lognormal(np.log(0.15), 0.35), 0.04, 0.4)),
+    return Style(gap=g, gap_sd=float(np.clip(rng.lognormal(np.log(GAP_SD), 0.35), 0.05, 0.5)),
                  open=float(rng.uniform(0.0, 0.5)), word=float(max(0.3, w * rng.lognormal(0, 0.15))),
                  word_sd=float(rng.uniform(0.1, 0.35)), dot_delay=float(rng.beta(8, 2)),
                  bar_delay=float(rng.uniform(0.03, 0.2)), rtl=float(rng.beta(4, 1.5)), mid=float(rng.uniform(0.03, 0.2)),
