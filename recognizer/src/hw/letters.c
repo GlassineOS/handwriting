@@ -1804,6 +1804,7 @@ int hw_letters_relearn(unsigned cp, int verbose)
 	struct hw_letters old;
 	int r = hw_letters_load(&old);
 	if (r <= 0) return r;
+	hw_letters_free(&old);
 	unsigned long gen = hw_store_generation();
 	struct hw_letters one;
 	build_only = cp;
@@ -1812,20 +1813,26 @@ int hw_letters_relearn(unsigned cp, int verbose)
 	build_only = 0;
 	build_progress = 0;
 	occ_free();
-	if (b) { hw_letters_free(&old); return -1; }
-	/* its line in place of the old one (or a new one, in code point order); its sides
-	 * against the model's side shapes */
-	struct hw_letter *nl = NULL;
-	for (size_t i = 0; i < one.n; i++) if (one.l[i].cp == cp) nl = &one.l[i];
+	if (b) return -1;
 	struct hw_letter fresh;
 	memset(&fresh, 0, sizeof fresh);
-	if (nl) letter_move(&fresh, nl);
-	else { fresh.cp = cp; hw_letters_marks_hash(cp, fresh.marks); }
+	for (size_t i = 0; i < one.n; i++) if (one.l[i].cp == cp) letter_move(&fresh, &one.l[i]);
+	if (!fresh.cp) { fresh.cp = cp; hw_letters_marks_hash(cp, fresh.marks); }
+	hw_letters_free(&one);
+	/* into the model as it is now (a whole build may have written one meanwhile), under the
+	 * lock: its line in place of the old one (or a new one, in code point order), its sides
+	 * against the model's side shapes */
+	int fd = hw_store_lock();
+	if (fd < 0) { for (int v = 0; v < fresh.nvar; v++) variant_free(&fresh.var[v]); return -1; }
+	int ret = -1, covered = fresh.covered, nvar = fresh.nvar;
+	char *text = NULL;
+	size_t len = 0;
+	r = hw_store_generation() != gen ? 0 : hw_letters_load(&old);
+	if (r <= 0) { ret = r; goto out; }
 	for (int v = 0; v < fresh.nvar; v++) {
 		fresh.var[v].lc = hw_spacing_side(&old.sp, &fresh.var[v].prof, 0);
 		fresh.var[v].rc = hw_spacing_side(&old.sp, &fresh.var[v].prof, 1);
 	}
-	hw_letters_free(&one);
 	size_t at = 0;
 	while (at < old.n && old.l[at].cp < cp) at++;
 	if (at < old.n && old.l[at].cp == cp) {
@@ -1833,24 +1840,18 @@ int hw_letters_relearn(unsigned cp, int verbose)
 		letter_move(&old.l[at], &fresh);
 	} else {
 		struct hw_letter *x = realloc(old.l, (old.n + 1) * sizeof *x);
-		if (!x) { for (int v = 0; v < fresh.nvar; v++) variant_free(&fresh.var[v]); hw_letters_free(&old); return -1; }
+		if (!x) { hw_letters_free(&old); goto out; }
 		old.l = x;
 		memmove(&old.l[at + 1], &old.l[at], (old.n - at) * sizeof *old.l);
 		letter_move(&old.l[at], &fresh);
 		old.n++;
 	}
-	size_t len;
-	char *text = hw_letters_format(&old, &len);
-	int covered = 0, nvar = 0;
-	for (size_t i = 0; i < old.n; i++) if (old.l[i].cp == cp) { covered = old.l[i].covered; nvar = old.l[i].nvar; }
+	text = hw_letters_format(&old, &len);
 	hw_letters_free(&old);
-	if (!text) return -1;
-	int fd = hw_store_lock();
-	if (fd < 0) { free(text); return -1; }
-	int ret = 1;
-	if (hw_store_generation() != gen) ret = 0;      /* erased meanwhile: nothing to write into */
-	else if (hw_store_replace("letters/model", text, len)) ret = -1;
+	if (text && !hw_store_replace("letters/model", text, len)) ret = 1;
+out:
 	hw_store_unlock(fd);
+	for (int v = 0; v < fresh.nvar; v++) variant_free(&fresh.var[v]);
 	free(text);
 	if (ret == 1 && verbose) printf("relearned\t%d\t%d\n", covered, nvar);
 	return ret;
