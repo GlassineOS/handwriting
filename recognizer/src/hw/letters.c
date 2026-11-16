@@ -679,6 +679,26 @@ static void delayed_strokes(struct hw_sample *s, size_t nc, const unsigned *cps,
 }
 
 
+int hw_letters_place(const struct hw_ink *ink, size_t n, double line, const unsigned *cps, size_t nc, int **spans)
+{
+	struct hw_sample s;
+	memset(&s, 0, sizeof s);
+	s.strokes = (struct hw_ink *)ink;
+	s.nstrokes = n;
+	s.spans = spans;
+	s.nspans = nc;
+	s.area.set = line > 0;
+	s.area.line = line;
+	int *cnt = calloc(n + 1, sizeof *cnt);
+	if (!cnt) return -1;
+	for (size_t k = 0; k < nc; k++)
+		for (int *p = spans[k]; p && *p >= 0; p++) if ((size_t)*p < n) cnt[*p]++;
+	spilled_strokes(&s, nc, cps, cnt);
+	delayed_strokes(&s, nc, cps, cnt);
+	free(cnt);
+	return 0;
+}
+
 /* A sample's characters with strokes of their own (FR-007), after the spans are put right
  * by where the ink lies (above): own[k] for each of the nc characters. The spans change. */
 static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *own)

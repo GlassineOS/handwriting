@@ -269,7 +269,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   Characters joined in one stroke move together.
 - **The pull (FR-014).** A character with a fit of 0.5 or more (or from `ALIGN`) that the letter
   model covers, whose strokes are its own (a stroke mostly one character's, three quarters of
-  its points or more, counts as its), with as many strokes as one of its versions made of at
+  its points or more, counts as its; then the strokes are put right by where the ink lies as
+  for the letter model, so a dot or bar written after the word belongs to the letter it lies
+  across, not to the word's last one, five x-heights standing in for the area's line), with as many strokes as one of its versions made of at
   least two samples, and within 0.3 x-heights (centred RMS distance, the ink at the line's
   x-height) of the nearest such version, goes towards that version: each point to the point of
   the version at the same share of the stroke's length, the version placed on the straight

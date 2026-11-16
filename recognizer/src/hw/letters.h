@@ -70,6 +70,13 @@ int hw_letters_parse(const char *text, struct hw_letters *L);
 /* the stored model: 1 read, 0 none, -1 unreadable */
 int hw_letters_load(struct hw_letters *L);
 
+struct hw_ink;
+/* The rules the build puts a sample's spans right with, by where the ink lies (a late dot,
+ * bar or arm to the character it lies across; a neighbour's stroke out of a mark's span):
+ * spans[k] (malloc'd, -1 ended, may be reallocated) the strokes of each of the nc
+ * characters; line the writing area's line spacing in the ink's units, 0 unknown. 0, -1. */
+int hw_letters_place(const struct hw_ink *ink, size_t n, double line, const unsigned *cps, size_t nc, int **spans);
+
 /* Usable samples per character (FR-007, FR-030) as the store holds them now, whether a
  * model is built or not: counted from the derived letters/usable file, made again for the
  * samples it lacks (progress, may be NULL, is called for each of those). Counts sorted by
