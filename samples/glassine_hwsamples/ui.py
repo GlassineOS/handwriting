@@ -1287,7 +1287,7 @@ def demo(screen, voice="white"):
                 ui.reviewing = True
                 ui.earlier_out = {ui.earlier[1][0], ui.earlier[4][0]}
             if sub == "saved":
-                ui.saved = "/home/person/Documents/Handwriting donations/handwriting-donation-3.jsonl"
+                ui.saved = os.path.join(documents_dir(), "Handwriting donations", "handwriting-donation-3.jsonl")
     return ui
 
 
