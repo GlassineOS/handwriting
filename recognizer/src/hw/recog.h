@@ -36,6 +36,9 @@ struct hw_run {
 	struct hw_origin *org;
 	size_t nstrokes;
 	const size_t *npoints;          /* points per stroke (for "whole stroke") */
+	/* the size (size.h): logp weighed by it, the ink's own in logp0; NULL without */
+	float *logp0;
+	struct hw_size_info *size;
 };
 
 int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r);
@@ -95,6 +98,9 @@ void hw_context_of(const struct hw_words *w, const char *before, struct hw_conte
  * margin and it isn't all words, and it is among the first two. x NULL: hw_read. */
 int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct hw_context *x, int n,
 		  struct hw_reading *out);
+
+/* log P(text | ink) by the run (CTC forward); -INFINITY when the model lacks a character */
+double hw_text_logp(const struct hw_lang *l, const struct hw_run *r, const unsigned *cp, int n);
 
 /* Character error rate helpers */
 size_t hw_edit(const unsigned *a, size_t na, const unsigned *b, size_t nb);

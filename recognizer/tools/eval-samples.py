@@ -11,6 +11,10 @@ how often the text is among the candidates, per prompt set, and against an earli
 
 --split: the adaptation's split (one sample in five by id is held back, docs/recognizer.md);
 the head adapted from a store has seen its train part, so its numbers count on `held` only.
+--store: a store directory (copied, never written) whose samples are the person's letters
+for the size (docs/recognizer.md, Size); without it the size has no reference. --base F:
+send the area's first guide line at F line heights below its top. --align: also check each
+short text (one or two characters) as prompted writing (the fit, and how many pass 0.6).
 --adaptation: the person's adaptation file (adaptation/LANG/current) to read with; without
 it, the base model alone. --prompts: the samples app's prompt sets (one .txt per set), to
 report per set; samples whose text is in none count as "other".
@@ -104,6 +108,9 @@ def main():
     ap.add_argument("--save")
     ap.add_argument("--against")
     ap.add_argument("--per-sample", action="store_true")
+    ap.add_argument("--store")
+    ap.add_argument("--base", type=float)
+    ap.add_argument("--align", action="store_true")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the recognizer")
     ap.add_argument("--unknown-targets", action="store_true",
                     help="the words of every sample's text marked removed in the predictor's store, so they"
@@ -118,9 +125,12 @@ def main():
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v
+    if a.store:
+        shutil.copytree(a.store, tmp / "data" / "glassine" / "handwriting",
+                        ignore=shutil.ignore_patterns("adaptation", "donation"))
     if a.adaptation:
         d = tmp / "data" / "glassine" / "handwriting" / "adaptation" / "en"
-        d.mkdir(parents=True)
+        d.mkdir(parents=True, exist_ok=True)
         shutil.copy(a.adaptation, d / "current")
     if a.unknown_targets:
         import re
@@ -167,16 +177,23 @@ def main():
                 continue
             ar = s.get("area")
             if ar:
-                rec.ask("area", "s", ",".join(num(v) for v in ar["box"] + [ar["line"], ar.get("orientation", 0)]))
+                v = ar["box"] + [ar["line"], ar.get("orientation", 0)]
+                if a.base is not None:
+                    v.append(ar["box"][1] + a.base * ar["line"])
+                rec.ask("area", "s", ",".join(num(x) for x in v))
             for st in s["strokes"]:
                 rec.ask("stroke", "s", " ".join(",".join(num(round(p[2] * 1000, 3)) if i == 2 else num(v)
                                                          for i, v in enumerate(p)) for p in st))
             t0 = time.perf_counter()
             r = rec.ask("read", "s", str(a.count), *(["raw"] if a.raw else []))
             times.append(time.perf_counter() - t0)
+            fit = None
+            if a.align and len(s["text"]) <= 2:
+                f = rec.ask("align", "s", esc(s["text"]))
+                fit = None if f[0] == "short" else float(f[0])
             rec.ask("end", "s")
             cands = [unesc(r[2 + 3 * i]) for i in range(int(r[1]))] if r and r[0] == "text" else []
-            out.append({"id": sid, "text": s["text"], "set": sets.get(s["text"], "other"), "cands": cands})
+            out.append({"id": sid, "text": s["text"], "set": sets.get(s["text"], "other"), "cands": cands, "fit": fit})
     finally:
         rec.close()
         shutil.rmtree(tmp, ignore_errors=True)
@@ -198,13 +215,36 @@ def main():
     show("all", stats(out))
     for name in sorted({r["set"] for r in out}):
         show(name, stats([r for r in out if r["set"] == name]))
+    # short texts (one or two characters) by kind: what the size is for
+    def kind(t):
+        if not any(c.isalnum() for c in t):
+            return "marks"
+        if t.isdigit():
+            return "digits"
+        return "capitals" if t.isupper() else "small" if t.islower() else "mixed"
+    short = [r for r in out if len(r["text"]) <= 2]
+    for name in ("marks", "digits", "capitals", "small", "mixed"):
+        rs = [r for r in short if kind(r["text"]) == name]
+        if not rs:
+            continue
+        top = [r["cands"][0] if r["cands"] else "" for r in rs]
+        ok = sum(t == r["text"] for t, r in zip(top, rs))
+        case = sum(t != r["text"] and t.lower() == r["text"].lower() for t, r in zip(top, rs))
+        line = "short %-8s n %4d  exact %5.1f %%  case wrong %d" % (name, len(rs), 100 * ok / len(rs), case)
+        if a.align:
+            fits = [r["fit"] or 0.0 for r in rs]
+            line += "  fit >= 0.6 %5.1f %%" % (100 * sum(f >= 0.6 for f in fits) / len(rs))
+        print(line)
+    longer = [r for r in out if len(r["text"]) > 2]
+    if longer:
+        show("3+ chars", stats(longer))
     if times:
         times.sort()
         print("read: median %.1f ms, 95th %.1f ms, max %.1f ms" % (
             1000 * times[len(times) // 2], 1000 * times[int(len(times) * 0.95)], 1000 * times[-1]))
     if a.against:
         old = {r["id"]: r for r in json.load(open(a.against))}
-        fixed = broken = 0
+        fixed = broken = changed3 = 0
         for r in out:
             o = old.get(r["id"])
             if not o:
@@ -213,7 +253,10 @@ def main():
             now = bool(r["cands"]) and r["cands"][0] == r["text"]
             fixed += now and not was
             broken += was and not now
-        print("against %s: %d fixed, %d broken (exact top candidate)" % (a.against, fixed, broken))
+            if len(r["text"]) > 2:
+                changed3 += o["cands"] != r["cands"]
+        print("against %s: %d fixed, %d broken (exact top candidate); texts of 3+ characters with other"
+              " candidates: %d" % (a.against, fixed, broken, changed3))
     if a.per_sample:
         for r in out:
             print("%s\t%s\t%s" % (r["set"], r["text"], " | ".join(r["cands"])))

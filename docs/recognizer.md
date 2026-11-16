@@ -48,7 +48,7 @@ app's own writing).
 `UNITS` says how to read a point: `em` (the client scaled its writing so a line of text is about
 1 high) or `device` (the pen's own units), optionally `device:PER_MM` (units per millimetre) or
 `device:PER_MM:RATE` (points per second). The recognizer normalizes the ink itself; the units
-only help with gestures and go into samples.
+help with gestures and with the ink's size (below, Size) and go into samples.
 
 `POINTS` is one stroke (pen down to pen up): points separated by spaces, each `x,y,t`,
 `x,y,t,p` or `x,y,t,p,tx,ty`: position (y pointing down), time in milliseconds (any origin,
@@ -69,7 +69,7 @@ microsecond.
 | `remove ID S N[,N…]` | `remove ID ok REMOVED` |
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
 | `end ID S` | `end ID ok` |
-| `area ID S X0,Y0,X1,Y1,LINE,ROT` | `area ID ok` |
+| `area ID S X0,Y0,X1,Y1,LINE,ROT[,BASE]` | `area ID ok` |
 | `confirm ID S SOURCE TEXT [keep]` | `confirm ID ok SAMPLE` (`prompted`: `confirm ID ok SAMPLE exact\|inferred`), or `confirm ID skip REASON` |
 | `recognize ID LANGS FIELD UNITS COUNT BEFORE STROKES` | as `read`, with the verb `recognize`; or `recognize ID private` |
 | `samples ID [all]` | `samples ID K SAMPLE…` |
@@ -103,7 +103,7 @@ the same whether they came one by one or at once. When several `read` requests o
 read together (the client was faster than the recognizer), only the newest is answered; the older
 ones get `drop ID`. Requests between them are carried out in order.
 
-- `text K`: `K` candidates (0 when nothing could be read, for instance a single dot), each
+- `text K`: `K` candidates (0 when nothing could be read), each
   `TEXT SCORE ALIGN`. `SCORE` is the log-probability (≤ 0, higher is better). `ALIGN` has one
   entry per character (code point) of `TEXT`, separated by `;`: the strokes that make it,
   comma-separated, each `N` (the whole stroke) or `N:A-B` (points `A` to `B` of stroke `N`); empty
@@ -124,10 +124,12 @@ character (0 to 1; `-` for a space or a character not written) and `SEGMENTS` as
 `SCORE` is the mean fit of the written characters; a low one means the person wrote something
 else. `short`: too little ink for the prompt.
 
-**area** names the writing area of session `S` for the samples it makes: its box `X0,Y0` to
-`X1,Y1` and its line spacing `LINE`, in the session's units, and the screen's orientation `ROT`
-(0, 90, 180 or 270 degrees). It stays until the session ends. A box that is empty or an
-orientation that isn't one of these is `bad-area`.
+**area** names the writing area of session `S` for the samples it makes and for the size: its
+box `X0,Y0` to `X1,Y1` and its line spacing `LINE`, in the session's units, the screen's
+orientation `ROT` (0, 90, 180 or 270 degrees), and optionally `BASE`, the y of its first guide
+line (the line letters sit on; the next ones every `LINE` from it). It stays until the session
+ends. A box that is empty or an orientation that isn't one of these is `bad-area`. `BASE` is not
+stored in samples.
 
 **remove** removes strokes by number (unknown numbers are ignored; `REMOVED` counts the ones
 removed). An undo, or the strokes a gesture covered once the client acted on it.
@@ -180,6 +182,53 @@ off. Every other field, and `read … raw`, reads without them.
   are added, in the written word's case, when the ink scores them within 6 of its best; never
   first.
 - `SCORE` stays the ink's log-probability of the text.
+
+## Size (FR-017)
+
+The model reads every piece of ink scaled to its own height, so on its own it can't tell a lone
+`.` from an `O` or a lone `o` from an `O`. The recognizer compares the ink's real size with a
+reference and weighs the model's reading by it.
+
+- **Reference.** The person's letters: from their newest samples of the language (up to 48 of
+  three characters or more and 48 of one letter or digit), the height of each small letter
+  (`a c e m n o r s u v w x z`) and each capital (not `J`, `Q`), digit or tall letter (`b d h k l`)
+  written with strokes of its own, and the height of the lone ones; their medians, each needing 5 words (or 3
+  lone samples; otherwise lone ones count as 1.4 times the word heights, capitals 2.5 times the
+  small letters). They are kept in millimetres (samples with `device:PER_MM`), in line heights
+  (samples with an `area` line) and in em (`em` samples without an area), and used in the same
+  kind of units only: a session with `device:PER_MM` in millimetres, else one with an `area` by
+  its LINE, else an `em` one in em. Without enough samples in those units, the line alone (the
+  area's LINE, or 1 for `em`; small letters 0.2 lines high, capitals 0.5), which only tells
+  dots and dashes apart. Without either, nothing below applies.
+- **Glyphs.** Strokes that overlap horizontally (within 0.2 small-letter heights, also through
+  other strokes) make one glyph. A glyph no bigger than half a small letter is a dot; one at most
+  half a small letter high and at least 2.5 times as wide as high a dash; with the person's
+  letters, one at most 0.6 small letters wide and at most 0.6 capitals and 1.8 small letters high
+  a tick. Anything else is a letter-sized glyph.
+- **Which ink.** The ink of one dot, dash or tick, or of one or two glyphs the model's best
+  reading makes one or two characters: each glyph of it. In longer ink only a dot, dash or tick
+  written last and standing apart at the end (0.3 small letters from the glyph before).
+- **Weights.** In each frame of the model that lies on such a glyph the blank keeps its
+  chance; the chance of a character is shared among the characters by weights: on a dot `.`
+  first, then `,` and `·`; on a dash `-` (`—` when long, `_` on the line); on a tick `,` and `'`
+  (`’`) alike, other quotes after them; letters and digits all but ruled out (−30). On a lone
+  letter-sized glyph, with the person's letters, a mark counts −8, and within each case pair whose forms differ mostly in
+  size (`c o s u v w x z`, with `0` beside `O`) the pair's chance moves to the form its height
+  says: 6 × ln(height / √(lone small × lone capital)), nothing within 1 of the middle, at most
+  6 either way (only with the person's letters, and only when each glyph reads as one
+  character). `k`/`K`, `p`/`P` and other pairs are left to the shape.
+- **The line.** With the area's `BASE`, the guide line nearest a glyph's middle is its line: a
+  dot hanging below it reads as `,`, one high above as `·`; a tick down to the line as `,`, one
+  high above it as `'`; a dash on the line as `_`; a lone `p`/`P` or `y`/`Y` hanging below the
+  line as the small form, one sitting on it as the capital.
+- **Readings.** All readings (`read`, `recognize`, with or without words and `raw`), the
+  prompted fit (`align`, `confirm … prompted`, `donate`) and the check of a pick are made on the
+  weighed frames; for a lone dot, dash or tick, the marks its shape allows come first (also when
+  the search found none of them), then the other readings. A fit is the better of the weighed
+  frames' and the ink's own, so the size never lowers one. `SCORE` is the log-probability with
+  the size taken into account.
+- The measurements are kept in the store's `size` (below); reading never waits on anything but
+  the samples it hasn't measured yet.
 
 **recognize** is `begin`, a stroke per `;`-separated part of `STROKES`, `read`, `end` in one line,
 for a client that has the whole ink at once. It stores nothing.
@@ -292,6 +341,13 @@ Nothing in it leaves the device except by export or a donation the person writes
   begins its line). A deletion writes the index (for the next erase count) first, then the file,
   then `samples.meta`, so a crash on the way leaves the sample with its client and time or takes
   it out. A store without an index gets one at its first open.
+- `size`: the person's letters as measured for the size (above): first line
+  `glassine-handwriting-size 1`, then `ID KIND V0 V1 PER_MM LINE EM` per sample in use (`KIND` 0
+  nothing to measure, 1 a word: its small-letter and capital heights, 2 a lone small letter, 3 a
+  lone capital, digit or tall letter: its height in `V0`; the sample's units per millimetre and
+  area line, 0 when unknown, and `EM` 1 for `em`). Derived like the index: made again from the
+  samples when it is missing (written by a reading that needs it, skipped while another process
+  holds the lock); a deletion takes the sample's line out with it, an erase removes the file.
 - `preferences`: one line per preference, `CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR` (sample ids;
   `-1` for a whole sample). A deletion takes a sample's preferences out before the sample.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
@@ -485,5 +541,6 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
+| `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
