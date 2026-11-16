@@ -205,6 +205,12 @@ they were with the head (6 → 7 of 623 texts) and fell without it (5 → 2). Lo
 read as before with words, but 6 points worse with the character model alone (`read … chars`,
 margin 0): the margin was tuned on synthetic lone characters, where it cost nothing.
 
+**Time on the device** (the e-ink tablet's Cortex-A53/A73 cores, the recognizer program
+before and after this change, interleaved, three rounds of 60 synthetic lines each, median
+read time): prose lines with words 241 → 243 ms (+1 %; 95th percentile +3 %), single words
+85 → 88 ms (+4 %; +6 %); with the character model alone against the ink alone, 222 → 227 ms
+(+2 %) and 81 → 85 ms (+4 %). Round-to-round spread is about ±5 %.
+
 ## Results
 
 CER = character edit distance / reference length, WER the same over words, "greedy" =
