@@ -102,13 +102,16 @@ size, spacing) and keep their shape.
 
 ### The letter model
 
-- **FR-006**: For each character the letter model holds the person's best versions of it:
-  up to a small number of variants, each built from their samples of that character with
-  the person's preferences, careful marking, readability (how well the recognizer read it
-  when it was written) and consistency (closeness to the person's typical shape) as
-  weights. Jitter is removed; shape, proportions, stroke count and stroke order stay the
-  person's. A variant is made from versions of the character with the same strokes, never
-  by mixing versions written with a different number of strokes.
+- **FR-006**: For each character the letter model holds a variant for each way the person
+  writes it often enough: their usable samples of the character are grouped by structure
+  (stroke count, stroke order and rough shape), and a group gives a variant when it holds
+  at least 3 samples and at least a tenth of the character's samples (a one-off slip gives
+  none). A character has up to 5 variants, each weighted by how often the person writes it
+  that way. Each variant is built from the samples of its group with the person's
+  preferences, careful marking, readability (how well the recognizer read it when it was
+  written) and consistency (closeness to the group's typical shape) as weights. Jitter is
+  removed; shape, proportions, stroke count and stroke order stay the person's. A variant
+  is never made by mixing versions written with different strokes.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
   prompt with its fit check passed (spans exact) or, for a prompt of one character alone,
   kept on the person's confirmation after a failed check (its strokes can only be that
@@ -146,7 +149,8 @@ size, spacing) and keep their shape.
   x-height); a character's other variants are in the font without a character of their own.
   Every other character falls back to the system's default font.
 - **FR-010**: Repeated letters don't look stamped: the font switches between a character's
-  variants along the text, the same way every time for the same text, by contextual
+  variants along the text, each about as often as the person writes it that way, the same
+  way every time for the same text, by contextual
   alternates that text shaping applies by default (no setting in the app). The preview
   (Scenario 3) shows the same variants as the installed font for the same text.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
@@ -162,7 +166,8 @@ size, spacing) and keep their shape.
   recognizer (spec 001), which also tells which strokes form which character.
 - **FR-014**: Neatening applies line-level corrections (straight baseline, steady slant,
   even letter size and spacing) and moves each covered character towards its nearest
-  variant in the letter model. A strength from 0 to 1 scales both; 0 returns the ink
+  variant in the letter model with the same strokes (a t written in one stroke towards a
+  one-stroke variant); a character none of whose variants has its strokes is not moved. A strength from 0 to 1 scales both; 0 returns the ink
   unchanged, 1 the neatest version.
 - **FR-015**: The same ink, letter model and strength always give the same result.
 - **FR-016**: Neatening is a request in the recognizer's interface (docs/recognizer.md), so
@@ -273,6 +278,9 @@ Host level:
   with fewer than 3 usable samples is not covered;
 - in words and alone, the versions of t, f, i, j, k, x, E and H written with a late dot, bar
   or arm keep that stroke, and a full stop or comma beside a letter counts for both;
+- a character written one way in about two thirds of its samples and another way in a
+  third gets a variant for each, weighted alike, and the font shows them in about that
+  proportion along a long text; a way written once among many gets none;
 - without a letter model, and with one that is out of date, the usable samples per character
   are reported as a built model would count them; the font page and neatening show them, say
   the model isn't built or is out of date, and build it without installing the font;
@@ -282,7 +290,8 @@ Host level:
   erasing the samples removes it;
 - neatening at strength 0 returns the input byte for byte; at strength 1 every covered
   character is closer to its variant than before, unless the reading check gives its line
-  back; stroke count, order, timing and pressure are kept;
+  back; a character is pulled towards a variant with its own strokes; stroke count, order,
+  timing and pressure are kept;
 - the recognizer reads neatened ink at least as well as the original on a held-back set;
 - through the neat ink layer, with a stand-in pen and recognizer: raw strokes pass on at
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
