@@ -11,6 +11,7 @@
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
 #define HW_LETTERS_BUILD 6      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
 #define HW_LETTERS_VARIANTS 5   /* variants per character at most (FR-006) */
@@ -54,6 +55,9 @@ struct hw_variant {
 	int use;                        /* versions written this way (nearest to it of their strokes) */
 	struct hw_profile prof;         /* x from the variant's left edge */
 	int lc, rc;                     /* the side shapes of its left and right side */
+	int out, favourite;             /* the person's marks (FR-031): left out, their favourite */
+	size_t nids;                    /* the samples written this way (its use), sorted */
+	char (*ids)[17];
 	size_t nstrokes;
 	struct hw_lstroke *s;
 };
@@ -61,6 +65,7 @@ struct hw_variant {
 struct hw_letter {
 	unsigned cp;
 	int samples;                    /* usable samples with this character */
+	char marks[17];                 /* the hash of its marks when built ("" none) */
 	int covered;
 	int nvar;
 	struct hw_variant var[HW_LETTERS_VARIANTS];    /* the most used first */
@@ -152,6 +157,34 @@ struct hw_letters_opts {
 };
 /* 1 built, 2 nothing to do (reason printed when verbose), -1 error */
 int hw_letters_run(const struct hw_letters_opts *o);
+
+/* Learn one character again (FR-032): its variants from its samples as they are now, the rest of
+ * the model as built. 1 done, 0 no model, -1 error. */
+int hw_letters_relearn(unsigned cp, int verbose);
+
+/* A character's occurrences in the prompted samples (FR-031; the character sheet): per sample
+ * and place, how it counts. Lines through emit(). */
+enum hw_occ_state {
+	HW_OCC_USABLE,          /* counts; variant: the one it is written like (-1 none) */
+	HW_OCC_OUT,             /* left out by the person */
+	HW_OCC_WAY_OUT,         /* counts for a variant the person left out */
+	HW_OCC_UNREAD,          /* the writing wasn't read clearly (no exact spans) */
+	HW_OCC_JOINED_BEFORE,   /* a stroke shared with the character before */
+	HW_OCC_JOINED_AFTER,    /* with the one after */
+	HW_OCC_ODD,             /* far from its other versions in size, or no baseline */
+};
+struct hw_occ { char id[17]; int pos; int state; int variant; const char *text; };
+int hw_letters_occurrences(unsigned cp, void (*emit)(const struct hw_occ *, void *), void *arg);
+
+/* the marks' hash for one character as the store has them now */
+void hw_letters_marks_hash(unsigned cp, char out[17]);
+/* 1 when some character's marks changed since the model was built */
+int hw_letters_marks_changed(const struct hw_letters *L);
+/* the letters as the font and neatening use them: variants left out removed (slots
+ * renumbered), letters with none left not covered; a shallow copy, free with
+ * hw_letters_view_free */
+int hw_letters_view(const struct hw_letters *L, struct hw_letters *out);
+void hw_letters_view_free(struct hw_letters *v);
 
 /* The step of the font's cycle a text is at, as its contextual alternates give it (FR-010):
  * prev the step of the character (or space) before in the same run, -1 at its start or after a

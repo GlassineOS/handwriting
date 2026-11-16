@@ -442,7 +442,9 @@ int hw_neaten(struct hw_neat *q)
 				if (q->L->l[mid].cp < q->cp[k]) lo = mid + 1; else hi = mid;
 			}
 			if (lo < q->L->n && q->L->l[lo].cp == q->cp[k]) le = &q->L->l[lo];
-			if (!le || !le->covered || !le->nvar) continue;
+			int kept = 0;
+			for (int t = 0; le && t < le->nvar; t++) kept |= !le->var[t].out;
+			if (!le || !le->covered || !kept) continue;
 			int ns = 0;
 			for (size_t j = 0; j < n; j++) ns += sole[j] == (int)k;
 			c->st = malloc((size_t)(ns + 1) * sizeof *c->st);
@@ -463,7 +465,7 @@ int hw_neaten(struct hw_neat *q)
 			double best = INFINITY;
 			for (int t = 0; !bad && t < le->nvar; t++) {
 				/* a version made of one sample is that sample, jitter and all */
-				if (le->var[t].members < 2) continue;
+				if (le->var[t].members < 2 || le->var[t].out) continue;
 				double d = dist_to(sx, sx + ns + 1, sn, (size_t)ns, xh, &le->var[t], NULL, NULL);
 				if (d < best - 1e-12) { best = d; c->v = &le->var[t]; }
 			}
