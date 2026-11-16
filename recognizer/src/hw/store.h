@@ -52,6 +52,7 @@ void hw_entries_free(struct hw_entry *e, size_t n);
 struct hw_index_entry {
 	struct hw_meta meta;
 	const char *text, *read;
+	char written[8], pair[17];      /* the sample's marking and pair link, "" when none */
 };
 /* borrowed: valid until the next call into the store, not freed by the caller */
 int hw_samples_index(const struct hw_index_entry **out, size_t *n);
@@ -85,7 +86,17 @@ int hw_donor_id(char *out, size_t n);
 int hw_donor_new(char *out, size_t n);
 int hw_donation_remove(const char *id);         /* 1 removed, 0 not there, -1 error */
 int hw_donation_has(const char *id);            /* 1 there, 0 not, -1 error */
-char *hw_donation_line(const char *id);         /* a donated sample's line, malloc'd; NULL none */
+char *hw_donation_line(const char *id);
+
+/* Preferences (spec 003 FR-003): of two samples (or one character of each, by its index in
+ * the text; -1 the whole sample) the one the person chose. Kept in the store's
+ * `preferences`, removed with either sample, exported and donated only with both. */
+struct hw_pref { char chosen[17], other[17]; int cspan, ospan; };
+/* the preferences whose samples are both stored (and, with owner, both the owner's), malloc'd */
+int hw_prefs(struct hw_pref **out, size_t *n, const char *owner);
+/* 0 recorded, -2 a sample isn't the owner's, -3 no such sample, -4 a bad span or the same
+ * sample twice, -1 an error */
+int hw_prefer(const struct hw_pref *p, const char *owner);         /* a donated sample's line, malloc'd; NULL none */
 long hw_donation_count(void);
 
 #endif

@@ -397,6 +397,8 @@ static void ix_put(FILE *f, const struct ix *x, const struct ixe *e)
 		esc_put(f, e->pub.text ? e->pub.text : "");
 		fputc('\t', f);
 		esc_put(f, e->pub.read ? e->pub.read : "");
+		/* the marking: - | careful | quick, and :PAIR when linked */
+		fprintf(f, "\t%s%s%s", e->pub.written[0] ? e->pub.written : "-", e->pub.pair[0] ? ":" : "", e->pub.pair);
 	}
 	fputc('\n', f);
 }
@@ -410,7 +412,7 @@ static int ix_write(struct ix *x, unsigned long long ino, int sync)
 	int fd = open(t, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 	FILE *f = fd >= 0 ? fdopen(fd, "w") : NULL;
 	if (!f) { if (fd >= 0) close(fd); return -1; }
-	fprintf(f, "%s 1 %llu %lu\n", x->head, ino, x->gen);
+	fprintf(f, "%s %d %llu %lu\n", x->head, x->samples ? 2 : 1, ino, x->gen);
 	for (size_t i = 0; i < x->n; i++) ix_put(f, x, &x->e[i]);
 	int r = fflush(f) || (sync && fsync(fileno(f))) ? -1 : 0;
 	if (fclose(f)) r = -1;
@@ -432,6 +434,18 @@ static int ix_append(struct ix *x, size_t from)
 
 /* the index file, when it belongs to the file with this inode and erase count; -1 when it
  * doesn't (the entries are then empty), 1 when it was read only up to a bad line */
+/* an index's marking field: - | careful | quick, with :PAIR */
+static int mark_parse(const char *f, struct hw_index_entry *e)
+{
+	e->written[0] = e->pair[0] = 0;
+	const char *c = strchr(f, ':');
+	size_t wl = c ? (size_t)(c - f) : strlen(f);
+	if (wl >= sizeof e->written) return -1;
+	if (!(wl == 1 && f[0] == '-')) { memcpy(e->written, f, wl); e->written[wl] = 0; }
+	if (c) { if (strlen(c + 1) >= sizeof e->pair) return -1; strcpy(e->pair, c + 1); }
+	return hw_written_ok(e->written) && hw_pair_ok(e->pair) ? 0 : -1;
+}
+
 static int ix_read(struct ix *x, unsigned long long ino)
 {
 	char p[4096];
@@ -447,8 +461,9 @@ static int ix_read(struct ix *x, unsigned long long ino)
 	char head[64];
 	unsigned long long fino;
 	unsigned long fgen;
-	if (sscanf(line, "%63s 1 %llu %lu", head, &fino, &fgen) != 3 || strcmp(head, x->head) || fino != ino ||
-	    fgen != x->gen)
+	int fver;
+	if (sscanf(line, "%63s %d %llu %lu", head, &fver, &fino, &fgen) != 4 || strcmp(head, x->head) ||
+	    fver != (x->samples ? 2 : 1) || fino != ino || fgen != x->gen)
 		goto out;
 	ret = 0;
 	long long prev = 0;
@@ -456,9 +471,9 @@ static int ix_read(struct ix *x, unsigned long long ino)
 		e = memchr(line, '\n', (size_t)(s + len - line));
 		if (!e) { ret = 1; break; }                 /* a line cut short */
 		*e = 0;
-		char *f[9];
+		char *f[10];
 		int nf = 0;
-		for (char *c = line; nf < 9;) {
+		for (char *c = line; nf < 10;) {
 			f[nf++] = c;
 			char *t = strchr(c, '\t');
 			if (!t) break;
@@ -472,7 +487,7 @@ static int ix_read(struct ix *x, unsigned long long ino)
 		v.len = strtoll(nf > 2 ? f[2] : "", &end2, 10);
 		int junk = !strcmp(f[0], "-");
 		if (nf < 3 || *end1 || *end2 || v.off < prev || v.len < 0 || (!junk && strlen(f[0]) != 16) ||
-		    (junk && nf != 3) || (!junk && nf != (x->samples ? 9 : 3))) { ret = 1; break; }
+		    (junk && nf != 3) || (!junk && nf != (x->samples ? 10 : 3))) { ret = 1; break; }
 		if (!junk) {
 			strcpy(v.id, f[0]);
 			if (x->samples) {
@@ -483,6 +498,7 @@ static int ix_read(struct ix *x, unsigned long long ino)
 				m->time = atoll(f[4]);
 				v.pub.text = unesc_dup(f[7]);
 				v.pub.read = unesc_dup(f[8]);
+				if (mark_parse(f[9], &v.pub)) { free((char *)v.pub.text); free((char *)v.pub.read); ret = 1; break; }
 				if (!v.pub.text || !v.pub.read) { free((char *)v.pub.text); free((char *)v.pub.read); ret = 1; break; }
 			}
 		}
@@ -528,9 +544,10 @@ static json_object *jsub(const char *a, const char *b)
 
 /* a sample's text and first reading ("" when none) without reading its strokes: the
  * top-level keys are walked and only those two values parsed */
-static int peek_sample(const char *line, char **text, char **read)
+static int peek_sample(const char *line, char **text, char **read, struct hw_index_entry *mk)
 {
 	*text = *read = NULL;
+	if (mk) mk->written[0] = mk->pair[0] = 0;
 	const char *s = line + strspn(line, " \t");
 	if (*s++ != '{') return -1;
 	for (;;) {
@@ -545,6 +562,17 @@ static int peek_sample(const char *line, char **text, char **read)
 		if (!ve) goto bad;
 		size_t kl = (size_t)(ke - k);
 		int is_text = kl == 6 && !memcmp(k, "\"text\"", 6), is_read = kl == 9 && !memcmp(k, "\"reading\"", 9);
+		int is_w = kl == 9 && !memcmp(k, "\"written\"", 9), is_p = kl == 6 && !memcmp(k, "\"pair\"", 6);
+		if (mk && (is_w || is_p)) {
+			json_object *o = jsub(v, ve);
+			const char *t = o && json_object_is_type(o, json_type_string) ? json_object_get_string(o) : NULL;
+			char *dst = is_w ? mk->written : mk->pair;
+			size_t cap = is_w ? sizeof mk->written : sizeof mk->pair;
+			int ok = t && strlen(t) < cap && (is_w ? hw_written_ok(t) : hw_pair_ok(t));
+			if (ok) strcpy(dst, t);
+			json_object_put(o);
+			if (!ok) goto bad;
+		}
 		if ((is_text && !*text) || (is_read && !*read)) {
 			json_object *o = jsub(v, ve), *c, *t;
 			if (is_text && o && json_object_is_type(o, json_type_string)) *text = strdup(json_object_get_string(o));
@@ -688,13 +716,15 @@ static int ix_scan(struct ix *x, int fd, long long off, long long size, struct m
 		memset(&v, 0, sizeof v);
 		if (e && l >= 2 && s[0] == '{' && s[l - 1] == '}' && !memchr(s, 0, (size_t)l)) {
 			*e = 0;
-			sample = !x->samples || !peek_sample(s, (char **)&v.pub.text, (char **)&v.pub.read);
+			sample = !x->samples || !peek_sample(s, (char **)&v.pub.text, (char **)&v.pub.read, &v.pub);
 			if (!sample && x->samples) {        /* not something peek can walk: json-c decides */
 				struct hw_sample smp;
 				char err[64];
 				if (!hw_sample_parse(s, &smp, err, sizeof err)) {
 					v.pub.text = strdup(smp.text ? smp.text : "");
 					v.pub.read = strdup(smp.reading.n ? smp.reading.text[0] : "");
+					strcpy(v.pub.written, smp.written);
+					strcpy(v.pub.pair, smp.pair);
 					sample = v.pub.text && v.pub.read;
 					hw_sample_free(&smp);
 				}
@@ -992,7 +1022,7 @@ static int ix_added(struct ix *x, const char *json, long long off, const struct 
 	v.len = (long long)strlen(json);
 	if (x->samples) {
 		v.pub.meta = *m;
-		if (peek_sample(json, (char **)&v.pub.text, (char **)&v.pub.read)) {
+		if (peek_sample(json, (char **)&v.pub.text, (char **)&v.pub.read, &v.pub)) {
 			v.pub.text = strdup("");
 			v.pub.read = strdup("");
 		}
@@ -1176,6 +1206,10 @@ static int rewrite_meta(void *arg)
 	return r;
 }
 
+static int prefs_drop(int (*gone)(const char *id, void *arg), void *arg);
+static int gone_client(const char *id, void *arg);
+static int gone_id(const char *id, void *arg);
+
 long hw_samples_erase(const char *client)
 {
 	char p[4096];
@@ -1188,6 +1222,9 @@ long hw_samples_erase(const char *client)
 	size_t n;
 	unsigned long gen;
 	long erased = -1;
+	/* the preferences of what goes, before the samples */
+	if (!client ? hw_store_replace("preferences", NULL, 0) : (ix_sync(&SIX, 1) || prefs_drop(gone_client, (void *)client)))
+		goto out;
 	if (hw_samples_load(&es, &n, &gen)) goto out;
 	size_t cap = 64, len = 0, mcap = 256, mlen = 0;
 	char *data = malloc(cap), *meta = malloc(mcap);
@@ -1236,6 +1273,7 @@ int hw_samples_delete(const char *id, const char *owner)
 	long k = ix_find(&SIX, id);
 	if (k < 0) { r = 0; goto out; }
 	if (owner && strcmp(SIX.e[k].pub.meta.client, owner)) { r = -2; goto out; }
+	if (prefs_drop(gone_id, (void *)id)) goto out;      /* its preferences before the sample */
 	/* counts as a change: a running adaptation drops its result */
 	struct meta_out mo = { id, SIX.gen + 1 };
 	long n = ix_remove(&SIX, id, mo.gen, rewrite_meta, &mo);
@@ -1243,6 +1281,130 @@ int hw_samples_delete(const char *id, const char *owner)
 out:
 	hw_store_unlock(fd);
 	return r;
+}
+
+/* ---------------------------------------------------------------- preferences */
+
+/* lines CHOSEN TAB OTHER TAB CSPAN TAB OSPAN (-1: the whole sample) */
+static int prefs_read(struct hw_pref **out, size_t *n)
+{
+	*out = NULL; *n = 0;
+	char p[4096];
+	if (hw_store_path(p, sizeof p, "preferences")) return -1;
+	size_t len;
+	char *b = slurp(p, &len);
+	if (!b) return errno == ENOENT ? 0 : -1;
+	size_t cap = 0;
+	for (char *l = b, *e; l < b + len; l = e + 1) {
+		e = memchr(l, '\n', (size_t)(b + len - l));
+		if (!e) break;                  /* a line cut short */
+		*e = 0;
+		struct hw_pref v;
+		char c[24], o[24];
+		if (sscanf(l, "%23s\t%23s\t%d\t%d", c, o, &v.cspan, &v.ospan) != 4 || strlen(c) != 16 || strlen(o) != 16 ||
+		    !hw_pair_ok(c) || !hw_pair_ok(o) || v.cspan < -1 || v.ospan < -1)
+			continue;
+		strcpy(v.chosen, c); strcpy(v.other, o);
+		if (*n == cap) {
+			cap = cap ? cap * 2 : 16;
+			struct hw_pref *x = realloc(*out, cap * sizeof *x);
+			if (!x) { free(b); free(*out); *out = NULL; *n = 0; return -1; }
+			*out = x;
+		}
+		(*out)[(*n)++] = v;
+	}
+	free(b);
+	return 0;
+}
+
+static int prefs_write(const struct hw_pref *ps, size_t n)
+{
+	if (!n) return hw_store_replace("preferences", NULL, 0);
+	char *d = malloc(n * 64 + 1);
+	if (!d) return -1;
+	size_t len = 0;
+	for (size_t i = 0; i < n; i++)
+		len += (size_t)sprintf(d + len, "%s\t%s\t%d\t%d\n", ps[i].chosen, ps[i].other, ps[i].cspan, ps[i].ospan);
+	int r = hw_store_replace("preferences", d, len);
+	free(d);
+	return r;
+}
+
+/* the lock held: takes out every preference with a sample gone(id) says goes */
+static int prefs_drop(int (*gone)(const char *id, void *arg), void *arg)
+{
+	struct hw_pref *ps;
+	size_t n, w = 0;
+	if (prefs_read(&ps, &n)) return -1;
+	for (size_t i = 0; i < n; i++) if (!gone(ps[i].chosen, arg) && !gone(ps[i].other, arg)) ps[w++] = ps[i];
+	int r = w == n ? 0 : prefs_write(ps, w);
+	free(ps);
+	return r;
+}
+
+static int gone_id(const char *id, void *arg) { return !strcmp(id, (const char *)arg); }
+static int gone_client(const char *id, void *arg)
+{
+	long k = ix_find(&SIX, id);
+	return k >= 0 && !strcmp(SIX.e[k].pub.meta.client, (const char *)arg);
+}
+
+static size_t chars_of(const char *s)
+{
+	size_t n = 0;
+	for (; *s; s++) n += ((unsigned char)*s & 0xc0) != 0x80;
+	return n;
+}
+
+/* the index in step: is the preference's every sample there (and the owner's)? */
+static int pref_live(const struct hw_pref *p, const char *owner)
+{
+	long a = ix_find(&SIX, p->chosen), b = ix_find(&SIX, p->other);
+	if (a < 0 || b < 0) return 0;
+	return !owner || (!strcmp(SIX.e[a].pub.meta.client, owner) && !strcmp(SIX.e[b].pub.meta.client, owner));
+}
+
+int hw_prefs(struct hw_pref **out, size_t *n, const char *owner)
+{
+	*out = NULL; *n = 0;
+	if (ix_sync(&SIX, 0)) return -1;
+	struct hw_pref *ps;
+	size_t m, w = 0;
+	if (prefs_read(&ps, &m)) return -1;
+	for (size_t i = 0; i < m; i++) if (pref_live(&ps[i], owner)) ps[w++] = ps[i];
+	*out = ps; *n = w;
+	return 0;
+}
+
+int hw_prefer(const struct hw_pref *p, const char *owner)
+{
+	if (!hw_pair_ok(p->chosen) || !hw_pair_ok(p->other) || !*p->chosen || !*p->other || p->cspan < -1 || p->ospan < -1 ||
+	    (!strcmp(p->chosen, p->other) && p->cspan == p->ospan))
+		return -4;
+	int fd = hw_store_lock();
+	if (fd < 0) return -1;
+	int r = -1;
+	if (ix_sync(&SIX, 1)) goto out;
+	long a = ix_find(&SIX, p->chosen), b = ix_find(&SIX, p->other);
+	if (a < 0 || b < 0) { r = -3; goto out; }
+	if (owner && (strcmp(SIX.e[a].pub.meta.client, owner) || strcmp(SIX.e[b].pub.meta.client, owner))) { r = -2; goto out; }
+	if ((p->cspan >= 0 && (size_t)p->cspan >= chars_of(SIX.e[a].pub.text)) ||
+	    (p->ospan >= 0 && (size_t)p->ospan >= chars_of(SIX.e[b].pub.text))) { r = -4; goto out; }
+	char l[80];
+	snprintf(l, sizeof l, "%s\t%s\t%d\t%d\n", p->chosen, p->other, p->cspan, p->ospan);
+	r = append("preferences", l) ? -1 : 0;
+out:
+	hw_store_unlock(fd);
+	return r;
+}
+
+/* one preference as a file's record, with the ids the samples have in that file */
+static void pref_record(FILE *f, const struct hw_pref *p, const char *chosen, const char *other)
+{
+	fprintf(f, "{\"preference\":{\"chosen\":\"%s\",\"other\":\"%s\"", chosen, other);
+	if (p->cspan >= 0) fprintf(f, ",\"chosen_char\":%d", p->cspan);
+	if (p->ospan >= 0) fprintf(f, ",\"other_char\":%d", p->ospan);
+	fputs("}}\n", f);
 }
 
 /* ---------------------------------------------------------------- export and import */
@@ -1303,6 +1465,13 @@ int hw_export(const char *path, const char *client)
 		fprintf(f, "{\"sample\":%s,%s\n", es[i].json, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN) + 1);
 		json_object_put(o);
 	}
+	/* the preferences between exported samples, with the samples' ids (the same as
+	 * stored, the lines are) */
+	struct hw_pref *ps = NULL;
+	size_t np = 0;
+	if (!ix_sync(&SIX, 1) && !prefs_read(&ps, &np))
+		for (size_t i = 0; i < np; i++) if (pref_live(&ps[i], client)) pref_record(f, &ps[i], ps[i].chosen, ps[i].other);
+	free(ps);
 	char ad[4096];
 	if (!client && !hw_store_path(ad, sizeof ad, "adaptation")) {
 		DIR *d = opendir(ad);
@@ -1360,6 +1529,8 @@ long hw_import(const char *path)
 	ssize_t len;
 	long added = 0, lineno = 0;
 	int fd = -1, ok = 1;
+	struct hw_pref *prefs_in = NULL;
+	size_t nprefs_in = 0;
 	while ((len = getline(&line, &cap, f)) > 0) {
 		lineno++;
 		json_object *o = json_tokener_parse(line), *v, *w;
@@ -1397,6 +1568,22 @@ long hw_import(const char *path)
 				added += r == 0;
 				hw_sample_free(&s);
 			}
+		} else if (json_object_object_get_ex(o, "preference", &v)) {
+			/* kept when both its samples are stored once the file is read */
+			json_object *a, *b, *ca, *cb;
+			struct hw_pref q = { .cspan = -1, .ospan = -1 };
+			if (json_object_object_get_ex(v, "chosen", &a) && json_object_object_get_ex(v, "other", &b) &&
+			    json_object_is_type(a, json_type_string) && json_object_is_type(b, json_type_string) &&
+			    strlen(json_object_get_string(a)) == 16 && strlen(json_object_get_string(b)) == 16) {
+				strcpy(q.chosen, json_object_get_string(a));
+				strcpy(q.other, json_object_get_string(b));
+				if (json_object_object_get_ex(v, "chosen_char", &ca)) q.cspan = json_object_get_int(ca);
+				if (json_object_object_get_ex(v, "other_char", &cb)) q.ospan = json_object_get_int(cb);
+				if (hw_pair_ok(q.chosen) && hw_pair_ok(q.other) && q.cspan >= -1 && q.ospan >= -1) {
+					struct hw_pref *x = realloc(prefs_in, (nprefs_in + 1) * sizeof *x);
+					if (x) { prefs_in = x; prefs_in[nprefs_in++] = q; }
+				}
+			}
 		} else if (json_object_object_get_ex(o, "adaptation", &v)) {
 			json_object *l, *sl, *d;
 			if (json_object_object_get_ex(v, "lang", &l) && json_object_object_get_ex(v, "slot", &sl) &&
@@ -1422,6 +1609,26 @@ long hw_import(const char *path)
 	free(line);
 	fclose(f);
 	if (lineno == 0) { fprintf(stderr, "glassine-handwriting: %s: empty\n", path); ok = 0; }
+	if (ok && nprefs_in && fd >= 0) {
+		struct hw_pref *have;
+		size_t nh;
+		if (ix_sync(&SIX, 1) || prefs_read(&have, &nh)) ok = 0;
+		else {
+			for (size_t i = 0; ok && i < nprefs_in; i++) {
+				const struct hw_pref *q = &prefs_in[i];
+				int dup = 0;
+				for (size_t k = 0; k < nh && !dup; k++)
+					dup = !strcmp(have[k].chosen, q->chosen) && !strcmp(have[k].other, q->other) &&
+					      have[k].cspan == q->cspan && have[k].ospan == q->ospan;
+				if (dup || !pref_live(q, NULL)) continue;
+				char l[80];
+				snprintf(l, sizeof l, "%s\t%s\t%d\t%d\n", q->chosen, q->other, q->cspan, q->ospan);
+				if (append("preferences", l)) ok = 0;
+			}
+			free(have);
+		}
+	}
+	free(prefs_in);
 	hw_store_unlock(fd);
 	return ok ? added : -1;
 }
@@ -1495,12 +1702,22 @@ int hw_donation_write(const char *path)
 	snprintf(tmp, sizeof tmp, "%s.tmp", path);
 	FILE *f = fopen(tmp, "we");
 	int r = f ? 0 : -1;
+	/* each donated sample's id in the store and in the file, for the preferences */
+	char (*ids)[2][17] = NULL;
+	size_t nids = 0, capids = 0;
 	for (char *c = s, *e; f && *c; c = e) {
 		e = strchr(c, '\n');
 		if (e) *e++ = 0; else e = c + strlen(c);
 		struct hw_sample smp;
 		char err[128];
 		if (!*c || hw_sample_parse(c, &smp, err, sizeof err)) continue;
+		if (nids == capids) {
+			capids = capids ? capids * 2 : 64;
+			void *x = realloc(ids, capids * sizeof *ids);
+			if (!x) { r = -1; hw_sample_free(&smp); break; }
+			ids = x;
+		}
+		hw_sample_id(c, ids[nids][0]);
 		/* only what the format allows in a donation: no client, time or device; times
 		 * start at 0 */
 		snprintf(smp.licence, sizeof smp.licence, "%s", lic);
@@ -1510,10 +1727,25 @@ int hw_donation_write(const char *path)
 			for (size_t k = 0; k < smp.strokes[i].n; k++) smp.strokes[i].t[k] -= t0;
 		char *out = hw_sample_format(&smp);
 		if (!out || fprintf(f, "%s\n", out) < 0) r = -1;
+		if (out) hw_sample_id(out, ids[nids++][1]);
 		free(out);
 		hw_sample_free(&smp);
 	}
 	free(s);
+	/* a preference goes only with both its samples, naming them by their ids in this file */
+	struct hw_pref *ps = NULL;
+	size_t np = 0;
+	if (f && !r && prefs_read(&ps, &np)) r = -1;
+	for (size_t i = 0; !r && i < np; i++) {
+		const char *a = NULL, *b = NULL;
+		for (size_t k = 0; k < nids; k++) {
+			if (!a && !strcmp(ids[k][0], ps[i].chosen)) a = ids[k][1];
+			if (!b && !strcmp(ids[k][0], ps[i].other)) b = ids[k][1];
+		}
+		if (a && b) pref_record(f, &ps[i], a, b);
+	}
+	free(ps);
+	free(ids);
 	if (f && fclose(f)) r = -1;
 	if (!r && rename(tmp, path)) r = -1;
 	if (r) unlink(tmp);
