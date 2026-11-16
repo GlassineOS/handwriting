@@ -615,12 +615,11 @@ class Samples(unittest.TestCase):
         c.close()
         self.assertIn("samples\t3\n", self.env.run("samples", "stats").stdout)
         self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()], ids)
-        # a delete rewrites the file without the damage; a running recognizer sees it
+        # a delete leaves the damage as it is (no sample in it); a running recognizer sees it
         c = self.env.start("-i", "0")
         c.ask("hello", "1", "org.example.keyboard")
         self.assertEqual(c.ask("samples")[2:], ["3", *ids])
         self.env.run("samples", "delete", ids[0])
-        self.assertNotIn(b"\0", (st / "samples.jsonl").read_bytes())
         self.assertEqual(c.ask("samples")[2:], ["2", *ids[1:]])
         self.assertEqual(c.ask("sample", ids[0])[2:], ["unknown-sample"])
         c.close()
@@ -711,17 +710,28 @@ class Samples(unittest.TestCase):
         c.close()
         self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()],
                          [ids[0], *ids[2:5]])
-        # a crash after the index (the sample marked gone) but before the overwrite
+        # a crash after the index (for the next erase count) but before the file: the sample
+        # stays, with its client
         ix = st / "samples.index"
+        meta = (st / "samples.meta").read_text()
         rows = ix.read_text().splitlines()
+        head = rows[0].split(" ")
+        head[-1] = str(int(head[-1]) + 1)
         k = next(i for i, x in enumerate(rows) if x.startswith(ids[2] + "\t"))
         f = rows[k].split("\t")
         rows[k] = "-\t%s\t%d" % (f[1], int(f[2]) + 1)
-        ix.write_text("\n".join(rows) + "\n")
-        self.assertIn(lines[2].encode(), data())
+        ix.write_text("\n".join([" ".join(head), *rows[1:]]) + "\n")
+        listed = [x.split("\t") for x in self.env.run("samples", "list").stdout.splitlines()]
+        self.assertEqual([x[0] for x in listed], [ids[0], *ids[2:5]])
+        self.assertEqual({x[1] for x in listed}, {"org.example.samples"})
+        # a crash after the file, before the meta: the sample is gone
+        line = lines[2].encode()
+        b = data()
+        at = b.index(line)
+        (st / "samples.jsonl").write_bytes(b[:at] + b" " * len(line) + b[at + len(line):])
+        self.assertEqual((st / "samples.meta").read_text(), meta)
         self.assertEqual([x.split("\t")[0] for x in self.env.run("samples", "list").stdout.splitlines()],
                          [ids[0], *ids[3:5]])
-        self.assertNotIn(lines[2].encode(), data())
         # enough blanks: the file is written without them
         big = self.kept(30, base=100)
         for i in big[:-1:2]:
