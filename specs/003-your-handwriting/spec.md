@@ -153,12 +153,13 @@ size, spacing) and keep their shape.
   every app gets the same result; apps reach it through the neat ink layer (FR-018), keep the
   original ink and let the person switch back. Neatening never learns from the ink it is
   given: nothing it neatens becomes a sample, and it never changes the letter model.
-- **FR-024**: Neatened ink is a view of the writing for display, never data about the
-  person's hand. The neat ink layer always passes the raw strokes on beside the neatened
-  ones, and recognition, samples, adaptation (spec 001 FR-009), the letter model, base
-  training and donations always use the raw pen input. Neatened ink is never stored as a
-  sample; where an app keeps neatened ink, it is marked as neatened, and ink so marked is
-  never read into adaptation, the letter model, base training or a donation.
+- **FR-024**: Neatened ink is never data about the person's hand. The neat ink layer
+  always passes the raw strokes on beside the neatened ones, and itself feeds recognition,
+  samples, adaptation (spec 001 FR-009), the letter model and donations from the raw pen
+  input, whatever the app keeps. An app may keep raw strokes, neatened ones or both in its
+  own documents; neatened ink it keeps is marked as neatened, and neatened ink that reaches
+  a sample (a confirm, an import, a donation) is refused, or kept marked and left out of
+  adaptation, the letter model, base training and donations.
 - **FR-017**: Ink the recognizer can't read, or reads with low confidence, gets only the
   line-level corrections.
 
@@ -189,6 +190,31 @@ size, spacing) and keep their shape.
 - **FR-023**: Ink in a private field (a password, a PIN; spec 001's field rules) is neither
   read nor neatened, and the layer sends the recognizer nothing from it.
 
+### Text from the neat ink layer
+
+- **FR-025**: The neat ink layer is the whole of pen to strokes and text: with text output
+  on, it passes on with the strokes what they are read as, so a client such as the
+  keyboard's writing paper uses the layer instead of talking to the recognizer itself.
+  Text output is chosen per surface and off by default: a drawing surface doesn't pay for
+  recognition it doesn't use (it still gets the readings neatening needs, without being
+  sent them).
+- **FR-026**: The text comes as ranked candidates, best first, each with its text, where it
+  came from (the ink's own reading, another reading of the ink, a word of the list, the
+  search the words guided; spec 001) and its fit verdict (whether it passed the check a
+  picked candidate gets), and with which strokes make which character. Partial readings
+  come while the person writes; each reading names the strokes it covers, and a newer one
+  replaces the older.
+- **FR-027**: A surface gives the layer its field context: the input purpose and hints
+  (prose, an email address, a web address, digits, a private field), the text around the
+  cursor, and the languages. The layer applies the recognizer's field rules (what is read,
+  what may be learned) unchanged.
+- **FR-028**: The client tells the layer what the person did with a reading: picked a
+  candidate, accepted the reading, or corrected it, with the chosen text. That is the
+  confirmation spec 001 learns from: the layer stores the raw strokes with that text as a
+  sample under the field rules, and nothing is stored without it.
+- **FR-029**: Strength 0 gives the raw strokes and the text, with no neatening; text output
+  works the same at every strength and with neatening off.
+
 ## Key entities
 
 - **Careful / quick marking**: how a sample was written (FR-001), and the pair it belongs to.
@@ -196,10 +222,11 @@ size, spacing) and keep their shape.
 - **Letter model**: per character, the person's best variants and the line metrics; derived
   data, rebuilt from samples, markings and preferences.
 - **Handwriting font**: the letter model as an installed font, named and versioned.
-- **Neat ink layer**: what an app draws pen ink through to get neatened strokes: raw strokes
-  in, raw and neatened vector strokes out, with the strength the app sets.
-- **Neatened ink**: a display view of raw ink, marked as neatened wherever it is kept; never
-  a sample.
+- **Neat ink layer**: what an app draws pen ink through: pen strokes and field context in;
+  raw and neatened vector strokes, and on request the text they are read as, out; the
+  person's choice of a reading back in.
+- **Neatened ink**: the raw ink moved towards the letter model, marked as neatened wherever
+  it is kept; never a sample.
 
 ## Contracts
 
@@ -207,13 +234,13 @@ size, spacing) and keep their shape.
 |---|---|---|---|
 | Sample format (marking, pair, preference records) | owned | minor bump of v1 | docs/samples.md |
 | Recognizer interface (letter model build and status, font build and installation, neaten) | owned | minor bump | docs/recognizer.md |
-| Neat ink layer (raw strokes in, raw and neatened vector strokes out, strength) | owned | new, version 1 | this spec (FR-018 to FR-024); its protocol definition beside the ink protocol in GlassineOS/protocols |
+| Neat ink layer (pen strokes and field context in; raw and neatened vector strokes, strength, candidates out; picks back) | owned | new, version 1 | this spec (FR-018 to FR-029); its protocol definition beside the ink protocol in GlassineOS/protocols |
 | Ink protocol (ink areas, pen-preview brushes) | consumed and extended: the neat ink layer wraps it | glassine_ink_v1 | GlassineOS/protocols `glassine-ink-v1.xml` |
 | E-ink stack pen preview (the panel engine draws the stroke at the pen's tip) | consumed | — | GlassineOS/epd |
 | GTK ink areas module | consumed: unchanged, it announces areas only; neatening needs an app that draws through the layer | — | GlassineOS/shell spec 003 |
 | Per-person font installation | consumed (freedesktop font directories, the system font cache) | — | — |
 | Font choice in the settings app | consumed (GlassineOS/shell settings) | — | shell specs |
-| Writing paper offering Neaten | consumed by GlassineOS/shell spec 006 (the keyboard), through the neat ink layer | — | shell spec 006 |
+| Writing paper: strokes, text candidates and Neaten | consumed by GlassineOS/shell spec 006 (the keyboard's writing paper, GlassineOS/wvkbd), through the neat ink layer instead of the recognizer directly | — | shell spec 006 |
 
 ## Device scope and risk
 
@@ -240,10 +267,16 @@ Host level:
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
   as drawing pass unchanged, strength 0 gives the raw strokes, and a private field sends
   the recognizer nothing;
-- a client confirming writing through the neat ink layer, with neatening on, stores samples
-  whose strokes are byte for byte those a client on the bare ink surface stores for the
-  same pen input; ink marked as neatened is refused as a sample and left out of adaptation,
-  the letter model and a donation.
+- whatever a client keeps (raw strokes, neatened ones or both), a confirmation through the
+  neat ink layer with neatening on stores a sample whose strokes are byte for byte those a
+  client talking to the recognizer directly stores for the same pen input; neatened ink
+  that reaches a sample path is refused or kept marked and left out of adaptation, the
+  letter model and a donation;
+- through the neat ink layer with text output on, the same pen input and field context give
+  the same candidates (text, origin, fit verdict, character strokes) as the recognizer's own
+  reading, partial readings arrive while writing, a pick stores one sample with the picked
+  text, a surface with text output off gets no candidates, and strength 0 gives raw strokes
+  and text.
 
 Product level: in the images acceptance suite, a test user with a prepared sample store
 builds the font, the font appears in the settings app's font list, and a text set in it
