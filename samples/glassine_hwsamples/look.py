@@ -268,7 +268,7 @@ def bar(cr, k, x, y, w, n, on, h=10):
 
 
 TABS = (("write", "Write"), ("samples", "Samples"), ("coverage", "Coverage"), ("learn", "Learn"),
-        ("donate", "Donate"))
+        ("donate", "Contribute"))
 
 
 def brand_mark(cr, k, cx, cy, col):
