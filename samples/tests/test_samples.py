@@ -682,8 +682,13 @@ class Pages(Case):
         self.assertEqual(st["chars"]["l"], (12, 0))
         u = self.make()
         u.wizard_done()
-        # opening the page learns the letters in the background, the font stays as it is
+        # opening the page shows the counts and offers to learn the letters; asked, they are
+        # learned in the background and the font stays as it is
         u.open_font()
+        self.settle(u, lambda: u.font is not None and not u.letters_loading)
+        self.assertEqual(u.font["status"]["state"], "none")
+        self.assertIsNone(u.letters_job)
+        u.build_letters()
         self.settle(u, lambda: u.font is not None and not u.letters_job and not u.letters_loading
                     and u.font["status"]["state"] == "current")
         self.assertIsNone(u.font["status"]["font"])
@@ -743,6 +748,76 @@ class Pages(Case):
         self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Notes hand", 2))
         u.remove_font()
         self.settle(u, lambda: u.font["status"]["font"] is None)
+
+    def test_character_sheet(self):
+        """spec 003 FR-031/FR-032 in the app: a key opens its sheet; a favourite, a version left
+        out and a sample left out (with Undo) are marks; closing learns the character again,
+        the preview follows, the installed font changes only with Update"""
+        from glassine_hwsamples import fontview
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
+        rnd = random.Random(5)
+        ss = [TL.sample(t, rnd) for t in ["abcde", "fghij", "klmno"] * 3]
+        ss += [TL.sample("l", rnd, styles={"l": k % 3}) for k in range(9)]
+        f = self.e.dir / "in.jsonl"
+        f.write_text("\n".join([json.dumps({"format": "glassine-handwriting-export", "version": 1})] +
+                               [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
+                                            "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
+        self.e.cli.run("samples", "import", str(f))
+        u = self.make()
+        u.wizard_done()
+        u.open_best("intro")
+        u.open_font()
+        self.settle(u, lambda: u.font is not None and not u.letters_loading)
+        u.make_font()                               # Install learns the letters first
+        self.settle(u, lambda: not u.font_busy and u.font and u.font["status"]["font"] and not u.letters_loading)
+        self.assertEqual(u.font["status"]["state"], "current")
+        self.assertTrue(u.font["status"]["font_same"])
+        u.open_char("l")
+        self.assertEqual(u.sheet["seg"], "versions")
+        vs = u.font["model"]["chars"]["l"]["variants"]
+        self.assertGreaterEqual(len(vs), 2)
+        fav_ids, out_ids = set(vs[-1]["ids"]), set(vs[0]["ids"])
+        u.mark_version(len(vs) - 1, "favourite")
+        u.mark_version(0, "out")
+        self.settle(u)
+        kinds = {ln.split("\t")[3] for ln in self.e.cli.run("letters", "marks").splitlines()}
+        self.assertEqual(kinds, {"favourite", "way-out"})
+        # its samples, one left out and put back with Undo
+        u.sheet_seg("samples")
+        self.settle(u, lambda: u.sheet["occ"] is not None)
+        use = [o for o in u.sheet["occ"] if o[2] == "usable"]
+        self.assertTrue(use)
+        u.mark_sample(use[0][0])
+        self.settle(u)
+        self.assertIn("out", self.e.cli.run("letters", "marks"))
+        u.undo_out()
+        self.settle(u)
+        self.assertNotIn("\tout\n", self.e.cli.run("letters", "marks") + "\n")
+        # Write more: careful prompts for l alone and in words
+        u.sheet_seg("write")
+        self.assertTrue(self.U.writing(u))
+        self.assertEqual([p.text for p in u.sheet["prompts"]][0], "l")
+        self.assertTrue(all(p.written == "careful" for p in u.sheet["prompts"]))
+        # closing: l learned again in the background; the preview has it, the font doesn't
+        u.close_char()
+        self.assertIsNotNone(u.relearn)
+        self.settle(u, lambda: not u.relearn and not u.letters_loading)
+        st, model = u.font["status"], u.font["model"]
+        self.assertEqual(st["state"], "current")
+        self.assertFalse(st["font_same"])
+        l = model["chars"]["l"]
+        # the marks follow their samples (the versions may come out in another order)
+        by = {frozenset(v["ids"]): v for v in l["variants"]}
+        self.assertTrue(by[frozenset(out_ids)].get("left_out"))
+        self.assertTrue(by[frozenset(fav_ids)].get("favourite"))
+        self.assertNotIn(l["variants"].index(by[frozenset(out_ids)]), fontview.slots(l))
+        self.assertEqual(self.U.pages.font_mode(u), "relearned")
+        # Update puts the new letters in the font
+        u.make_font()
+        self.settle(u, lambda: not u.font_busy and u.font["status"]["font"][1] == 2 and not u.letters_loading)
+        self.assertTrue(u.font["status"]["font_same"])
+        self.assertEqual(self.U.pages.font_mode(u), "installed")
 
     def test_neaten_page(self):
         """spec 003 Scenario 4 in the app: what is written comes back with the same strokes,
@@ -879,13 +954,34 @@ class Window(Case):
                 return True
             if seen[1:] and not seen[2:] and w.geom and w.geom[0]:
                 seen.append(("turned", a.width < 936 and a.height < 702))
+                w.resize(702, 936)
+                u.wizard_done()
+                u.open_best("intro")
+                u.open_font()
+                return True
+            if seen[2:] and not seen[3:] and u.font is not None and not w.geom[0]:
+                # a character's sheet on Write more: the writing area inside the sheet
+                u.open_char("Q")
+                return True
+            if seen[3:] == [] and u.sheet and w.stack.get_visible_child_name() == "write" and a.height > 100:
+                seen.append(("sheet", u.writer.prompt.text, a.width > 600))
+                u.close_char()
+                u.rename_font()
+                return True
+            if seen[4:] == [] and w.entry.get_visible():
+                ea = w.entry.get_allocation()
+                seen.append(("rename", w.stack.get_visible_child_name(), ea.y < 936 / 2, w.entry.get_text()))
+                w.entry.set_text("Garden letters")
+                u.use_name()
+                seen.append(("named", u.font_name, w.entry.get_visible()))
                 app.quit()
                 return False
             return True
         GLib.timeout_add(200, step)
         GLib.timeout_add(30000, app.quit)
         app.run(["glassine-handwriting-samples"])
-        self.assertEqual(seen, ["full", ("try", "write", True), ("turned", True)])
+        self.assertEqual(seen, ["full", ("try", "write", True), ("turned", True), ("sheet", "Q", True),
+                                ("rename", "full", True, "My handwriting"), ("named", "Garden letters", False)])
 
 
 class Drawn(unittest.TestCase):
