@@ -187,9 +187,9 @@ export them as one file in the sample format; nothing leaves the device otherwis
   every request in a session belong to the writer shown.
 - **FR-016**: Separate stores: each guest writer has a store of their own, separate from the
   owner's store and from every other writer's, not inside any of them, and kept by the
-  recognizer like the owner's (spec 001 FR-009, spec 004 FR-005). The app names the store a
-  request is for explicitly, with every request, so no request can fall to another store by
-  default. Nothing a guest writes is kept in, learned by or read from anything of the
+  recognizer like the owner's (spec 001 FR-009, FR-021, spec 004 FR-005). The app names the
+  store explicitly for every request and every recognizer process it starts, so no request
+  can fall to another store by default. Nothing a guest writes is kept in, learned by or read from anything of the
   owner's: not their samples, adaptation, size reference (spec 001 FR-017), letter model,
   font, neatening, learned words or keyboard. A sample is kept in the store of the writer
   in whose session it was written, also when it is kept after the session was left, or not
@@ -204,7 +204,8 @@ export them as one file in the sample format; nothing leaves the device otherwis
 - **FR-018**: What a guest session offers: Write with the shipped prompt sets, including
   "Write it your best" and "Which one is nicer?" (spec 003 Scenarios 1 and 2), whose marks
   and preferences travel with a contribution; Samples (their own: look, delete, erase all,
-  export); Coverage, with prompt choice (FR-004) by their own coverage and the base model's
+  and export as one file in the sample format, the only way a writer's samples leave with
+  them); Coverage, with prompt choice (FR-004) by their own coverage and the base model's
   errors on their samples; and Contribute (Scenario 5) with their own licence, contributor
   number and earlier-samples offer, of their own samples only. Counts are today's and the
   total. Not offered: Adapt and the learning progress, Your font, Neaten my writing, and the
@@ -217,10 +218,15 @@ export them as one file in the sample format; nothing leaves the device otherwis
 - **FR-019**: A guest's introduction: the first time a writer's session opens, the app shows
   the introduction of FR-012, addressed to that writer by name: one prompt to try (kept as
   their sample), what happens to their samples (kept on this device in a store of their own,
-  apart from the owner's; not used to read anyone's writing here; the device's owner can
-  open and remove them), and the question whether to contribute, with the licence (Scenario
-  5), which the writer is asked to answer themselves; declining is as easy as accepting. It
-  promises nothing a guest store doesn't do: no learning step, no "it reads you better".
+  apart from the owner's; not used to read anyone's writing here), said plainly: the
+  device's owner can open this writer's session and their samples without them, and remove
+  them. Then the question whether to contribute, which the writer is asked to answer
+  themselves, declining as easy as accepting. Before the licence (Scenario 5) the writer
+  confirms being 18 or older; the confirmation is asked once, at that step, and stored
+  nowhere, not in the store, a sample or a contribution. A writer who doesn't confirm still
+  writes, with contributing off; their Contribute page offers the same question and
+  confirmation again. The introduction promises nothing a guest store doesn't do: no
+  learning step, no "it reads you better".
   Contributing for a writer is turned on and off only in that writer's session, never from
   the owner's session or the list of writers.
 - **FR-020**: Contributor number per writer: each writer has one, under the same rules as the
@@ -239,7 +245,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
 - **FR-022**: Finish (Scenario 9) is the one step from a guest session back to the owner's.
   When the writer contributes and their contribution holds samples not yet saved, Finish
   first saves it as a file (the writer's next contribution then starts empty, with the same
-  licence and contributor number); nothing else is asked. The owner's session then shows
+  licence and contributor number); nothing else is asked, no password either. The owner's session then shows
   what was saved and that the writer is kept, with Remove beside it. A guest session has no
   other way out of it and no way into another writer's session.
 - **FR-023**: Removing a writer (Scenario 10) is offered only in the owner's session, after a
@@ -293,7 +299,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
 | Sample format: the writing area's geometry and orientation, the reading at the time of writing | consumer, adds optional fields (`docs/samples.md`) | 1 | FR-005, FR-008 |
 | Writing paper look (line height, guides, ink) | consumer (`GlassineOS/shell` spec 006) | — | FR-005 |
 | Pen ink areas (fast ink under the pen) | consumer (the e-ink session's ink protocol) | — | Scenario 1 |
-| Writer stores in the recognizer: a store named explicitly with every request; creating and removing a writer's store; for a guest store no adaptation, letter model, font or neatening and no reading with the owner's learned words or adaptation | consumer; asks spec 001 for it (the next minor version of the recognizer contract) | after 1.2 | FR-016–FR-018, FR-023 |
+| Writer stores in the recognizer: a store named explicitly with every request; creating and removing a writer's store; for a guest store no adaptation, letter model, font or neatening and no reading with the owner's learned words or adaptation | consumer (spec 001 FR-021, `docs/recognizer.md`) | 1.3 | FR-016–FR-018, FR-023 |
 | Store layout per writer: the same as the owner's store (`docs/recognizer.md`), found by a random identifier | consumer (spec 001) | unchanged | FR-016, FR-021 |
 | Sample format: unchanged; a guest's contribution carries their contributor number as the owner's does | consumer (`docs/samples.md`) | 1 | FR-020, FR-021 |
 | List of writers (names and random identifiers, on the device only, never exported or contributed) | owned (this app) | 1 | FR-014, FR-021 |
@@ -366,7 +372,10 @@ Host level, other writers:
   leaves saved contribution files;
 - the name field gives the keyboard no sample, learned word or prediction;
 - a guest's contributing is off until the writer turns it on in their session; the owner's
-  session and the list offer no way to.
+  session and the list offer no way to; without the 18-or-older confirmation no licence can
+  be chosen, and the confirmation is in no file;
+- the owner's export holds no guest store; a guest's export holds that writer's samples only,
+  without their name.
 
 Hardware: supervised: a writing session of words and sentences in English, an adaptation
 on request with the before and after rates, a contribution file inspected on the host; a
@@ -381,7 +390,6 @@ removed.
 - Fonts from the person's handwriting (spec 001 Scenario 4's app).
 - A second account, or a guest's writing anywhere but in this app (on the keyboard or in other
   apps the device writes as the owner's).
-- Contributions from writers who can't decide for themselves, such as children: the guest's
-  contributing question asks the writer to answer for themselves, and nothing more is
-  checked.
-- Moving guest writers to another device: the owner's export holds the owner's store only.
+- Checking a writer's age beyond their own confirmation (FR-019).
+- Moving guest writers to another device: the owner's export holds the owner's store only; a
+  writer exports their own samples from their session (FR-018).

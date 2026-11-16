@@ -267,6 +267,27 @@ included unless they pick them one by one.
   - Contributors' letter models (versions in proportion, spacing, timing) as further
     synthetic writers, when their contribution's licence covers derived models; a
     contributor in the real test set is never one of the generator's writers.
+- **FR-021**: Writer stores: besides the person's store, the recognizer keeps one store per
+  guest writer of the samples app (spec 002 FR-014–FR-025), laid out as the person's,
+  readable only by them, beside it and never inside it:
+  - A writer's store is named explicitly, by a random identifier the recognizer makes when
+    it creates the store, for every recognizer process and every command that is to use
+    it; nothing in the environment chooses a store, and without a name a request is for the
+    person's store. Creating a store gives its identifier; removing one deletes the whole
+    store for good when the request returns, a crash on the way leaving it whole or gone;
+    a request for a removed or unknown store is refused and keeps nothing. The identifier
+    says nothing about the writer, and no name of a writer reaches the recognizer.
+  - For a writer's store the recognizer keeps samples, preferences, marks and a
+    contribution with its own contributor number (FR-014), counts, lists, deletes, erases
+    and exports them, and measures that writer's size reference (FR-017) from them; it
+    reads with the base model, the language's words and the character model, never with
+    the person's adaptation, learned words or letters.
+  - It refuses, for a writer's store, an adaptation (also in the background), the letter
+    model, a font, neatening, a learning switch of its own and an import; the person's
+    learning setting does not apply to it.
+  - The person's erase, counts and export cover the person's store only and count the
+    writer stores kept beside it; only the samples app reaches a writer's store, never
+    another client or the handwriting service's other apps (spec 004).
 
 ## Key entities
 
@@ -276,12 +297,14 @@ included unless they pick them one by one.
 - **Base model**: per language, shipped with the program, the same for everyone.
 - **Adaptation**: per person, built on the device from their samples.
 - **Contribution**: samples the person reviewed and licensed for the base models.
+- **Writer's store**: a guest writer's samples and contribution (spec 002), beside the
+  person's store, named by a random identifier.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import) | owned (this program) | 1.1 | FR-001–FR-011; defined with the plan |
+| Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import, writer stores) | owned (this program) | 1.3 | FR-001–FR-011, FR-021; `docs/recognizer.md` |
 | Sample format (export/import, contribution, training data) | owned (this program) | 1 | FR-010, FR-014; `docs/samples.md` |
 | Base model package (model, language, recipe, data sources and licences) | owned (this program) | 1 | FR-005, FR-012 |
 | Writing paper and corrections | consumer (`GlassineOS/shell` spec 006) | — | shell spec 006 FR-011–FR-013a |
@@ -334,7 +357,10 @@ per request, a pick it put first that doesn't fit makes no sample, and the error
 with and without it on held-back samples; error rates with and without words on held-back
 samples; size (FR-017): a dot, comma, apostrophe and hyphen and the case
 pairs at their true size next to a known reference read as written, and words and
-sentences of a person's samples read no worse than without it.
+sentences of a person's samples read no worse than without it; writer stores (FR-021):
+samples kept for a writer's store are in it alone and the person's store is unchanged byte
+for byte, a removed store is gone and refuses requests, the refusals, and readings for a
+writer's store equal the base model's whatever the person's adaptation and learned words.
 
 Hardware: supervised: writing on the keyboard's paper in English; an adaptation
 after a day of use, compared on held-back samples.
