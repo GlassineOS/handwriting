@@ -11,7 +11,8 @@ Every line has a kind; `corpus()` mixes them in the shares of `SHARES`:
 - `flat`: pseudo-words drawn at a higher temperature (FLAT_T): the character model's
   probabilities flattened, so the ink model does not learn the language's letter statistics
   as a second character model;
-- `name`: given names and surnames from public name lists (NAME_SOURCES, pinned by sha256),
+- `name`: given names (the SSA's national baby names, GIVEN_SOURCES) and surnames (the 2010
+  census) from public name lists, pinned by sha256,
   written as names are (Mary, M. Smith, Smith, Mary, Dr Smith);
 - code kinds, each its own: `ordinal` (ordinals and measures: 4th, 5 km, 250 g, 10%),
   `time`, `date`, `phone`, `postcode`, `plate`, `part` (part and model numbers: R2D2,
@@ -54,37 +55,62 @@ SHARES = {"prose": 0.38, "words": 0.13, "pseudo": 0.10, "flat": 0.06, "name": 0.
 
 # Name lists: US federal government works (17 U.S.C. 105: not subject to copyright, public
 # domain in the USA, like the books), U.S. Census Bureau.
-NAME_SOURCES = [
-    {"file": "census1990.female.first", "kind": "given",
-     "url": "https://www2.census.gov/topics/genealogy/1990surnames/dist.female.first",
-     "sha256": "bd2f310fc4e5d5e5ea122c9d4342c9821145823118eb20db1647f305ec77b358",
-     "licence": "public domain (U.S. Census Bureau, a U.S. federal government work, 17 U.S.C. 105)"},
-    {"file": "census1990.male.first", "kind": "given",
-     "url": "https://www2.census.gov/topics/genealogy/1990surnames/dist.male.first",
-     "sha256": "0a5078ef6effe3b483d15b0f7f95047662126c9bfb624ecd5e5b978fc0f2470b",
-     "licence": "public domain (U.S. Census Bureau, a U.S. federal government work, 17 U.S.C. 105)"},
-    {"file": "census2010.surnames.zip", "kind": "surname",
+PD_CENSUS = "public domain (U.S. Census Bureau, a U.S. federal government work, 17 U.S.C. 105)"
+PD_SSA = "public domain (U.S. Social Security Administration, a U.S. federal government work, 17 U.S.C. 105)"
+SSA_PAGE = "https://www.ssa.gov/oact/babynames/limits.html"
+# Given names: the Social Security Administration's national baby names (yobYYYY.txt,
+# Name,Sex,Count, names given at least 5 times in a year), counted over SSA_YEARS. Its URL
+# refuses scripted downloads: fetch it by hand in a browser (SSA_PAGE, "National data",
+# names.zip) and put it in the names directory as ssa.names.zip; the pin checks it.
+# Surnames: the 2010 census. GIVEN_SOURCES picks the given-name lists.
+GIVEN_SOURCES = {
+    "ssa": [{"file": "ssa.names.zip", "kind": "given", "format": "ssa",
+             "url": "https://www.ssa.gov/oact/babynames/names.zip", "manual": SSA_PAGE,
+             "sha256": "cd78e975ed7bb358e018dd62fbe14ced89295e9581c49172ca4eedcb011b3724", "licence": PD_SSA}],
+    "census": [{"file": "census1990.female.first", "kind": "given", "format": "census",
+                "url": "https://www2.census.gov/topics/genealogy/1990surnames/dist.female.first",
+                "sha256": "bd2f310fc4e5d5e5ea122c9d4342c9821145823118eb20db1647f305ec77b358", "licence": PD_CENSUS},
+               {"file": "census1990.male.first", "kind": "given", "format": "census",
+                "url": "https://www2.census.gov/topics/genealogy/1990surnames/dist.male.first",
+                "sha256": "0a5078ef6effe3b483d15b0f7f95047662126c9bfb624ecd5e5b978fc0f2470b", "licence": PD_CENSUS}],
+}
+SURNAME_SOURCES = [
+    {"file": "census2010.surnames.zip", "kind": "surname", "format": "census2010",
      "url": "https://www2.census.gov/topics/genealogy/2010surnames/names.zip",
-     "sha256": "117c41cb4668727b7627b2845b6df3f83eb2a22a1813f42c0ff4bdcab86de135",
-     "licence": "public domain (U.S. Census Bureau, a U.S. federal government work, 17 U.S.C. 105)"},
+     "sha256": "117c41cb4668727b7627b2845b6df3f83eb2a22a1813f42c0ff4bdcab86de135", "licence": PD_CENSUS},
 ]
+GIVEN = "ssa"
+SSA_YEARS = (1930, 2025)  # names of people writing now
+SSA_MIN_COUNT = 50  # given at least this often over SSA_YEARS
 SURNAME_MIN_COUNT = 1000  # surnames borne by at least this many people (2010 census)
+
+
+def name_sources(given: str = GIVEN) -> list[dict]:
+    return GIVEN_SOURCES[given] + SURNAME_SOURCES
+
+
+NAME_SOURCES = name_sources()
 
 
 # ---------------------------------------------------------------------------- names
 
-def fetch_names(dest: Path) -> list[dict]:
-    """The name lists in dest/, checked against their pins."""
+def fetch_names(dest: Path, given: str = GIVEN) -> list[dict]:
+    """The name lists in dest/, checked against their pins; a list that refuses scripted
+    downloads (`manual`) must be put there by hand."""
     dest.mkdir(parents=True, exist_ok=True)
-    for s in NAME_SOURCES:
+    srcs = name_sources(given)
+    for s in srcs:
         f = dest / s["file"]
         if not f.exists():
+            if s.get("manual"):
+                raise SystemExit(f"{f} is missing: download {s['url']} in a browser (from {s['manual']}) "
+                                 f"and save it there; its sha256 must be {s['sha256']}")
             req = urllib.request.Request(s["url"], headers={"User-Agent": "glassine-train"})
             with urllib.request.urlopen(req, timeout=120) as r:
                 f.write_bytes(r.read())
         if hashlib.sha256(f.read_bytes()).hexdigest() != s["sha256"]:
-            raise SystemExit(f"{f}: sha256 differs from lines.NAME_SOURCES")
-    return NAME_SOURCES
+            raise SystemExit(f"{f}: sha256 differs from its pin in lines.py")
+    return srcs
 
 
 def _title(n: str) -> str:
@@ -95,13 +121,28 @@ def _title(n: str) -> str:
     return "-".join(p.capitalize() for p in n.split("-"))
 
 
-def load_names(dest: Path) -> dict[str, list[tuple[str, float]]]:
+def _ssa_counts(raw: bytes) -> dict[str, int]:
+    """Name -> times given over SSA_YEARS, both sexes together."""
+    out = {}
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        for nm in z.namelist():
+            m = re.fullmatch(r"yob(\d{4})\.txt", nm)
+            if not m or not SSA_YEARS[0] <= int(m.group(1)) <= SSA_YEARS[1]:
+                continue
+            for ln in z.read(nm).decode("ascii", "replace").splitlines():
+                f = ln.strip().split(",")
+                if len(f) == 3 and f[0].isalpha() and f[2].isdigit():
+                    out[f[0]] = out.get(f[0], 0) + int(f[2])
+    return out
+
+
+def load_names(dest: Path, given: str = GIVEN) -> dict[str, list[tuple[str, float]]]:
     """{given, surname}: (name, weight), weight the square root of how common the name is, so
     rare names get their share and common ones still come first."""
     out = {"given": {}, "surname": {}}
-    for s in NAME_SOURCES:
+    for s in name_sources(given):
         raw = (dest / s["file"]).read_bytes()
-        if s["file"].endswith(".zip"):
+        if s["format"] == "census2010":
             with zipfile.ZipFile(io.BytesIO(raw)) as z:
                 csv = z.read("Names_2010Census.csv").decode("utf-8", "replace")
             for ln in csv.splitlines()[1:]:
@@ -109,6 +150,10 @@ def load_names(dest: Path) -> dict[str, list[tuple[str, float]]]:
                 if len(f) < 3 or not f[0].isalpha() or not f[2].isdigit() or int(f[2]) < SURNAME_MIN_COUNT:
                     continue
                 out["surname"][_title(f[0])] = math.sqrt(int(f[2]))
+        elif s["format"] == "ssa":
+            for n, c in _ssa_counts(raw).items():
+                if c >= SSA_MIN_COUNT:
+                    out["given"][n] = math.sqrt(c)
         else:
             for ln in raw.decode().splitlines():
                 f = ln.split()
@@ -412,12 +457,13 @@ def reject_words(raw: Path, wordlist: Path | None) -> set[str]:
 class Generator:
     """Lines of every kind (module docstring); `held` draws names from the held-out part."""
 
-    def __init__(self, raw: Path, gclm: Path, names_dir: Path, wordlist: Path | None, held: bool = False):
+    def __init__(self, raw: Path, gclm: Path, names_dir: Path, wordlist: Path | None, held: bool = False,
+                 given: str = GIVEN):
         tr, self.val_s, self.test_s = _books(raw, 1)
         self.train_s = tr
         self.vocab = text.vocab(tr)
         self.pseudo = Pseudo(gclm, reject_words(raw, wordlist))
-        self.names = Names(load_names(names_dir), held)
+        self.names = Names(load_names(names_dir, given), held)
         self.codes = Codes(self.vocab, self.pseudo, self.names)
 
     def one(self, kind: str, rng) -> str:

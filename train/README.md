@@ -201,7 +201,7 @@ bonus 1, beam 8, margin 0 (with words 1). CER, model 2, `read … raw` / `chars`
 Without the code lines the character model cost codes 1 to 5 points; a higher weight (0.5)
 reads prose a little better (2.0 %) but random letters 4 points worse.
 
-**On one writer's real ink** (prompted samples, mostly single words, read by the recognizer
+**On one writer's real ink, same writer** (prompted samples, mostly single words, read by the recognizer
 program, three candidates; frozen weights, the test session read once). Model 2 with a fresh
 per-writer head trained on the other sessions (`glassine-handwriting adapt`), CER / WER:
 
@@ -259,8 +259,13 @@ variation, laid out by writers drawn per line:
   model's versions it gives the stored profiles to 5e-5 x-heights): each pair at the
   writer's typical gap, closer where the profiles leave open space, plus a spread per pair,
   never more than 0.12 x-heights into a letter; word gaps box to box. Typical gaps and word
-  gaps come from a pool of styles: each training font laid out at its own advances, and a
-  letter model's spacing as one style more;
+  gaps come from a pool of styles: each training font laid out at its own advances, moved
+  by rank onto the spread of written spacing (`gen.CALIB`: letter gaps median 0.45, sd 0.09
+  between writers; word gaps median 1.35 lognormal 0.2), so a tight font stays a tight
+  writer but no font keeps its typeset spacing; and a letter model's spacing as one style
+  more. On 1500 lines the generated letter gaps come out at median 0.42 x-heights, sd 0.31,
+  12 % touching, word gaps median 1.36, against one writer's real ink 0.42, 0.29, 7 % and
+  about 1.4;
 - *timing* (`timing.py`): a sigma-lognormal speed model fitted to real ink (`dynfit`):
   pulses found by least squares on each stroke's speed, described by duration, skew and
   overlap, with the stroke's duration from its path; pen-up pauses from the jump. Each
@@ -279,7 +284,26 @@ contributors' letter models as writers (`--writers`): only under a licence that 
 derived models (CC0-1.0, CC-BY-4.0) and never a contributor in the real test set.
 `gen4-letters` writes in one letter model's own versions (in proportion of use), spacing,
 fitted timing and delay habits; ink made from a person's letter model stays with their
-samples, never in a repository, a release or a log.
+samples, never in a repository, a release or a log. It is not part of the base model's
+data: it is for that person's adaptation head only.
+
+**Names** (`lines.py`): given names from the U.S. Social Security Administration's national
+baby names (1930 to 2025, at least 50 times, weighted by the square root of how often;
+public domain), surnames from the 2010 census. The SSA file refuses scripted downloads:
+open https://www.ssa.gov/oact/babynames/limits.html in a browser, take "National data"
+(`names.zip`) and save it in `build/names/` as `ssa.names.zip`; `gen4` checks its sha256
+and says how to fetch it when it is missing. `--given census` uses the 1990 census given
+names instead, so changing the given-name lists is one regeneration.
+
+**Real ink in training** (`real.py`). The split's test set is fixed (`--keep-test`), and no
+test sample ever trains, the adaptation head included: the split writes `test-ids.txt`,
+and every reader of training ink (`load_split`, the adaptation store `realeval` and the
+letter model build from, `finetune --test-ids` for more ids) checks the ids and stops when
+a test sample is there. Train and dev samples whose text is a test text, or nearly (the
+same after case, marks and spaces; or 0.85 alike), are left out. The real test set is one
+writer, the one whose ink the timing fit and the letter model come from: results on it are
+**same writer**, not other hands. A test on other writers comes from guest contributions
+(spec 002).
 
 ## Results
 
@@ -409,7 +433,7 @@ fine-tune 35–42 ms per line. A small head still learns a far hand quickly (`re
 23.6 → 3.2 %, against 50 → 8 % with the 7-font baseline), at the cost of some drift on
 other hands; keep the base head to fall back to, as FR-009 says.
 
-### Fine-tuning on real ink from one writer (`real`, `finetune`, `realeval`)
+### Fine-tuning on real ink from one writer, same writer (`real`, `finetune`, `realeval`)
 
 Not released: no run kept the model as good on other hands. The data is 756 prompted
 samples from one writer in three sessions. It is split by session (`glassine-train real`):
