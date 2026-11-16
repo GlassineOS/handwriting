@@ -413,8 +413,24 @@ class Writer:
             self._take_back(sh)         # in the contribution alone (learning off): the old one stays
             sh.status = "not-kept"
         if sh.sample_id and sh.sample_id != old_id:
+            self._carry_version_marks(old_id, sh.sample_id)
             self.delete(old_id)
         return sh
+
+    def _carry_version_marks(self, old_id, new_id):
+        """the marks on a character's ways stay (FR-033): the old sample's way-out and
+        favourite marks go to the new one; its own out marks go with it"""
+        try:
+            marks = self.cli.letters_marks()
+        except Error:
+            return
+        for char, kind in {(c, k) for sid, c, k in marks if sid == old_id and k in ("way-out", "favourite")}:
+            # a favourite mark replaces the character's favourite: all of its samples, with the new one
+            ids = [sid for sid, c, k in marks if c == char and k == kind and sid != old_id] + [new_id]
+            try:
+                self.cli.letters_mark(kind, char, ids)
+            except Error:
+                pass
 
     # ------------------------------------------------------------ counts and coverage
 

@@ -260,6 +260,23 @@ class Writing(Case):
         self.assertIs(w.prompt, shown)
         self.assertIs(w.shown, before)
 
+    def test_written_again_keeps_the_ways_marks(self):
+        """FR-033: the old sample's marks on a character's ways (way-out, favourite) go to the
+        new sample; its own out mark goes with it"""
+        w = self.e.writer()
+        w.prompt = P.Prompt("garden", "words", "en")
+        sh, _ = self.write(w, fit_ok=0)
+        old_id = sh.sample_id
+        old = self.e.rec.sample(old_id)
+        self.e.cli.letters_mark("way-out", "g", [old_id])
+        self.e.cli.letters_mark("favourite", "d", [old_id])
+        self.e.cli.letters_mark("out", "n", [old_id])
+        self.e.rec.close()
+        new = w.rewrite(old_id, old, ink(self.rng, n=6), "device:6.2", (0, 0, 702, 300, 96, 0))
+        self.assertEqual(new.status, "kept")
+        self.assertEqual(sorted(self.e.cli.letters_marks()), [(new.sample_id, "d", "favourite"),
+                                                             (new.sample_id, "g", "way-out")])
+
     def test_redo_skip_discard_delete(self):
         w = self.e.writer()
         p1 = w.prompt
@@ -1011,7 +1028,9 @@ class Pages(Case):
             self.assertEqual(got[k], before[k], k)
         self.assertNotIn(old, json.dumps(self.e.rec.preferences()))
         self.assertEqual({m for m in marks() if m[0] != new}, kept_marks)    # the version marks stay
-        self.assertFalse([m for m in marks() if m[0] in (old, new)])
+        self.assertFalse([m for m in marks() if m[0] == old])
+        self.assertFalse([m for m in marks() if m[0] == new and m[2] == "out"])
+        self.assertIn((new, "l", "favourite"), marks())                  # the old one's way, carried
         if partner:
             self.assertIn((partner, "l", "favourite"), marks())
         # Delete in the sheet = Delete in Samples: the sample, its marks, its preferences
