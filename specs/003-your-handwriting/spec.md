@@ -111,29 +111,15 @@ size, spacing) and keep their shape.
   by mixing versions written with a different number of strokes.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
   prompt with its fit check passed (spans exact), and with strokes of its own (a stroke
-  shared with a neighbour, as in joined writing, is not cut). Which strokes are a
-  character's goes by where the ink lies as well as by the order of writing: a stroke written
-  after the rest (an i's dot, the bar of a t or an f, the arms of an E, the second stroke of
-  an x) is part of the character it lies across or stands over, in words as well as alone,
-  and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
-  stays the neighbour's, so both count. Line metrics (baseline,
+  shared with a neighbour, as in joined writing, is not cut). Line metrics (baseline,
   x-height, cap height, ascender, descender, slant, letter spacing, word spacing) come from
   the person's word and sentence samples. The same samples, markings and preferences
   always give the same letter model.
 - **FR-008**: The letter model is rebuilt when samples, markings or preferences changed,
   under the same conditions as adaptation (spec 001 FR-009: charging and idle, or when the
-  person asks), and stays on the device. Having a page open that shows or uses it (the font
-  page, neatening) counts as asking: when the model is missing or out of date (its samples,
-  markings or preferences changed, or the way it is built changed) such a page has it built in
-  the background at the lowest priority, shows its progress and stays usable meanwhile, and
-  offers to build it at once. Building the letter model never changes the installed font
-  (FR-011). Erasing samples (all, or one client's) erases the
+  person asks), and stays on the device. Erasing samples (all, or one client's) erases the
   letter model, the preferences and the font with them; deleting one sample leaves the
   letter model out of date until its next rebuild.
-- **FR-030**: How many usable samples each character has is known from the samples
-  themselves, whether a letter model is built or not: a page about the person's letters shows
-  these counts as soon as it opens, says whether the letter model is built, out of date or
-  being built, and never shows an empty page because the model isn't built yet.
 
 ### The font
 
@@ -269,11 +255,6 @@ Host level:
 
 - a letter model built from a fixed set of samples is the same on every run; a character
   with fewer than 3 usable samples is not covered;
-- in words and alone, the versions of t, f, i, j, k, x, E and H written with a late dot, bar
-  or arm keep that stroke, and a full stop or comma beside a letter counts for both;
-- without a letter model, and with one that is out of date, the usable samples per character
-  are reported as a built model would count them; the font page and neatening show them, say
-  the model isn't built or is out of date, and build it without installing the font;
 - the font built from it passes a standard font validator, maps exactly the covered
   characters and the space, alternates variants deterministically when shaped with no
   feature requested, and installs and is found by the system font cache in a test user;

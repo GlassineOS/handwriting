@@ -44,6 +44,13 @@ The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
   and sentences so the recognizer learns your hand, ask it to learn, and donate reviewed
   samples to the base models as a file you send yourself. Python with GTK 3; its prompt sets
   and their sources are in `samples/prompts/`. `make -C samples check` runs its tests.
+- [`service/`](service): `glassine-handwriting-service`, handwriting for apps
+  ([`specs/004-handwriting-for-apps`](specs/004-handwriting-for-apps/spec.md)): one recognizer
+  for every app, the service socket ([`docs/service.md`](docs/service.md), schema
+  `docs/service.schema.json`) and the side behind the pen interface. `make -C service check`.
+- [`client/`](client): `libglassine-handwriting` and its Python binding, the pen interface
+  for apps ([`docs/pen-interface.md`](docs/pen-interface.md)). `make -C client check` (the
+  end-to-end tests need GlassineOS/sway's stand-in compositor, `HW_STANDIN`).
 - [`train/`](train): the trainer and the base model recipe.
 - [`models/`](models): how a trained model is released (GitHub release assets, not
   files here) and each language's prompts.

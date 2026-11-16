@@ -61,10 +61,11 @@ microsecond.
 
 | Request | Reply |
 |---|---|
-| `hello ID VERSION [CLIENT]` | `hello ID 1` |
+| `hello ID VERSION [CLIENT [relay]]` | `hello ID 1` |
+| `client ID NAME` | `client ID ok` (after `hello … relay` only, else `not-relay`) |
 | `begin ID S LANGS FIELD UNITS BEFORE` | `begin ID ok`, or `begin ID private` (nothing is kept) |
 | `stroke ID S POINTS` | `stroke ID ok N`: the stroke's number in this session |
-| `read ID S [COUNT [raw]]` | `read ID text K {TEXT SCORE ALIGN}×K`, `read ID gesture …` (below), `read ID empty`, or `drop ID` |
+| `read ID S [COUNT [raw] [detail]]` | `read ID text K {TEXT SCORE ALIGN}×K` (with `detail` `{TEXT SCORE ALIGN FROM CHECK}×K`), `read ID gesture …` (below), `read ID empty`, or `drop ID` |
 | `align ID S PROMPT` | `align ID SCORE K {FIT SEGMENTS}×K`, or `align ID short` |
 | `remove ID S N[,N…]` | `remove ID ok REMOVED` |
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
@@ -89,7 +90,14 @@ microsecond.
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
 the person's own process and can't check it).
 
-**begin** opens session `S` (an existing one of that name is ended first). At most 16 sessions at
+With `relay` the process serves several clients: the handwriting service (docs/service.md)
+starts one for all apps, so the model is loaded once. `client` then names the client the
+requests after it are for, as `hello`'s `CLIENT` does for a whole process. A session belongs to
+the client it was begun for: other clients get `unknown-session` for it (and `busy` for a
+`begin` of its name), and its samples are stored under that client. Without `relay`, `client`
+is `not-relay` and nothing else changes.
+
+**begin** opens session `S` (an existing one of that name is ended first). At most 64 sessions at
 once (`busy`). `BEFORE` is the text before the cursor; in a prose field the words before it rank
 the readings (below, Words).
 In a private field (below) no session is kept: strokes sent to it get `unknown-session`.
@@ -105,7 +113,10 @@ read together (the client was faster than the recognizer), only the newest is an
 ones get `drop ID`. Requests between them are carried out in order.
 
 - `text K`: `K` candidates (0 when nothing could be read), each
-  `TEXT SCORE ALIGN`. `SCORE` is the log-probability (≤ 0, higher is better). `ALIGN` has one
+  `TEXT SCORE ALIGN`, with `detail` also `FROM CHECK`: where it came from (`ink` the ink's best
+  reading, `beam` another reading of the ink, `words` a word of the list one edit from a reading,
+  `guided` the search the words guided; Words, below) and `ok` when a pick of it is stored as it
+  is or `check` when a pick is checked first and would not pass (confirm, below). `SCORE` is the log-probability (≤ 0, higher is better). `ALIGN` has one
   entry per character (code point) of `TEXT`, separated by `;`: the strokes that make it,
   comma-separated, each `N` (the whole stroke) or `N:A-B` (points `A` to `B` of stroke `N`); empty
   for a space. Every written stroke belongs to some character.
