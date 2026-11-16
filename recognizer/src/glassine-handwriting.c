@@ -580,7 +580,10 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 	struct hw_stroke *st = n ? strokes_of(ink, n, &np) : NULL;
 	struct hw_run r;
 	int done = 0;
-	if (st && !hw_run(l, st, n, &r) && r.rows > 0) {
+	struct hw_size_ref ref;
+	size_ref(l, s, &ref);
+	double base = NAN, h = st && l->model.version == HW_GHM_VERSION_REF ? hw_size_ref_height(&ref, st, n, &base) : 0;
+	if (st && !hw_run_at(l, st, n, h, base, &r) && r.rows > 0) {
 		r.npoints = np;
 		struct hw_reading rd;
 		struct hw_charspan *cs = NULL;

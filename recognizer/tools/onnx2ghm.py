@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""ONNX export of the trainer (glassine-train export) -> base model file (.ghm, version 1).
+"""ONNX export of the trainer (glassine-train export) -> base model file (.ghm): version 1 for
+a model reading the trainer's features (5 per row), version 2 for one reading the
+reference-height features (features_ref, 6 per row).
 
     onnx2ghm.py recognizer.onnx --charset-from train/src/glassine_train/text.py -o recognizer.ghm
     onnx2ghm.py recognizer.onnx --charset 'abc...' -o recognizer.ghm
@@ -26,6 +28,8 @@ from onnx import numpy_helper
 
 MAGIC = b"GHWM"
 VERSION = 1
+VERSION_REF = 2  # the same layout; the input is features_ref()
+NFEAT = {VERSION: 5, VERSION_REF: 6}
 
 
 def charset_from(path: Path) -> str:
@@ -61,6 +65,9 @@ def convert(model: onnx.ModelProto, charset: str, trained_until: int = 0) -> byt
     nfeat, nclass = din[2], dout[2]
     if not isinstance(nfeat, int) or not isinstance(nclass, int):
         fail("feature and class dimensions must be fixed")
+    version = {v: k for k, v in NFEAT.items()}.get(nfeat)
+    if version is None:
+        fail(f"{nfeat} features per row: neither version 1 (5) nor version 2 (6)")
     if len(charset) != nclass - 1:
         fail(f"charset has {len(charset)} characters, the model {nclass - 1} classes after the blank")
 
@@ -137,7 +144,7 @@ def convert(model: onnx.ModelProto, charset: str, trained_until: int = 0) -> byt
         fail("scale shape")
 
     cs = charset.encode()
-    hdr = MAGIC + struct.pack("<15I", VERSION, 64, nfeat, c1, conv or c1, nstrided, k0, hidden, len(lstms), nclass,
+    hdr = MAGIC + struct.pack("<15I", version, 64, nfeat, c1, conv or c1, nstrided, k0, hidden, len(lstms), nclass,
                               len(cs), trained_until & 0xFFFFFFFF, trained_until >> 32, 0, 0)
     body = cs + b"\0" * ((-len(cs)) % 4)
     data = np.concatenate([scale] + out).astype("<f4").tobytes()

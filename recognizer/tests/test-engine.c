@@ -56,21 +56,26 @@ static void test_features(const char *dir, const char *file)
 {
 	json_object *v = load(dir, file);
 	for (size_t c = 0; c < json_object_array_length(v); c++) {
-		json_object *o = json_object_array_get_idx(v, c), *st, *fe, *nm;
+		json_object *o = json_object_array_get_idx(v, c), *st, *fe, *nm, *hj, *bj;
 		json_object_object_get_ex(o, "strokes", &st);
 		json_object_object_get_ex(o, "features", &fe);
 		json_object_object_get_ex(o, "name", &nm);
 		struct hw_ink *ink; struct hw_stroke *s;
 		size_t n = strokes_of(st, &ink, &s);
 		float *f; struct hw_origin *org;
-		long rows = hw_features(s, n, &f, &org);
+		/* "h" (and "base", null: none): the reference-height features */
+		int ref = json_object_object_get_ex(o, "h", &hj);
+		int nf = ref ? HW_NFEAT_REF : HW_NFEAT;
+		double base = ref && json_object_object_get_ex(o, "base", &bj) && bj ? json_object_get_double(bj) : NAN;
+		long rows = ref ? hw_features_ref(s, n, json_object_get_double(hj), base, &f, &org) : hw_features(s, n, &f, &org);
 		long want = (long)json_object_array_length(fe);
 		CHECK(rows == want, "features '%s': %ld rows, want %ld", json_object_get_string(nm), rows, want);
 		double worst = 0;
 		for (long r = 0; r < rows && r < want; r++) {
 			json_object *row = json_object_array_get_idx(fe, (size_t)r);
-			for (int k = 0; k < HW_NFEAT; k++) {
-				double d = fabs(f[r * HW_NFEAT + k] - json_object_get_double(json_object_array_get_idx(row, (size_t)k)));
+			CHECK((int)json_object_array_length(row) == nf, "features '%s': %d columns", json_object_get_string(nm), nf);
+			for (int k = 0; k < nf; k++) {
+				double d = fabs(f[r * nf + k] - json_object_get_double(json_object_array_get_idx(row, (size_t)k)));
 				if (d > worst) worst = d;
 			}
 			CHECK(org[r].stroke >= 0 && (size_t)org[r].stroke < n && org[r].point >= 0 &&
