@@ -301,14 +301,14 @@ def licenses(meta, fonts_dir, writers=0):
     return "\n".join(L) + "\n"
 
 
-def pack(stage, name, out):
+def pack(stage, name, out, files=FILES):
     """deterministic tar.gz: sorted, fixed owner and time, no gzip name or time"""
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         d = tarfile.TarInfo(name)
         d.type, d.mode, d.mtime = tarfile.DIRTYPE, 0o755, 0
         tar.addfile(d)
-        for f in FILES:
+        for f in files:
             data = (stage / f).read_bytes()
             ti = tarfile.TarInfo(f"{name}/{f}")
             ti.size, ti.mode, ti.mtime = len(data), 0o644, 0
