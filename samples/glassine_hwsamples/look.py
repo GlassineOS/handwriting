@@ -80,6 +80,8 @@ PT.ICONS.update({k: v for k, v in {
     "add_to_photos": ["list-add-symbolic"],
     "check_box": ["checkbox-checked-symbolic", "object-select-symbolic"],
     "check_box_outline_blank": ["checkbox-symbolic"],
+    "star_border": ["non-starred-symbolic", "starred-symbolic"],
+    "block": ["action-unavailable-symbolic", "process-stop-symbolic", "dialog-error-symbolic"],
 }.items() if k not in PT.ICONS})
 
 

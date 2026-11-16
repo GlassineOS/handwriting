@@ -181,6 +181,15 @@ class UI:
         self.letters_loading = 0        # letters status reads running (off the worker)
         self.letters_then = []          # what waits for the build running now
         self.pick = None                # {"a": (id, strokes, k), "b": ..., "chosen": i}
+        # the character sheet over the font page (spec 003 FR-031): {"char", "seg" (versions,
+        # samples, write, pick), "occ" (letters samples, None until read), "page", "undo" (the
+        # sample just left out), "changed" (relearn it on close), "pick", "picks"}
+        self.sheet = None
+        self.relearn = None             # (char, done, total) while one character is learned again
+        self.relearn_then = []          # what waits for it
+        self.renaming = None            # {"text"}: the font's name being typed
+        self.entry_text = None          # the window's text field, read when the name is used
+        self.rename_rect = None         # where the dialog's field is (pages.rename_dialog)
         self.pick_loading = False
         self.neat = None                # Neaten my writing: a neat.Neat while the page is open
         self.neat_strength = N.DEFAULT
@@ -291,6 +300,9 @@ class UI:
         self.saved = None
         self.picking_licence = False
         self.reviewing = False
+        if self.sheet:
+            self.close_char()
+        self.renaming = None
         if page != "learn":
             self.best = None
             self.pick = None
@@ -371,6 +383,10 @@ class UI:
                                                      sh.reading[:1] if sh.reading else None))
             note(sh)
             self.msg = ""
+            if sh and sh.status == "kept" and sh.sample_id and self.sheet:
+                self.sheet_changed()
+                self.sheet["occ"] = None
+                self.load_font()
             if sh and sh.status == "kept":
                 self.counts = (self.counts[0] + bool(sh.sample_id), self.counts[1] + bool(sh.sample_id))
                 self.fresh += bool(sh.sample_id)
@@ -593,6 +609,9 @@ class UI:
         """Learn's Your handwriting (mode "intro"), or back to Learn (None); either way the
         careful writing stops"""
         self.close_neat()
+        if self.sheet:
+            self.close_char()
+        self.renaming = None
         if self.writer and self.writer.best is not None:
             self.run(self.writer.stop_best)
         self.page = self.tab = "learn"
@@ -610,8 +629,9 @@ class UI:
         """Your font: the letters it has, a preview, what is missing"""
         self.best = "font"
         self.msg = ""
+        self.sheet = None
         self.redraw()
-        self.load_font(build=True)
+        self.load_font()
 
     def letters_bg(self, fn, done):
         """the letter model's calls on a thread of their own: a count or a build of the
@@ -656,6 +676,9 @@ class UI:
             self.letters_then.append(then)
         if self.letters_job or self.demo:
             return
+        if self.relearn:                # one character first, then the whole model
+            self.relearn_then.append(lambda: self.build_letters())
+            return
         self.letters_job = (0, 0)
 
         def progress(done, total):
@@ -693,6 +716,11 @@ class UI:
         """the letter model brought up to date, then the font built and installed (under its
         name; the first time, the name chosen here or the default)"""
         if self.font_busy or self.demo:
+            return
+        if self.relearn:                # the character being learned again goes in too
+            self.relearn_then.append(self.make_font)
+            self.font_busy = "waiting"
+            self.redraw()
             return
         self.font_busy = "making"
         self.msg = ""
@@ -733,27 +761,29 @@ class UI:
         return self.font_name or (st.get("font") or (fontview.DEFAULT_NAME,))[0]
 
     def rename_font(self):
-        """the name, typed in a small dialog (the keyboard comes up for it)"""
-        if self.demo:
+        """the name, typed in a dialog in the page's upper half (the keyboard takes the lower)"""
+        self.renaming = {"text": self.font_shown_name()}
+        self.redraw()
+
+    def cancel_rename(self):
+        self.renaming = None
+        self.redraw()
+
+    def use_name(self):
+        """Use this name: an installed font is made again under it (its letters as they are);
+        otherwise it is the name the first install uses"""
+        if not self.renaming:
             return
-        dlg = Gtk.Dialog(title="Name of your font", modal=True)
-        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use this name", Gtk.ResponseType.OK)
-        entry = Gtk.Entry(text=self.font_shown_name(), max_length=40, activates_default=True)
-        dlg.set_default_response(Gtk.ResponseType.OK)
-        dlg.get_content_area().add(entry)
-        dlg.show_all()
-        r = dlg.run()
-        name = entry.get_text().strip()
-        dlg.destroy()
-        if r != Gtk.ResponseType.OK or not name or name == self.font_shown_name():
+        name = (self.entry_text() if self.entry_text else self.renaming["text"]).strip()[:40]
+        self.renaming = None
+        if not name or name == self.font_shown_name():
+            self.redraw()
             return
         st = (self.font or {}).get("status") or {}
+        self.font_name = name
         if st.get("font"):
-            self.font_name = name
             self.make_font()
-        else:
-            self.font_name = name
-            self.redraw()
+        self.redraw()
 
     def write_missing(self):
         """the characters the font lacks, one at a time, written with care"""
@@ -765,6 +795,241 @@ class UI:
         self.run(lambda: self.writer.start_best(chars=miss))
         self.go("write")
 
+    # ---------------------------------------------------------- the character sheet
+
+    def char_info(self, c):
+        """(usable samples, its line in the model or None, in the font)"""
+        f = self.font or {}
+        st, model = f.get("status") or {}, f.get("model")
+        d = model["chars"].get(c) if model else None
+        n = st.get("chars", {}).get(c, (0, 0))[0] if st.get("chars") is not None else int((d or {}).get("samples", 0))
+        fd = fontview.font_view(model)["chars"].get(c) if model else None
+        return n, d, bool(fd and fd.get("covered") and fd.get("variants"))
+
+    def open_char(self, c):
+        """a key of the font page: the sheet of that character, on its versions, or on Write
+        more while it has fewer than 3 samples"""
+        n, d, _ = self.char_info(c)
+        seg = "versions" if d and d.get("variants") else "write" if n < fontview.MIN else "samples"
+        self.sheet = {"char": c, "seg": None, "occ": None, "page": 0, "undo": None, "changed": False, "pick": None,
+                      "picks": 0}
+        self.sheet_seg(seg)
+
+    def sheet_seg(self, seg):
+        sh = self.sheet
+        if not sh or sh["seg"] == seg:
+            return
+        if sh["seg"] == "write" and self.writer and self.writer.best is not None and not self.demo:
+            self.run(self.writer.stop_best)
+        sh["seg"] = seg
+        if seg == "write" and not self.demo:
+            n, _, _ = self.char_info(sh["char"])
+            prompts = flow.char_prompts(sh["char"], self.writer.sets, self.state.lang, 3 if n < fontview.MIN else 4)
+            sh["prompts"] = prompts
+            self.writer.start_list(prompts)
+        elif seg == "samples" and sh["occ"] is None:
+            self.load_occ()
+        elif seg == "pick":
+            self.char_pick()
+        self.redraw()
+
+    def load_occ(self):
+        """the character's samples, how each counts (letters samples), and their ink"""
+        sh = self.sheet
+        if not sh or self.demo:
+            return
+        c = sh["char"]
+
+        def got(r, err):
+            if self.sheet is not sh:
+                return
+            if err:
+                self.msg = "Its samples couldn’t be read: %s" % err
+            else:
+                sh["occ"] = r
+                self.want_inks(sorted({o[0] for o in r}))
+            self.redraw()
+        self.letters_bg(lambda: self.cli.letters_samples(c), got)
+
+    def sheet_changed(self):
+        if self.sheet:
+            self.sheet["changed"] = True
+
+    def close_char(self):
+        """the sheet closes: a changed character is learned again in the background, the
+        preview shows it once that is done; the installed font stays (FR-032)"""
+        sh, self.sheet = self.sheet, None
+        if not sh:
+            return
+        if sh["seg"] == "write" and self.writer and self.writer.best is not None and not self.demo:
+            self.run(self.writer.stop_best)
+        st = (self.font or {}).get("status") or {}
+        if sh["changed"] and st.get("state") != "none":
+            self.relearn_char(sh["char"])
+        self.load_font()
+        self.redraw()
+
+    def relearn_char(self, c):
+        if self.demo:
+            return
+        if self.letters_job:            # after the whole build that runs now
+            self.letters_then.append(lambda ok: self.relearn_char(c))
+            return
+        if self.relearn:
+            self.relearn_then.append(lambda: self.relearn_char(c))
+            return
+        self.relearn = (c, 0, 0)
+
+        def progress(done, total):
+            def show():
+                if self.relearn:
+                    old, self.relearn = self.relearn, (c, done, total)
+                    if old[2] == 0 or int(10 * old[1] / old[2]) != int(10 * done / max(total, 1)):
+                        self.redraw()
+                return False
+            GLib.idle_add(show)
+
+        def fin(r, err):
+            self.relearn = None
+            if err:
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
+                self.msg = "%s couldn’t be learned again: %s" % (c, err)
+            then, self.relearn_then = self.relearn_then, []
+            if self.font_busy == "waiting":
+                self.font_busy = None
+            self.load_font()
+            for f in then:
+                f()
+            self.redraw()
+        self.letters_bg(lambda: self.cli.letters_build(progress, char=c), fin)
+        self.redraw()
+
+    def relearn_progress(self):
+        if not self.relearn:
+            return None
+        _, done, total = self.relearn
+        return done / total if total else 0.0
+
+    def _mark(self, kind, ids, then=None):
+        c = self.sheet["char"]
+        self.sheet_changed()
+        if self.demo:
+            if then:
+                then()
+            self.redraw()
+            return
+        self.run(lambda: self.cli.letters_mark(kind, c, ids), lambda _: then and then())
+
+    def mark_version(self, v, what):
+        """a version's Favourite (again: no favourite), Leave out, Put back"""
+        sh = self.sheet
+        _, d, _ = self.char_info(sh["char"])
+        if not d or v >= len(d.get("variants") or []):
+            return
+        var = d["variants"][v]
+        ids = var.get("ids") or []
+        if what == "favourite":
+            kind = "clear" if var.get("favourite") else "favourite"
+            for x in d["variants"]:
+                x.pop("favourite", None)
+            if kind == "favourite":
+                var["favourite"] = True
+        elif what == "out":
+            kind = "way-out"
+            var["left_out"] = True
+            var.pop("favourite", None)
+        else:
+            kind = "clear"
+            var.pop("left_out", None)
+        self._drop_view()
+        self._mark(kind, ids)
+        self.redraw()
+
+    def _drop_view(self):
+        m = (self.font or {}).get("model")
+        if m:
+            m.pop("_view", None)
+
+    def mark_sample(self, sid):
+        """a sample's box: left out of the character (with Undo), or put back"""
+        sh = self.sheet
+        occ = sh.get("occ") or []
+        st = next((o[2] for o in occ if o[0] == sid), None)
+        if st not in ("usable", "out"):
+            return
+        new = "out" if st == "usable" else "usable"
+        sh["occ"] = [(o[0], o[1], new if o[0] == sid else o[2], *o[3:]) for o in occ]
+        sh["undo"] = sid if new == "out" else None
+        self._mark("out" if new == "out" else "clear", [sid])
+        self.redraw()
+
+    def undo_out(self):
+        sh = self.sheet
+        if sh and sh.get("undo"):
+            self.mark_sample(sh["undo"])
+            sh["undo"] = None
+            self.redraw()
+
+    def sheet_page(self, p):
+        self.sheet["page"] = p
+        self.redraw()
+
+    def char_pick(self):
+        """Which one is nicer? for this character: two of its usable samples written
+        different ways, none of a version left out"""
+        sh = self.sheet
+        sh["pick"] = None
+        if self.demo:
+            return
+        c = sh["char"]
+        _, d, _ = self.char_info(c)
+        out = {i for v in (d or {}).get("variants", []) if v.get("left_out") for i in v.get("ids") or []}
+
+        def get():
+            occ = sh["occ"] if sh["occ"] is not None else self.cli.letters_samples(c)
+            use = [o for o in occ if o[2] == "usable" and o[0] not in out]
+            random.shuffle(use)
+            use.sort(key=lambda o: o[3])
+            got, seen = [], set()
+            for o in use:                      # one of each version first
+                if o[3] in seen and len({u[3] for u in use}) > 1:
+                    continue
+                st = flow.crop(self.rec.sample(o[0]), o[1])
+                if st:
+                    got.append((o[0], st, o[1]))
+                    seen.add(o[3])
+                if len(got) == 2:
+                    return occ, {"a": got[0], "b": got[1], "char": c, "chosen": None}
+            return occ, None
+
+        def got(r):
+            if self.sheet is sh:
+                sh["occ"] = r[0]
+                sh["pick"] = r[1] or False
+        self.run(get, got)
+
+    def char_choose(self, i):
+        sh = self.sheet
+        pk = sh and sh.get("pick")
+        if not pk or pk.get("chosen") is not None:
+            return
+        pk["chosen"] = i
+        a, b = (pk["a"], pk["b"]) if i == 0 else (pk["b"], pk["a"])
+        sh["picks"] += 1
+        self.sheet_changed()
+        self.redraw()
+        self.run(lambda: self.rec.prefer(a[0], b[0], a[2], b[2]), lambda _: (self.refresh(), self.char_pick()))
+
+    def char_picks(self):
+        """the picks for the sheet's character so far"""
+        sh = self.sheet
+        if not sh:
+            return 0
+        text = {r[0]: r[2] for r in self.samples}
+        c = sh["char"]
+        return sum(1 for ch, _, cc, _ in self.prefs if cc is not None and ch in text and cc < len(text[ch])
+                   and text[ch][cc] == c)
+
     # ---------------------------------------------------------- Neaten my writing
 
     def open_neat(self):
@@ -774,7 +1039,7 @@ class UI:
         self.neat_shown, self.neat_text, self.neat_orig = {}, "", False
         self.page, self.tab, self.best = "neat", "learn", None
         self.msg = ""
-        self.load_font(build=True)
+        self.load_font()
         self.redraw()
 
     def close_neat(self):
@@ -1252,7 +1517,7 @@ class Canvas(Gtk.DrawingArea):
         t = self.ui.theme
         a = self.get_allocation()
         PT.fill(cr, 0, 0, a.width, a.height, t.paper)
-        guides(cr, t, 0, 0, a.width, a.height, LINE)
+        area_frame(cr, self.ui, a.width, a.height)
         cr.set_source_rgba(*PT.color(t.pen))
         cr.set_line_width(max(2.0, LINE / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
@@ -1266,6 +1531,25 @@ class Canvas(Gtk.DrawingArea):
                 cr.line_to(s[0][0] + 0.1, s[0][1])
             cr.stroke()
         return True
+
+
+def area_frame(cr, ui, w, h):
+    """the writing area's paper: in the character sheet framed by the sheet, on Neaten my
+    writing a box, elsewhere the guides only"""
+    k = ui.theme
+    if sheet_writing(ui) and not pages.LAND[0]:
+        pages.sheet_area(cr, k, w, h)
+        cr.save()
+        cr.rectangle(pages.SHEET_M + 20, 4, w - 2 * pages.SHEET_M - 40, h - 8)
+        cr.clip()
+        guides(cr, k, pages.SHEET_M + 24, 0, w - 2 * pages.SHEET_M - 48, h, LINE)
+        cr.restore()
+    elif ui.page == "neat" or sheet_writing(ui):
+        P_ = pages.PAD
+        PT.box(cr, P_, 4, w - 2 * P_, h - 8, k["cardR"], bg=None, shadow="inset 0 0 0 1.5px " + k.ink)
+        guides(cr, k, P_, 0, w - 2 * P_, h, LINE)
+    else:
+        guides(cr, k, 0, 0, w, h, LINE)
 
 
 def neat_view(ui, strokes):
@@ -1302,7 +1586,13 @@ def writing(ui):
     if ui.confirm or not ui.loaded:
         return False
     return ((ui.page == "write" and not ui.sets_open) or (ui.page == "wizard" and ui.wstep == "w-try") or
-            ui.page == "neat")
+            ui.page == "neat" or sheet_writing(ui))
+
+
+def sheet_writing(ui):
+    """the character sheet on Write more: a writing page inside the sheet"""
+    return bool(ui.page == "learn" and ui.best == "font" and ui.sheet and ui.sheet["seg"] == "write" and
+                not ui.renaming)
 
 
 def parts(ui):
@@ -1311,6 +1601,8 @@ def parts(ui):
         return pages.try_top, pages.try_bottom
     if ui.page == "neat":
         return pages.neat_top, pages.neat_bottom
+    if sheet_writing(ui):
+        return pages.sheet_write_top, pages.sheet_write_bottom
     return pages.write_top, pages.write_bottom
 
 
@@ -1356,7 +1648,7 @@ def layout(ui, W, H, canvas=None):
         pages.LAND[0] = True
         hh = int(pages.write_head(_probe(), ui, Hits(), W))
         fh = pages.WIZ_FOOT if ui.page == "wizard" else 0
-        sw = side_width(W)
+        sw = side_width(W) if not sheet_writing(ui) else max(420, int(W * 0.46))
         out = {"head": (0, 0, W, hh), "side": (0, hh, sw, H - hh - fh), "area": (sw, hh, W - sw, H - hh - fh)}
         if fh:
             out["foot"] = (0, H - fh, W, fh)
@@ -1408,7 +1700,16 @@ class Window(Gtk.ApplicationWindow):
         self.ui = ui
         self.set_default_size(W0, H0)
         self.stack = Gtk.Stack()
-        self.add(self.stack)
+        overlay = Gtk.Overlay()
+        overlay.add(self.stack)
+        self.add(overlay)
+        # the font's name is typed here, over the field the rename dialog draws (the
+        # on-screen keyboard comes up for it)
+        self.entry = Gtk.Entry(has_frame=False, max_length=40, halign=Gtk.Align.START, valign=Gtk.Align.START,
+                               no_show_all=True)
+        self.entry.connect("activate", lambda e: ui.use_name())
+        overlay.add_overlay(self.entry)
+        ui.entry_text = self.entry.get_text
         self.canvas = Canvas(ui, lambda: [self.panels[n].queue_draw() for n in ("bottom", "side")])
         self.fixed = Gtk.Layout()             # unlike Gtk.Fixed, it asks no size of its own: the window can turn
         self.panels = {}
@@ -1458,6 +1759,28 @@ class Window(Gtk.ApplicationWindow):
         for p in list(self.panels.values()) + [self.full, self.canvas]:
             p.queue_draw()
         self.canvas.pen_sync()
+        self.place_entry()
+
+    def place_entry(self):
+        ui = self.ui
+        if not ui.renaming:
+            self.entry.hide()
+            return
+        a = self.stack.get_allocation()
+        if a.width <= 1:
+            return
+        ui.rename_rect = None
+        pages.paint_full(_probe(), ui, Hits(), a.width, a.height)
+        if not ui.rename_rect:
+            return
+        x, y, w, h = (int(v) for v in ui.rename_rect)
+        self.entry.set_margin_start(x)
+        self.entry.set_margin_top(y)
+        self.entry.set_size_request(w, h)
+        if not self.entry.get_visible():
+            self.entry.set_text(ui.renaming["text"])
+            self.entry.show()
+            self.entry.grab_focus()
 
 
 class App(Gtk.Application):
@@ -1501,8 +1824,9 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "wizard.licence", "wizard.ready", "write.prompt", "write.ink", "write.kept", "write.check", "write.sentence",
            "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
-           "best.pick", "best.font", "best.neat", "best.font-new", "best.font-none", "best.font-building",
-           "best.neat-learning", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
+           "best.pick", "font.none", "font.learning", "font.current", "font.installed", "font.outdated",
+           "font.rename", "font.relearn", "char.versions", "char.samples", "char.write", "char.pick", "char.missing",
+           "neat.write", "neat.original", "neat.unlearned", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
 DEMO_WORDS = ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o’clock", "garden", "bright",
               "yellow", "Thursday", "minimum", "fifty"]
 
@@ -1529,27 +1853,47 @@ def demo_ink(text, seed=1, x0=0.0):
     return strokes, spans
 
 
-def demo_font(installed):
+def demo_font(installed, state="current"):
     """a made-up letter model (loops, as demo_ink draws them; no one's real writing) with the
-    letters a person who wrote a few words with care has, and its status"""
+    letters a person who wrote a few words with care has, and its status; t written three
+    ways (the favourite, another, one left out), Q with one sample"""
     rnd = random.Random(4)
     chars = {}
+    few = {"q": 2, "x": 1, "z": 0, "F": 2, "G": 1, "J": 0, "K": 1, "Q": 1, "U": 2, "V": 0, "X": 0, "Y": 1, "Z": 0,
+           "7": 2, "8": 1}
     for c in fontview.TARGET:
-        n = 0 if c in "QXZqxz" else 2 if c in "jkvJKV7" else 5
+        n = few.get(c, 24 if c == "t" else 5)
         tall = c.isupper() or c in "bdfhklt0123456789"
         vs = []
         for v in range(3 if n >= 3 else 0):
             pts = [[0.3 + 0.28 * math.sin(i / 18 * 2 * math.pi) + rnd.uniform(-.01, .01),
                     (1.5 if tall else 1.0) * (0.5 - 0.5 * math.cos(i / 18 * 2 * math.pi)) + rnd.uniform(-.01, .01)]
                    for i in range(19)]
-            vs.append({"width": 0.6, "weight": 1, "members": 2, "strokes": [pts]})
-        chars[c] = {"char": c, "samples": n, "covered": n >= 3, "variants": vs}
+            k = (13, 6, 3)[v] if c == "t" else 2
+            vs.append({"width": 0.6, "weight": 1, "members": 2, "use": k, "strokes": [pts],
+                       "ids": ["%016x" % (100 * (v + 1) + j) for j in range(k)]})
+        d = {"char": c, "samples": n, "covered": n >= 3, "variants": vs}
+        if c == "t":
+            vs[0]["favourite"] = True
+            vs[1]["strokes"] = [vs[1]["strokes"][0][:10], vs[1]["strokes"][0][9:]]
+            vs[2]["left_out"] = True
+            d["slots"] = [0, 1, 0, 0, 1, 0, 0, 1, 0, 0]
+        chars[c] = d
     model = {"head": {}, "metrics": {"cap_height": 1.5, "ascender": 1.6, "descender": -0.5, "slant": 0.1,
                                      "letter_spacing": 0.2, "word_spacing": 0.9, "ink_width": 0.08}, "chars": chars}
-    counts = {c: (d["samples"] + (1 if installed else 0), len(d["variants"])) for c, d in chars.items() if d["samples"]}
-    status = {"state": "outdated" if installed else "current", "covered": sum(1 for d in chars.values() if d["covered"]),
-              "samples": 40, "chars": counts, "font": ("My handwriting", 3) if installed else None}
+    counts = {c: (d["samples"], len(d["variants"])) for c, d in chars.items()}
+    status = {"state": state, "covered": sum(1 for d in chars.values() if d["covered"]),
+              "samples": 160, "chars": counts, "font": ("My handwriting", 3) if installed else None,
+              "font_same": True}
+    if state == "none":
+        model = None
     return {"status": status, "model": model}
+
+
+DEMO_OCC = (("t", 0, "usable", 0), ("that", 0, "usable", 0), ("water", 2, "usable", 1),
+            ("little", 2, "joined-after", -1), ("start", 1, "out", -1), ("tea", 0, "usable", 1),
+            ("not", 2, "usable", 0), ("it", 1, "usable", 2), ("after", 2, "usable", 0), ("t", 0, "usable", 1),
+            ("street", 1, "unread", -1), ("out", 2, "usable", 0), ("ten", 0, "usable", 0), ("cat", 2, "usable", 1))
 
 
 def demo(screen, voice="white"):
@@ -1636,23 +1980,6 @@ def demo(screen, voice="white"):
         if sub == "intro":
             ui.page = ui.tab = "learn"
             ui.best = "intro"
-        elif sub in ("font", "font-new", "font-none", "font-building"):
-            ui.page = ui.tab = "learn"
-            ui.best = "font"
-            ui.font = demo_font(sub in ("font", "font-building"))
-            if sub == "font-none":      # samples written, the letter model not built yet
-                ui.font["status"].update(state="none", font=None)
-                ui.font["model"] = None
-            if sub == "font-building":
-                ui.letters_job = (24, 60)
-        elif sub in ("neat", "neat-learning"):
-            ui.page, ui.tab = "neat", "learn"
-            if sub == "neat":
-                ui.neat_text = "quiet"
-            else:
-                ui.font = demo_font(False)
-                ui.font["status"].update(state="none")
-                ui.letters_job = (10, 60)
         elif sub == "pick":
             ui.page = ui.tab = "learn"
             ui.best = "pick"
@@ -1666,6 +1993,51 @@ def demo(screen, voice="white"):
             if sub == "careful":
                 w.shown = shown("Thursday")
                 w.shown.prompt = P.Prompt("Thursday", "words", "en", written="quick", pair="0" * 16)
+    elif sec == "font":
+        ui.page = ui.tab = "learn"
+        ui.best = "font"
+        ui.font = demo_font(sub in ("installed", "outdated", "rename", "relearn"),
+                            {"none": "none", "learning": "none", "outdated": "outdated"}.get(sub, "current"))
+        if sub == "learning":
+            ui.letters_job = (36, 60)
+        elif sub == "relearn":
+            ui.relearn = ("t", 24, 60)
+        elif sub == "rename":
+            ui.renaming = {"text": "Garden letters"}
+    elif sec == "char":
+        ui.page = ui.tab = "learn"
+        ui.best = "font"
+        ui.font = demo_font(True)
+        c = "Q" if sub == "missing" else "t"
+        ui.sheet = {"char": c, "seg": {"versions": "versions", "samples": "samples", "pick": "pick"}.get(sub, "write"),
+                    "occ": None, "page": 0, "undo": None, "changed": False, "pick": None, "picks": 0}
+        if sub == "samples":
+            occ = []
+            for i, (word, pos, state, var) in enumerate(DEMO_OCC):
+                sid = "%016x" % (900 + i)
+                s_, sp = demo_ink(word, 30 + i)
+                ui.inks[sid] = {"strokes": s_, "spans": sp, "text": word}
+                occ.append((sid, pos, state, var, word))
+            ui.sheet["occ"] = occ
+            ui.sheet["undo"] = occ[4][0]
+        if sub == "pick":
+            a, _ = demo_ink("t", 3)
+            b, _ = demo_ink("t", 11)
+            ui.sheet["pick"] = {"a": ("a", a, 0), "b": ("b", b, 0), "char": "t", "chosen": None}
+            ui.sheet["picks"] = 2
+        if ui.sheet["seg"] == "write":
+            n = 1 if c == "Q" else 4
+            ps = flow.char_prompts(c, {"words": [P.Prompt(t, "words", "en") for t in ("that", "after", "Quiet")]},
+                                   "en", 3 if c == "Q" else 4)
+            ui.sheet["prompts"] = ps
+            w.best = {"step": "careful", "pair": "", "n": 0 if c == "Q" else 1, "chars": [], "list": ps}
+            w.prompt = ps[w.best["n"]]
+            del n
+    elif sec == "neat":
+        ui.page, ui.tab = "neat", "learn"
+        ui.font = demo_font(False, "none" if sub == "unlearned" else "current")
+        ui.neat_text = "Call back about the train at ten"
+        ui.neat_orig = sub == "original"
     elif sec == "donate":
         ui.page = ui.tab = "donate"
         if sub == "off":
@@ -1713,7 +2085,7 @@ def paint(cr, ui, W, H, ink=None):
         cr.translate(x, y)
         if name == "area":
             PT.fill(cr, 0, 0, w, h, ui.theme.paper)
-            guides(cr, ui.theme, 0, 0, w, h, LINE)
+            area_frame(cr, ui, w, h)
             if ink:
                 draw_ink(cr, ui.theme, ink, 40, LINE * 0.62 - 80, w * 0.6, 90, 3.0, align="left")
         else:
@@ -1730,7 +2102,8 @@ def render(argv):
     screen = opt("--screen", opt("--page", "write.prompt"))
     ui = demo(screen, opt("--theme", "white"))
     surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try", "best.neat") else None)
+    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try") else
+          demo_ink("Call back about", 5)[0] if screen.startswith("neat.") else None)
     surf.write_to_png(opt("--render"))
 
 
