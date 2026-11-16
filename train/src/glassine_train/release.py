@@ -47,7 +47,7 @@ recognizer.ghm (the model)
   The model contains no text and no font software. It was trained on public-domain
   texts (no terms) rendered as synthetic ink from fonts under the SIL Open Font
   License 1.1 or the Apache License 2.0; these cover the fonts themselves, not what is
-  made with them. The
+  made with them.{real} The
   sources and their licences are listed below so the training can be checked and
   repeated.
 
@@ -163,11 +163,106 @@ def readme(a, run_args, meta, ev, exp, ghm, test_meta):
     return "\n".join(L) + "\n"
 
 
-def licenses(meta, fonts_dir):
+REAL_LICENCE = """ It was also trained on real handwriting:
+  samples of {writers} writer, given by the writer to the project for training this
+  model. The samples are not distributed with the model or anywhere else."""
+
+
+REAL_SETS = [("test", "the writer's held-back session")]
+
+
+def readme_finetune(a, run_args, meta, ev, exp, ghm, split, rev, base_rev):
+    """README of a model fine-tuned on real ink (glassine-train finetune)."""
+    rep = split["report"]
+    L = []
+    w = L.append
+    w(f"glassine-handwriting base model: {a.lang}, version {a.version}")
+    w("")
+    w("The base model of glassine-handwriting (GlassineOS/handwriting, docs/recognizer.md)")
+    w(f"for the language '{a.lang}'. recognizer.ghm is model file format ghm version 1.")
+    w("It includes real handwriting from one writer.")
+    w("")
+    w(f"recognizer.ghm  sha256 {sha256(ghm)}")
+    w("")
+    w("Recipe")
+    w("------")
+    w(f"Trainer: GlassineOS/handwriting commit {a.commit}, train/ (train/README.md has the")
+    w("full recipe). The synthetic base model (model 2's recipe) was fine-tuned with:")
+    w("")
+    args = " ".join(f"--{k.replace('_', '-')} {' '.join(map(str, v)) if isinstance(v, list) else v}"
+                    for k, v in run_args.items()
+                    if k not in ("cmd", "run", "init", "real", "threads", "workers") and v not in (None, False))
+    w(f"  uv run glassine-train finetune --run {a.run} {args}")
+    w("")
+    w(f"Model: convolutions + 2-layer bidirectional LSTM + CTC, {exp['params']} parameters.")
+    w("Every batch is a fixed mix of real ink (oversampled, augmented on the pen's points),")
+    w("synthetic ink in 158 fonts and text drawn in the writer's own letters; a penalty keeps")
+    w("the weights near the synthetic model's; the average of the best checkpoints on the")
+    w("writer's dev ink was kept.")
+    w("")
+    w("Data")
+    w("----")
+    w(f"Real handwriting: {rep['train'] + rep['dev']} prompted samples of one writer (single words")
+    w(f"and characters) from {rep['sessions'] - 1} writing sessions, given by the writer for training;")
+    w(f"{rep['train']} to learn from, {rep['dev']} to choose the checkpoint. A later session of")
+    w(f"{rep['test']} samples is held back as the test set and was never trained on. The samples")
+    w("are not distributed. The model file records when its training data ends: an adaptation")
+    w("on the device uses only samples confirmed after that.")
+    w(f"Synthetic ink: {meta['n']} text lines rendered by glassine-synth from {len(meta['fonts'])} fonts,")
+    w("and text drawn in the writer's letters cut from their training samples.")
+    w("")
+    fonts, texts = meta["provenance"]["fonts"], meta["provenance"]["text"]
+    w("Fonts (SIL Open Font License 1.1 or Apache License 2.0, from google/fonts; upstream commit):")
+    for d in sorted(fonts):
+        f = fonts[d]
+        role = "training" if d in meta["fonts"] else "held out, never trained on"
+        w(f"  {f['name']} ({d}), {role}: {f['commit']}")
+    w("")
+    w("Text (public domain; Project Gutenberg plain-text editions):")
+    for k in sorted(texts, key=lambda k: (texts[k]["split"], texts[k]["title"])):
+        t = texts[k]
+        w(f"  {t['title']}, {t['author']}: {t['split']}, {t['source']}")
+    w("")
+    w("Results")
+    w("-------")
+    w("Real ink: the writer's held-back session, read by the recognizer program; character")
+    w("error, word error, the top reading exact, the text among the top three. 'words' reads")
+    w("with the word list (FR-015), 'ink' without. One writer: not a measure for other hands.")
+    w("")
+    for name, r in (("this model", rev), ("model 2 (synthetic only)", base_rev)):
+        for mode, lab in (("raw", "ink"), ("words", "words")):
+            x = r.get(f"test/base/{mode}")
+            if x:
+                w(f"  {name:28s} {lab:6s} CER {pct(x['cer']):>7s}  WER {pct(x['wer']):>7s}  "
+                  f"top {pct(x['top1']):>7s}  top 3 {pct(x['top3']):>7s}  ({x['n']} samples)")
+    w("")
+    w("Synthetic ink, greedy decoding, character error:")
+    w("")
+    for k, what in RESULTS:
+        if k in ev:
+            w(f"  {what:44s} {pct(ev[k]['cer']):>7s}   ({ev[k]['lines']} lines)")
+    if "dev" in ev:
+        w(f"  {'dev fonts':44s} {pct(ev['dev']['cer']):>7s}   ({ev['dev']['lines']} lines)")
+    w("")
+    w(f"Export check: ONNX matches the checkpoint to {exp['max_abs_diff_vs_torch']:.1e}; held-out")
+    w(f"character error through ONNX {pct(exp['fp32_test_heldout_cer'])}.")
+    w("")
+    w("Files")
+    w("-----")
+    w("  recognizer.ghm  the model")
+    w("  prompts.txt     texts for prompted writing and donation, one per line")
+    w("  LICENSES        the licences of these files and of the training data")
+    w("  README          this file")
+    return "\n".join(L) + "\n"
+
+
+def licenses(meta, fonts_dir, writers=0):
     fonts = meta["provenance"]["fonts"]
     texts = meta["provenance"]["text"]
     man = {f["dir"]: f for f in json.loads((fonts_dir / "manifest.json").read_text())}
-    L = [MODEL_LICENCE, "Training data", "-------------", "",
+    words = {1: "one", 2: "two", 3: "three"}
+    real = REAL_LICENCE.format(writers=words.get(writers, str(writers))) if writers else ""
+    L = [MODEL_LICENCE.format(real=real), "Training data", "-------------", "",
          "Texts, public domain (catalogue record \"Public domain in the USA.\", every author died",
          "before 1956):"]
     for k in sorted(texts, key=lambda k: texts[k]["title"]):
@@ -236,6 +331,10 @@ def main(argv=None):
     ap.add_argument("--commit", required=True, help="the GlassineOS/handwriting commit the run was trained with")
     ap.add_argument("--fonts", type=Path, default=Path("../synth/build/fonts"), help="glassine-synth fetch's fonts")
     ap.add_argument("--out", type=Path, default=Path("build/release"))
+    ap.add_argument("--real", type=Path, default=Path("build/real"),
+                    help="the real-ink split a fine-tuned run was trained on (glassine-train real)")
+    ap.add_argument("--base-realeval", type=Path, default=Path("build/realeval/m2/result.json"),
+                    help="the previous base model's real-ink results, for the README")
     ap.add_argument("--tolerance", type=float, default=0.002,
                     help="largest difference of the held-out error through ONNX vs the run's evaluation")
     a = ap.parse_args(argv)
@@ -243,13 +342,18 @@ def main(argv=None):
         fail("--version must be a plain number")
     build = a.build.resolve()
     rundir = build / "runs" / a.run
-    for p in (rundir / a.ckpt, rundir / "args.json", rundir / "eval-best.json",
-              build / "data" / "train" / "meta.json", build / "data" / "test-heldout",
-              REPO / "models" / a.lang / "prompts.txt", a.fonts / "manifest.json"):
+    run_args = json.loads((rundir / "args.json").read_text()) if (rundir / "args.json").exists() else {}
+    tuned = run_args.get("cmd") == "finetune"
+    need = [rundir / a.ckpt, rundir / "args.json", rundir / "eval-best.json",
+            build / "data" / "train" / "meta.json", build / "data" / "test-heldout",
+            REPO / "models" / a.lang / "prompts.txt", a.fonts / "manifest.json"]
+    if tuned:
+        need += [a.real / "split.json", build / "realeval" / a.run / "result.json", a.base_realeval]
+    for p in need:
         if not p.exists():
             fail(f"missing {p}")
-    run_args = json.loads((rundir / "args.json").read_text())
-    meta = json.loads((build / "data" / run_args.get("data", "train") / "meta.json").read_text())
+    data = run_args["synth"][0] if tuned else run_args.get("data", "train")
+    meta = json.loads((build / "data" / data / "meta.json").read_text())
     ev = json.loads((rundir / "eval-best.json").read_text())
     tm = build / "data" / "test-heldout" / "meta.json"
     test_meta = json.loads(tm.read_text()) if tm.exists() else None
@@ -266,11 +370,19 @@ def main(argv=None):
                  "checkpoint and trainer don't match")
         stage = tmp / "stage"
         stage.mkdir()
+        until = json.loads((a.real / "split.json").read_text())["report"]["trained_until"] if tuned else 0
         subprocess.run([sys.executable, str(ONNX2GHM), str(onnx), "--charset-from", str(TEXT_PY),
-                        "-o", str(stage / "recognizer.ghm")], check=True)
+                        "-o", str(stage / "recognizer.ghm"), "--trained-until", str(until)], check=True)
         shutil.copyfile(REPO / "models" / a.lang / "prompts.txt", stage / "prompts.txt")
-        (stage / "README").write_text(readme(a, run_args, meta, ev, exp, stage / "recognizer.ghm", test_meta))
-        (stage / "LICENSES").write_text(licenses(meta, a.fonts))
+        if tuned:
+            split = json.loads((a.real / "split.json").read_text())
+            rev = json.loads((build / "realeval" / a.run / "result.json").read_text())
+            base_rev = json.loads(a.base_realeval.read_text())
+            (stage / "README").write_text(readme_finetune(a, run_args, meta, ev, exp, stage / "recognizer.ghm",
+                                                          split, rev, base_rev))
+        else:
+            (stage / "README").write_text(readme(a, run_args, meta, ev, exp, stage / "recognizer.ghm", test_meta))
+        (stage / "LICENSES").write_text(licenses(meta, a.fonts, 1 if tuned else 0))
         # the unpacked model directory too, for make check-model
         mdir = a.out / name / a.lang
         shutil.rmtree(a.out / name, ignore_errors=True)
