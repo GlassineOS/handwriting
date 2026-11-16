@@ -58,7 +58,10 @@ are chosen (the settings app, text editors, notes apps).
 
 **Given** the font page, **When** the person opens a character, **Then** they see each way
 they write it, drawn large, with how often the font shows it ("6 in 10"), and its samples,
-each marked as counting or not with the reason in plain words. **When** they make one way
+each marked as counting or not with the reason in plain words. **When** they open a
+sample, **Then** they see the whole word it belongs to with this character picked out and
+what it was read as, and can write it again, delete it or leave it out of the font; a way
+of writing it shows its own samples, with the same choices. **When** they make one way
 their favourite, leave a way or a sample out (and put it back, or undo), write more of it
 (careful prompts of the character alone and inside words) or say which of its ways is nicer
 and close the character, **Then** just that character is learned again in the background
@@ -189,6 +192,25 @@ size, spacing) and keep their shape.
   lowest priority; the font page's preview shows the result. Its marks then count as
   learned; when samples were added or removed since the last whole build, the letter model
   still counts as out of date.
+- **FR-033**: Looking at a character's samples. A sample opened from a character shows the
+  whole sample (the word or sentence it was written for) with this character's strokes
+  picked out, and what the recognizer read when it was written (when the sample has that
+  reading). It offers:
+  - **Write it again**: the same text is shown in the character's page to be written anew.
+    The new writing is checked as any prompted sample is (spec 002 FR-007). Only once it
+    passes and is kept does it take the old sample's place: the old sample is deleted, and
+    the new one keeps the old one's text, source, how it was written and its pair link
+    (FR-001, FR-002), with its own ink, area, reading and time. The old sample's
+    preferences and the marks on it go with it (they judged the old ink); the marks on the
+    character's ways stay. Cancelling, or writing that fails the check, keeps the old sample
+    as it was.
+  - **Delete**: after a question that says the whole sample goes, with every character it
+    writes, from the font and from recognition; the same deletion as in the sample view
+    (spec 002 FR-009).
+  - **Leave out** of the font for this character, and put back (FR-031).
+
+  Each way of writing a character offers its samples: exactly the samples that form it,
+  each opening the same way.
 - **FR-030**: How many usable samples each character has is known from the samples
   themselves, whether a letter model is built or not: a page about the person's letters shows
   these counts as soon as it opens, says whether the letter model is built, out of date or
