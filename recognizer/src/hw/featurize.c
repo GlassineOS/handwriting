@@ -11,6 +11,7 @@
 
 #define STEP 0.1        /* resampling step, in core heights */
 #define CLIP 6.0
+#define SIZE_CLIP 4.0   /* features_ref's size column */
 #define MAX_TILT 0.35   /* radians */
 
 struct pts {
@@ -214,6 +215,49 @@ out:
 	return r;
 }
 
+/* the rows from resampled strokes (already scaled): moves, height, pen-up, pause, and with
+ * nf == HW_NFEAT_REF the size column */
+static long rows_of(struct pts *rs, size_t ns, const int *idx, int nf, double size, float **out,
+		    struct hw_origin **origin)
+{
+	size_t total = 0;
+	for (size_t i = 0; i < ns; i++) total += rs[i].n;
+	double *f = calloc(total * nf, sizeof *f);
+	float *o = malloc(total * nf * sizeof *o);
+	struct hw_origin *org = origin ? malloc(total * sizeof *org) : NULL;
+	if (!f || !o || (origin && !org)) { free(f); free(o); free(org); return -1; }
+	size_t row = 0;
+	double px = 0, py = 0, pt = 0;
+	for (size_t i = 0; i < ns; i++) {
+		struct pts *r = &rs[i];
+		double sx = i ? px : r->x[0], sy = i ? py : r->y[0];
+		for (size_t k = 0; k < r->n; k++, row++) {
+			double *g = f + row * nf;
+			g[0] = r->x[k] - (k ? r->x[k - 1] : sx);
+			g[1] = r->y[k] - (k ? r->y[k - 1] : sy);
+			g[2] = r->y[k];
+			if (i && !k) {
+				double gap = r->t[0] - pt;
+				g[3] = 1.0;
+				g[4] = log1p((gap > 0.0 ? gap : 0.0) * 10);
+			}
+			if (nf == HW_NFEAT_REF) g[5] = size;
+			if (org) { org[row].stroke = idx[i]; org[row].point = r->j[k]; }
+		}
+		px = r->x[r->n - 1]; py = r->y[r->n - 1]; pt = r->t[r->n - 1];
+	}
+	for (size_t k = 0; k < total * nf; k++) {
+		double v = f[k];
+		if (v < -CLIP) v = -CLIP;
+		if (v > CLIP) v = CLIP;
+		o[k] = (float)v;
+	}
+	free(f);
+	*out = o;
+	if (origin) *origin = org;
+	return (long)total;
+}
+
 long hw_features(const struct hw_stroke *s0, size_t ns0, float **out, struct hw_origin **origin)
 {
 	*out = NULL;
@@ -221,7 +265,6 @@ long hw_features(const struct hw_stroke *s0, size_t ns0, float **out, struct hw_
 	struct hw_stroke *s = malloc((ns0 + 1) * sizeof *s);
 	int *idx = malloc((ns0 + 1) * sizeof *idx);
 	struct pts *rot = NULL, *rs = NULL;
-	double *f = NULL;
 	long rows = -1;
 	size_t ns = 0;
 	if (!s || !idx) goto out;
@@ -232,48 +275,103 @@ long hw_features(const struct hw_stroke *s0, size_t ns0, float **out, struct hw_
 	if (!rot || !rs) goto out;
 	double th, h, md, x0;
 	if (normalise(s, ns, rot, &th, &h, &md, &x0)) goto out;
-	size_t total = 0;
 	for (size_t i = 0; i < ns; i++) {
 		struct pts *q = &rot[i];
 		for (size_t k = 0; k < q->n; k++) { q->x[k] = (q->x[k] - x0) / h; q->y[k] = (q->y[k] - md) / h; }
 		if (resample(q->x, q->y, q->t, q->n, STEP, &rs[i])) goto out;
-		total += rs[i].n;
 	}
-	f = calloc(total * HW_NFEAT, sizeof *f);
-	float *o = malloc(total * HW_NFEAT * sizeof *o);
-	struct hw_origin *org = origin ? malloc(total * sizeof *org) : NULL;
-	if (!f || !o || (origin && !org)) { free(o); free(org); goto out; }
-	size_t row = 0;
-	double px = 0, py = 0, pt = 0;
-	for (size_t i = 0; i < ns; i++) {
-		struct pts *r = &rs[i];
-		double sx = i ? px : r->x[0], sy = i ? py : r->y[0];
-		for (size_t k = 0; k < r->n; k++, row++) {
-			double *g = f + row * HW_NFEAT;
-			g[0] = r->x[k] - (k ? r->x[k - 1] : sx);
-			g[1] = r->y[k] - (k ? r->y[k - 1] : sy);
-			g[2] = r->y[k];
-			if (i && !k) {
-				double gap = r->t[0] - pt;
-				g[3] = 1.0;
-				g[4] = log1p((gap > 0.0 ? gap : 0.0) * 10);
-			}
-			if (org) { org[row].stroke = idx[i]; org[row].point = r->j[k]; }
-		}
-		px = r->x[r->n - 1]; py = r->y[r->n - 1]; pt = r->t[r->n - 1];
-	}
-	for (size_t k = 0; k < total * HW_NFEAT; k++) {
-		double v = f[k];
-		if (v < -CLIP) v = -CLIP;
-		if (v > CLIP) v = CLIP;
-		o[k] = (float)v;
-	}
-	*out = o;
-	if (origin) *origin = org;
-	rows = (long)total;
+	rows = rows_of(rs, ns, idx, HW_NFEAT, 0, out, origin);
 out:
 	if (rot) for (size_t i = 0; i < ns; i++) pts_free(&rot[i]);
 	if (rs) for (size_t i = 0; i < ns; i++) pts_free(&rs[i]);
-	free(rot); free(rs); free(f); free(s); free(idx);
+	free(rot); free(rs); free(s); free(idx);
+	return rows;
+}
+
+/* np.median of n values (sorted in place) */
+static double median(double *v, size_t n)
+{
+	qsort(v, n, sizeof *v, cmpd);
+	return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
+}
+
+long hw_features_ref(const struct hw_stroke *s0, size_t ns0, double h, double base, float **out,
+		     struct hw_origin **origin)
+{
+	*out = NULL;
+	if (origin) *origin = NULL;
+	struct hw_stroke *s = malloc((ns0 + 1) * sizeof *s);
+	int *idx = malloc((ns0 + 1) * sizeof *idx);
+	struct pts *rot = NULL, *rs = NULL;
+	double *ys = NULL;
+	long rows = -1;
+	size_t ns = 0;
+	if (!s || !idx || !(h > 0)) goto out;
+	ns = nonempty(s0, ns0, s, idx);
+	if (!ns) { rows = 0; goto out; }
+	rot = calloc(ns, sizeof *rot);
+	rs = calloc(ns, sizeof *rs);
+	if (!rot || !rs) goto out;
+	size_t N = 0;
+	double xmin = INFINITY, xmax = -INFINITY, ymin = INFINITY, ymax = -INFINITY, sx = 0, sy = 0;
+	for (size_t i = 0; i < ns; i++)
+		for (size_t k = 0; k < s[i].n; k++) {
+			double x = s[i].x[k], y = s[i].y[k];
+			if (x < xmin) xmin = x;
+			if (x > xmax) xmax = x;
+			if (y < ymin) ymin = y;
+			if (y > ymax) ymax = y;
+			sx += x; sy += y; N++;
+		}
+	double th = 0, hy = ymax - ymin;
+	/* only lines wide enough for a meaningful tilt */
+	if (xmax - xmin > 2 * (hy > h ? hy : h)) {
+		double mx = sx / (double)N, my = sy / (double)N, sxy = 0, sxx = 0;
+		for (size_t i = 0; i < ns; i++)
+			for (size_t k = 0; k < s[i].n; k++) {
+				double dx = s[i].x[k] - mx;
+				sxy += dx * (s[i].y[k] - my);
+				sxx += dx * dx;
+			}
+		th = -atan(sxy / sxx);
+		if (th < -MAX_TILT) th = -MAX_TILT;
+		if (th > MAX_TILT) th = MAX_TILT;
+	}
+	double c = cos(th), sn = sin(th);
+	double rxmin = INFINITY, rxmax = -INFINITY, rymin = INFINITY, rymax = -INFINITY;
+	ys = malloc(N * sizeof *ys);
+	if (!ys) goto out;
+	size_t ny = 0;
+	for (size_t i = 0; i < ns; i++) {
+		if (pts_alloc(&rot[i], s[i].n)) goto out;
+		for (size_t k = 0; k < s[i].n; k++) {
+			double x = s[i].x[k], y = s[i].y[k];
+			double a = x * c - y * sn, b = x * sn + y * c;
+			rot[i].x[k] = a; rot[i].y[k] = b; rot[i].t[k] = s[i].t[k]; rot[i].j[k] = (int)k;
+			ys[ny++] = b;
+			if (a < rxmin) rxmin = a;
+			if (a > rxmax) rxmax = a;
+			if (b < rymin) rymin = b;
+			if (b > rymax) rymax = b;
+		}
+	}
+	/* the baseline at the ink's left end, turned with the ink; else the median */
+	double y0 = isfinite(base) ? xmin * sn + base * c : median(ys, ny);
+	double ext = rymax - rymin, w4 = (rxmax - rxmin) / 4;
+	if (w4 > ext) ext = w4;
+	if (1e-6 * h > ext) ext = 1e-6 * h;
+	double size = log(ext / h);
+	if (size < -SIZE_CLIP) size = -SIZE_CLIP;
+	if (size > SIZE_CLIP) size = SIZE_CLIP;
+	for (size_t i = 0; i < ns; i++) {
+		struct pts *q = &rot[i];
+		for (size_t k = 0; k < q->n; k++) { q->x[k] = (q->x[k] - rxmin) / h; q->y[k] = (q->y[k] - y0) / h; }
+		if (resample(q->x, q->y, q->t, q->n, STEP, &rs[i])) goto out;
+	}
+	rows = rows_of(rs, ns, idx, HW_NFEAT_REF, size, out, origin);
+out:
+	if (rot) for (size_t i = 0; i < ns; i++) pts_free(&rot[i]);
+	if (rs) for (size_t i = 0; i < ns; i++) pts_free(&rs[i]);
+	free(rot); free(rs); free(s); free(idx); free(ys);
 	return rows;
 }

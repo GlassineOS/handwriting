@@ -17,6 +17,7 @@
 #include "ctc.h"
 #include "recog.h"
 #include "sample.h"
+#include "size.h"
 #include "store.h"
 
 #define HDR_BYTES 56
@@ -315,6 +316,16 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 	struct hw_entry *es;
 	size_t ne;
 	unsigned long gen;
+	int at = m->version == HW_GHM_VERSION_REF;
+	if (at) {
+		/* the person's letters, measured once before the samples are loaded (the reference
+		 * a sample is read at, as when it was written) */
+		struct hw_units u = { "em", 0, 0 };
+		struct hw_size_ref r0;
+		double b0;
+		hw_size_ref_for(o->lang, &u, NULL, NAN, &r0);
+		hw_size_ref_height(&r0, NULL, 0, &b0);
+	}
 	if (hw_samples_load(&es, &ne, &gen)) return -1;
 	struct item *tr = calloc(ne + 1, sizeof *tr), *he = calloc(ne + 1, sizeof *he);
 	size_t ntr = 0, nhe = 0, usable = 0;
@@ -337,7 +348,19 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 		if (ok) {
 			struct hw_stroke *st = calloc(s.nstrokes + 1, sizeof *st);
 			float *feats = NULL;
-			long rows = st ? (hw_sample_strokes(&s, st), hw_features(st, s.nstrokes, &feats, NULL)) : -1;
+			long rows = -1;
+			if (st && at) {
+				/* the sample's reference: the person's letters in its units, else its
+				 * area's line; its guides at two thirds of each line (the samples app's) */
+				hw_sample_strokes(&s, st);
+				struct hw_size_ref ref;
+				double base = s.area.set && s.area.line > 0 ? s.area.box[1] + s.area.line * 2 / 3 : NAN, b;
+				hw_size_ref_for(o->lang, &s.units, &s.area, base, &ref);
+				double h = hw_size_ref_height(&ref, st, s.nstrokes, &b), tilt, mid, x0;
+				if (h > 0 || !hw_line_metrics(st, s.nstrokes, &tilt, &h, &mid, &x0))
+					rows = hw_features_ref(st, s.nstrokes, h, b, &feats, NULL);
+			} else if (st)
+				rows = (hw_sample_strokes(&s, st), hw_features(st, s.nstrokes, &feats, NULL));
 			free(st);
 			x.T = rows > 0 ? hw_encode(m, feats, rows, &x.frames) : -1;
 			free(feats);

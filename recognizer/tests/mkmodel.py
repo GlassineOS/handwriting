@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""A random-weight base model (.ghm, version 1) for tests: no training, no blob in git.
+"""A random-weight base model (.ghm) for tests: no training, no blob in git.
 
-    mkmodel.py OUT.ghm [--seed N] [--conv C] [--hidden H] [--strided S]
+    mkmodel.py OUT.ghm [--seed N] [--conv C] [--hidden H] [--strided S] [--ref]
+
+--ref: version 2, a model reading the reference-height features (6 per row).
 
 The character set is the English one of the trainer (kept in step by test-train-sync).
 """
@@ -21,15 +23,17 @@ def main():
     ap.add_argument("--hidden", type=int, default=32)
     ap.add_argument("--strided", type=int, default=3)
     ap.add_argument("--layers", type=int, default=2)
+    ap.add_argument("--ref", action="store_true")
     a = ap.parse_args()
     rng = random.Random(a.seed)
-    nfeat, k, c1, conv, H, nclass = 5, 5, a.conv // 2, a.conv, a.hidden, len(CHARS) + 1
+    version, nfeat = (2, 6) if a.ref else (1, 5)
+    k, c1, conv, H, nclass = 5, a.conv // 2, a.conv, a.hidden, len(CHARS) + 1
 
     def w(n, fan_in):
         b = (3.0 / fan_in) ** 0.5
         return [rng.uniform(-b, b) for _ in range(n)]
 
-    data = [10.0, 10.0, 1.0, 1.0, 1.0]
+    data = [10.0, 10.0, 1.0, 1.0, 1.0] + [1.0] * (nfeat - 5)
     data += w(c1 * nfeat * k, nfeat * k) + w(c1, nfeat * k)
     cin = c1
     for _ in range(a.strided):
@@ -41,7 +45,7 @@ def main():
             data += w(4 * H * i, i) + w(4 * H * H, H) + w(4 * H, H)
     data += w(nclass * 2 * H, 2 * H) + [0.0] * nclass
     cs = CHARS.encode()
-    hdr = b"GHWM" + struct.pack("<15I", 1, 64, nfeat, c1, conv, a.strided, k, H, a.layers, nclass, len(cs), 0, 0, 0, 0)
+    hdr = b"GHWM" + struct.pack("<15I", version, 64, nfeat, c1, conv, a.strided, k, H, a.layers, nclass, len(cs), 0, 0, 0, 0)
     with open(a.out, "wb") as f:
         f.write(hdr + cs + b"\0" * (-len(cs) % 4) + struct.pack(f"<{len(data)}f", *data))
 
