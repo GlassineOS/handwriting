@@ -495,9 +495,13 @@ def cmd_inkread(a):
     res = {}
     for ink in a.sets:
         name = Path(ink).name
-        smp = out / f"{name}.samples.jsonl"
+        smp = Path(a.samples or out) / f"{name}{f'.first{a.limit}' if a.limit else ''}.samples.jsonl"
         if not smp.exists():
-            R.ink_samples(Path(ink), smp, a.limit)
+            tmp = smp.with_suffix(".tmp")
+            R.ink_samples(Path(ink), tmp, a.limit)
+            tmp.rename(smp)
+        if a.prepare:
+            continue
         kinds = [json.loads(ln)["kind"] for ln in smp.read_text().splitlines()]
         extra = ["--base", R.GUIDE] + (["--chars"] if a.mode == "chars" else [])
         rs = R.read_samples(Path(a.models).resolve(), smp.resolve(), Path(a.predict).resolve(), a.mode == "raw",
@@ -928,6 +932,8 @@ def main(argv=None):
     ir.add_argument("--out", required=True)
     ir.add_argument("--tag", required=True, help="name of this reading in the output files")
     ir.add_argument("--limit", type=int)
+    ir.add_argument("--samples", help="where the sets' sample files are kept (default --out), shared between runs")
+    ir.add_argument("--prepare", action="store_true", help="only write the sample files")
     ss = sub.add_parser("synthset", help="training ink of short lines with a measured preset")
     ss.add_argument("--name", default="train-f158-real1")
     ss.add_argument("--preset", default="real1")
@@ -997,7 +1003,7 @@ def main(argv=None):
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
     {"inkcheck": cmd_inkcheck, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
-     "inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+     "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":
