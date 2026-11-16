@@ -104,3 +104,39 @@ def test_finetune_moves_little_and_writes_best(tmp_path):
     h = torch.randn(2, 5, 16, requires_grad=True)
     DomainHead(16)(h, 1.0).sum().backward()
     assert h.grad is not None
+
+
+def test_kept_test_set_stays_fixed(tmp_path):
+    # sessions: 0 (50), 1 (40, the test session), 2 (30), 3 (60)
+    starts = [0, 10_000, 20_000, 30_000]
+    sizes = [50, 40, 30, 60]
+    times = [s + i * 20 for s, n in zip(starts, sizes) for i in range(n)]
+    texts = ["word%d" % i for i in range(len(times))]
+    _store(tmp_path, times[:90], texts[:90])  # the first pull ends with the test session
+    first = split(read_store(tmp_path))
+    assert len(first["test"]) == 40
+    _store(tmp_path, times, texts)  # a later pull with two more sessions
+    recs = read_store(tmp_path)
+    sp = split(recs, first["test"])
+    assert sp["test"] == first["test"] and sp["left_out"] == []
+    by = {r["id"]: r["time"] for r in recs}
+    # dev = whole newest sessions until DEV_MIN (session 3 alone has 60 < 80: sessions 3 and 2)
+    assert sorted(by[i] // 10_000 for i in sp["dev"]) == [2] * 30 + [3] * 60
+    assert sorted({by[i] // 10_000 for i in sp["train"]}) == [0]
+    rep = prepare(tmp_path, tmp_path / "out", first["test"])
+    assert rep["test"] == 40 and rep["kept_test"] and rep["left_out"] == 0
+
+
+def test_kept_test_set_leaves_out_its_sessions_and_needs_every_id(tmp_path):
+    times = [i * 20 for i in range(50)] + [10_000 + i * 20 for i in range(30)] + [20_000 + i for i in range(5)]
+    _store(tmp_path, times, ["w%d" % i for i in range(85)])
+    recs = read_store(tmp_path)
+    test = [r["id"] for r in recs if 10_000 <= r["time"] < 10_000 + 20 * 20]  # 20 of the 30
+    sp = split(recs, test)
+    assert len(sp["left_out"]) == 10 and not set(sp["left_out"]) & set(sp["train"] + sp["dev"])
+    try:
+        split(recs, test + ["0123456789abcdef"])
+    except SystemExit as e:
+        assert "not in the store" in str(e)
+    else:
+        raise AssertionError("a missing kept test id must fail")
