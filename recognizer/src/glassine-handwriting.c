@@ -1997,7 +1997,7 @@ static int cmd_letters(int argc, char **argv)
 		/* asked for or not, it runs at the lowest priority: the device stays usable */
 		if (nice(19) == -1) {}
 		if (one) {
-			int r = hw_letters_relearn(one, 1);
+			int r = hw_letters_relearn(one, o.progress ? 2 : 1);
 			if (r == 0) puts("skip\tno-model");
 			return r < 0 ? 1 : 0;
 		}
@@ -2093,6 +2093,7 @@ static int cmd_letters(int argc, char **argv)
 			free(b.s);
 		}
 		free(c);
+		int fcur = r == 1 && hw_font_current(&L);
 		if (r == 1) hw_letters_free(&L);
 		char name[256], path[4096];
 		unsigned v;
@@ -2106,6 +2107,8 @@ static int cmd_letters(int argc, char **argv)
 			besc(&b, path);
 			puts(b.s);
 			free(b.s);
+			/* whether it was made from the letters as they are in the model now */
+			printf("font-letters\t%s\n", fcur ? "same" : "changed");
 		} else {
 			puts("font\t-");
 		}

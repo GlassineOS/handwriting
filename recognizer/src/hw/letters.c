@@ -1807,8 +1807,10 @@ int hw_letters_relearn(unsigned cp, int verbose)
 	unsigned long gen = hw_store_generation();
 	struct hw_letters one;
 	build_only = cp;
+	build_progress = verbose > 1;
 	int b = hw_letters_build(&one);
 	build_only = 0;
+	build_progress = 0;
 	occ_free();
 	if (b) { hw_letters_free(&old); return -1; }
 	/* its line in place of the old one (or a new one, in code point order); its sides
@@ -1997,6 +1999,31 @@ static int valid_name(const char *s)
 	return hw_utf8_decode(s, cp, HW_FONT_NAME_MAX + 1) > 0;
 }
 
+/* what the font is made from: the model less its head (the build time, its inputs) */
+int hw_letters_fingerprint(const struct hw_letters *L, char out[17])
+{
+	size_t len;
+	char *t = hw_letters_format(L, &len);
+	if (!t) return -1;
+	char *body = memchr(t, '\n', len);
+	body = body ? body + 1 : t + len;
+	uint64_t h = fnv(FNV0, body, (size_t)(t + len - body));
+	free(t);
+	snprintf(out, 17, "%016llx", (unsigned long long)h);
+	return 0;
+}
+
+int hw_font_current(const struct hw_letters *L)
+{
+	char p[4096], want[17], have[24] = "";
+	if (hw_letters_fingerprint(L, want) || hw_store_path(p, sizeof p, "letters/font-model")) return 0;
+	FILE *f = fopen(p, "re");
+	if (!f) return 0;
+	int ok = fgets(have, sizeof have, f) != NULL;
+	fclose(f);
+	return ok && !strncmp(have, want, 16);
+}
+
 int hw_font_install(const char *name, int verbose)
 {
 	struct hw_letters L;
@@ -2019,6 +2046,8 @@ int hw_font_install(const char *name, int verbose)
 	unsigned v = last_version() + 1;
 	size_t len;
 	unsigned char *ttf = hw_font_build(&L, nm, v, &len);
+	char fp[18] = "";
+	if (!hw_letters_fingerprint(&L, fp)) strcat(fp, "\n");
 	hw_letters_free(&L);
 	int ret = -1;
 	if (!ttf) goto out;
@@ -2033,7 +2062,10 @@ int hw_font_install(const char *name, int verbose)
 	int k = snprintf(rec, sizeof rec, "%s\t%u\t%s\n", nm, v, path);
 	snprintf(vs, sizeof vs, "%u\n", v);
 	if (hw_store_mkdir("letters") || hw_store_replace("letters/font-version", vs, strlen(vs)) ||
-	    hw_store_replace("letters/font", rec, (size_t)k)) { unlink(path); goto out; }
+	    hw_store_replace("letters/font", rec, (size_t)k) || hw_store_replace("letters/font-model", fp, strlen(fp))) {
+		unlink(path);
+		goto out;
+	}
 	if (had && strcmp(opath, path)) unlink(opath);
 	ret = 0;
 out:
@@ -2073,7 +2105,8 @@ void hw_letters_erase_locked(void)
 	remove_font_locked();
 	char p[4096];
 	if (hw_store_path(p, sizeof p, "letters")) return;
-	const char *files[] = { "model", "model.tmp", "font", "font.tmp", "font-version", "font-version.tmp", "usable", "usable.tmp" };
+	const char *files[] = { "model", "model.tmp", "font", "font.tmp", "font-version", "font-version.tmp", "usable", "usable.tmp",
+				"font-model", "font-model.tmp" };
 	for (size_t i = 0; i < sizeof files / sizeof *files; i++) {
 		char q[4200];
 		snprintf(q, sizeof q, "%s/%s", p, files[i]);
