@@ -1453,5 +1453,187 @@ class Serving(unittest.TestCase):
         self.assertEqual(c.p.wait(timeout=10), 0)
 
 
+class WriterStores(unittest.TestCase):
+    """guest writers' stores (spec 001 FR-021, spec 002 FR-016, FR-023, FR-024; contract 1.3):
+    beside the person's store, named only by --writer, refused for what a writer's store
+    doesn't do, removed whole"""
+
+    def setUp(self):
+        self.env = Env()
+        self.env.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
+
+    def tearDown(self):
+        self.env.close()
+
+    @property
+    def writers(self):
+        return self.env.data / "glassine" / "handwriting-writers"
+
+    def new(self):
+        w = self.env.run("writer", "new").stdout.strip()
+        self.assertRegex(w, r"^[0-9a-f]{16}$")
+        return w
+
+    def keep(self, c, text="hello"):
+        rng = random.Random(len(text))
+        self.assertEqual(c.ask("begin", "s", "en", "normal", "device:4.0:200", "")[2], "ok")
+        t = 1000
+        for k in range(3):
+            q = []
+            for i in range(20):
+                q.append(f"{rng.uniform(0, 300):.2f},{rng.uniform(0, 80):.2f},{t}")
+                t += 5
+            self.assertEqual(c.ask("stroke", "s", " ".join(q))[2], "ok")
+        r = c.ask("confirm", "s", "prompted", text)
+        self.assertEqual(r[2], "ok", r)
+        return r[3]
+
+    def stats(self, *pre):
+        return dict(ln.split("\t", 1) for ln in self.env.run(*pre, "samples", "stats").stdout.splitlines()
+                    if not ln.startswith("client"))
+
+    def test_beside_the_persons_store(self):
+        w = self.new()
+        d = self.writers / w
+        self.assertTrue(d.is_dir())
+        self.assertEqual(d.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.writers.stat().st_mode & 0o777, 0o700)
+        self.assertFalse(self.env.store.exists())               # making one makes nothing of the person's
+        # the person's learning off: a writer's prompted samples are kept all the same
+        self.env.conf_set("handwriting.conf", "learning = off\n")
+        c = self.env.start("--writer", w, "-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        sid = self.keep(c)
+        c.close()
+        self.assertEqual(self.stats("--writer", w)["samples"], "1")
+        self.assertEqual(self.stats()["samples"], "0")
+        self.assertEqual(self.stats()["writers"], "1")
+        self.assertNotIn("writers", self.stats("--writer", w))
+        self.assertIn(sid, self.env.run("--writer", w, "samples", "list").stdout)
+        self.assertNotIn(sid, self.env.run("samples", "list").stdout)
+        for f in d.rglob("*"):
+            self.assertEqual(f.stat().st_mode & 0o777, 0o700 if f.is_dir() else 0o600, f)
+        lst = [ln.split("\t") for ln in self.env.run("writer", "list").stdout.splitlines()]
+        self.assertEqual(lst, [[w, "1", "0"]])
+
+    def test_erase_and_export_are_one_stores(self):
+        a, b = self.new(), self.new()
+        self.assertNotEqual(a, b)
+        for w in (a, b, None):
+            pre = ["--writer", w] if w else []
+            c = self.env.start(*pre, "-i", "0")
+            c.ask("hello", "1", "org.example.samples")
+            self.keep(c, "water")
+            c.close()
+        self.env.run("samples", "erase")
+        self.assertEqual(self.stats()["samples"], "0")
+        self.assertEqual(self.stats("--writer", a)["samples"], "1")
+        self.env.run("--writer", a, "samples", "erase")
+        self.assertEqual(self.stats("--writer", a)["samples"], "0")
+        self.assertEqual(self.stats("--writer", b)["samples"], "1")
+        out = self.env.dir / "b.jsonl"
+        self.env.run("--writer", b, "samples", "export", str(out))
+        self.assertEqual(sum(1 for ln in out.read_text().splitlines() if '"sample"' in ln), 1)
+
+    def test_own_contributor_number(self):
+        a, b = self.new(), self.new()
+        ids = []
+        for pre in (["--writer", a], ["--writer", b], []):
+            self.env.run(*pre, "donation", "start", "CC0-1.0")
+            ids.append(self.env.run(*pre, "donation", "donor").stdout.strip())
+        self.assertEqual(len(set(ids)), 3)
+        self.assertNotIn(a, ids[0])
+        self.env.run("--writer", a, "donation", "erase")
+        self.assertEqual(self.env.run("--writer", a, "donation", "donor").stdout.strip(), ids[0])
+
+    def test_refusals(self):
+        w = self.new()
+        for args in (["adapt"], ["adaptation"], ["letters", "build", "-r"], ["letters", "status"], ["font", "status"],
+                     ["learning"], ["learning", "off"], ["samples", "import", str(self.env.dir / "x.jsonl")]):
+            p = self.env.run("--writer", w, *args, check=False)
+            self.assertEqual((p.returncode, p.stderr.strip()), (2, "writer-store"), args)
+        c = self.env.start("--writer", w, "-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        self.assertEqual(c.ask("begin", "s", "en", "normal", "device:4.0:200", "")[2], "ok")
+        self.assertEqual(c.ask("stroke", "s", "1,1,0 5,5,10")[2], "ok")
+        self.assertEqual(c.ask("neaten", "s", "1")[2:], ["writer-store"])
+        c.close()
+        self.assertFalse((self.writers / w / "adaptation").exists())
+        self.assertFalse((self.writers / w / "letters").exists())
+
+    def test_unknown_and_removed(self):
+        bad = "0123456789abcdef"
+        p = self.env.run("--writer", bad, "samples", "stats", check=False)
+        self.assertEqual((p.returncode, p.stderr.strip()), (1, "unknown-writer"))
+        p = self.env.run("--writer", bad, "-i", "0", check=False, inp="hello\tr1\t1\n")
+        self.assertEqual((p.returncode, p.stderr.strip(), p.stdout), (1, "unknown-writer", ""))
+        self.assertFalse(self.writers.exists() and any(self.writers.iterdir()))
+        self.assertEqual(self.env.run("writer", "remove", bad, check=False).returncode, 1)
+        w = self.new()
+        c = self.env.start("--writer", w, "-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        self.keep(c)
+        self.assertEqual(self.env.run("writer", "remove", w).stdout.strip(), "removed")
+        self.assertFalse((self.writers / w).exists())
+        # its running process keeps nothing more and makes nothing again
+        self.assertEqual(c.ask("begin", "s", "en", "normal", "device:4.0:200", "")[2:], ["unknown-writer"])
+        self.assertEqual(c.ask("samples", "")[2:], ["unknown-writer"])
+        c.close()
+        self.assertEqual(list(self.writers.iterdir()), [])
+        self.assertEqual(self.env.run("writer", "list").stdout, "")
+        self.assertEqual(self.stats()["writers"], "0")
+
+    def test_crashed_remove_is_finished(self):
+        w = self.new()
+        left = self.writers / (".removing-" + w)
+        (self.writers / w).rename(left)
+        (left / "samples.jsonl").write_text("{}\n")
+        self.assertEqual(self.env.run("writer", "list").stdout, "")
+        self.assertFalse(left.exists())
+
+    def test_moved_in_by_hand(self):
+        """a store kept elsewhere becomes a writer's store as docs/recognizer.md says, its
+        samples and contributor number with it"""
+        other = Env()
+        try:
+            other.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
+            c = other.start("-i", "0")
+            c.ask("hello", "1", "org.example.samples")
+            sid = WriterStores.keep(self, c, "water")
+            c.close()
+            other.run("donation", "start", "CC-BY-4.0")
+            donor = other.run("donation", "donor").stdout.strip()
+            w = self.new()
+            dst = self.writers / w
+            for f in other.store.iterdir():
+                if f.name in ("lock", "adaptation", "letters"):
+                    continue
+                if f.is_dir():
+                    shutil.copytree(f, dst / f.name)
+                else:
+                    shutil.copy2(f, dst / f.name)
+            for f in dst.rglob("*"):
+                f.chmod(0o700 if f.is_dir() else 0o600)
+        finally:
+            other.close()
+        self.assertEqual(self.env.run("writer", "list").stdout.split(), [w, "1", "0"])
+        self.assertIn(sid, self.env.run("--writer", w, "samples", "list").stdout)
+        self.assertEqual(self.env.run("--writer", w, "donation", "donor").stdout.strip(), donor)
+        self.assertIn("licence\tCC-BY-4.0", self.env.run("--writer", w, "donation", "list").stdout)
+
+    def test_idle_exit_never_adapts(self):
+        w = self.new()
+        c = self.env.start("--writer", w, "-i", "1")
+        c.ask("hello", "1", "org.example.samples")
+        for k in range(3):
+            self.keep(c, f"word{k}")
+        self.assertEqual(c.p.wait(timeout=20), 0)
+        c.close()
+        time.sleep(1)
+        self.assertFalse((self.writers / w / "adaptation").exists())
+        self.assertFalse((self.writers / w / "letters").exists())
+        self.assertFalse(self.env.store.exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

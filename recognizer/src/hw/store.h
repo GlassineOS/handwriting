@@ -23,6 +23,19 @@ struct hw_entry {
 	char *json;                     /* the sample's line (sample format v1) */
 };
 
+/* Writer stores (spec 001 FR-021): beside the person's store, in
+ * $XDG_DATA_HOME/glassine/handwriting-writers/WRITER, WRITER 16 random hex digits. Once a
+ * writer is set, every store function is for that store and never creates it. */
+int hw_store_set_writer(const char *id);       /* 0, -1 not a writer store */
+void hw_store_set_person(void);
+const char *hw_store_writer(void);              /* NULL: the person's store */
+int hw_writers_dir(char *out, size_t n);
+int hw_writer_exists(const char *id);
+int hw_writer_new(char out[17]);                /* creates a store: 0, -1 */
+int hw_writer_remove(const char *id);           /* 1 removed, 0 no such store, -1 error */
+int hw_writers_list(char (**out)[17], size_t *n);       /* sorted, malloc'd */
+void hw_writers_sweep(void);                    /* deletes what a crashed remove left */
+
 int hw_store_path(char *out, size_t n, const char *rel);      /* rel "" = the directory */
 int hw_store_adaptation_path(char *out, size_t n, const char *lang, const char *slot);
 int hw_store_mkdir(const char *rel);    /* the directory (and rel under it), 0700 */

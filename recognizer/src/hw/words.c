@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "store.h"
 #include "words.h"
 
 /* ---------------------------------------------------------------- the model file */
@@ -110,6 +111,8 @@ static const char *models_dir(void)
 
 static int store_path(char *p, size_t n)
 {
+	/* a writer's store reads no learned words: they are the person's */
+	if (hw_store_writer()) return -1;
 	const char *x = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
 	if (x && x[0] == '/') return snprintf(p, n, "%s/glassine/predict/words", x) >= (int)n ? -1 : 0;
 	if (!home || home[0] != '/') return -1;
