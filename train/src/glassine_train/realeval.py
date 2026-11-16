@@ -25,7 +25,6 @@ REPO = Path(__file__).resolve().parents[3]
 BIN = REPO / "recognizer" / "glassine-handwriting"
 EVAL = REPO / "recognizer" / "tools" / "eval-samples.py"
 ONNX2GHM = REPO / "recognizer" / "tools" / "onnx2ghm.py"
-TEXT_PY = REPO / "train" / "src" / "glassine_train" / "text.py"
 
 
 def export_ghm(ckpt: Path, models: Path, trained_until: int = 0) -> Path:
@@ -37,11 +36,13 @@ def export_ghm(ckpt: Path, models: Path, trained_until: int = 0) -> Path:
     d = models / "en"
     d.mkdir(parents=True, exist_ok=True)
     onnx = models / "recognizer.onnx"
-    x0 = torch.zeros(1, 200, 5)
+    x0 = torch.zeros(1, 200, m.c1.in_channels)
     torch.onnx.export(Single(m).eval(), (x0,), onnx, input_names=["ink"], output_names=["logp"],
                       dynamic_axes={"ink": {1: "points"}, "logp": {1: "frames"}}, opset_version=17,
                       dynamo=False)
-    subprocess.run([sys.executable, str(ONNX2GHM), str(onnx), "--charset-from", str(TEXT_PY),
+    # the model's characters (model 4 adds @/&+#%_=$ after text.py's CHARS); onnx2ghm writes
+    # version 2 for a model reading the reference-height features
+    subprocess.run([sys.executable, str(ONNX2GHM), str(onnx), "--charset", m.alphabet,
                     "-o", str(d / "recognizer.ghm"), "--trained-until", str(trained_until)],
                    check=True, stdout=subprocess.DEVNULL)
     onnx.unlink()
@@ -74,8 +75,10 @@ def adapt(models: Path, store: Path, predict: Path, out: Path, extra: tuple = ()
         return info
 
 
-def read_samples(models: Path, samples: Path, predict: Path, raw: bool, head: Path | None = None) -> list[dict]:
-    """[{id, text, cands}] as the recognizer reads them (three candidates)."""
+def read_samples(models: Path, samples: Path, predict: Path, raw: bool, head: Path | None = None,
+                 extra: tuple = (), env: dict | None = None) -> list[dict]:
+    """[{id, text, cands}] as the recognizer reads them (three candidates); `extra`: more
+    options for eval-samples.py (--store, --base, --chars), `env` for the recognizer."""
     with tempfile.TemporaryDirectory(prefix="hw-eval-") as t:
         save = Path(t) / "out.json"
         cmd = [sys.executable, str(EVAL), str(BIN), str(samples), "--models", str(models),
@@ -84,8 +87,9 @@ def read_samples(models: Path, samples: Path, predict: Path, raw: bool, head: Pa
             cmd.append("--raw")
         if head:
             cmd += ["--adaptation", str(head)]
+        cmd += [str(x) for x in extra]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
-                       env=dict(os.environ, GLASSINE_PREDICT_MODELS=str(predict)), timeout=3600)
+                       env=dict(os.environ, GLASSINE_PREDICT_MODELS=str(predict), **(env or {})), timeout=3600)
         return json.loads(save.read_text())
 
 
@@ -117,3 +121,37 @@ def paired_bootstrap(a: dict, b: dict, n: int = 10000, seed: int = 0) -> dict:
     d = da - db
     return {"p_a_better": float((d < 0).mean()), "diff_lo": float(np.quantile(d, 0.025)),
             "diff_hi": float(np.quantile(d, 0.975))}
+
+
+# ---------------------------------------------------------------- synthetic ink, read the same way
+
+XH_EM = 0.1  # the letter height synthetic samples are scaled to (GLASSINE_HANDWRITING_SIZE gives it)
+GUIDE = 2 / 3  # the area's guides: two thirds down each line, as real.reference assumes
+
+
+def ink_samples(ink: Path, out: Path, limit: int | None = None) -> int:
+    """An ink set (inkstore.py) as sample-format lines, so the recognizer program reads it as
+    it reads a person's: each line scaled so its letter height is XH_EM em, in a writing
+    area of its own line height whose guide (GUIDE of a line below the box's top) is the
+    line's baseline. With $GLASSINE_HANDWRITING_SIZE=XH_EM,2.5·XH_EM the letter height is
+    known; without it the recognizer has the area's line alone."""
+    from .inkstore import InkStore
+    st = InkStore(ink)
+    n = len(st) if limit is None else min(limit, len(st))
+    with open(out, "w") as fh:
+        for i in range(n):
+            strokes, row = st[i]
+            strokes = [q for q in strokes if len(q)]
+            if not strokes:  # a mark too small to keep any ink (a few lone dots): nothing to read
+                continue
+            k = XH_EM / row["xh"]
+            line, base = row["line"] * k, row["base"] * k
+            pts = np.concatenate(strokes)
+            x0, x1 = float(pts[:, 0].min()) * k - line, float(pts[:, 0].max()) * k + line
+            y0 = base - GUIDE * line
+            area = {"box": [round(x0, 5), round(y0, 6), round(x1, 5), round(y0 + 4 * line, 6)], "line": round(line, 6)}
+            sm = {"version": 1, "text": row["text"], "lang": "en", "source": "prompted", "spans_source": "exact",
+                  "units": {"xy": "em"}, "area": area, "kind": row["kind"],
+                  "strokes": [np.c_[np.round(q[:, :2] * k, 6), np.round(q[:, 2], 4)].tolist() for q in strokes]}
+            fh.write(json.dumps(sm, separators=(",", ":")) + "\n")
+    return n

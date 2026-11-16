@@ -23,6 +23,7 @@ TRAIN_FONTS = ORIG_TRAIN
 NO_VARIANTS = {"reverse_loop": 0.0, "delay": 0.0, "extra_lift": 0.0}
 EVAL_SIZES = {"test": 2000, "test_words": 1000, "test_symbols": 500, "test_letters": 500}
 VARIATION = {"warp": 0.025, "zones": 0.15}  # letter-shape variation for --variation
+LONE_SIZE = ".,oOcCsS"  # gen4's test_lone sets: alike but for their size (FR-018)
 
 
 def font_splits() -> dict[str, list[str]]:
@@ -103,7 +104,7 @@ def cmd_train(a):
     (out / "args.json").write_text(json.dumps(vars(a), default=str, indent=1))
     train(Path("build/data") / a.data, Path("build/data") / a.val, out, a.minutes, cfg,
           a.batch, a.lr, a.threads, a.eval_every, a.seed, steps_per_s=a.steps_per_s,
-          augment=a.augment, select=Path("build/data") / a.select if a.select else None)
+          augment=a.augment, select=[Path("build/data") / x for x in a.select.split(",") if x])
 
 
 def _model(a):
@@ -137,6 +138,8 @@ def cmd_eval(a):
         if a.only and not any(d.name.startswith(o) for o in a.only):
             continue
         ds = InkSet(d, a.limit)
+        if ds.nfeat != m.c1.in_channels:  # another kind of input (features with or without a reference)
+            continue
         refs, hyps = recognise(m, ds)
         r = rates(refs, hyps)
         if d.name in ("test-heldout", "test-trainfonts", "test-newprint", "test-newscript"):
@@ -210,7 +213,7 @@ def cmd_export(a):
     m = load(run / a.ckpt)
     single = Single(m).eval()
     path = run / "recognizer.onnx"
-    ds = InkSet(Path("build/data/test-heldout"))
+    ds = InkSet(Path("build/data") / (a.data or ("test-heldout" if m.c1.in_channels == 5 else "test-heldout.xh")))
     x0 = ds[0][0][None]
     torch.onnx.export(single, (x0,), path, input_names=["ink"], output_names=["logp"],
                       dynamic_axes={"ink": {1: "points"}, "logp": {1: "frames"}},
@@ -250,7 +253,7 @@ def cmd_export(a):
             t = time.perf_counter()
             o = s8.run(None, {"ink": x[None].numpy()})[0]
             tt.append(time.perf_counter() - t)
-            hyps.append(decode(greedy(torch.from_numpy(o), torch.tensor([o.shape[1]]))[0]))
+            hyps.append(decode(greedy(torch.from_numpy(o), torch.tensor([o.shape[1]]))[0], m.alphabet))
             refs.append(ref)
         r = rates(refs, hyps)
         rep[f"{name}_test_heldout_cer"] = r["cer"]
@@ -433,8 +436,10 @@ def cmd_realeval(a):
     real = Path(a.real)
     predict = Path(a.predict).resolve()
     name = a.name or a.run
-    out = Path("build/realeval") / name
+    out = Path(a.out) / name
     out.mkdir(parents=True, exist_ok=True)
+    extra = (["--store", (real / a.letters).resolve()] if a.letters else []) + \
+        (["--base", a.base] if a.base is not None else [])
     if a.models:
         models = Path(a.models).resolve()
     else:
@@ -455,8 +460,9 @@ def cmd_realeval(a):
     keep = {}
     for split in a.sets:
         for hname, head in heads.items():
-            for mode in ("raw", "words"):
-                rs = R.read_samples(models, (real / f"{split}.jsonl").resolve(), predict, mode == "raw", head)
+            for mode in a.modes:
+                more = list(extra) + (["--chars"] if mode == "chars" else [])
+                rs = R.read_samples(models, (real / f"{split}.jsonl").resolve(), predict, mode == "raw", head, more)
                 p = R.per_sample(rs)
                 key = f"{split}/{hname}/{mode}"
                 res[key] = R.summary(p)
@@ -474,6 +480,40 @@ def cmd_realeval(a):
             print(f"{name:24s} synth/{d:14s} cer {res[f'synth/{d}']['cer']:.4f}", flush=True)
     (out / "result.json").write_text(json.dumps(res, indent=1))
     (out / "per-sample.json").write_text(json.dumps(keep))
+
+
+def cmd_inkread(a):
+    """Synthetic ink sets through the recognizer program (realeval.py ink_samples): the
+    readings of one model directory in one mode, with the letter height known or the line
+    alone, saved per line beside a summary."""
+    from . import realeval as R
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    env = {"GLASSINE_HANDWRITING_SIZE": f"{R.XH_EM},{2.5 * R.XH_EM}"} if a.ref == "xh" else {}
+    if a.size_env:
+        env["GLASSINE_HANDWRITING_SIZE"] = a.size_env
+    res = {}
+    for ink in a.sets:
+        name = Path(ink).name
+        smp = Path(a.samples or out) / f"{name}{f'.first{a.limit}' if a.limit else ''}.samples.jsonl"
+        if not smp.exists():
+            tmp = smp.with_suffix(".tmp")
+            R.ink_samples(Path(ink), tmp, a.limit)
+            tmp.rename(smp)
+        if a.prepare:
+            continue
+        kinds = [json.loads(ln)["kind"] for ln in smp.read_text().splitlines()]
+        extra = ["--base", R.GUIDE] + (["--chars"] if a.mode == "chars" else [])
+        rs = R.read_samples(Path(a.models).resolve(), smp.resolve(), Path(a.predict).resolve(), a.mode == "raw",
+                            None, extra, env)
+        for r, k in zip(rs, kinds):
+            r["kind"] = k
+        (out / f"{name}.{a.tag}.json").write_text(json.dumps(rs))
+        p = R.per_sample(rs)
+        res[name] = R.summary(p)
+        print(f"{a.tag:28s} {name:28s} " + " ".join(f"{k} {v:.4f}" if isinstance(v, float) else f"{k} {v}"
+                                                   for k, v in res[name].items()), flush=True)
+    (out / f"summary.{a.tag}.json").write_text(json.dumps(res, indent=1))
 
 
 def _short_lines(c, max_words):
@@ -611,6 +651,10 @@ def cmd_gen4(a):
             jobs.append((f"{name}-{g}", texts, fonts, 13))
     for g, fonts in groups.items():
         jobs.append((f"test_kinds-{g}", test_kinds, fonts, 15))
+    # lone characters whose forms differ mostly in size, and the marks a dot or tick makes,
+    # written alone at their true size (FR-018): 40 of each per held-out group
+    for g, fonts in groups.items():
+        jobs.append((f"test_lone-{g}", [(ch, "lone") for ch in LONE_SIZE for _ in range(40)], fonts, 16))
     for f in HELD_OUT + sp["test-print"] + sp["test-script"]:
         jobs.append((f"test-font-{f}", [(t, "prose") for t in c["test"][:300]], [f], 13))
     for name, texts, fonts, seed in jobs:
@@ -619,6 +663,7 @@ def cmd_gen4(a):
         texts = [(t, k) for t, k in texts if all(ch in L.CHARS4 for ch in t)]
         meta = dict(base_meta, fonts=sorted(fonts), seed=seed)
         build4.render_set(out / name, build4.jobs_of(texts, seed), mk(fonts), None, a.workers, meta)
+    old = json.loads((out / "manifest.json").read_text()) if a.only and (out / "manifest.json").exists() else None
     man = {"sets": {}, "sources": base_meta["sources"], "alphabet": L.CHARS4, "line_kinds": L.SHARES,
            "style_pool": {"fonts": per_font, "extra": len(extra), "calibration": calib}, "timing_fit": {k: v for k, v in fj["fit"].items()},
            "contributors": [m for _, m in contrib]}
@@ -627,6 +672,9 @@ def cmd_gen4(a):
             m = json.loads((d / "meta.json").read_text())
             man["sets"][d.name] = {k: m[k] for k in ("lines", "strokes", "points", "characters", "kinds", "bytes",
                                                      "seed", "fonts") if k in m}
+    if old:  # a partial run (--only) adds its sets to the manifest it finds, the rest stays
+        old["sets"].update({k: v for k, v in man["sets"].items() if any(k.startswith(o) for o in a.only)})
+        man = old
     (out / "manifest.json").write_text(json.dumps(man, indent=1, default=float))
 
 
@@ -764,7 +812,8 @@ def main(argv=None):
     t = sub.add_parser("train")
     t.add_argument("--data", default="train")
     t.add_argument("--val", default="val", help="dataset shown during training (training fonts)")
-    t.add_argument("--select", default="dev", help="dataset for model selection (fonts never trained on); '' = val")
+    t.add_argument("--select", default="dev", help="datasets for model selection (fonts never trained on), "
+                   "comma-separated: the mean of their CERs; '' = val")
     t.add_argument("--run", required=True)
     t.add_argument("--minutes", type=float, default=60)
     t.add_argument("--steps-per-s", type=float, help="measured rate, sets the LR schedule length")
@@ -803,6 +852,7 @@ def main(argv=None):
     x = sub.add_parser("export")
     x.add_argument("--run", required=True)
     x.add_argument("--ckpt", default="best.pt")
+    x.add_argument("--data", help="dataset to check and time on (default: test-heldout, .xh for a reference model)")
     ad = sub.add_parser("adapt", help="head-only adaptation to one held-out font")
     ad.add_argument("--run", required=True)
     ad.add_argument("--ckpt", default="best.pt")
@@ -867,6 +917,23 @@ def main(argv=None):
     re_.add_argument("--sets", nargs="+", default=["test"])
     re_.add_argument("--synth-dev", nargs="*", default=["dev"])
     re_.add_argument("--threads", type=int, default=4)
+    re_.add_argument("--out", default="build/realeval", help="where the results go (a writer's own: a private directory)")
+    re_.add_argument("--modes", nargs="+", default=["raw", "words"], choices=["raw", "chars", "words"],
+                     help="ink alone, the character model alone (read … chars), the field's reading")
+    re_.add_argument("--letters", help="a store (in --real) whose samples are the person's letters for the size")
+    re_.add_argument("--base", type=float, help="the area's first guide at this many line heights below its top")
+    ir = sub.add_parser("inkread", help="synthetic ink sets read by the recognizer program")
+    ir.add_argument("sets", nargs="+", help="ink set directories (gen4)")
+    ir.add_argument("--models", required=True, help="a model directory (LANG/recognizer.ghm, chars.gclm or not)")
+    ir.add_argument("--mode", default="raw", choices=["raw", "chars", "words"])
+    ir.add_argument("--ref", default="xh", choices=["xh", "line"], help="the letter height known, or the line alone")
+    ir.add_argument("--size-env", help="$GLASSINE_HANDWRITING_SIZE instead (e.g. noweigh, off)")
+    ir.add_argument("--predict", default="build/predict")
+    ir.add_argument("--out", required=True)
+    ir.add_argument("--tag", required=True, help="name of this reading in the output files")
+    ir.add_argument("--limit", type=int)
+    ir.add_argument("--samples", help="where the sets' sample files are kept (default --out), shared between runs")
+    ir.add_argument("--prepare", action="store_true", help="only write the sample files")
     ss = sub.add_parser("synthset", help="training ink of short lines with a measured preset")
     ss.add_argument("--name", default="train-f158-real1")
     ss.add_argument("--preset", default="real1")
@@ -936,7 +1003,7 @@ def main(argv=None):
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
     {"inkcheck": cmd_inkcheck, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
-     "inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+     "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":
