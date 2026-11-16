@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.1)
+# The handwriting recognizer (contract version 1.2)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -85,7 +85,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: version 1.1 only adds to 1.0, so a client of either
+**hello** names the contract version (1: versions 1.1 and 1.2 only add to 1.0, so a client of either
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -457,13 +457,18 @@ Nothing in it leaves the device except by export or a donation the person writes
   holds the lock); a deletion takes the sample's line out with it, an erase removes the file.
 - `preferences`: one line per preference, `CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR` (sample ids;
   `-1` for a whole sample). A deletion takes a sample's preferences out before the sample.
+- `marks`: the person's marks on the letter model (spec 003 FR-031), one line per sample and
+  character, `ID CODEPOINT MARK` (tab-separated, the code point in hex, MARK `out`, `way-out` or
+  `favourite`). A deletion takes a sample's marks out with it, an erase with the samples (all, or
+  the client's). Never exported or donated.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
   `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
 - `letters/model`: the letter model (below); `letters/usable` (its usable samples, below); `letters/font` (`NAME VERSION PATH`, tab-separated:
   the installed font) and `letters/font-version` (the last version made, so a removed and
-  remade font doesn't reuse one). An erase of all samples or of a client's takes out the letter
+  remade font doesn't reuse one) and `letters/font-model` (a hash of the letters the installed
+  font was made from). An erase of all samples or of a client's takes out the letter
   model, the installed font and these files (the erased samples' preferences go with them).
 - `donation/licence` (`CC0-1.0` or `CC-BY-4.0`), `donation/samples.jsonl` (kept like
   `samples.jsonl`) with its index `donation/index` (first line `glassine-handwriting-donation-index
@@ -555,6 +560,32 @@ changed: after a background adaptation (the same conditions: charging and idle),
 (`-r`, any power; at the lowest priority, so the device stays usable; a client asks while it
 shows a page about the letters, spec 003 FR-008). `-f` makes it even when nothing changed.
 
+**Marks (FR-031).** The person has a say per character, kept in `marks`:
+- `out`: the sample is left out of that character. It isn't a usable sample of it (not counted,
+  shapes no version); it stays a sample for everything else (the reader's adaptation, base
+  training, the donation).
+- `way-out`: the sample belongs to a version the person left out. A version at least a third of
+  whose samples (by `use`, below) are marked so is kept in the model marked `left_out` (samples
+  written that way later join it without bringing it back): it is not in the font's
+  cycle, not in the font and no target for neatening. A character with no other version isn't in
+  the font (it stays covered in the counts).
+- `favourite`: the sample belongs to the person's favourite version. The version (not left out)
+  with the most samples marked so is the favourite (one per character) and counts 2 times its
+  use in the cycle.
+
+Marks name samples rather than versions, so they keep their meaning when the versions are made
+again: the client marks a version's `ids` (below); a model whose versions have no `ids` (built
+before the marks) is outdated. A change of marks makes the model outdated;
+it changes the font only at the next `font install`.
+
+**One character (FR-032).** `letters build -c CHAR` learns one character again from its samples
+and marks as they are now (any power, lowest priority; only the samples with it are read, so it
+takes a second or two), puts its line in the model in place of the old one and keeps the rest
+(the spacing, the other characters and the model's inputs). It prints `relearned COVERED
+VERSIONS` or `skip no-model` (it needs a model); `--progress` first prints `progress DONE TOTAL`
+lines as `letters build` does. Its versions get their side shapes from the
+model's spacing.
+
 The usable samples per character are known without a model (FR-030): `letters/usable` holds,
 per prompted sample, the characters it has with strokes of their own, by the same rules as the
 build. It is derived like `size`: a count or a build writes it (skipped while another process
@@ -565,16 +596,21 @@ make them now, at once.
 **Model file** (`letters/model`, `letters show`): JSON lines. The first
 `{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
 then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"slant":…,
-"letter_spacing":…,"word_spacing":…,"ink_width":…}}` (the spacing's typical and word gaps), then
+"letter_spacing":…,"word_spacing":…,"ink_width":…,"x_height_per_line":…,"base_below_guide":…,
+"x_height_mm":…}}` (the spacing's typical and word gaps; the last three what a sample without
+letters to measure its x-height or baseline from takes, which a one-character build reuses), then
 `{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N],…],
 "sides":[[RIGHT,LEFT,GAP,N],…],"left_shapes":[[…8],…],"right_shapes":[[…8],…]}}`, then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
-"members":N,"use":N,"lc":L,"rc":R,"left":[…8],"right":[…8],"strokes":[[[x,y],…],…]}],
-"slots":[V,…]}` (x from the version's left edge, y up from the baseline, in x-heights; `left` and
-`right` its profile, null for a band without ink, `lc` and `rc` its side shapes; no versions when
-not covered). `slots` is the font's cycle (10 steps): the version
-the character shows at each step, each about as often as it is used, spread out (smooth weighted
-round robin on `use`); a model without it shows its versions in turn.
+"members":N,"use":N,"lc":L,"rc":R,"left_out":true,"favourite":true,"ids":["ID",…],"left":[…8],
+"right":[…8],"strokes":[[[x,y],…],…]}],"slots":[V,…]}` (x from the version's left edge, y up
+from the baseline, in x-heights; `left` and `right` its profile, null for a band without ink,
+`lc` and `rc` its side shapes; `left_out` and `favourite` only when so; `ids` the samples written
+this way, those its `use` counts, sorted; no versions when not covered). A character with marks
+has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the
+font's cycle (10 steps): the version the character shows at each step, each about as often as it
+is used (a favourite twice as often, a left-out one never), spread out (smooth weighted round
+robin); a model without it shows its versions in turn.
 
 **The font:** `font install` makes a TrueType font of the covered characters (a stroke outlined
 at the ink width; everything else falls back to the system's fonts) and installs it as
@@ -610,7 +646,8 @@ glassine-handwriting learning [on|off]          show or set handwriting.conf's l
 glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
-glassine-handwriting letters build [-f] [-r] [--progress] | status | show
+glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show
+glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | marks | samples CHAR
 glassine-handwriting font install [-n NAME] | remove | status | build [-n NAME] FILE
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
@@ -651,11 +688,25 @@ donations then count as another writer's. `erase` keeps the donor ID.
 `letters build` prints `built SAMPLES COVERED` or `skip REASON` (`charging`, `nothing-new`,
 `erased`); with `--progress` first `progress DONE TOTAL` lines (samples read of those stored) while
 it reads the samples. `letters status` prints `state none|current|outdated` (outdated: samples,
-picks or the way it is built changed since it was made), then from the samples as they are now,
+picks, marks or the way it is built changed since it was made), then from the samples as they are now,
 model or not: `samples N` (usable), `covered K` (characters with 3 usable samples), one `char C
 SAMPLES VERSIONS` per character seen (C escaped like a text field; VERSIONS the versions it has
-in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`. `font
-install` makes the font from the letter model as it is and prints `installed NAME VERSION PATH`,
+in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`; with a font,
+`font-letters same|changed`: whether it was made from the letters as the model has them now
+(changed after a build or a one-character build since; Update makes it again).
+
+`letters mark KIND CHAR ID...` sets the samples' mark for that character (`clear` takes it
+away; a `favourite` first clears the character's other favourites) and prints `marked`, or
+`error no-such-sample` (exit 1) with nothing changed. `letters marks` prints `mark ID CHAR KIND`
+per mark of a stored sample. `letters samples CHAR` lists where CHAR is written in the prompted
+samples, one `sample ID PLACE STATE VERSION TEXT` per occurrence (PLACE its index in the text;
+VERSION the version it is written like as a build would make it now, -1 none; TEXT escaped),
+sorted by id and place, STATE one of `usable`, `out` (left out), `way-out` (in a left-out
+version), `unread` (the writing wasn't read clearly: no exact strokes per character),
+`joined-before` or `joined-after` (a stroke shared with the neighbour), `odd` (too far from its
+other versions in size to count).
+
+`font install` makes the font from the letter model as it is and prints `installed NAME VERSION PATH`,
 or `skip no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control
 characters is a usage error. `font status` prints `NAME VERSION PATH` or `none`; `font remove`
 takes the installed font out; `font build FILE` writes the font to FILE without installing it

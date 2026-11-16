@@ -134,11 +134,49 @@ def _round(x):
     return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
 
 
+def font_view(model):
+    """the model as the font has it (ttf.c, hw_letters_view): variants the person left out
+    taken out (slots renumbered), a character with none left not covered"""
+    if model is None or model.get("_font"):
+        return model
+    v = model.get("_view")
+    if v is not None:
+        return v
+    chars = {}
+    for c, d in model["chars"].items():
+        vs = d.get("variants") or []
+        if not any(x.get("left_out") for x in vs):
+            chars[c] = d
+            continue
+        keep = [i for i, x in enumerate(vs) if not x.get("left_out")]
+        new = {i: k for k, i in enumerate(keep)}
+        sl = [new.get(i, 0) for i in slots(d)] if vs else None
+        e = dict(d, variants=[vs[i] for i in keep], slots=sl)
+        if not keep:
+            e["covered"] = False
+        chars[c] = e
+    v = dict(model, chars=chars, _font=True)
+    model["_view"] = v
+    return v
+
+
+def in_ten(d, v):
+    """how many of the font's 10 steps show variant v of a character"""
+    return slots(d).count(v) if d.get("variants") else 0
+
+
+def strokes_desc(var):
+    """how a variant is written, in plain words"""
+    n = len(var.get("strokes") or [])
+    return "In one go" if n == 1 else "In %d strokes" % n
+
+
 def layout(model, text):
     """[(char, strokes or None, x, advance)] in x-heights, x from the left of the text, y up
     from the baseline; strokes None: the system font draws the character. Spaced as the font
     spaces it (ttf.c): half the typical gap each side, each pair of neighbouring letters
     kerned to its gap, the space the word gap less the two sides beside it."""
+    model = font_view(model)
     m = model["metrics"]
     sp = model.get("spacing") or {"letter": m.get("letter_spacing", 0.15), "word": m.get("word_spacing", 0.7)}
     gap, word = sp.get("letter", 0.15), sp.get("word", 0.7)
@@ -175,7 +213,7 @@ def coverage(model, chars=TARGET, status=None):
     counts = (status or {}).get("chars")
     out = []
     for c in chars:
-        d = model["chars"].get(c, {}) if model else {}
+        d = font_view(model)["chars"].get(c, {}) if model else {}
         n = counts.get(c, (0, 0))[0] if counts is not None else int(d.get("samples", 0))
         out.append((c, n, bool(d.get("covered") and d.get("variants"))))
     return out

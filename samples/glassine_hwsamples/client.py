@@ -282,17 +282,37 @@ class Cli:
                 d["chars"][unesc(f[1])] = (int(f[2]), int(f[3]))
             elif f[0] == "font" and len(f) >= 3:
                 d["font"] = (unesc(f[1]), int(f[2]))
+            elif f[0] == "font-letters":
+                d["font_same"] = f[1] == "same"
         return d
 
     def letters_model(self):
         """the letter model's file text ("" when there is none)"""
         return self.run("letters", "show")
 
-    def letters_build(self, progress=None):
+    def letters_mark(self, kind, char, ids):
+        """the person's mark (clear, out, way-out, favourite) on these samples for char
+        (spec 003 FR-031)"""
+        if ids:
+            self.run("letters", "mark", kind, char, *ids)
+
+    def letters_samples(self, char):
+        """where char is written in the prompted samples: [(id, place, state, version, text)],
+        state usable, out, way-out, unread, joined-before, joined-after or odd"""
+        out = []
+        for line in self.run("letters", "samples", char).splitlines():
+            f = line.split("\t")
+            if f[0] == "sample" and len(f) >= 6:
+                out.append((f[1], int(f[2]), f[3], int(f[4]), unesc(f[5])))
+        return out
+
+    def letters_build(self, progress=None, char=None):
         """asked for by the person (at the lowest priority): built, or skip with the reason;
-        progress(done, total) while it reads the samples"""
+        progress(done, total) while it reads the samples. char: that character learned again
+        (FR-032)"""
         last = []
-        with subprocess.Popen([self.binary, "letters", "build", "-r", "--progress"], stdout=subprocess.PIPE,
+        args = ["-c", char] if char else ["-r"]
+        with subprocess.Popen([self.binary, "letters", "build", *args, "--progress"], stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, text=True, env=self.env) as p:
             for line in p.stdout:
                 f = line.rstrip("\n").split("\t")
