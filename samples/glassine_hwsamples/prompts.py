@@ -11,11 +11,11 @@ import os
 from dataclasses import dataclass
 
 # the sets in the order they are offered; "auto" draws from the shipped ones by need
-SETS = ("words", "sentences", "pangrams", "letters", "digits")
+SETS = ("words", "sentences", "pangrams", "letters", "digits", "symbols")
 OWN = "own"
 AUTO = "auto"
 KIND = {"words": "word", "sentences": "sentence", "pangrams": "pangram", "letters": "character",
-        "digits": "character", OWN: "word"}
+        "digits": "character", "symbols": "word", OWN: "word"}
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ class Prompt:
     def kind(self):
         if self.set == "digits" and len(self.text) > 1:
             return "word"
+        if self.set == "symbols" and len(self.text) == 1:
+            return "character"
         return KIND.get(self.set, "word")
 
     @property

@@ -1,0 +1,46 @@
+@
+/
+&
++
+#
+%
+_
+=
+$
+anna@example.com
+info@example.org
+j.smith@example.net
+tom_baker@example.com
+www.example.com
+https://example.org/news
+example.com/shop?id=42
+Fish & chips
+Salt & pepper
+R&D
+$5
+$12.50
+It costs $3.99 today.
+The bill came to $120.
+50%
+12.5%
+Prices fell by 20% this year.
+Only 3% said no.
+#garden
+#tbt
+Join us at #coffeeclub
+Call #4 on the list.
+2+2=4
+a+b=c
+3 + 4 = 7
+x = y + 1
+10 - 4 = 6
+first_name
+snake_case
+max_value = 100
+user_id
+1/2
+and/or
+24/7
+09/11/2024
+Meet at 10:30 @ the cafe.
+Tea & cake: $4 (10% off)
