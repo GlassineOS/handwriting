@@ -153,3 +153,24 @@ def test_augment_moves_the_size_with_the_stretch():
         g = augment(f, np.random.default_rng(seed))
         assert np.allclose(g[:, 5] - f[:, 5], np.log(_extent(g) / _extent(f)), atol=1e-6)
         assert np.ptp(g[:, 5]) < 1e-6  # still the same in every row
+
+
+def test_training_goes_on_from_a_checkpoint(tmp_path):
+    """--init: the run starts from the checkpoint's weights and keeps its architecture"""
+    from glassine_train.data import build
+    from glassine_train.train import load, train
+    torch.manual_seed(0)
+    m = Recognizer(conv=32, hidden=16, layers=1, down=3)
+    torch.save({"cfg": m.cfg, "state": m.state_dict(), "step": 0, "val": {}}, tmp_path / "init.pt")
+    data = tmp_path / "data"
+    import json
+    data.mkdir()
+    xs = [features(_ink(scale=1 + 0.1 * i)) for i in range(8)]
+    off = np.cumsum([0] + [len(x) for x in xs])
+    np.concatenate(xs).astype(np.float16).tofile(data / "feat.f16")
+    np.save(data / "offsets.npy", off)
+    (data / "texts.json").write_text(json.dumps(["ab"] * 8))
+    train(data, data, tmp_path / "run", 0.05, {"conv": 999, "hidden": 999, "layers": 9, "dropout": 0.0, "down": 3},
+          batch=4, threads=1, eval_every=1, steps_per_s=1.0, init=tmp_path / "init.pt")
+    got = load(tmp_path / "run" / "last.pt")
+    assert got.cfg == m.cfg

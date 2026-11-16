@@ -284,3 +284,39 @@ def test_middle_and_place_by_middles():
     assert abs(S.guard_gap(pa, pb, dx) - 0.2) < 1e-9  # guarded: half the typical gap
     sp = {"letter": 0.4, "pairs": [], "reach": [["T", 0.3, None, 3, 0], ["h", None, 0.35, 0, 3]]}
     assert abs(S.place(sp, "T", "h", pa, pb, 0.5, 0.5) - 0.65) < 1e-9
+
+
+def test_uniform_strings_do_not_mix_letters_and_digits():
+    from glassine_train import lines as L
+    rng = np.random.default_rng(3)
+    toks = [w for _ in range(2000) for w in L.uniform(rng).split()]
+    assert not any(any(c.isdigit() for c in w) and any(c.isalpha() for c in w) for w in toks)
+    assert any(w.isdigit() for w in toks) and any(w.isalpha() for w in toks)
+
+
+def test_lone_capitals_and_digits_equally_often():
+    from glassine_train import lines as L
+    rng = np.random.default_rng(4)
+    xs = [L.lone(rng) for _ in range(60000)]
+    caps = sum(len(x) == 1 and x.isupper() for x in xs) / 26
+    digs = sum(len(x) == 1 and x.isdigit() for x in xs) / 10
+    assert abs(caps / digs - 1) < 0.1
+
+
+def test_mergeset_replaces_kinds(tmp_path, monkeypatch):
+    from glassine_train.cli import main
+    from glassine_train.data import InkSet
+    g, st = _gen()
+    for name, rows in (("base", [("tin", "words"), ("a", "lone"), ("salt", "words"), ("tas", "uniform")]),
+                       ("new", [("i", "lone"), ("mat", "uniform")])):
+        w = Writer(tmp_path / "ink" / name)
+        for i, (t, k) in enumerate(rows):
+            w.add(g.line(t, np.random.default_rng(i), st), k, i)
+        w.close({})
+        main(["featurize", str(tmp_path / "ink" / name), "--out", str(tmp_path / "build/data" / name),
+              "--ref", "mix", "--workers", "1"])
+    monkeypatch.chdir(tmp_path)
+    main(["mergeset", "--base", "base", "--drop-kinds", "lone", "uniform", "--add", "new", "--out", "merged"])
+    ds, base, new = (InkSet(tmp_path / "build/data" / n) for n in ("merged", "base", "new"))
+    assert ds.texts == ["tin", "salt", "i", "mat"] and ds.nfeat == NFEAT_REF
+    assert np.array_equal(ds[1][0].numpy(), base[2][0].numpy()) and np.array_equal(ds[3][0].numpy(), new[1][0].numpy())
