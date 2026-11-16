@@ -82,6 +82,21 @@ each in the original held-out fonts (`-heldout`, plus `test-font-kalam`,
 held-out" below is their mean; `test-font-NAME`, 300 test-book lines, for each of them) and the seven original training fonts (`-trainfonts`, in
 training for every model here).
 
+**Text for the next base model** (`lines.py`, spec 001 FR-020), line kinds of their own in
+`SHARES` of the training lines: book lines (38 %), words of the books in random order
+(13 %), pseudo-words drawn letter by letter from the character model (`charlm.py`, the
+training books only; never a word of the books or of the word list) plain (10 %) and
+flattened at temperature 2 (6 %), names (7 %), ten code kinds (17 % together: ordinals and
+measures, times, dates, phone numbers, postcodes, number plates, part numbers, email and web
+addresses, numbers and prices; a third of them inside a few book words), uniform letter and
+digit strings (3 %) and lone characters and marks (6 %). Names: the U.S. Census Bureau's
+1990 given-name lists and 2010 surname list (surnames borne by 1000 people or more),
+public domain as works of the U.S. federal government, pinned by sha256 (`NAME_SOURCES`),
+weighted by the square root of how common they are; one name in ten (by CRC-32) is held out
+for the test sets. The alphabet (`CHARS4`) is `CHARS` with `@/&+#%_=$` appended (every
+training font has them), so the old characters keep their class numbers. The test book is
+never a source; its words are only kept out of the pseudo-words.
+
 ## Features (`features.py`)
 
 Only what a pen reports: x, y, t per point, strokes in order. Height, tilt and baseline
