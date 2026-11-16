@@ -719,10 +719,14 @@ class Marks(unittest.TestCase):
         self.assertTrue(m["covered"])
         states = {f[1]: f[3] for f in (ln.split("\t") for ln in self.e.run("letters", "samples", "l").stdout.splitlines())}
         self.assertTrue(all(states[i] == "way-out" for i in ids))
-        # the font has no left-out variant: one glyph fewer for l
         self.e.run("font", "install")
+        self.assertEqual(self.e.status()["font-letters"], ["same"])
         self.e.run("letters", "mark", "clear", "l", *ids)
-        self.e.run("letters", "build", "-c", "l")
+        out = self.e.run("letters", "build", "-c", "l", "--progress").stdout.splitlines()
+        self.assertTrue(out[0].startswith("progress\t"), out)
+        self.assertTrue(out[-1].startswith("relearned\t"), out)
+        # the installed font stays as it was until it is made again
+        self.assertEqual(self.e.status()["font-letters"], ["changed"])
         self.assertFalse(self.chars()["l"]["variants"][0].get("left_out"))
         self.assertIn(0, self.chars()["l"]["slots"])
 

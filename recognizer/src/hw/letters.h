@@ -176,6 +176,10 @@ enum hw_occ_state {
 struct hw_occ { char id[17]; int pos; int state; int variant; const char *text; };
 int hw_letters_occurrences(unsigned cp, void (*emit)(const struct hw_occ *, void *), void *arg);
 
+/* what a font made now would be made from, hashed; 1 when the installed font was made from it */
+int hw_letters_fingerprint(const struct hw_letters *L, char out[17]);
+int hw_font_current(const struct hw_letters *L);
+
 /* the marks' hash for one character as the store has them now */
 void hw_letters_marks_hash(unsigned cp, char out[17]);
 /* 1 when some character's marks changed since the model was built */

@@ -467,7 +467,8 @@ Nothing in it leaves the device except by export or a donation the person writes
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
 - `letters/model`: the letter model (below); `letters/usable` (its usable samples, below); `letters/font` (`NAME VERSION PATH`, tab-separated:
   the installed font) and `letters/font-version` (the last version made, so a removed and
-  remade font doesn't reuse one). An erase of all samples or of a client's takes out the letter
+  remade font doesn't reuse one) and `letters/font-model` (a hash of the letters the installed
+  font was made from). An erase of all samples or of a client's takes out the letter
   model, the installed font and these files (the erased samples' preferences go with them).
 - `donation/licence` (`CC0-1.0` or `CC-BY-4.0`), `donation/samples.jsonl` (kept like
   `samples.jsonl`) with its index `donation/index` (first line `glassine-handwriting-donation-index
@@ -578,7 +579,8 @@ it changes the font only at the next `font install`.
 and marks as they are now (any power, lowest priority; only the samples with it are read, so it
 takes a second or two), puts its line in the model in place of the old one and keeps the rest
 (the spacing, the other characters and the model's inputs). It prints `relearned COVERED
-VERSIONS` or `skip no-model` (it needs a model). Its versions get their side shapes from the
+VERSIONS` or `skip no-model` (it needs a model); `--progress` first prints `progress DONE TOTAL`
+lines as `letters build` does. Its versions get their side shapes from the
 model's spacing.
 
 The usable samples per character are known without a model (FR-030): `letters/usable` holds,
@@ -684,7 +686,9 @@ it reads the samples. `letters status` prints `state none|current|outdated` (out
 picks, marks or the way it is built changed since it was made), then from the samples as they are now,
 model or not: `samples N` (usable), `covered K` (characters with 3 usable samples), one `char C
 SAMPLES VERSIONS` per character seen (C escaped like a text field; VERSIONS the versions it has
-in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`.
+in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`; with a font,
+`font-letters same|changed`: whether it was made from the letters as the model has them now
+(changed after a build or a one-character build since; Update makes it again).
 
 `letters mark KIND CHAR ID...` sets the samples' mark for that character (`clear` takes it
 away; a `favourite` first clears the character's other favourites) and prints `marked`, or
