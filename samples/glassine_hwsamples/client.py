@@ -4,6 +4,7 @@ on a child process, and its command line. The app keeps no samples of its own: e
 it stores, adapts and donates goes through here."""
 
 import os
+import re
 import select
 import subprocess
 import threading
@@ -18,18 +19,15 @@ def esc(s):
     return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
 
 
+_UNESC = re.compile(r"\\(.)", re.S)
+_UNESC_MAP = {"\\": "\\", "t": "\t", "n": "\n", "r": "\r"}
+
+
 def unesc(s):
-    out, i = [], 0
-    while i < len(s):
-        c = s[i]
-        if c == "\\" and i + 1 < len(s):
-            n = s[i + 1]
-            out.append({"\\": "\\", "t": "\t", "n": "\n", "r": "\r"}.get(n, n))
-            i += 2
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
+    """a text field as sent (a sample's line is tens of kilobytes: no loop per character)"""
+    if "\\" not in s:
+        return s
+    return _UNESC.sub(lambda m: _UNESC_MAP.get(m.group(1), m.group(1)), s)
 
 
 def fmt(v):
@@ -179,6 +177,18 @@ class Recognizer:
             raise
         return r[1].split(",")
 
+    def list(self):
+        """this app's samples in the order stored, from the recognizer's index (no strokes):
+        [(id, time, source, lang, text, read)], read the first reading when it was written
+        (None when none was kept)"""
+        r = self.ask("list")
+        n = int(r[0])
+        out = []
+        for i in range(n):
+            f = r[1 + 6 * i:7 + 6 * i]
+            out.append((f[0], int(f[1]), f[2], f[3], unesc(f[4]), unesc(f[5]) or None))
+        return out
+
     def sample_ids(self):
         r = self.ask("samples")
         return r[1:1 + int(r[0])]
@@ -270,15 +280,21 @@ class Cli:
         return self.run("learning").strip() == "on"
 
     def donation(self):
-        """(licence or None, count)"""
-        lic, n = None, 0
+        """(licence or None, count, donor ID or None)"""
+        lic, n, donor = None, 0, None
         for line in self.run("donation", "list").splitlines():
             f = line.split("\t")
             if f[0] == "licence" and f[1] != "-":
                 lic = f[1]
             elif f[0] == "samples":
                 n = int(f[1])
-        return lic, n
+            elif f[0] == "donor" and f[1] != "-":
+                donor = f[1]
+        return lic, n, donor
+
+    def donor_new(self):
+        """a new donor ID: later donations count as another writer's"""
+        return self.run("donation", "donor", "new").strip()
 
     def donation_start(self, licence):
         self.run("donation", "start", licence)

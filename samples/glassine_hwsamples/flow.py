@@ -83,7 +83,7 @@ class Writer:
         self.shown = None
         self.prompt = None
         self.kept_now = 0
-        self.recent = {}                # {id: (text, read)} kept here since the coverage was read
+        self.counted = {}               # {id: (text, read)}: the samples in the coverage
         # samples whose check failed, waiting for the person (Keep it, Redo, Skip): shown
         # one after the other, oldest first, before any sample read after them, so none
         # goes unseen while the person writes on
@@ -198,9 +198,10 @@ class Writer:
         sh.status = "kept" if sh.sample_id or sh.donated_id else "not-kept"
         if sh.sample_id:
             with self.lock:
-                pair = (p.text, sh.reading[0][0] if sh.reading else "")
-                self.cov.add(*pair)
-                self.recent[sh.sample_id] = pair
+                pair = (p.text, sh.reading[0][0] if sh.reading else None)
+                if sh.sample_id not in self.counted:
+                    self.cov.add(*pair)
+                    self.counted[sh.sample_id] = pair
                 self.kept_now += 1
 
     def _advance(self, p):
@@ -214,7 +215,7 @@ class Writer:
         if sh.sample_id:
             with self.lock:
                 self.kept_now -= 1
-                self.recent.pop(sh.sample_id, None)
+                self._uncount(sh.sample_id)
         sh.sample_id = sh.donated_id = None
 
     def redo(self):
@@ -271,50 +272,34 @@ class Writer:
 
     # ------------------------------------------------------------ counts and coverage
 
-    def load_coverage(self, cache=None):
+    def load_coverage(self, rows=None):
         """coverage from this app's samples (their text and the reading at the time of
-        writing); cache: {id: (text, read)} kept by the caller between calls"""
-        cache = {} if cache is None else cache
-        ids = self.rec.sample_ids()
-        self.read_coverage(ids, cache)
-        return self.set_coverage(ids, cache)
+        writing, from the recognizer's listing: no strokes are read)"""
+        return self.set_coverage(self.rec.list() if rows is None else rows)
 
-    def read_coverage(self, ids, cache, limit=None):
-        """reads up to limit of the samples not in cache yet; the number still to read"""
-        todo = [sid for sid in ids if sid not in cache]
-        for sid in todo[:limit]:
-            try:
-                s = self.rec.sample(sid)
-            except Error:
-                cache[sid] = None       # gone meanwhile: not asked again
-                continue
-            rd = s.get("reading") or []
-            cache[sid] = (s.get("text", ""), rd[0]["text"] if rd else None)
-        return max(0, len(todo) - len(todo[:limit]))
-
-    def set_coverage(self, ids, cache):
-        """the coverage from the samples read, and those kept here since the ids were listed"""
-        cov = P.Coverage()
-        ids = set(ids)
+    def set_coverage(self, rows):
+        """rows: rec.list(); only the samples that came or went since the last listing are
+        counted in or out, so a listing of thousands costs what changed"""
         with self.lock:
-            for sid in ids:
-                pair = cache[sid] if sid in cache else self.recent.get(sid)
-                if pair:
-                    cov.add(*pair)
-            for sid, pair in self.recent.items():
-                if sid not in ids:
-                    cov.add(*pair)
-            self.recent = {sid: pair for sid, pair in self.recent.items() if sid not in cache}
-            self.cov = cov
-        return cov
+            now = {r[0]: (r[4], r[5]) for r in rows}
+            for sid in [s for s in self.counted if s not in now]:
+                self._uncount(sid)
+            for sid, pair in now.items():
+                if sid not in self.counted:
+                    self.cov.add(*pair)
+                    self.counted[sid] = pair
+            return self.cov
+
+    def _uncount(self, sid):
+        pair = self.counted.pop(sid, None)
+        if pair:
+            self.cov.remove(*pair)
 
     def forgotten(self, sid=None):
         """a sample deleted elsewhere (None: all of them): not counted from here on"""
         with self.lock:
-            if sid is None:
-                self.recent = {}
-            else:
-                self.recent.pop(sid, None)
+            for s in list(self.counted) if sid is None else [sid]:
+                self._uncount(s)
 
     def counts(self, now=None, rows=None):
         """(today, total) of this app's samples; rows: cli.samples() when the caller has them"""
