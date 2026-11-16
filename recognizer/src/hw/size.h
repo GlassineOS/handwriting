@@ -27,15 +27,17 @@ struct hw_size_ref {
 	int pending;                    /* the person's letters not looked up yet */
 	char lang[36];
 	double per_mm;                  /* the session's points per mm (0: not known) */
-	int noweigh;                    /* the reference for the model only, no weighing ("noweigh") */
+	int weigh;                      /* 0: by the model (version 1 weighs, version 2 does not);
+	                                   1: weigh ("weigh"); -1: never ("noweigh") */
 };
 
 /* The reference for a session: the person's letters (their confirmed samples of the
  * language, newest first; nothing is stored) in the session's units, else the line
  * (area LINE, or 1 for em), else none. base: the area's first guide line, NAN when the
  * client didn't say. $GLASSINE_HANDWRITING_SIZE ("x,c[,xs,cs]" in the session's units)
- * replaces the person's letters (tests, measurements); "noweigh" (alone or after them) keeps
- * the reference for a model that reads it (ghm version 2) but weighs nothing. */
+ * replaces the person's letters (tests, measurements); "noweigh" or "weigh" (alone or after
+ * them) turns the weighing off or on whatever the model (by default only a model that does
+ * not read the size, ghm version 1, is weighed). */
 void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw_area *a, double base,
 		     struct hw_size_ref *out);
 
