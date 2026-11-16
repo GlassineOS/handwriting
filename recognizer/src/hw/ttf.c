@@ -438,7 +438,19 @@ static int gl_at(int i, int s, void *ctx)
 	return 1 + i * HW_LETTERS_SLOTS + s;
 }
 
+static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len);
+
+/* the font of the letters as the person marked them: variants left out are not in it */
 unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len)
+{
+	struct hw_letters V;
+	if (hw_letters_view(L, &V)) return NULL;
+	unsigned char *r = font_build(&V, name, version, len);
+	hw_letters_view_free(&V);
+	return r;
+}
+
+static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len)
 {
 	enum { S = HW_LETTERS_SLOTS };
 	int nl = 0;

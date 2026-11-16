@@ -1209,6 +1209,7 @@ static int rewrite_meta(void *arg)
 }
 
 static int prefs_drop(int (*gone)(const char *id, void *arg), void *arg);
+static int marks_drop(int (*gone)(const char *id, void *arg), void *arg);
 static int gone_client(const char *id, void *arg);
 static int gone_id(const char *id, void *arg);
 
@@ -1225,7 +1226,8 @@ long hw_samples_erase(const char *client)
 	unsigned long gen;
 	long erased = -1;
 	/* the preferences of what goes, before the samples */
-	if (!client ? hw_store_replace("preferences", NULL, 0) : (ix_sync(&SIX, 1) || prefs_drop(gone_client, (void *)client)))
+	if (!client ? hw_store_replace("preferences", NULL, 0) || hw_store_replace("marks", NULL, 0)
+		    : (ix_sync(&SIX, 1) || prefs_drop(gone_client, (void *)client) || marks_drop(gone_client, (void *)client)))
 		goto out;
 	if (hw_samples_load(&es, &n, &gen)) goto out;
 	size_t cap = 64, len = 0, mcap = 256, mlen = 0;
@@ -1279,6 +1281,7 @@ int hw_samples_delete(const char *id, const char *owner)
 	if (k < 0) { r = 0; goto out; }
 	if (owner && strcmp(SIX.e[k].pub.meta.client, owner)) { r = -2; goto out; }
 	if (prefs_drop(gone_id, (void *)id)) goto out;      /* its preferences before the sample */
+	if (marks_drop(gone_id, (void *)id)) goto out;      /* and its marks */
 	if (hw_size_drop(id)) goto out;                     /* and its measured letters */
 	/* counts as a change: a running adaptation drops its result */
 	struct meta_out mo = { id, SIX.gen + 1 };
@@ -1400,6 +1403,134 @@ int hw_prefer(const struct hw_pref *p, const char *owner)
 	snprintf(l, sizeof l, "%s\t%s\t%d\t%d\n", p->chosen, p->other, p->cspan, p->ospan);
 	r = append("preferences", l) ? -1 : 0;
 out:
+	hw_store_unlock(fd);
+	return r;
+}
+
+/* ---------------------------------------------------------------- marks */
+
+static const char *MARK_NAME[] = { "", "out", "way-out", "favourite" };
+
+static int cmp_mark(const void *a, const void *b)
+{
+	const struct hw_mark *x = a, *y = b;
+	int c = strcmp(x->id, y->id);
+	return c ? c : x->cp < y->cp ? -1 : x->cp > y->cp;
+}
+
+static int marks_read(struct hw_mark **out, size_t *n)
+{
+	*out = NULL; *n = 0;
+	char p[4096];
+	if (hw_store_path(p, sizeof p, "marks")) return -1;
+	size_t len;
+	char *b = slurp(p, &len);
+	if (!b) return errno == ENOENT ? 0 : -1;
+	size_t cap = 0;
+	for (char *l = b, *e; l < b + len; l = e + 1) {
+		e = memchr(l, '\n', (size_t)(b + len - l));
+		if (!e) break;
+		*e = 0;
+		char id[24], kind[16];
+		unsigned cp;
+		if (sscanf(l, "%23s\t%x\t%15s", id, &cp, kind) != 3 || strlen(id) != 16 || !hw_pair_ok(id)) continue;
+		int k = 0;
+		for (int i = 1; i <= HW_MARK_FAVOURITE; i++) if (!strcmp(kind, MARK_NAME[i])) k = i;
+		if (!k) continue;
+		if (*n == cap) {
+			cap = cap ? cap * 2 : 16;
+			struct hw_mark *x = realloc(*out, cap * sizeof *x);
+			if (!x) { free(b); free(*out); *out = NULL; *n = 0; return -1; }
+			*out = x;
+		}
+		struct hw_mark *m = &(*out)[(*n)++];
+		strcpy(m->id, id);
+		m->cp = cp;
+		m->kind = k;
+	}
+	free(b);
+	if (*n) qsort(*out, *n, sizeof **out, cmp_mark);
+	/* one mark per sample and character: the last written wins (the list is sorted stably
+	 * enough: duplicates are only made by hand) */
+	size_t w = 0;
+	for (size_t i = 0; i < *n; i++) {
+		if (w && !cmp_mark(&(*out)[w - 1], &(*out)[i])) { (*out)[w - 1] = (*out)[i]; continue; }
+		(*out)[w++] = (*out)[i];
+	}
+	*n = w;
+	return 0;
+}
+
+static int marks_write(const struct hw_mark *ms, size_t n)
+{
+	if (!n) return hw_store_replace("marks", NULL, 0);
+	char *d = malloc(n * 48 + 1);
+	if (!d) return -1;
+	size_t len = 0;
+	for (size_t i = 0; i < n; i++) len += (size_t)sprintf(d + len, "%s\t%x\t%s\n", ms[i].id, ms[i].cp, MARK_NAME[ms[i].kind]);
+	int r = hw_store_replace("marks", d, len);
+	free(d);
+	return r;
+}
+
+static int marks_drop(int (*gone)(const char *id, void *arg), void *arg)
+{
+	struct hw_mark *ms;
+	size_t n, w = 0;
+	if (marks_read(&ms, &n)) return -1;
+	for (size_t i = 0; i < n; i++) if (!gone(ms[i].id, arg)) ms[w++] = ms[i];
+	int r = w == n ? 0 : marks_write(ms, w);
+	free(ms);
+	return r;
+}
+
+int hw_marks(struct hw_mark **out, size_t *n)
+{
+	*out = NULL; *n = 0;
+	if (ix_sync(&SIX, 0)) return -1;
+	struct hw_mark *ms;
+	size_t m, w = 0;
+	if (marks_read(&ms, &m)) return -1;
+	for (size_t i = 0; i < m; i++) if (ix_find(&SIX, ms[i].id) >= 0) ms[w++] = ms[i];
+	*out = ms; *n = w;
+	return 0;
+}
+
+int hw_mark_of(const struct hw_mark *m, size_t n, const char *id, unsigned cp)
+{
+	struct hw_mark k;
+	snprintf(k.id, sizeof k.id, "%s", id);
+	k.cp = cp;
+	const struct hw_mark *f = n ? bsearch(&k, m, n, sizeof k, cmp_mark) : NULL;
+	return f ? f->kind : 0;
+}
+
+int hw_mark_set(const char (*ids)[17], size_t n, unsigned cp, int kind)
+{
+	if (kind < 0 || kind > HW_MARK_FAVOURITE) return -4;
+	int fd = hw_store_lock();
+	if (fd < 0) return -1;
+	int r = -1;
+	struct hw_mark *ms = NULL;
+	size_t nm = 0;
+	if (ix_sync(&SIX, 1)) goto out;
+	for (size_t i = 0; i < n; i++) if (ix_find(&SIX, ids[i]) < 0) { r = -3; goto out; }
+	if (marks_read(&ms, &nm)) goto out;
+	struct hw_mark *x = realloc(ms, (nm + n + 1) * sizeof *x);
+	if (!x) goto out;
+	ms = x;
+	size_t w = 0;
+	for (size_t i = 0; i < nm; i++) {
+		int drop = kind == HW_MARK_FAVOURITE && ms[i].cp == cp && ms[i].kind == HW_MARK_FAVOURITE;
+		for (size_t j = 0; j < n && !drop; j++) drop = ms[i].cp == cp && !strcmp(ms[i].id, ids[j]);
+		if (!drop) ms[w++] = ms[i];
+	}
+	if (kind)
+		for (size_t j = 0; j < n; j++) { snprintf(ms[w].id, sizeof ms[w].id, "%s", ids[j]); ms[w].cp = cp; ms[w].kind = kind; w++; }
+	qsort(ms, w, sizeof *ms, cmp_mark);
+	r = marks_write(ms, w) ? -1 : 0;
+out:
+	free(ms);
 	hw_store_unlock(fd);
 	return r;
 }

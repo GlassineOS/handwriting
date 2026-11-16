@@ -666,6 +666,118 @@ class Spacing(unittest.TestCase):
         self.assertLess(abs(self.gap_of(pl[0], pl[1]) - self.sp["letter"]), 0.31)
 
 
+class Marks(unittest.TestCase):
+    """the person's marks on the letter model (spec 003 FR-031) and one character learned again
+    (FR-032)"""
+
+    def setUp(self):
+        self.e = Env()
+        rnd = random.Random(11)
+        ss = alphabet_samples(seed=11, per=3)
+        ss += [sample("l", rnd, styles={"l": k % 3}) for k in range(9)]
+        self.e.put(ss)
+        self.e.run("letters", "build", "-r")
+
+    def tearDown(self):
+        self.e.close()
+
+    def chars(self):
+        return {d["char"]: d for d in map(json.loads, self.e.model().splitlines()) if "char" in d}
+
+    def test_variants_list_their_samples(self):
+        l = self.chars()["l"]
+        self.assertGreaterEqual(len(l["variants"]), 2)
+        for v in l["variants"]:
+            self.assertEqual(len(v["ids"]), v["use"])
+            self.assertTrue(all(len(i) == 16 for i in v["ids"]))
+
+    def test_favourite_shown_more_often(self):
+        l = self.chars()["l"]
+        k = len(l["variants"]) - 1
+        before = l["slots"].count(k)
+        self.e.run("letters", "mark", "favourite", "l", *l["variants"][k]["ids"])
+        self.assertEqual(self.e.status()["state"], ["outdated"])
+        out = self.e.run("letters", "build", "-c", "l").stdout
+        self.assertTrue(out.startswith("relearned\t1\t"), out)
+        self.assertEqual(self.e.status()["state"], ["current"])
+        l = self.chars()["l"]
+        self.assertTrue(l["variants"][k].get("favourite"))
+        self.assertGreater(l["slots"].count(k), before)
+        # one favourite per character
+        self.e.run("letters", "mark", "favourite", "l", *l["variants"][0]["ids"])
+        kinds = [ln.split("\t")[3] for ln in self.e.run("letters", "marks").stdout.splitlines()]
+        self.assertEqual(kinds.count("favourite"), len(l["variants"][0]["ids"]))
+
+    def test_variant_left_out_and_put_back(self):
+        l = self.chars()["l"]
+        ids = l["variants"][0]["ids"]
+        self.e.run("letters", "mark", "way-out", "l", *ids)
+        self.e.run("letters", "build", "-c", "l")
+        m = self.chars()["l"]
+        self.assertTrue(m["variants"][0].get("left_out"))
+        self.assertNotIn(0, m["slots"])
+        self.assertTrue(m["covered"])
+        states = {f[1]: f[3] for f in (ln.split("\t") for ln in self.e.run("letters", "samples", "l").stdout.splitlines())}
+        self.assertTrue(all(states[i] == "way-out" for i in ids))
+        # the font has no left-out variant: one glyph fewer for l
+        self.e.run("font", "install")
+        self.e.run("letters", "mark", "clear", "l", *ids)
+        self.e.run("letters", "build", "-c", "l")
+        self.assertFalse(self.chars()["l"]["variants"][0].get("left_out"))
+        self.assertIn(0, self.chars()["l"]["slots"])
+
+    def test_sample_left_out(self):
+        before = self.e.status()["chars"]["l"][0]
+        sid = self.chars()["l"]["variants"][0]["ids"][0]
+        self.e.run("letters", "mark", "out", "l", sid)
+        self.assertEqual(self.e.status()["chars"]["l"][0], before - 1)
+        self.e.run("letters", "build", "-c", "l")
+        l = self.chars()["l"]
+        self.assertFalse(any(sid in v["ids"] for v in l["variants"]))
+        self.assertEqual(l["samples"], before - 1)
+        st = [ln.split("\t") for ln in self.e.run("letters", "samples", "l").stdout.splitlines()]
+        self.assertIn([sid, "out"], [[f[1], f[3]] for f in st])
+        # still a sample: it stays in the store; deleting it drops its marks
+        self.assertIn(sid, self.e.run("samples", "list").stdout)
+        self.e.run("samples", "delete", sid)
+        self.assertEqual(self.e.run("letters", "marks").stdout, "")
+
+    def test_marks_erased_with_the_samples(self):
+        sid = self.chars()["l"]["variants"][0]["ids"][0]
+        self.e.run("letters", "mark", "out", "l", sid)
+        self.e.run("samples", "erase")
+        self.assertEqual(self.e.run("letters", "marks").stdout, "")
+        self.assertFalse((self.e.store / "marks").exists() and (self.e.store / "marks").read_text())
+
+    def test_marks_are_not_exported(self):
+        sid = self.chars()["l"]["variants"][0]["ids"][0]
+        self.e.run("letters", "mark", "out", "l", sid)
+        f = self.e.dir / "out.jsonl"
+        self.e.run("samples", "export", str(f))
+        self.assertNotIn("way-out", f.read_text())
+        self.assertNotIn('"out"', f.read_text())
+
+    def test_unknown_sample_refused(self):
+        p = self.e.run("letters", "mark", "out", "l", "0" * 16, check=False)
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(p.stdout.strip(), "error\tno-such-sample")
+
+    def test_relearn_leaves_the_rest(self):
+        before = {k: v for k, v in self.chars().items() if k != "l"}
+        head = self.e.model().splitlines()[0]
+        self.e.run("letters", "mark", "out", "l", self.chars()["l"]["variants"][0]["ids"][0])
+        self.e.run("letters", "build", "-c", "l")
+        after = {k: v for k, v in self.chars().items() if k != "l"}
+        self.assertEqual(before, after)
+        self.assertEqual(self.e.model().splitlines()[0], head)
+
+    def test_relearn_is_fast(self):
+        import time
+        t = time.monotonic()
+        self.e.run("letters", "build", "-c", "l")
+        self.assertLess(time.monotonic() - t, 5.0)
+
+
 class Font(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

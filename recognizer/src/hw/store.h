@@ -101,4 +101,21 @@ int hw_prefs(struct hw_pref **out, size_t *n, const char *owner);
 int hw_prefer(const struct hw_pref *p, const char *owner);         /* a donated sample's line, malloc'd; NULL none */
 long hw_donation_count(void);
 
+/* Marks (spec 003 FR-031): the person's say over the letter model, per sample and character.
+ * Kept in the store's `marks` (SAMPLE TAB CODEPOINT-HEX TAB MARK), removed with the sample,
+ * erased with the samples, never exported or contributed. */
+enum hw_mark_kind {
+	HW_MARK_OUT = 1,        /* the sample left out for that character */
+	HW_MARK_WAY_OUT,        /* left out with its variant (the variant stays, marked left out) */
+	HW_MARK_FAVOURITE,      /* in the person's favourite variant */
+};
+struct hw_mark { char id[17]; unsigned cp; int kind; };
+/* the marks of stored samples, sorted by id, code point; malloc'd */
+int hw_marks(struct hw_mark **out, size_t *n);
+/* sets kind (0: clears) for the samples ids[0..n) and the character cp; a favourite first
+ * clears the character's other favourites. 0 done, -3 no such sample, -1 an error */
+int hw_mark_set(const char (*ids)[17], size_t n, unsigned cp, int kind);
+/* the mark kind of a sample and character in a sorted list, 0 none */
+int hw_mark_of(const struct hw_mark *m, size_t n, const char *id, unsigned cp);
+
 #endif

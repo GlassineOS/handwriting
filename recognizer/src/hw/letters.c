@@ -70,6 +70,7 @@ static void variant_free(struct hw_variant *v)
 {
 	for (size_t j = 0; j < v->nstrokes; j++) { free(v->s[j].x); free(v->s[j].y); }
 	free(v->s);
+	free(v->ids);
 	memset(v, 0, sizeof *v);
 }
 
@@ -172,8 +173,10 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 		size_t k = hw_utf8_encode(l->cp, u);
 		u[k] = 0;
 		json_object *js = json_object_new_string(u);
-		sput(&b, "{\"char\":%s,\"samples\":%d,\"covered\":%s,\"variants\":[", json_object_to_json_string_ext(js, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE),
+		sput(&b, "{\"char\":%s,\"samples\":%d,\"covered\":%s,", json_object_to_json_string_ext(js, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE),
 		     l->samples, l->covered ? "true" : "false");
+		if (l->marks[0]) sput(&b, "\"marks\":\"%s\",", l->marks);
+		sput(&b, "\"variants\":[");
 		json_object_put(js);
 		for (int v = 0; v < l->nvar; v++) {
 			const struct hw_variant *x = &l->var[v];
@@ -182,6 +185,11 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 			sput(&b, ",\"weight\":");
 			num(&b, x->weight);
 			sput(&b, ",\"members\":%d,\"use\":%d,\"lc\":%d,\"rc\":%d", x->members, x->use, x->lc, x->rc);
+			if (x->out) sput(&b, ",\"left_out\":true");
+			if (x->favourite) sput(&b, ",\"favourite\":true");
+			sput(&b, ",\"ids\":[");
+			for (size_t q = 0; q < x->nids; q++) sput(&b, "%s\"%s\"", q ? "," : "", x->ids[q]);
+			sput(&b, "]");
 			for (int side = 0; side < 2; side++) {
 				sput(&b, side ? ",\"right\":[" : ",\"left\":[");
 				for (int k = 0; k < HW_PROF_BANDS; k++) {
@@ -309,6 +317,7 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			l->samples = (int)jnum(o, "samples", 0);
 			json_object *c;
 			l->covered = json_object_object_get_ex(o, "covered", &c) && json_object_get_boolean(c);
+			if (json_object_object_get_ex(o, "marks", &c)) snprintf(l->marks, sizeof l->marks, "%s", json_object_get_string(c));
 			json_object *vs;
 			if (json_object_object_get_ex(o, "variants", &vs) && json_object_is_type(vs, json_type_array)) {
 				size_t nv = json_object_array_length(vs);
@@ -321,6 +330,17 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 					w->use = (int)jnum(x, "use", 1);
 					w->lc = (int)jnum(x, "lc", -1);
 					w->rc = (int)jnum(x, "rc", -1);
+					json_object *f;
+					w->out = json_object_object_get_ex(x, "left_out", &f) && json_object_get_boolean(f);
+					w->favourite = json_object_object_get_ex(x, "favourite", &f) && json_object_get_boolean(f);
+					if (json_object_object_get_ex(x, "ids", &f) && json_object_is_type(f, json_type_array)) {
+						size_t ni = json_object_array_length(f);
+						w->ids = calloc(ni + 1, sizeof *w->ids);
+						for (size_t q = 0; w->ids && q < ni; q++) {
+							const char *id = json_object_get_string(json_object_array_get_idx(f, q));
+							if (id && strlen(id) == 16) snprintf(w->ids[w->nids++], 17, "%s", id);
+						}
+					}
 					if (!json_object_object_get_ex(x, "strokes", &st)) continue;
 					w->nstrokes = json_object_array_length(st);
 					w->s = calloc(w->nstrokes + 1, sizeof *w->s);
@@ -450,6 +470,9 @@ struct inst {
 	struct hw_lstroke *s;           /* sample units until normalized, then x-heights, y up */
 	double w;                       /* weight */
 	int dropped;
+	int slip;                       /* far from the character's other versions in size */
+	int var;                        /* the variant it is written like, -1 none */
+	int occ;                        /* its occurrence record (one character's build), -1 none */
 	double *rs;                     /* resampled, centred: 2 * total points (per group) */
 };
 
@@ -1030,6 +1053,10 @@ int hw_letters_usable(struct hw_lcount **out, size_t *nout, long *samples, void 
 		if (progress) progress(++done, miss);
 	}
 	if (ret == 0 && (miss || nf != nw)) usable_save(want, nw);
+	/* a sample the person left out of a character doesn't count for it (FR-031) */
+	struct hw_mark *MK = NULL;
+	size_t nmk = 0;
+	if (ret == 0 && hw_marks(&MK, &nmk)) ret = -1;
 	/* the counts: each sample once per character */
 	struct hw_lcount *c = NULL;
 	size_t nc = 0, cc = 0;
@@ -1041,6 +1068,7 @@ int hw_letters_usable(struct hw_lcount **out, size_t *nout, long *samples, void 
 			char *e;
 			unsigned long v = strtoul(p, &e, 16);
 			if (e == p) break;
+			if (nmk && hw_mark_of(MK, nmk, want[i].id, (unsigned)v) == HW_MARK_OUT) { p = *e == ',' ? e + 1 : e; continue; }
 			if (nc == cc) { cc = cc ? cc * 2 : 128; struct hw_lcount *t = realloc(c, cc * sizeof *c); if (!t) { ret = -1; break; } c = t; }
 			c[nc++] = (struct hw_lcount){ (unsigned)v, 1 };
 			p = *e == ',' ? e + 1 : e;
@@ -1048,6 +1076,7 @@ int hw_letters_usable(struct hw_lcount **out, size_t *nout, long *samples, void 
 	}
 	urecs_free(want, nw);
 	urecs_free(file, nf);
+	free(MK);
 	if (ret) { free(c); return -1; }
 	if (c) qsort(c, nc, sizeof *c, cmp_lcount);
 	k = 0;
@@ -1061,6 +1090,83 @@ int hw_letters_usable(struct hw_lcount **out, size_t *nout, long *samples, void 
 }
 
 static int build_progress;      /* letters build --progress */
+/* one character's build (relearn, its occurrences): only that character's variants, only
+ * the samples with it; its occurrences recorded */
+static unsigned build_only;
+struct occrec { char id[17]; int pos, state, inst; char *text; };
+static struct occrec *build_occ;
+static size_t build_nocc, build_cocc;
+
+static int occ_add(const char *id, int pos, int state, int inst, const char *text)
+{
+	if (build_nocc == build_cocc) {
+		size_t c = build_cocc ? build_cocc * 2 : 64;
+		struct occrec *x = realloc(build_occ, c * sizeof *x);
+		if (!x) return -1;
+		build_occ = x;
+		build_cocc = c;
+	}
+	struct occrec *o = &build_occ[build_nocc];
+	snprintf(o->id, sizeof o->id, "%s", id);
+	o->pos = pos; o->state = state; o->inst = inst;
+	o->text = strdup(text ? text : "");
+	return o->text ? (int)build_nocc++ : -1;
+}
+
+static void occ_free(void)
+{
+	for (size_t i = 0; i < build_nocc; i++) free(build_occ[i].text);
+	free(build_occ);
+	build_occ = NULL;
+	build_nocc = build_cocc = 0;
+}
+
+static int cmp_id17(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+
+/* the hash of the marks of cp in a sorted list (by id, code point); "" none */
+static void marks_hash_of(const struct hw_mark *m, size_t n, unsigned cp, char out[17])
+{
+	uint64_t h = FNV0;
+	int any = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (m[i].cp != cp) continue;
+		char b[40];
+		snprintf(b, sizeof b, "%s %d", m[i].id, m[i].kind);
+		h = fnv(h, b, strlen(b) + 1);
+		any = 1;
+	}
+	if (any) snprintf(out, 17, "%016llx", (unsigned long long)h);
+	else out[0] = 0;
+}
+
+void hw_letters_marks_hash(unsigned cp, char out[17])
+{
+	struct hw_mark *m;
+	size_t n;
+	out[0] = 0;
+	if (hw_marks(&m, &n)) return;
+	marks_hash_of(m, n, cp, out);
+	free(m);
+}
+
+int hw_letters_marks_changed(const struct hw_letters *L)
+{
+	struct hw_mark *m;
+	size_t n;
+	if (hw_marks(&m, &n)) return 1;
+	int changed = 0;
+	char h[17];
+	/* a character in the model whose marks are not those it was built with */
+	for (size_t i = 0; i < L->n && !changed; i++) { marks_hash_of(m, n, L->l[i].cp, h); changed = strcmp(h, L->l[i].marks) != 0; }
+	/* or a mark of a character the model has none of but whose samples it saw */
+	for (size_t i = 0; i < n && !changed; i++) {
+		int have = 0;
+		for (size_t k = 0; k < L->n && !have; k++) have = L->l[k].cp == m[i].cp;
+		changed = !have;
+	}
+	free(m);
+	return changed;
+}
 
 int hw_letters_build(struct hw_letters *L)
 {
@@ -1078,9 +1184,27 @@ int hw_letters_build(struct hw_letters *L)
 	size_t nu0 = 0;
 	if (!U) { free(S); hw_entries_free(es, ne); return -1; }
 	int shown = -1;
+	struct hw_mark *MK = NULL;
+	size_t nmk = 0;
+	if (hw_marks(&MK, &nmk)) { free(S); free(U); hw_entries_free(es, ne); return -1; }
+	/* one character's build: the samples whose text has it */
+	char (*with)[17] = NULL;
+	size_t nwith = 0;
+	if (build_only) {
+		const struct hw_index_entry *ix;
+		size_t nix;
+		char u8[8];
+		u8[hw_utf8_encode(build_only, u8)] = 0;
+		if (hw_samples_index(&ix, &nix) || !(with = calloc(nix + 1, sizeof *with))) {
+			free(MK); free(S); free(U); hw_entries_free(es, ne); return -1;
+		}
+		for (size_t i = 0; i < nix; i++) if (ix[i].text && strstr(ix[i].text, u8)) memcpy(with[nwith++], ix[i].meta.id, 17);
+		qsort(with, nwith, sizeof *with, cmp_id17);
+	}
 	for (size_t i = 0; i < ne; i++) {
 		if (build_progress && (int)(i * 50 / ne) != shown) { shown = (int)(i * 50 / ne); printf("progress\t%zu\t%zu\n", i, ne); fflush(stdout); }
 		if (strcmp(es[i].meta.source, "prompted")) continue;
+		if (build_only && !bsearch(es[i].meta.id, with, nwith, sizeof *with, cmp_id17)) continue;
 		/* a sample stored twice counts once */
 		int dup = 0;
 		for (size_t k = 0; k < nu0 && !dup; k++) dup = !strcmp(U[k].id, es[i].meta.id);
@@ -1090,7 +1214,15 @@ int hw_letters_build(struct hw_letters *L)
 		struct smp *m = &S[ns];
 		char err[128];
 		if (hw_sample_parse(es[i].json, &m->s, err, sizeof err)) continue;
-		if (!known_spans(&m->s)) { hw_sample_free(&m->s); continue; }
+		if (!known_spans(&m->s)) {
+			if (build_only) {
+				unsigned t[1024];
+				size_t nt = hw_utf8_decode(m->s.text, t, 1024);
+				for (size_t k = 0; k < nt && k < 1024; k++) if (t[k] == build_only) occ_add(es[i].meta.id, (int)k, HW_OCC_UNREAD, -1, m->s.text);
+			}
+			hw_sample_free(&m->s);
+			continue;
+		}
 		snprintf(m->id, sizeof m->id, "%s", es[i].meta.id);
 		m->time = es[i].meta.time;
 		m->parsed = 1;
@@ -1118,15 +1250,33 @@ int hw_letters_build(struct hw_letters *L)
 		if (!own || own_chars(&m->s, cps, nc, own)) { free(own); continue; }
 		for (size_t k = 0; k < nu0; k++)
 			if (!strcmp(U[k].id, m->id)) { free(U[k].cps); U[k].cps = usable_cps(cps, nc, own); break; }
-		for (size_t k = 0; k < m->s.nspans && k < nc; k++) {
+		for (size_t k = 0; k < nc; k++) {
+			int occ = -1;
+			if (build_only && cps[k] == build_only) {
+				int st = -1;
+				if (k >= m->s.nspans || !m->s.spans[k] || m->s.spans[k][0] < 0) st = HW_OCC_UNREAD;
+				else if (!own[k]) {
+					/* shared with which neighbour */
+					st = HW_OCC_JOINED_AFTER;
+					for (int *p = m->s.spans[k]; *p >= 0; p++)
+						if (k > 0 && k - 1 < m->s.nspans && m->s.spans[k - 1])
+							for (int *q = m->s.spans[k - 1]; *q >= 0; q++) if (*q == *p) st = HW_OCC_JOINED_BEFORE;
+				} else if (hw_mark_of(MK, nmk, m->id, cps[k]) == HW_MARK_OUT) st = HW_OCC_OUT;
+				occ = occ_add(m->id, (int)k, st >= 0 ? st : HW_OCC_USABLE, st >= 0 ? -1 : (int)nin, m->s.text);
+				if (st >= 0) continue;
+			}
+			if (k >= m->s.nspans) break;
 			int *sp = m->s.spans[k];
 			if (!own[k]) continue;
+			/* left out by the person (FR-031): no instance; it still counts as a sample */
+			if (hw_mark_of(MK, nmk, m->id, cps[k]) == HW_MARK_OUT) continue;
 			int np = 0;
 			for (int *p = sp; *p >= 0; p++) np++;
 			if (nin == cin) { cin = cin ? cin * 2 : 1024; struct inst *x = realloc(in, cin * sizeof *x); if (!x) break; in = x; }
 			struct inst *x = &in[nin];
 			memset(x, 0, sizeof *x);
 			x->cp = cps[k]; x->sample = (int)si; x->pos = (int)k;
+			x->var = -1; x->occ = occ;
 			x->x0 = x->y0 = INFINITY; x->x1 = x->y1 = -INFINITY;
 			x->s = calloc((size_t)np, sizeof *x->s);
 			if (!x->s) break;
@@ -1149,7 +1299,7 @@ int hw_letters_build(struct hw_letters *L)
 					if (k2->y[q] > x->y1) x->y1 = k2->y[q];
 				}
 			}
-			if (!x->nstrokes) { free(x->s); continue; }
+			if (!x->nstrokes) { free(x->s); if (occ >= 0) { build_occ[occ].state = HW_OCC_UNREAD; build_occ[occ].inst = -1; } continue; }
 			/* weight: careful marking, readability, preferences (consistency comes later) */
 			double w = !strcmp(m->s.written, "careful") ? 1.5 : !strcmp(m->s.written, "quick") ? 0.6 : 1.0;
 			w *= 0.25 + (k < 512 ? m->read[k] : 0.6);
@@ -1168,7 +1318,7 @@ int hw_letters_build(struct hw_letters *L)
 	free(pr);
 	for (size_t k = 0; k < nu0; k++) if (!U[k].cps) U[k].cps = strdup("-");
 	qsort(U, nu0, sizeof *U, cmp_urec);
-	usable_save(U, nu0);
+	if (!build_only) usable_save(U, nu0);
 	urecs_free(U, nu0);
 
 	/* per sample: baseline and x-height from its own letters */
@@ -1258,8 +1408,10 @@ int hw_letters_build(struct hw_letters *L)
 	L->l = calloc(nd + 1, sizeof *L->l);
 	if (!L->l || !uc) { free(uc); goto fail; }
 	for (size_t c = 0; c < nd; c++) {
+		if (build_only && uc[c] != build_only) continue;
 		struct hw_letter *l = &L->l[L->n++];
 		l->cp = uc[c];
+		marks_hash_of(MK, nmk, l->cp, l->marks);
 		/* its versions, in sample order */
 		int *v = NULL, nv = 0;
 		v = malloc((nin + 1) * sizeof *v);
@@ -1280,6 +1432,7 @@ int hw_letters_build(struct hw_letters *L)
 			for (int i = 0; i < nv; i++) {
 				double hh = in[v[i]].y1 - in[v[i]].y0 + (in[v[i]].x1 - in[v[i]].x0);
 				if (mh <= 0 || (hh >= 0.4 * mh && hh <= 2.5 * mh)) v[w++] = v[i];
+				else in[v[i]].slip = 1;
 			}
 			nv = w;
 		}
@@ -1432,9 +1585,49 @@ int hw_letters_build(struct hw_letters *L)
 				t = sgr[b2]; sgr[b2] = sgr[b2 - 1]; sgr[b2 - 1] = t;
 				t = use[b2]; use[b2] = use[b2 - 1]; use[b2 - 1] = t;
 			}
-		for (int k = 0; k < nsd; k++)
-			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar])) l->var[l->nvar++].use = use[k];
+		int vix[HW_LETTERS_VARIANTS];
+		for (int k = 0; k < nsd; k++) {
+			vix[k] = -1;
+			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar])) { vix[k] = l->nvar; l->var[l->nvar++].use = use[k]; }
 			else variant_free(&l->var[l->nvar]);
+		}
+		/* the samples written like each variant (as use counts them), and the person's marks
+		 * on them: a variant is left out, or their favourite, when most of its samples say so */
+		for (int i = 0; i < nv; i++) {
+			int x = v[i], q = 0;
+			if (way[x] < 0) continue;
+			for (int k = 0; k < nq; k++) q |= ord[k] == way[x];
+			if (!q) continue;
+			int bk = -1;
+			double bd = INFINITY;
+			for (int k = 0; k < nsd; k++) {
+				if (sgr[k] != W[way[x]].g) continue;
+				double d = rdist(in[x].rs, in[seeds[k]].rs, G[sgr[k]].total);
+				if (d < bd - 1e-12) { bd = d; bk = k; }
+			}
+			if (bk >= 0) in[x].var = vix[bk];
+		}
+		int fav = -1, favn = 0;
+		for (int k = 0; k < l->nvar; k++) {
+			struct hw_variant *va = &l->var[k];
+			int cnt = 0, nout = 0, nfav = 0;
+			for (int i = 0; i < nv; i++) cnt += in[v[i]].var == k;
+			va->ids = calloc((size_t)cnt + 1, sizeof *va->ids);
+			for (int i = 0; va->ids && i < nv; i++) {
+				if (in[v[i]].var != k) continue;
+				const char *id = S[in[v[i]].sample].id;
+				int dup = 0;
+				for (size_t q = 0; q < va->nids && !dup; q++) dup = !strcmp(va->ids[q], id);
+				if (!dup) memcpy(va->ids[va->nids++], id, 17);
+				int mk = hw_mark_of(MK, nmk, id, l->cp);
+				nout += mk == HW_MARK_WAY_OUT;
+				nfav += mk == HW_MARK_FAVOURITE;
+			}
+			if (va->ids) qsort(va->ids, va->nids, sizeof *va->ids, cmp_id17);
+			va->out = cnt && 2 * nout > cnt;
+			if (!va->out && cnt && 2 * nfav > cnt && nfav > favn) { fav = k; favn = nfav; }
+		}
+		if (fav >= 0) l->var[fav].favourite = 1;
 		letter_slots(l);
 		free(way);
 		if (!l->nvar) l->covered = 0;
@@ -1443,6 +1636,8 @@ int hw_letters_build(struct hw_letters *L)
 	}
 	free(uc);
 
+	/* one character's build: no spacing (the model's stays) */
+	if (build_only) goto measured;
 	/* spacing (FR-007): the profile gaps of neighbouring own letters of one sample (their
 	 * strokes placed by where they lie), the box gaps between words */
 	struct hw_gap_obs *obs = NULL;
@@ -1492,6 +1687,19 @@ int hw_letters_build(struct hw_letters *L)
 	L->m.letter_gap = L->sp.letter;
 	L->m.word_gap = L->sp.word;
 	free(obs); free(wgs.v);
+measured:
+	/* the occurrences' states from their instances */
+	for (size_t i = 0; i < build_nocc; i++) {
+		struct occrec *o = &build_occ[i];
+		if (o->inst < 0 || o->state != HW_OCC_USABLE) continue;
+		const struct inst *x = &in[o->inst];
+		if (x->dropped || x->slip) { o->state = HW_OCC_ODD; o->inst = -1; continue; }
+		o->inst = x->var;      /* now the variant */
+		for (size_t c = 0; c < L->n && x->var >= 0; c++)
+			if (L->l[c].cp == x->cp && L->l[c].var[x->var].out) o->state = HW_OCC_WAY_OUT;
+	}
+	free(MK); MK = NULL;
+	free(with); with = NULL;
 
 	for (size_t si = 0; si < ns; si++) {
 		if (S[si].time > L->built) L->built = S[si].time;
@@ -1514,6 +1722,8 @@ fail:
 	free(in);
 	for (size_t si = 0; si < ns; si++) hw_sample_free(&S[si].s);
 	free(S);
+	free(MK);
+	free(with);
 	hw_letters_free(L);
 	return -1;
 }
@@ -1527,19 +1737,148 @@ int hw_letters_step(int prev)
 
 /* the cycle of a letter's variants, each as often as it is used, spread out (smooth
  * weighted round robin: the same uses give the same cycle) */
+/* how much a variant counts in the cycle: its use, a favourite's HW_LETTERS_FAVOURITE times,
+ * none when left out (FR-031) */
+static long slot_weight(const struct hw_variant *v)
+{
+	if (v->out) return 0;
+	long u = v->use > 0 ? v->use : 1;
+	return v->favourite ? u * HW_LETTERS_FAVOURITE : u;
+}
+
 static void letter_slots(struct hw_letter *l)
 {
 	long cur[HW_LETTERS_VARIANTS] = { 0 }, tot = 0;
-	for (int v = 0; v < l->nvar; v++) tot += l->var[v].use > 0 ? l->var[v].use : 1;
+	int first = -1;
+	for (int v = 0; v < l->nvar; v++) { tot += slot_weight(&l->var[v]); if (first < 0 && !l->var[v].out) first = v; }
 	for (int k = 0; k < HW_LETTERS_SLOTS; k++) {
-		int best = 0;
+		int best = first;
 		for (int v = 0; v < l->nvar; v++) {
-			cur[v] += l->var[v].use > 0 ? l->var[v].use : 1;
-			if (cur[v] > cur[best]) best = v;
+			long w = slot_weight(&l->var[v]);
+			if (!w) continue;
+			cur[v] += w;
+			if (best < 0 || cur[v] > cur[best]) best = v;
 		}
-		cur[best] -= tot;
-		l->slot[k] = (unsigned char)(l->nvar ? best : 0);
+		if (best >= 0) cur[best] -= tot;
+		l->slot[k] = (unsigned char)(best >= 0 ? best : 0);
 	}
+}
+
+int hw_letters_view(const struct hw_letters *L, struct hw_letters *out)
+{
+	*out = *L;
+	out->l = calloc(L->n + 1, sizeof *out->l);
+	if (!out->l) return -1;
+	for (size_t i = 0; i < L->n; i++) {
+		const struct hw_letter *a = &L->l[i];
+		struct hw_letter *b = &out->l[i];
+		*b = *a;
+		b->nvar = 0;
+		int map[HW_LETTERS_VARIANTS];
+		for (int v = 0; v < a->nvar; v++) {
+			map[v] = -1;
+			if (a->var[v].out) continue;
+			map[v] = b->nvar;
+			b->var[b->nvar++] = a->var[v];
+		}
+		for (int k = 0; k < HW_LETTERS_SLOTS; k++) b->slot[k] = (unsigned char)(map[a->slot[k]] >= 0 ? map[a->slot[k]] : 0);
+		if (!b->nvar) b->covered = 0;
+	}
+	return 0;
+}
+
+void hw_letters_view_free(struct hw_letters *v)
+{
+	free(v->l);
+	memset(v, 0, sizeof *v);
+}
+
+static void letter_move(struct hw_letter *dst, struct hw_letter *src)
+{
+	*dst = *src;
+	memset(src, 0, sizeof *src);
+}
+
+int hw_letters_relearn(unsigned cp, int verbose)
+{
+	struct hw_letters old;
+	int r = hw_letters_load(&old);
+	if (r <= 0) return r;
+	unsigned long gen = hw_store_generation();
+	struct hw_letters one;
+	build_only = cp;
+	int b = hw_letters_build(&one);
+	build_only = 0;
+	occ_free();
+	if (b) { hw_letters_free(&old); return -1; }
+	/* its line in place of the old one (or a new one, in code point order); its sides
+	 * against the model's side shapes */
+	struct hw_letter *nl = NULL;
+	for (size_t i = 0; i < one.n; i++) if (one.l[i].cp == cp) nl = &one.l[i];
+	struct hw_letter fresh;
+	memset(&fresh, 0, sizeof fresh);
+	if (nl) letter_move(&fresh, nl);
+	else { fresh.cp = cp; hw_letters_marks_hash(cp, fresh.marks); }
+	for (int v = 0; v < fresh.nvar; v++) {
+		fresh.var[v].lc = hw_spacing_side(&old.sp, &fresh.var[v].prof, 0);
+		fresh.var[v].rc = hw_spacing_side(&old.sp, &fresh.var[v].prof, 1);
+	}
+	hw_letters_free(&one);
+	size_t at = 0;
+	while (at < old.n && old.l[at].cp < cp) at++;
+	if (at < old.n && old.l[at].cp == cp) {
+		for (int v = 0; v < old.l[at].nvar; v++) variant_free(&old.l[at].var[v]);
+		letter_move(&old.l[at], &fresh);
+	} else {
+		struct hw_letter *x = realloc(old.l, (old.n + 1) * sizeof *x);
+		if (!x) { for (int v = 0; v < fresh.nvar; v++) variant_free(&fresh.var[v]); hw_letters_free(&old); return -1; }
+		old.l = x;
+		memmove(&old.l[at + 1], &old.l[at], (old.n - at) * sizeof *old.l);
+		letter_move(&old.l[at], &fresh);
+		old.n++;
+	}
+	size_t len;
+	char *text = hw_letters_format(&old, &len);
+	int covered = 0, nvar = 0;
+	for (size_t i = 0; i < old.n; i++) if (old.l[i].cp == cp) { covered = old.l[i].covered; nvar = old.l[i].nvar; }
+	hw_letters_free(&old);
+	if (!text) return -1;
+	int fd = hw_store_lock();
+	if (fd < 0) { free(text); return -1; }
+	int ret = 1;
+	if (hw_store_generation() != gen) ret = 0;      /* erased meanwhile: nothing to write into */
+	else if (hw_store_replace("letters/model", text, len)) ret = -1;
+	hw_store_unlock(fd);
+	free(text);
+	if (ret == 1 && verbose) printf("relearned\t%d\t%d\n", covered, nvar);
+	return ret;
+}
+
+static int cmp_occ(const void *a, const void *b)
+{
+	const struct occrec *x = a, *y = b;
+	int c = strcmp(x->id, y->id);
+	return c ? c : x->pos - y->pos;
+}
+
+int hw_letters_occurrences(unsigned cp, void (*emit)(const struct hw_occ *, void *), void *arg)
+{
+	struct hw_letters one;
+	build_only = cp;
+	int b = hw_letters_build(&one);
+	build_only = 0;
+	if (b) { occ_free(); return -1; }
+	hw_letters_free(&one);
+	/* in the samples' order, then by place */
+	qsort(build_occ, build_nocc, sizeof *build_occ, cmp_occ);
+	for (size_t i = 0; i < build_nocc; i++) {
+		const struct occrec *o = &build_occ[i];
+		struct hw_occ e = { "", o->pos, o->state, o->state == HW_OCC_USABLE || o->state == HW_OCC_WAY_OUT ? o->inst : -1, o->text };
+		memcpy(e.id, o->id, 17);
+		emit(&e, arg);
+	}
+	occ_free();
+	return 0;
 }
 
 int hw_letters_run(const struct hw_letters_opts *o)
@@ -1553,7 +1892,7 @@ int hw_letters_run(const struct hw_letters_opts *o)
 	if (!o->force) {
 		struct hw_letters old;
 		int r = hw_letters_load(&old);
-		int same = r == 1 && !strcmp(old.inputs, now);
+		int same = r == 1 && !strcmp(old.inputs, now) && !hw_letters_marks_changed(&old);
 		if (r == 1) hw_letters_free(&old);
 		if (same) { if (o->verbose) puts("skip\tnothing-new"); return 2; }
 	}
