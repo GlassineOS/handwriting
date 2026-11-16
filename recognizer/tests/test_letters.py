@@ -4,7 +4,7 @@
 FR-012, SC-001), on synthetic samples: the model is the same on every run and in any import
 order; a character needs 3 usable samples; the font passes fontTools with checksums, maps
 exactly the covered characters and the space, alternates the same way every time when
-shaped with no feature asked for (and as hw_letters_rotate says); installed, the font cache
+shaped with no feature asked for (and as hw_letters_step says); installed, the font cache
 finds it in a test user; a rebuild keeps the name and changes the version and the file;
 erasing the samples takes the model and the font.
 
@@ -33,17 +33,13 @@ SKIP_TOOLS = os.environ.get("HW_LETTERS_NO_FONT_TOOLS") == "1"
 ALNUM = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
-def rotate(prev, n):
-    """the variant at a character (letters.h hw_letters_rotate); prev None at a run's start"""
-    if prev is None or n < 2:
-        return 0
-    if prev == 0:
-        return 1
-    if prev == 1 and n == 3:
-        return 2
-    if prev == 2 and n == 2:
-        return 1
-    return 0
+SLOTS = 10      # letters.h HW_LETTERS_SLOTS
+
+
+def step(prev):
+    """the step of the font's cycle at a character or space (letters.h hw_letters_step);
+    prev None at a run's start or after a character the font lacks"""
+    return 0 if prev is None else (prev + 1) % SLOTS
 
 
 def shape(c, style, rnd):
@@ -277,7 +273,11 @@ BESIDE = {"K": [[(0.0, 1.5), (0.0, 0.0)], [(1.0, 1.5), (0.15, 0.75), (1.0, 0.0)]
 ROUND = [[(0.3 + 0.3 * math.cos(a / 11 * 2 * math.pi), 0.5 + 0.5 * math.sin(a / 11 * 2 * math.pi)) for a in range(12)]]
 
 
-def late_sample(word, rnd, where, line=150.0, xh=30.0):
+# a t written in one stroke: the bar, back and up the stem, down
+ONE_T = [[(0.0, 1.0), (0.6, 1.0), (0.3, 1.0), (0.3, 1.4), (0.3, 0.0), (0.5, 0.05)]]
+
+
+def late_sample(word, rnd, where, line=150.0, xh=30.0, forms=None):
     """a prompted sample of word as a person writes it: each letter in turn, the late strokes
     of LATE's characters after the whole word, and spans as the alignment gives them, which
     follow the order of writing: a late stroke in the span of the word's last letter
@@ -308,7 +308,7 @@ def late_sample(word, rnd, where, line=150.0, xh=30.0):
             spans[k].insert(0, spans[k - 1][-1])
             x += 0.4 * xh
             continue
-        first, rest = LATE.get(c, (BESIDE.get(c, ROUND), []))
+        first, rest = (forms or {}).get(c) or LATE.get(c, (BESIDE.get(c, ROUND), []))
         for st in first:
             spans[k].append(put(st, x))
         if c in BESIDE and where == "shared" and k + 1 < len(word):   # its second stroke with the next letter too
@@ -363,6 +363,56 @@ class LateStrokes(unittest.TestCase):
         # the letters the late strokes were put with count too
         self.assertEqual(st["chars"]["o"][0], 4 * len(LATE))
         self.assertEqual(st["chars"]["a"][0], 4 * len(LATE))
+
+    def model_chars(self):
+        return {d["char"]: d for d in map(json.loads, self.e.model().splitlines()) if "char" in d}
+
+    def test_each_way_of_writing_in_proportion(self):
+        """a t written in two strokes in two thirds of the samples and in one in a third gets a
+        variant for each, weighted and in the font's cycle about as often"""
+        rnd = random.Random(30)
+        self.e.put([late_sample("ato", rnd, "next") for _ in range(8)] +
+                   [late_sample("ato", rnd, "next", forms={"t": (ONE_T, [])}) for _ in range(4)])
+        self.e.run("letters", "build", "-r")
+        t = self.model_chars()["t"]
+        ways = {}
+        for v in t["variants"]:
+            ways[len(v["strokes"])] = ways.get(len(v["strokes"]), 0) + v["use"]
+        self.assertEqual(ways, {2: 8, 1: 4})
+        self.assertEqual(len(t["variants"][0]["strokes"]), 2)          # the most used first
+        per = {}
+        for k in t["slots"]:
+            n = len(t["variants"][k]["strokes"])
+            per[n] = per.get(n, 0) + 1
+        self.assertLessEqual(abs(per[2] - 2 * SLOTS / 3), 1)
+        self.assertLessEqual(abs(per[1] - SLOTS / 3), 1)
+        # the same samples, the same model
+        before = self.e.model()
+        self.e.run("letters", "build", "-r", "-f")
+        self.assertEqual(self.e.model(), before)
+
+    def test_a_one_off_way_gives_no_variant(self):
+        rnd = random.Random(31)
+        self.e.put([late_sample("ato", rnd, "next") for _ in range(12)] +
+                   [late_sample("ato", rnd, "next", forms={"t": (ONE_T, [])})])
+        self.e.run("letters", "build", "-r")
+        t = self.model_chars()["t"]
+        self.assertEqual({len(v["strokes"]) for v in t["variants"]}, {2})
+        self.assertEqual(sum(v["use"] for v in t["variants"]), 12)
+
+    def test_stroke_order_is_a_way(self):
+        """an x written left stroke first and right stroke first: a variant for each order"""
+        rnd = random.Random(32)
+        a = ([[(0.0, 1.0), (0.7, 0.0)]], [[(0.7, 1.0), (0.0, 0.0)]])
+        b = ([[(0.7, 1.0), (0.0, 0.0)]], [[(0.0, 1.0), (0.7, 0.0)]])
+        self.e.put([late_sample("axo", rnd, "next", forms={"x": a}) for _ in range(5)] +
+                   [late_sample("axo", rnd, "next", forms={"x": b}) for _ in range(5)])
+        self.e.run("letters", "build", "-r")
+        x = self.model_chars()["x"]
+        firsts = {tuple(round(c) for c in v["strokes"][0][0]) for v in x["variants"]}
+        starts = {(v["strokes"][0][0][0] < v["strokes"][0][-1][0]) for v in x["variants"]}
+        self.assertEqual(starts, {True, False}, firsts)
+        self.assertEqual(sum(v["use"] for v in x["variants"]), 10)
 
     def test_a_stroke_beside_two_stays_shared(self):
         """a K's long arm shared with the next letter, beside both, is not given to either"""
@@ -467,6 +517,11 @@ class Font(unittest.TestCase):
         cls.st = cls.e.status()
         cls.nvar = {c: v[1] for c, v in cls.st["chars"].items() if v[1] > 0}
         cls.covered = set(cls.nvar)
+        cls.slots = {}
+        for x in cls.e.model().splitlines():
+            d = json.loads(x)
+            if d.get("covered") and d.get("variants"):
+                cls.slots[d["char"]] = d["slots"]
         cls.ttf = cls.e.dir / "f.ttf"
         cls.e.run("font", "build", "-n", "Test hand", str(cls.ttf))
 
@@ -484,11 +539,15 @@ class Font(unittest.TestCase):
         self.assertEqual({chr(c) for c in cmap}, self.covered | {" "})
         self.assertEqual(f["name"].getDebugName(1), "Test hand")
         self.assertIn("calt", [r.FeatureTag for r in f["GSUB"].table.FeatureList.FeatureRecord])
-        # the alternates have no character of their own
-        self.assertEqual(len(f.getGlyphOrder()), sum(self.nvar.values()) + 2)
+        # .notdef, the space and each character at each step of the cycle (a reference to
+        # one of its variants), then the variants, which have no character of their own
+        self.assertEqual(len(f.getGlyphOrder()), 1 + (len(self.covered) + 1) * SLOTS + sum(self.nvar.values()))
         glyf = f["glyf"]
         for c in self.covered:
-            self.assertGreater(glyf[cmap[ord(c)]].numberOfContours, 0, c)
+            g = glyf[cmap[ord(c)]]
+            self.assertTrue(g.isComposite(), c)
+            self.assertEqual(len(g.components), 1)
+            self.assertGreater(glyf[g.components[0].glyphName].numberOfContours, 0, c)
         self.assertEqual(glyf[cmap[32]].numberOfContours, 0)
         # the same model, name and version: the same bytes
         again = self.e.dir / "g.ttf"
@@ -500,28 +559,57 @@ class Font(unittest.TestCase):
                            capture_output=True, text=True, check=True)
         return [int(x) for x in p.stdout.strip().strip("[]").split("|")]
 
+    def expected(self, text):
+        """the glyph ids the font gives text (hw_letters_step) and the variant each shows"""
+        cov = sorted(self.covered)
+        idx = {c: 1 + i for i, c in enumerate(cov)}
+        idx[" "] = 0
+        out, var, prev = [], [], None
+        for c in text:
+            st = step(prev)
+            out.append(1 + idx[c] * SLOTS + st)
+            var.append(self.slots[c][st] if c != " " else None)
+            prev = st
+        return out, var
+
     def test_alternates(self):
         self.assertEqual(self.nvar["l"], 3)
         self.assertEqual(self.nvar["o"], 2)
         text = "lllll ooo lol hello"
         a = self.shaped(text)
         self.assertEqual(a, self.shaped(text))
-        # glyph ids: .notdef, space, the covered characters in code point order, then their
-        # variants 1, then their variants 2
-        cov = sorted(self.covered)
-        base = {c: 2 + i for i, c in enumerate(cov)}
-        base[" "] = 1
-        multi = [c for c in cov if self.nvar[c] >= 2]
-        three = [c for c in cov if self.nvar[c] >= 3]
-        alt = {(c, 1): 2 + len(cov) + i for i, c in enumerate(multi)}
-        alt.update({(c, 2): 2 + len(cov) + len(multi) + i for i, c in enumerate(three)})
-        want, prev = [], None
-        for c in text:
-            v = rotate(prev, self.nvar.get(c, 1))
-            want.append(base[c] if v == 0 else alt[(c, v)])
-            prev = v
+        want, var = self.expected(text)
         self.assertEqual(a, want)
-        self.assertEqual(len(set(a[:5])), 3)    # 'lllll' isn't stamped
+        self.assertEqual(len(set(var[:5])), 3)    # 'lllll' isn't stamped
+        # each step's glyph refers to the variant the model gives that step
+        from fontTools.ttLib import TTFont
+        f = TTFont(str(self.ttf))
+        order = f.getGlyphOrder()
+        outl = 1 + (len(self.covered) + 1) * SLOTS
+        first = {}
+        for c in sorted(self.covered):
+            first[c] = outl
+            outl += self.nvar[c]
+        for c in ("l", "o"):
+            for st in range(SLOTS):
+                g = f["glyf"][order[1 + (1 + sorted(self.covered).index(c)) * SLOTS + st]]
+                self.assertEqual(g.components[0].glyphName, order[first[c] + self.slots[c][st]])
+
+    def test_variants_in_proportion(self):
+        """along a long text each variant shows about as often as it is used"""
+        text = " ".join(["hello world lol"] * 40)
+        a = self.shaped(text)
+        want, var = self.expected(text)
+        self.assertEqual(a, want)
+        use = {}
+        for x in self.e.model().splitlines():
+            d = json.loads(x)
+            if d.get("char") in ("l", "o"):
+                use[d["char"]] = [v["use"] for v in d["variants"]]
+        for c in ("l", "o"):
+            shown = [v for ch, v in zip(text, var) if ch == c]
+            for k, u in enumerate(use[c]):
+                self.assertAlmostEqual(shown.count(k) / len(shown), u / sum(use[c]), delta=0.12, msg=c)
 
     def test_install_found_rebuild_erase(self):
         e = Env()
