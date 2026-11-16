@@ -256,6 +256,17 @@ included unless they pick them one by one.
   - A test set of other real writers' ink, from contributions with their contributor numbers, as soon as
     there is one; the held-out synthetic fonts only stand in for other hands. The base
     model's real-ink error is then reported per writer.
+  - Letters placed as people space them: the generator spaces letters by their ink
+    profiles and pair gaps (spec 003 FR-007), drawn from the spread real writers show,
+    not the mean, with touching and overlapping letters and varying word gaps; one
+    writer's spacing is at most one style among many.
+  - Part of the text drawn from the character model flattened (sampled at a higher
+    temperature) beside the plain samples, so the ink model does not learn the language's
+    letter statistics as a second character model; codes, names and unusual words read
+    no worse than with model 2 and the character model.
+  - Contributors' letter models (versions in proportion, spacing, timing) as further
+    synthetic writers, when their contribution's licence covers derived models; a
+    contributor in the real test set is never one of the generator's writers.
 
 ## Key entities
 
