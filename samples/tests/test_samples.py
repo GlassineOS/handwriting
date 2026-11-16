@@ -773,6 +773,8 @@ class Pages(Case):
         from glassine_hwsamples import neat
 
         class Pen:
+            capabilities = {"strokes", "neaten", "text"}
+
             def __init__(s):
                 s.calls = []
 
@@ -802,6 +804,17 @@ class Pages(Case):
         self.assertEqual(pi.pen.calls[-1], ("set_neaten", (True, 1.0)))
         pi.clear()
         self.assertEqual((pi.shown, pi.index, pi.text), ({}, {}, ""))
+        # the service leaves: no more neatening through it, the pen's waiting strokes join the page
+        self.assertTrue(pi.neatens)
+        late = [(4, 4, 0, 0.5, 0, 0)]
+        pi.down(late)
+        pi.capabilities({"strokes"})
+        self.assertFalse(pi.neatens)
+        pi.settle()
+        self.assertEqual((pi.pending, pi.page[-1]), ([], late))
+        # a compositor without the service: the page doesn't take the pen interface
+        Pen.capabilities = {"strokes"}
+        self.assertFalse(neat.PenInk(Pen(), [], lambda: None).neatens)
 
     def test_neat_lines(self):
         from glassine_hwsamples import neat

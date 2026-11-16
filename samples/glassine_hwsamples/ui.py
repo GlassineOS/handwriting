@@ -1049,6 +1049,10 @@ class Canvas(Gtk.DrawingArea):
             if pen is None:
                 return
             pi = N.PenInk(pen, self.inks["neat"], self.pen_changed)
+            if not pi.neatens:            # the compositor has it, the service isn't there
+                pen.close()
+                log("pen interface without neatening: the direct path")
+                return
             pen.listener = pi
             self.ui.pen_ink = pi
             self.pen_place()
@@ -1075,6 +1079,14 @@ class Canvas(Gtk.DrawingArea):
         pi.place(x, y, a.width, a.height, LINE, LINE * 0.62)
 
     def pen_changed(self):
+        pi = self.ui.pen_ink
+        if pi and not pi.neatens:         # the service left: the direct path from here on
+            pi.settle()
+            pi.pen.close()
+            self.ui.pen_ink = None
+            log("pen interface lost neatening: the direct path")
+            if self.strokes:
+                self.ui.neaten(self.payload())
         self.ui.neat_text = self.ui.pen_ink.text if self.ui.pen_ink else self.ui.neat_text
         self.queue_draw()
         self.on_change()
