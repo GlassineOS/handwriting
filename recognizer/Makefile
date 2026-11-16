@@ -36,6 +36,7 @@ check: $(OUT)/test-engine $(OUT)/glassine-handwriting
 	HW_BIN=$(OUT)/glassine-handwriting $(PY) tests/test_recognizer.py
 	HW_BIN=$(OUT)/glassine-handwriting $(PY) tests/test_letters.py
 	HW_BIN=$(OUT)/glassine-handwriting $(PY) tests/test_neaten.py
+	HW_BIN=$(OUT)/glassine-handwriting $(PY) tests/test_relay.py
 
 # with a trained model: MODEL_DIR holds en/recognizer.ghm (tools/onnx2ghm.py)
 check-model: $(OUT)/glassine-handwriting

@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glassine.org/schemas/handwriting-service-1.json",
+  "title": "GlassineOS handwriting service interface, version 1",
+  "description": "JSON lines over $XDG_RUNTIME_DIR/glassine-handwriting/service (docs/service.md). A client sends request objects; the service answers each with a response of the same id. $defs/request and $defs/response describe one line each; $defs/methods holds each method's params and result.",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["method"],
+      "properties": {
+        "id": {"description": "any JSON value; the response carries it back"},
+        "method": {"enum": ["hello", "status", "permission.get", "permission.set", "read", "neaten", "samples.list", "samples.delete", "letters.status"]},
+        "params": {"type": "object"}
+      },
+      "allOf": [
+        {"if": {"properties": {"method": {"const": "permission.set"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/permission.set/params"}}, "required": ["params"]}},
+        {"if": {"properties": {"method": {"const": "read"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/read/params"}}, "required": ["params"]}},
+        {"if": {"properties": {"method": {"const": "neaten"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/neaten/params"}}, "required": ["params"]}},
+        {"if": {"properties": {"method": {"const": "samples.delete"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/samples.delete/params"}}, "required": ["params"]}}
+      ]
+    },
+    "response": {
+      "type": "object",
+      "required": ["id"],
+      "oneOf": [
+        {"required": ["result"], "not": {"required": ["error"]}},
+        {"required": ["error"], "not": {"required": ["result"]}, "properties": {"error": {"$ref": "#/$defs/error"}}}
+      ],
+      "properties": {"id": {}, "result": {"type": "object"}, "error": {}}
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": ["bad-request", "unknown-method", "permission-needed", "not-allowed", "not-yours", "unavailable", "failed"],
+          "description": "permission-needed: the person hasn't been asked for this app; not-allowed: the person said no (or the caller may not do this); not-yours: no sample of the caller with that id"
+        },
+        "message": {"type": "string"}
+      }
+    },
+    "point": {
+      "description": "[x, y, time ms], [x, y, time, pressure 0..1] or [x, y, time, pressure, tilt_x, tilt_y] (degrees)",
+      "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 6,
+      "not": {"minItems": 5, "maxItems": 5}
+    },
+    "strokes": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/point"}}},
+    "context": {
+      "type": "object",
+      "properties": {
+        "purpose": {"type": "integer", "minimum": 0, "description": "zwp_text_input_v3 content purpose"},
+        "hints": {"type": "integer", "minimum": 0, "description": "zwp_text_input_v3 content hints"},
+        "before": {"type": "string"},
+        "languages": {"type": "string", "description": "comma-separated, in order; empty: the person's setting"}
+      }
+    },
+    "permission": {"enum": ["allowed", "refused", "unasked"]},
+    "candidate": {
+      "type": "object",
+      "required": ["text", "score", "from", "fit", "chars"],
+      "properties": {
+        "text": {"type": "string"},
+        "score": {"type": "number"},
+        "from": {"enum": ["ink", "beam", "words", "guided"]},
+        "fit": {"type": "boolean"},
+        "chars": {"type": "string", "description": "per character the strokes that make it (docs/recognizer.md ALIGN)"}
+      }
+    },
+    "methods": {
+      "hello": {
+        "result": {
+          "type": "object",
+          "required": ["version", "app", "sandboxed", "neaten", "text", "letters", "languages"],
+          "properties": {
+            "version": {"const": 1},
+            "app": {"type": "string", "description": "who the service takes the caller for"},
+            "sandboxed": {"type": "boolean"},
+            "neaten": {"type": "boolean"}, "text": {"type": "boolean"}, "letters": {"type": "boolean"},
+            "languages": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      },
+      "status": {
+        "result": {
+          "type": "object",
+          "required": ["engine", "surfaces"],
+          "properties": {
+            "engine": {"type": "object", "required": ["running", "starts"], "properties": {"running": {"type": "boolean"}, "pid": {"type": ["integer", "null"]}, "starts": {"type": "integer"}}},
+            "surfaces": {"type": "integer"}
+          }
+        }
+      },
+      "permission.get": {
+        "result": {"type": "object", "required": ["learn", "samples"], "properties": {"learn": {"$ref": "#/$defs/permission"}, "samples": {"$ref": "#/$defs/permission"}}}
+      },
+      "permission.set": {
+        "params": {"type": "object", "required": ["app"], "properties": {"app": {"type": "string"}, "learn": {"$ref": "#/$defs/permission"}, "samples": {"$ref": "#/$defs/permission"}}},
+        "result": {"$ref": "#/$defs/methods/permission.get/result"}
+      },
+      "read": {
+        "params": {"type": "object", "required": ["strokes"], "properties": {"strokes": {"$ref": "#/$defs/strokes"}, "count": {"type": "integer", "minimum": 1, "maximum": 8}, "units": {"type": "string"}, "context": {"$ref": "#/$defs/context"}}},
+        "result": {
+          "type": "object",
+          "required": ["candidates"],
+          "properties": {
+            "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
+            "private": {"const": true},
+            "gesture": {"type": "string"}
+          }
+        }
+      },
+      "neaten": {
+        "params": {"type": "object", "required": ["strokes"], "properties": {"strokes": {"$ref": "#/$defs/strokes"}, "strength": {"type": "number", "minimum": 0, "maximum": 1}, "text": {"type": "string"}, "units": {"type": "string"}, "context": {"$ref": "#/$defs/context"}}},
+        "result": {
+          "type": "object",
+          "required": ["strokes"],
+          "properties": {
+            "text": {"type": "string"},
+            "private": {"const": true},
+            "strokes": {"type": "array", "items": {"type": "object", "required": ["how", "points"], "properties": {"how": {"enum": ["kept", "line", "pulled"]}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}}}}}
+          }
+        }
+      },
+      "samples.list": {
+        "result": {
+          "type": "object", "required": ["samples"],
+          "properties": {"samples": {"type": "array", "items": {"type": "object", "required": ["id", "time", "source", "language", "text"], "properties": {"id": {"type": "string"}, "time": {"type": "integer"}, "source": {"type": "string"}, "language": {"type": "string"}, "text": {"type": "string"}}}}}
+        }
+      },
+      "samples.delete": {
+        "params": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}},
+        "result": {"type": "object", "maxProperties": 0}
+      },
+      "letters.status": {
+        "result": {
+          "type": "object", "required": ["state", "covered", "font"],
+          "properties": {"state": {"type": "string"}, "covered": {"type": "integer"}, "font": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["name", "version"], "properties": {"name": {"type": "string"}, "version": {"type": "integer"}}}]}}
+        }
+      }
+    }
+  }
+}

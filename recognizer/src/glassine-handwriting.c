@@ -46,7 +46,7 @@
 #define VERSION 1
 #define MAX_LINE (4 << 20)      /* bytes of one request line */
 #define MAX_BATCH 4096         /* lines answered together (a read drops older reads among them) */
-#define MAX_SESSIONS 16
+#define MAX_SESSIONS 64
 #define MAX_STROKES 4096
 #define MAX_POINTS 100000
 #define MAX_CANDS 8
@@ -297,10 +297,15 @@ struct session {
 	/* the last reply's candidates, for a pick: text, where each came from */
 	char *cand[MAX_CANDS];
 	int cand_from[MAX_CANDS], ncand;
+	char client[HW_CLIENT_MAX];     /* the client it was begun for (relay) */
 };
 
 static struct session sessions[MAX_SESSIONS];
 static char client[HW_CLIENT_MAX] = "-";
+/* hello … relay: one process serves several clients (the handwriting service); the client
+ * request names the one the requests after it are for, and a session belongs to the
+ * client it was begun for */
+static int relay;
 
 static struct session *find_session(const char *name)
 {
@@ -460,7 +465,11 @@ static void size_ref(const struct hw_lang *l, const struct session *s, struct hw
 }
 
 /* candidates (and their alignment) for ink; appends "\tTEXT\tSCORE\tALIGN" per candidate */
-static int candidates(struct hw_lang *l, struct session *s, int raw, int want, struct buf *b, int *ncand)
+static double fit_ok(void);
+#define PICK_MIN 0.3            /* a pick the words made: every character fits at least this */
+static const char *froms[] = { "ink", "beam", "words", "guided" };
+
+static int candidates(struct hw_lang *l, struct session *s, int raw, int detail, int want, struct buf *b, int *ncand)
 {
 	const struct hw_ink *ink = s->ink;
 	const int *ids = s->ids;
@@ -497,6 +506,18 @@ static int candidates(struct hw_lang *l, struct session *s, int raw, int want, s
 				hw_span_text(&r, &cs[k], ids, &a, &al, &ac);
 				if (a) bstr(b, a);
 				free(a);
+			}
+			if (detail) {
+				/* where it came from, and whether a pick of it passes the check (confirm) */
+				int f = rd.c[c].from, ok = 1;
+				if (f == HW_FROM_WORDS || f == HW_FROM_GUIDED) {
+					double sum = 0, lo = 1;
+					int m = 0;
+					for (long k = 0; k < nc; k++)
+						if (cs[k].fit >= 0 && rd.c[c].cp[k] != ' ') { sum += cs[k].fit; m++; if (cs[k].fit < lo) lo = cs[k].fit; }
+					ok = m && sum / m >= fit_ok() && lo >= PICK_MIN;
+				}
+				bfmt(b, "\t%s\t%s", f >= 0 && f < 4 ? froms[f] : "ink", ok ? "ok" : "check");
 			}
 			free(cs);
 		}
@@ -552,7 +573,7 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 	if (!done) bstr(b, ge->kind == HW_GESTURE_CARET ? "@0" : "-");
 }
 
-static void do_read(const char *id, struct session *s, int want, int raw)
+static void do_read(const char *id, struct session *s, int want, int raw, int detail)
 {
 	int bad;
 	if (!s->n) { reply("read\t%s\tempty", id); return; }
@@ -581,7 +602,7 @@ static void do_read(const char *id, struct session *s, int want, int raw)
 	free(ge); free(st); free(np);
 	struct buf c = { 0 };
 	int nc;
-	if (candidates(l, s, raw, want, &c, &nc)) { reply("error\t%s\tmemory", id); free(c.s); return; }
+	if (candidates(l, s, raw, detail, want, &c, &nc)) { reply("error\t%s\tmemory", id); free(c.s); return; }
 	bfmt(&b, "read\t%s\ttext\t%d", id, nc);
 	if (c.s) bstr(&b, c.s);
 	bstr(&out, b.s);
@@ -648,7 +669,6 @@ static double fit_ok(void)
  * reading, or found with the words guiding the search) is kept only when its alignment passes the check and no character fits below
  * PICK_MIN; failing, no sample (*reason 3). pick_rank > 0: the candidate picked (1 = the
  * first) and where it came from. */
-#define PICK_MIN 0.3
 static char *make_sample(struct hw_lang *l, const struct session *s, const char *text, const char *source, int prompted,
 			 int keep, int gate, int pick_rank, const char *pick_from, int *exact, double *fit, int *reason)
 {
@@ -754,7 +774,6 @@ static void do_confirm(const char *id, struct session *s, const char *source, co
 	if (!strcmp(src, "confirmed"))
 		for (int i = 0; i < s->ncand && !rank; i++) if (!strcmp(s->cand[i], text)) { rank = i + 1; from = s->cand_from[i]; }
 	int gate = from == HW_FROM_WORDS || from == HW_FROM_GUIDED;
-	static const char *froms[] = { "ink", "beam", "words", "guided" };
 	double fit = 0;
 	char *line = make_sample(l, s, text, src, prompted, keep && !gate, gate, rank,
 				 from >= 0 && from < 4 ? froms[from] : "", &exact, &fit, &why);
@@ -1359,16 +1378,26 @@ static void request(char *line, int skip_read)
 #define NEED(k) do { if (n != (k)) { reply("error\t%s\tbad-line", id); return; } } while (0)
 #define UNESC(i) do { if (unescape(f[i])) { reply("error\t%s\tbad-escape", id); return; } } while (0)
 	if (!strcmp(v, "hello")) {
-		if (n != 3 && n != 4) { reply("error\t%s\tbad-line", id); return; }
+		if (n < 3 || n > 5 || (n == 5 && strcmp(f[4], "relay"))) { reply("error\t%s\tbad-line", id); return; }
 		char *e;
 		long ver = strtol(f[2], &e, 10);
 		if (e == f[2] || *e || ver < 1) { reply("error\t%s\tbad-line", id); return; }
-		if (n == 4) {
+		if (n >= 4) {
 			if (!valid_name(f[3], HW_CLIENT_MAX - 1)) { reply("error\t%s\tbad-client", id); return; }
 			snprintf(client, sizeof client, "%s", f[3]);
 		}
+		relay = n == 5;
 		version_set = 1;
 		reply("hello\t%s\t%d", id, VERSION);
+		return;
+	}
+	if (!strcmp(v, "client")) {
+		/* client ID NAME: the client the following requests are for (relay only) */
+		NEED(3);
+		if (!relay) { reply("error\t%s\tnot-relay", id); return; }
+		if (!valid_name(f[2], HW_CLIENT_MAX - 1)) { reply("error\t%s\tbad-client", id); return; }
+		snprintf(client, sizeof client, "%s", f[2]);
+		reply("client\t%s\tok", id);
 		return;
 	}
 	if (!strcmp(v, "begin")) {
@@ -1383,6 +1412,7 @@ static void request(char *line, int skip_read)
 		UNESC(6);
 		if (strlen(f[3]) >= sizeof sessions[0].langs) { reply("error\t%s\tbad-lang", id); return; }
 		struct session *s = find_session(f[2]);
+		if (s && relay && strcmp(s->client, client)) { reply("error\t%s\tbusy", id); return; }
 		if (s) session_end(s);
 		if (rule == FIELD_PRIVATE) { reply("begin\t%s\tprivate", id); return; }   /* nothing kept */
 		if (*f[3] && strcmp(f[3], "-")) {
@@ -1396,6 +1426,7 @@ static void request(char *line, int skip_read)
 		snprintf(s->name, sizeof s->name, "%s", f[2]);
 		snprintf(s->langs, sizeof s->langs, "%s", f[3]);
 		snprintf(s->field, sizeof s->field, "%s", f[4]);
+		snprintf(s->client, sizeof s->client, "%s", client);
 		s->rule = rule;
 		s->units = u;
 		s->before = strdup(f[6]);
@@ -1433,7 +1464,7 @@ static void request(char *line, int skip_read)
 		}
 		struct buf b0 = out;      /* the reply line, renamed from read to recognize */
 		size_t at = b0.len;
-		do_read(id, &tmp, (int)want, 0);
+		do_read(id, &tmp, (int)want, 0, 0);
 		if (out.len > at && !strncmp(out.s + at, "read\t", 5)) {
 			struct buf t = { 0 };
 			bstr(&t, "recognize");
@@ -1451,6 +1482,7 @@ static void request(char *line, int skip_read)
 	    !strcmp(v, "area") || !strcmp(v, "mark") || !strcmp(v, "neaten")) {
 		if (n < 3) { reply("error\t%s\tbad-line", id); return; }
 		if (!s) { reply("error\t%s\tunknown-session", id); return; }
+		if (relay && strcmp(s->client, client)) { reply("error\t%s\tunknown-session", id); return; }
 	}
 	if (!strcmp(v, "stroke")) {
 		NEED(4);
@@ -1462,8 +1494,14 @@ static void request(char *line, int skip_read)
 		if ((sid = session_add(s, &k, w, src)) < 0) { free(src); hw_ink_free(&k); reply("error\t%s\ttoo-many", id); return; }
 		reply("stroke\t%s\tok\t%d", id, sid);
 	} else if (!strcmp(v, "read")) {
-		/* read ID S [COUNT [raw]] */
-		if (n < 3 || n > 5 || (n == 5 && strcmp(f[4], "raw"))) { reply("error\t%s\tbad-line", id); return; }
+		/* read ID S [COUNT [raw] [detail]] */
+		int raw = 0, detail = 0;
+		if (n < 3 || n > 6) { reply("error\t%s\tbad-line", id); return; }
+		for (int k = 4; k < n; k++) {
+			if (!strcmp(f[k], "raw") && !raw && !detail) raw = 1;
+			else if (!strcmp(f[k], "detail") && !detail) detail = 1;
+			else { reply("error\t%s\tbad-line", id); return; }
+		}
 		long want = 3;
 		if (n >= 4) {
 			char *e;
@@ -1471,7 +1509,7 @@ static void request(char *line, int skip_read)
 			if (e == f[3] || *e || want < 1 || want > MAX_CANDS) { reply("error\t%s\tbad-count", id); return; }
 		}
 		if (skip_read) { reply("drop\t%s", id); return; }
-		do_read(id, s, (int)want, n == 5);
+		do_read(id, s, (int)want, raw, detail);
 	} else if (!strcmp(v, "align")) {
 		NEED(4);
 		UNESC(3);
