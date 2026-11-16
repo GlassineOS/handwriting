@@ -144,6 +144,14 @@ class Writer:
             self.shown = None
             return self._best_next()
 
+    def start_list(self, prompts):
+        """the character sheet's Write more: these prompts, each written once with care, in
+        turn; then none"""
+        with self.lock:
+            self.best = {"step": "careful", "pair": "", "n": 0, "chars": [], "list": list(prompts)}
+            self.shown = None
+            return self._best_next()
+
     def stop_best(self):
         with self.lock:
             self.best = None
@@ -155,6 +163,9 @@ class Writer:
             b = self.best
             if same is not None:
                 base = same
+            elif "list" in b:
+                base = b["list"][b["n"]] if b["n"] < len(b["list"]) else None
+                b["step"], b["pair"] = "careful", ""
             elif b.get("chars"):
                 c = b["chars"][b["n"] % len(b["chars"])]
                 base = P.Prompt(c, "letters", self.state.lang)
@@ -487,3 +498,22 @@ def load_pick(rec, rows, prefs, rng=None, tries=6):
             if len(got) == 2:
                 return {"a": got[0], "b": got[1], "char": ch, "chosen": None}
     return None
+
+
+def char_prompts(c, sets, lang, n):
+    """the character sheet's Write more for c: n prompts, the character on its own and in a
+    word in turn (a word of the shipped ones that has it; a capital: one that starts with
+    it), each written with care"""
+    words = [p.text for name in ("words", "digits") for p in sets.get(name, []) if c in p.text and " " not in p.text]
+    if not words and c.isalpha():
+        low = c.lower()
+        words = [p.text[0].upper() + p.text[1:] for p in sets.get("words", []) if p.text.startswith(low)]
+    words = sorted(set(w for w in words if w != c), key=lambda w: (len(w), w))
+    out = []
+    for i in range(n):
+        if i % 2 and words:
+            w = words[(i // 2) % len(words)]
+            out.append(P.Prompt(w, "words", lang, written="careful"))
+        else:
+            out.append(P.Prompt(c, "letters", lang, written="careful"))
+    return out

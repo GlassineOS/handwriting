@@ -9,7 +9,8 @@
 //   glassine-handwriting adapt [-f] [-l LANG] ...    one adaptation (idle and charging)
 //   glassine-handwriting adaptation [show|revert] [-l LANG]
 //   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
-//   glassine-handwriting letters build [-f] [-r] [--progress]|status|show   the letter model (spec 003)
+//   glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR]|status|show|marks|mark KIND CHAR ID...|samples CHAR
+//                                                                  the letter model (spec 003)
 //   glassine-handwriting font build [-n NAME] FILE|install [-n NAME]|remove|status
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
@@ -1751,7 +1752,8 @@ static void usage(void)
 	      "       glassine-handwriting adaptation [show|revert] [-l LANG]\n"
 	      "       glassine-handwriting charging\n"
 	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
-	      "       glassine-handwriting letters build [-f] [-r] [--progress] | status | show\n"
+	      "       glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show | marks\n"
+	      "       glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | samples CHAR\n"
 	      "       glassine-handwriting font build [-n NAME] FILE | install [-n NAME] | remove | status\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
@@ -1958,21 +1960,95 @@ static int cmp_double(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
+/* one character given as its UTF-8 */
+static int one_char(const char *s, unsigned *cp)
+{
+	unsigned c[2];
+	if (hw_utf8_decode(s, c, 2) != 1 || c[0] == ' ' || c[0] < 0x21) return 0;
+	*cp = c[0];
+	return 1;
+}
+
+static void print_occ(const struct hw_occ *o, void *arg)
+{
+	static const char *st[] = { "usable", "out", "way-out", "unread", "joined-before", "joined-after", "odd" };
+	(void)arg;
+	struct buf b = { 0 };
+	bfmt(&b, "sample\t%s\t%d\t%s\t%d\t", o->id, o->pos, st[o->state], o->variant);
+	besc(&b, o->text);
+	puts(b.s);
+	free(b.s);
+}
+
 /* read / bench: sample-format lines from FILE */
 static int cmd_letters(int argc, char **argv)
 {
 	const char *sub = argc > 0 ? argv[0] : "status";
 	if (!strcmp(sub, "build")) {
 		struct hw_letters_opts o = { 0, 0, 1, 0 };
+		unsigned one = 0;
 		for (int i = 1; i < argc; i++) {
 			if (!strcmp(argv[i], "-f")) o.force = 1;
 			else if (!strcmp(argv[i], "-r")) o.requested = 1;
 			else if (!strcmp(argv[i], "--progress")) o.progress = 1;
+			else if (!strcmp(argv[i], "-c") && i + 1 < argc && one_char(argv[i + 1], &one)) i++;
 			else { usage(); return 2; }
 		}
 		/* asked for or not, it runs at the lowest priority: the device stays usable */
 		if (nice(19) == -1) {}
+		if (one) {
+			int r = hw_letters_relearn(one, o.progress ? 2 : 1);
+			if (r == 0) puts("skip\tno-model");
+			return r < 0 ? 1 : 0;
+		}
 		return hw_letters_run(&o) < 0 ? 1 : 0;
+	}
+	if (!strcmp(sub, "mark")) {
+		/* letters mark KIND CHAR ID... (FR-031) */
+		static const char *kinds[] = { "clear", "out", "way-out", "favourite" };
+		unsigned cp;
+		int kind = -1;
+		if (argc < 4 || !one_char(argv[2], &cp)) { usage(); return 2; }
+		for (int k = 0; k < 4; k++) if (!strcmp(argv[1], kinds[k])) kind = k;
+		if (kind < 0) { usage(); return 2; }
+		size_t n = (size_t)argc - 3;
+		char (*ids)[17] = calloc(n + 1, sizeof *ids);
+		if (!ids) return 1;
+		for (size_t i = 0; i < n; i++) {
+			if (strlen(argv[3 + i]) != 16) { free(ids); usage(); return 2; }
+			memcpy(ids[i], argv[3 + i], 17);
+		}
+		int r = hw_mark_set((const char (*)[17])ids, n, cp, kind);
+		free(ids);
+		if (r == -3) { puts("error\tno-such-sample"); return 1; }
+		if (r) return 1;
+		puts("marked");
+		return 0;
+	}
+	if (!strcmp(sub, "marks")) {
+		struct hw_mark *m;
+		size_t n;
+		if (argc != 1 || hw_marks(&m, &n)) return argc != 1 ? (usage(), 2) : 1;
+		static const char *kinds[] = { "", "out", "way-out", "favourite" };
+		for (size_t i = 0; i < n; i++) {
+			char u[8];
+			u[hw_utf8_encode(m[i].cp, u)] = 0;
+			struct buf b = { 0 };
+			bfmt(&b, "mark\t%s\t", m[i].id);
+			besc(&b, u);
+			bfmt(&b, "\t%s", kinds[m[i].kind]);
+			puts(b.s);
+			free(b.s);
+		}
+		free(m);
+		return 0;
+	}
+	if (!strcmp(sub, "samples")) {
+		/* letters samples CHAR: where it is written and how each counts (the character sheet) */
+		unsigned cp;
+		if (argc != 2 || !one_char(argv[1], &cp)) { usage(); return 2; }
+		if (nice(10) == -1) {}
+		return hw_letters_occurrences(cp, print_occ, NULL) ? 1 : 0;
 	}
 	if (argc != 1) { usage(); return 2; }
 	if (!strcmp(sub, "show")) {
@@ -1994,7 +2070,7 @@ static int cmd_letters(int argc, char **argv)
 		if (r < 0) return 1;
 		char now[17];
 		if (hw_letters_inputs(now)) { if (r == 1) hw_letters_free(&L); return 1; }
-		printf("state\t%s\n", r == 0 ? "none" : strcmp(L.inputs, now) ? "outdated" : "current");
+		printf("state\t%s\n", r == 0 ? "none" : strcmp(L.inputs, now) || hw_letters_marks_changed(&L) ? "outdated" : "current");
 		/* the counts from the samples as they are now, built model or not (FR-030); the
 		 * versions from the model as built */
 		struct hw_lcount *c;
@@ -2017,6 +2093,7 @@ static int cmd_letters(int argc, char **argv)
 			free(b.s);
 		}
 		free(c);
+		int fcur = r == 1 && hw_font_current(&L);
 		if (r == 1) hw_letters_free(&L);
 		char name[256], path[4096];
 		unsigned v;
@@ -2030,6 +2107,8 @@ static int cmd_letters(int argc, char **argv)
 			besc(&b, path);
 			puts(b.s);
 			free(b.s);
+			/* whether it was made from the letters as they are in the model now */
+			printf("font-letters\t%s\n", fcur ? "same" : "changed");
 		} else {
 			puts("font\t-");
 		}
