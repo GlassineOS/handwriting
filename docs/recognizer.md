@@ -307,9 +307,10 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   is more likely a descender read wrong); the slant of each character moves to the letter
   model's (without one, the line's own), at most 0.4; letters read with a fit of 0.5 or more are
   scaled to the line's x-height (by their class: small letters, tall letters, capitals and
-  digits; 0.85 to 1.18); each pair of neighbouring letters moves so its profile gap (below,
-  taken from the ink as the line-level map and the pull leave it) goes towards the letter
-  model's gap for that pair (without a letter model, the line's median profile gap), and the
+  digits; 0.85 to 1.18); each pair of neighbouring letters moves towards where the letter model's spacing places it
+  (below: its middles' distance, guarded by its gap; profiles and middles taken from the ink as
+  the line-level map and the pull leave it; without a letter model, towards the line's median
+  profile gap), and the
   gaps between words (box to box) towards the letter model's word spacing (without one, the
   line's median), at most 0.3 x-heights each. Characters joined in one stroke move together.
 - **The pull (FR-014).** A character with a fit of 0.5 or more (or from `ALIGN`) that the letter
@@ -610,7 +611,18 @@ letters stand where their profiles leave more open space (`open`, the least-squa
 the gap on the mean open space beyond the narrowest, at most 1). A pair's gap is its own, else
 its side shapes', else the typical gap less `open` times its open space beyond the median one
 (`open0`), within 0.3 x-heights of the typical gap. Word spacing is the median box gap between
-words. The same samples and picks make
+words. Where a pair goes is by its letters' middles: a version's middle is the mean x of its
+ink between the baseline and the x-height, each piece weighted by how far it runs up or down
+(stems and bowls count, bars, hooks and connecting strokes hardly do). From the same
+neighbouring letters come a pair's distance (the median from the first's middle to the
+second's, written at least 3 times) and each character's reaches (the distance as the first's
+right reach plus the second's left reach, by alternating medians, for a character on that side
+of at least 3 pairs). A pair is set at its distance, else at its characters' reaches, applied to
+the middles of the versions used; then, where between the baseline and the x-height (the
+bands from −0.05 to 1.05) their profiles come closer than its gap, or than half the typical gap
+when that is smaller, moved apart to it. A pair without a distance (or a version without ink
+running up or down in the x-height band) is set at its gap. A version sits on the line where the
+samples it is made from sit on average (with the weights that make its shape). The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
 
 It is made again when its inputs (the prompted samples and the picks, and the way it is built)
@@ -657,12 +669,14 @@ then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"
 "letter_spacing":…,"word_spacing":…,"ink_width":…,"x_height_per_line":…,"base_below_guide":…,
 "x_height_mm":…}}` (the spacing's typical and word gaps; the last three what a sample without
 letters to measure its x-height or baseline from takes, which a one-character build reuses), then
-`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N],…],
-"sides":[[RIGHT,LEFT,GAP,N],…],"left_shapes":[[…8],…],"right_shapes":[[…8],…]}}`, then per
+`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
+"sides":[[RIGHT,LEFT,GAP,N],…],"reach":[["a",RIGHT,LEFT,NR,NL],…],"left_shapes":[[…8],…],
+"right_shapes":[[…8],…]}}` (`DISTANCE`, `RIGHT` and `LEFT` null when not learned), then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
 "members":N,"use":N,"lc":L,"rc":R,"left_out":true,"favourite":true,"ids":["ID",…],"left":[…8],
-"right":[…8],"strokes":[[[x,y],…],…]}],"slots":[V,…]}` (x from the version's left edge, y up
-from the baseline, in x-heights; `left` and `right` its profile, null for a band without ink,
+"right":[…8],"middle":…,"strokes":[[[x,y],…],…]}],"slots":[V,…]}` (x from the version's left
+edge, y up from the baseline, in x-heights; `left` and `right` its profile, null for a band
+without ink, `middle` its middle (null without one),
 `lc` and `rc` its side shapes; `left_out` and `favourite` only when so; `ids` the samples written
 this way, those its `use` counts, sorted; no versions when not covered). A character with marks
 has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the
@@ -683,7 +697,7 @@ references to one of its versions), and the `calt` feature has a rule per step t
 next glyph into its glyph at the step after. Letters are spaced by the spacing: each version has
 half the typical gap as side bearing on each side, and the `kern` feature (GPOS pair kerning
 with a class per version, every step glyph in its version's class) moves every pair of versions
-to its pair's gap; the space is the word spacing less the typical gap. A preview that lays text
+to where the spacing places it; the space is the word spacing less the typical gap. A preview that lays text
 out from the model (the samples app) spaces it the same way. The font is made only on the device and is
 never donated or exported.
 

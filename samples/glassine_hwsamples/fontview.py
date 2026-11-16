@@ -123,10 +123,51 @@ def pair_gap(sp, a, va, b, vb):
     return min(max(g, letter - 0.3), letter + 0.3)
 
 
+MID_Y0, MID_Y1 = 0.0, 1.0       # letters.h HW_MID_Y0, HW_MID_Y1
+PROF_Y0, PROF_Y1 = -0.6, 1.6    # letters.h HW_PROF_Y0, HW_PROF_Y1
+
+
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else float("nan")
+
+
+def place(sp, a, va, b, vb):
+    """spacing.c hw_spacing_place: where b's left edge goes, right of a's: the letters'
+    middles at the pair's distance (or the two characters' reaches), guarded by the gap
+    between the baseline and the x-height; at the gap without a distance"""
+    pa, pb = _prof(va), _prof(vb)
+    gap = pair_gap(sp, a, va, b, vb)
+    s = gap - profile_gap(pa, pb, 0)
+    ma, mb = _num(va.get("middle")), _num(vb.get("middle"))
+    if not (_ok(ma) and _ok(mb)):
+        return s
+    d = float("nan")
+    for p in sp.get("pairs", []):
+        if p[0] == a and p[1] == b:
+            d = _num(p[4]) if len(p) > 4 else d
+            break
+    if not _ok(d):
+        reach = {r[0]: r for r in sp.get("reach", [])}
+        if a in reach and b in reach:
+            d = _num(reach[a][1]) + _num(reach[b][2])
+    if not _ok(d):
+        return s
+    at = d + ma - mb
+    floor = gap if gap < sp.get("letter", 0.15) / 2 else sp.get("letter", 0.15) / 2
+    band = (PROF_Y1 - PROF_Y0) / BANDS
+    g = float("inf")
+    for k in range(BANDS):
+        y0 = PROF_Y0 + k * band
+        y1 = y0 + band
+        if y1 <= MID_Y0 or y0 >= MID_Y1 or not _ok(pa[1][k]) or not _ok(pb[0][k]):
+            continue
+        g = min(g, pb[0][k] + at - pa[1][k])
+    return at + floor - g if g < floor else at
+
+
 def _kern(sp, a, va, b, vb, gap):
     """ttf.c gpos: the kerning between two variants, in font units"""
-    at = profile_gap(_prof(va), _prof(vb), va["width"] + gap)
-    k = _round((pair_gap(sp, a, va, b, vb) - at) * XH)
+    k = _round((place(sp, a, va, b, vb) - (va["width"] + gap)) * XH)
     return max(-3 * XH, min(3 * XH, k))
 
 
@@ -175,7 +216,7 @@ def layout(model, text):
     """[(char, strokes or None, x, advance)] in x-heights, x from the left of the text, y up
     from the baseline; strokes None: the system font draws the character. Spaced as the font
     spaces it (ttf.c): half the typical gap each side, each pair of neighbouring letters
-    kerned to its gap, the space the word gap less the two sides beside it."""
+    kerned to where the spacing places it, the space the word gap less the two sides beside it."""
     model = font_view(model)
     m = model["metrics"]
     sp = model.get("spacing") or {"letter": m.get("letter_spacing", 0.15), "word": m.get("word_spacing", 0.7)}

@@ -88,6 +88,25 @@ double hw_profile_open(const struct hw_profile *a, const struct hw_profile *b)
 	return n >= 2 ? s / n : 0;
 }
 
+void hw_mid_seg(struct hw_mid *m, double x0, double y0, double x1, double y1)
+{
+	if (!isfinite(x0) || !isfinite(y0) || !isfinite(x1) || !isfinite(y1) || y0 == y1) return;
+	/* the part between the baseline and the x-height */
+	double t0 = (HW_MID_Y0 - y0) / (y1 - y0), t1 = (HW_MID_Y1 - y0) / (y1 - y0);
+	if (t0 > t1) { double t = t0; t0 = t1; t1 = t; }
+	if (t0 < 0) t0 = 0;
+	if (t1 > 1) t1 = 1;
+	if (t1 <= t0) return;
+	double w = fabs(y1 - y0) * (t1 - t0), x = x0 + (x1 - x0) * (t0 + t1) / 2;
+	m->sx += w * x;
+	m->sw += w;
+}
+
+double hw_mid_of(const struct hw_mid *m)
+{
+	return m->sw > 1e-9 ? m->sx / m->sw : NAN;
+}
+
 /* a side's shape: per band, how far it lies in from the side's outermost ink */
 static void side_shape(const struct hw_profile *p, int side, double *v)
 {
@@ -141,7 +160,7 @@ static int cmp_side(const void *x, const void *y)
 double hw_spacing_gap(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, int rc,
 		      unsigned b, const struct hw_profile *pb, int lc)
 {
-	struct hw_pair kp = { a, b, 0, 0 };
+	struct hw_pair kp = { a, b, 0, 0, 0 };
 	const struct hw_pair *hp = sp->npairs ? bsearch(&kp, sp->pairs, sp->npairs, sizeof kp, cmp_pair) : NULL;
 	if (hp) return hp->gap;
 	if (rc >= 0 && lc >= 0 && sp->nsides) {
@@ -157,10 +176,48 @@ double hw_spacing_gap(const struct hw_spacing *sp, unsigned a, const struct hw_p
 	return g;
 }
 
+static int cmp_reach(const void *x, const void *y)
+{
+	unsigned a = ((const struct hw_reach *)x)->cp, b = ((const struct hw_reach *)y)->cp;
+	return a < b ? -1 : a > b;
+}
+
+double hw_spacing_place(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, double ma, int rc,
+			unsigned b, const struct hw_profile *pb, double mb, int lc)
+{
+	double gap = hw_spacing_gap(sp, a, pa, rc, b, pb, lc);
+	/* set at the gap */
+	double s = gap - hw_profile_gap(pa, pb, 0);
+	if (!isfinite(ma) || !isfinite(mb)) return s;
+	/* the middles' distance: the pair's own, or the two characters' reaches */
+	double d = NAN;
+	struct hw_pair kp = { a, b, 0, 0, 0 };
+	const struct hw_pair *hp = sp->npairs ? bsearch(&kp, sp->pairs, sp->npairs, sizeof kp, cmp_pair) : NULL;
+	if (hp) d = hp->mid;
+	if (!isfinite(d) && sp->nreach) {
+		struct hw_reach ka = { a, 0, 0, 0, 0 }, kb = { b, 0, 0, 0, 0 };
+		const struct hw_reach *ra = bsearch(&ka, sp->reach, sp->nreach, sizeof ka, cmp_reach);
+		const struct hw_reach *rb = bsearch(&kb, sp->reach, sp->nreach, sizeof kb, cmp_reach);
+		if (ra && rb) d = ra->right + rb->left;
+	}
+	if (!isfinite(d)) return s;
+	/* guarded: never closer than the gap, or half the typical gap where that is smaller,
+	 * between the baseline and the x-height (a bar or a hook may reach over the next letter) */
+	double at = d + ma - mb, floor = gap < sp->letter / 2 ? gap : sp->letter / 2, g = INFINITY;
+	for (int k = 0; k < HW_PROF_BANDS; k++) {
+		double y0 = HW_PROF_Y0 + k * BAND, y1 = y0 + BAND;
+		if (y1 <= HW_MID_Y0 || y0 >= HW_MID_Y1 || isnan(pa->r[k]) || isnan(pb->l[k])) continue;
+		double x = pb->l[k] + at - pa->r[k];
+		if (x < g) g = x;
+	}
+	return g < floor ? at + floor - g : at;
+}
+
 void hw_spacing_free(struct hw_spacing *sp)
 {
 	free(sp->pairs);
 	free(sp->sides);
+	free(sp->reach);
 	memset(sp, 0, sizeof *sp);
 }
 
@@ -221,7 +278,7 @@ static int side_classes(struct hw_letters *L, int side, double (*shape)[HW_PROF_
 	return nc;
 }
 
-struct obs_ix { unsigned a, b; int rc, lc; double gap, open; };
+struct obs_ix { unsigned a, b; int rc, lc; double gap, open, d; };
 
 static int cmp_obs_pair(const void *x, const void *y)
 {
@@ -237,6 +294,59 @@ static int cmp_obs_side(const void *x, const void *y)
 	if (a->rc != b->rc) return a->rc - b->rc;
 	if (a->lc != b->lc) return a->lc - b->lc;
 	return a->gap < b->gap ? -1 : a->gap > b->gap;
+}
+
+/* the characters' reaches: the middles' distance of every pair as the first's right reach
+ * plus the second's left reach, by alternating medians (the same pairs, the same reaches);
+ * x: room for n numbers */
+static int reaches(struct hw_spacing *sp, const struct obs_ix *ix, size_t n, double *x)
+{
+	size_t nc = 0;
+	struct hw_reach *r = malloc((2 * n + 1) * sizeof *r);
+	if (!r) return -1;
+	for (size_t i = 0; i < n; i++) {
+		if (!isfinite(ix[i].d)) continue;
+		r[nc++] = (struct hw_reach){ ix[i].a, NAN, NAN, 0, 0 };
+		r[nc++] = (struct hw_reach){ ix[i].b, NAN, NAN, 0, 0 };
+	}
+	qsort(r, nc, sizeof *r, cmp_reach);
+	size_t u = 0;
+	for (size_t i = 0; i < nc; i++) if (!u || r[u - 1].cp != r[i].cp) r[u++] = r[i];
+	nc = u;
+	for (size_t i = 0; i < n; i++) {
+		if (!isfinite(ix[i].d)) continue;
+		struct hw_reach ka = { ix[i].a, 0, 0, 0, 0 }, kb = { ix[i].b, 0, 0, 0, 0 };
+		((struct hw_reach *)bsearch(&ka, r, nc, sizeof ka, cmp_reach))->nr++;
+		((struct hw_reach *)bsearch(&kb, r, nc, sizeof kb, cmp_reach))->nl++;
+	}
+	for (size_t c = 0; c < nc; c++) if (r[c].nl >= HW_PAIR_MIN) r[c].left = 0;
+	for (int it = 0; it < 8; it++)
+		for (int side = 1; side >= 0; side--)
+			for (size_t c = 0; c < nc; c++) {
+				if ((side ? r[c].nr : r[c].nl) < HW_PAIR_MIN) continue;
+				size_t k = 0;
+				for (size_t i = 0; i < n; i++) {
+					if (!isfinite(ix[i].d) || (side ? ix[i].a : ix[i].b) != r[c].cp) continue;
+					struct hw_reach ko = { side ? ix[i].b : ix[i].a, 0, 0, 0, 0 };
+					const struct hw_reach *o = bsearch(&ko, r, nc, sizeof ko, cmp_reach);
+					double other = side ? o->left : o->right;
+					if (isfinite(other)) x[k++] = ix[i].d - other;
+				}
+				if (k) { if (side) r[c].right = med(x, k, 0); else r[c].left = med(x, k, 0); }
+			}
+	/* the characters with both, or one, learned */
+	u = 0;
+	for (size_t c = 0; c < nc; c++) {
+		if (r[c].nr < HW_PAIR_MIN) r[c].right = NAN;
+		if (r[c].nl < HW_PAIR_MIN) r[c].left = NAN;
+		if (!isfinite(r[c].right) && !isfinite(r[c].left)) continue;
+		if (isfinite(r[c].right)) r[c].right = round(r[c].right * 1e4) / 1e4;
+		if (isfinite(r[c].left)) r[c].left = round(r[c].left * 1e4) / 1e4;
+		r[u++] = r[c];
+	}
+	sp->reach = r;
+	sp->nreach = u;
+	return 0;
 }
 
 int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n, const double *words, size_t nw)
@@ -255,7 +365,7 @@ int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n,
 	for (size_t i = 0; i < n; i++) {
 		if (!(o[i].gap >= GAP_MIN && o[i].gap <= GAP_MAX)) continue;
 		ix[m0] = (struct obs_ix){ o[i].a, o[i].b, hw_spacing_side(sp, &o[i].pa, 1), hw_spacing_side(sp, &o[i].pb, 0),
-					 o[i].gap, hw_profile_open(&o[i].pa, &o[i].pb) };
+					 o[i].gap, hw_profile_open(&o[i].pa, &o[i].pb), o[i].mb - o[i].ma };
 		g[m0++] = o[i].gap;
 	}
 	n = m0;
@@ -287,12 +397,15 @@ int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n,
 		size_t j = i;
 		while (j < n && ix[j].a == ix[i].a && ix[j].b == ix[i].b) j++;
 		if (j - i >= HW_PAIR_MIN) {
-			size_t m = j - i;
+			size_t m = j - i, k = 0;
 			double v = m % 2 ? ix[i + m / 2].gap : (ix[i + m / 2 - 1].gap + ix[i + m / 2].gap) / 2;
-			sp->pairs[sp->npairs++] = (struct hw_pair){ ix[i].a, ix[i].b, v, (int)m };
+			for (size_t q = i; q < j; q++) if (isfinite(ix[q].d)) x[k++] = ix[q].d;
+			double d = k >= HW_PAIR_MIN ? round(med(x, k, 0) * 1e4) / 1e4 : NAN;
+			sp->pairs[sp->npairs++] = (struct hw_pair){ ix[i].a, ix[i].b, v, (int)m, d };
 		}
 		i = j;
 	}
+	if (reaches(sp, ix, n, x)) { free(g); free(x); free(ix); return -1; }
 	qsort(ix, n, sizeof *ix, cmp_obs_side);
 	for (size_t i = 0; i < n;) {
 		size_t j = i;

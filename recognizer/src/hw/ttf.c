@@ -167,7 +167,7 @@ static void glyph_of(struct glyph *g, const struct hw_variant *v, double gap, do
 	double r = ink * XH / 2;
 	if (r < 6) r = 6;
 	/* the side bearings: half the person's typical gap each side, between the pen's centre
-	 * lines as the spacing measures it (GPOS kerns each pair to its own gap) */
+	 * lines as the spacing measures it (GPOS kerns each pair to where the spacing places it) */
 	double ox = gap / 2 * XH;
 	for (size_t j = 0; j < v->nstrokes; j++) outline_stroke(g, &v->s[j], ox, r);
 	g->adv = (int)lround((v->width + gap) * XH);
@@ -323,7 +323,7 @@ static uint32_t tsum(const unsigned char *d, size_t n)
 }
 
 /* GPOS: pair kerning (FR-009), one class per variant, so every pair of variants comes out
- * at the spacing's gap for its two characters (spacing.c). PairPos format 2 subtables of
+ * where the spacing places it (spacing.c). PairPos format 2 subtables of
  * as many first classes as fit 16-bit offsets, behind Extension lookups (32-bit). The
  * classes: the glyph of character i at step s has its variant's, the space none. */
 static int gl_at(int i, int s, void *ctx);
@@ -344,9 +344,8 @@ static void gpos(struct bb *b, const struct hw_letters *L, const struct hw_lette
 	for (int a = 0; a < nv; a++)
 		for (int c = 0; c < nv; c++) {
 			const struct hw_variant *va = vv[a], *vc = vv[c];
-			double at = hw_profile_gap(&va->prof, &vc->prof, va->width + letter);
-			double want = hw_spacing_gap(&L->sp, vl[a]->cp, &va->prof, va->rc, vl[c]->cp, &vc->prof, vc->lc);
-			long k = lround((want - at) * XH);
+			double at = hw_spacing_place(&L->sp, vl[a]->cp, &va->prof, va->mid, va->rc, vl[c]->cp, &vc->prof, vc->mid, vc->lc);
+			long k = lround((at - (va->width + letter)) * XH);
 			kern[a * nv + c] = (short)(k < -3 * XH ? -3 * XH : k > 3 * XH ? 3 * XH : k);
 		}
 	/* the first classes per subtable: what keeps its classes and coverage in 16-bit reach */
