@@ -253,7 +253,7 @@ Nothing in it leaves the device except by export or a donation the person writes
   deleted one is cut off the end of the file or, when other samples follow it, overwritten with
   spaces where it is (a line of spaces is no sample), and the file is written anew without those
   once they are a quarter of it. A line that is not a whole JSON object (zero bytes or a line cut
-  short by a crash) is no sample either and is overwritten with spaces at the next write.
+  short by a crash) is no sample either.
 - `samples.meta`: first line `glassine-handwriting-meta 1 GEN` (format, version, erase count),
   then one line per sample, tab-separated: `ID CLIENT TIME SOURCE LANG` (`TIME` seconds since
   1970; `CLIENT` `-` when none was named). `ID` is the sample's id: the first 16 hex digits of a
@@ -266,9 +266,10 @@ Nothing in it leaves the device except by export or a donation the person writes
   fields), `- OFFSET LENGTH` for bytes that are no sample. It is checked against the files at every
   open (inode, erase count, the last sample's id and place); lines after the last one it covers
   (written by an earlier version, or an index line lost in a crash) are added from the file, and
-  an index that doesn't fit is made again from the file. A deletion writes the index first, then
-  `samples.meta`, then the overwrite, so a crash on the way leaves the sample (no reply was given)
-  or is finished at the next open. A store without an index gets one at its first open.
+  an index that doesn't fit is made again from the file (also when a sample it lists no longer
+  begins its line). A deletion writes the index (for the next erase count) first, then the file,
+  then `samples.meta`, so a crash on the way leaves the sample with its client and time or takes
+  it out. A store without an index gets one at its first open.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
   `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one

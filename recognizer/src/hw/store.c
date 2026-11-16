@@ -700,8 +700,16 @@ static int ix_scan(struct ix *x, int fd, long long off, long long size, struct m
 				}
 			}
 		}
+		if (!sample && e && l >= 2 && s[0] == '{' && s[l - 1] == '}' && !memchr(s, 0, (size_t)l)) {
+			/* a whole line no parser reads: still a sample, as the load counts it */
+			free((char *)v.pub.text); free((char *)v.pub.read);
+			v.pub.text = strdup("");
+			v.pub.read = strdup("");
+			sample = v.pub.text && v.pub.read;
+		}
 		if (!sample) {
 			free((char *)v.pub.text); free((char *)v.pub.read);
+			v.pub.text = v.pub.read = NULL;
 			if (junk0 < 0) junk0 = off + i;
 			i += e ? l + 1 : l;
 			continue;
@@ -794,24 +802,19 @@ static int ix_sync(struct ix *x, int locked)
 	x->gen = gen;
 	int r = ix_read(x, (unsigned long long)js.st_ino), rewrite = r != 0;
 	if (r < 0 || ix_end(x) > js.st_size) { ix_clear(x); rewrite = 1; }
-	/* the last sample must still be where the index says */
+	/* the last sample must still be where the index says, and every sample still begin its
+	 * line (a deletion overwrites the line before the index of the donation knows) */
 	for (size_t k = x->n; k-- > 0;) {
 		if (!x->e[k].id[0]) continue;
 		if (!line_is(jfd, &x->e[k])) { ix_clear(x); rewrite = 1; }
 		break;
 	}
+	for (size_t k = 0; k < x->n; k++) {
+		char c;
+		if (x->e[k].id[0] && (pread(jfd, &c, 1, x->e[k].off) != 1 || c != '{')) { ix_clear(x); rewrite = 1; break; }
+	}
 	size_t had = x->n;
 	if (ix_scan(x, jfd, ix_end(x), js.st_size, x->samples ? &mm : NULL)) goto out;
-	/* bytes the index says are no sample are blanks: a crash between the index and the
-	 * overwrite (the deletion finishes here), zero bytes or a line cut short by a crash
-	 * are overwritten too */
-	for (size_t k = 0; k < x->n; k++) {
-		char c, nl = 0;
-		const struct ixe *e = &x->e[k];
-		if (!e->id[0] && e->len > 0 && pread(jfd, &c, 1, e->off) == 1 && c != ' ' && c != '\n' &&
-		    pread(jfd, &nl, 1, e->off + e->len - 1) == 1)
-			blank(jfd, e->off, e->len - (nl == '\n'));
-	}
 	if (rewrite) { if (ix_write(x, (unsigned long long)js.st_ino, 0)) {} }
 	else if (x->n > had && ix_append(x, had)) {}
 	stat0(x->jrel, &x->js);
@@ -1060,11 +1063,12 @@ static void rm_tree(const char *p)
 /* takes every line of the id out of an indexed file (the store's lock held, the index in
  * step): the lines at the end are cut off, the others overwritten with blanks where they
  * are; when the blanks grow to a quarter of the file, it is written anew without them.
- * The index goes to the disk first (with gen, the erase count it will belong to), so a
- * crash on the way either leaves the sample or finishes the deletion at the next look.
- * before_file: called between the index and the file (the meta's new erase count).
- * Returns the number of lines taken out, -1 on an error. */
-static long ix_remove(struct ix *x, const char *id, unsigned long gen, int (*before_file)(void *), void *arg)
+ * after_file (the samples: samples.meta with the new erase count gen) makes the order
+ * index, file, meta: the index belongs to the new count, so until the meta has it the
+ * index is made again from the file, and a crash leaves the sample with its meta or takes
+ * it out. Without (the donation) the order is file, index: an index whose sample no longer
+ * begins its line is made again. Returns the number of lines taken out, -1 on an error. */
+static long ix_remove(struct ix *x, const char *id, unsigned long gen, int (*after_file)(void *), void *arg)
 {
 	char p[4096];
 	if (hw_store_path(p, sizeof p, x->jrel)) return -1;
@@ -1093,7 +1097,7 @@ static long ix_remove(struct ix *x, const char *id, unsigned long gen, int (*bef
 	long long junk = 0, size = cut;
 	for (size_t k = 0; k < x->n; k++) if (!x->e[k].id[0]) junk += x->e[k].len;
 	int compact = junk * 4 > size;
-	int r = -1;
+	int r = -1, keyed = after_file != NULL;
 	x->gen = gen;
 	if (compact) {
 		/* the live lines into a new file, then the index for it, then the rename */
@@ -1122,15 +1126,18 @@ static long ix_remove(struct ix *x, const char *id, unsigned long gen, int (*bef
 		x->n = w;
 		ok = ok && !fsync(tfd) && !fstat(tfd, &ts);
 		if (tfd >= 0) close(tfd);
-		if (ok && !ix_rehash(x, x->hcap) && !ix_write(x, (unsigned long long)ts.st_ino, 1) &&
-		    (!before_file || !before_file(arg)) && !rename(t, p))
-			r = 0;
-		else unlink(t);
-	} else if (!ix_write(x, (unsigned long long)st.st_ino, 1) && (!before_file || !before_file(arg))) {
-		r = 0;
-		if (cut < st.st_size && (ftruncate(fd, cut) || fsync(fd))) r = -1;
+		ok = ok && !ix_rehash(x, x->hcap) && !(keyed && ix_write(x, (unsigned long long)ts.st_ino, 1)) && !rename(t, p);
+		if (!ok) unlink(t);
+		if (ok && keyed && after_file(arg)) ok = 0;
+		if (ok && !keyed) ix_write(x, (unsigned long long)ts.st_ino, 0);
+		r = ok ? 0 : -1;
+	} else {
+		r = keyed && ix_write(x, (unsigned long long)st.st_ino, 1) ? -1 : 0;
+		if (!r && cut < st.st_size && (ftruncate(fd, cut) || fsync(fd))) r = -1;
 		for (size_t k = 0; !r && k < nb; k++)
 			if (blanks[k].off < cut && blank(fd, blanks[k].off, blanks[k].len - 1)) r = -1;
+		if (!r && keyed && after_file(arg)) r = -1;
+		if (!r && !keyed) ix_write(x, (unsigned long long)st.st_ino, 0);
 	}
 	free(blanks);
 	close(fd);
