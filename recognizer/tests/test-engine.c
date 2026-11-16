@@ -544,6 +544,46 @@ static void test_size(void)
 	free(was);
 	for (int i = 0; i < 3; i++) hw_ink_free(&k[i]);
 
+	/* a mark set apart at the end of a word, written last: a dot, whatever the model saw */
+	for (int i = 0; i < 3; i++) stroke_at(&k[i], &s[i], 10 + 30 * i, 50, 7, 0, 0);
+	stroke_at(&k[3], &s[3], 90, 56, 1, 0, 0);
+	hw_run_free(&r);
+	r.C = (int)l.model.cfg.nclass;
+	r.T = r.rows = 8;
+	r.down = 1;
+	r.logp = malloc(8 * (size_t)r.C * sizeof *r.logp);
+	r.org = calloc(8, sizeof *r.org);
+	const char *rd8 = "a_a_a_L_";
+	const int st8[] = { 0, 0, 1, 1, 2, 2, 3, 3 };
+	for (int f = 0; f < 8; f++) {
+		float *row = r.logp + (size_t)f * r.C;
+		r.org[f].stroke = st8[f];
+		for (int c = 0; c < r.C; c++) row[c] = -12;
+		if (rd8[f] == '_') row[0] = -0.01f;
+		else { row[0] = -4; row[hw_class_of(&l.model, (unsigned char)rd8[f])] = -0.05f; }
+		if (rd8[f] == 'L') row[hw_class_of(&l.model, '.')] = -6;
+	}
+	hw_size_weigh(&l, &r, s, 4, &ref);
+	{
+		struct hw_reading rd;
+		char txt[16] = "";
+		hw_read(&l, &r, 1, &rd);
+		for (int j = 0; rd.n && j < rd.c[0].len && j < 15; j++) txt[j] = (char)rd.c[0].cp[j], txt[j + 1] = 0;
+		CHECK(!strcmp(txt, "aaa."), "a dot after a word reads as a dot (%s)", txt);
+	}
+	/* an i's dot written last over its stem is part of the i: the word reads as it is */
+	hw_ink_free(&k[2]); hw_ink_free(&k[3]);
+	stroke_at(&k[2], &s[2], 70, 45, 0, 70, 57);
+	stroke_at(&k[3], &s[3], 70.5, 38, 1, 0, 0);
+	memcpy(r.logp + 6 * (size_t)r.C, r.logp + 4 * (size_t)r.C, 2 * (size_t)r.C * sizeof *r.logp);
+	free(r.logp0); free(r.size); r.logp0 = NULL; r.size = NULL;
+	was = malloc(8 * (size_t)r.C * sizeof *was);
+	memcpy(was, r.logp, 8 * (size_t)r.C * sizeof *was);
+	hw_size_weigh(&l, &r, s, 4, &ref);
+	CHECK(!r.logp0 && !memcmp(was, r.logp, 8 * (size_t)r.C * sizeof *was), "an i's dot leaves the word as it is");
+	free(was);
+	for (int i = 0; i < 4; i++) hw_ink_free(&k[i]);
+
 	/* no reference: nothing changes */
 	stroke_at(&k[0], &s[0], 50, 50, 1, 0, 0);
 	run_of(&l, &r, 1, "LO.,", (const float[]){ -0.1f, -1, -9, -10 });

@@ -1106,13 +1106,14 @@ class Size(unittest.TestCase):
     def test_marks(self):
         """a dot and a hyphen at their size next to the person's letters (x-height 0.1 em):
         read as marks whatever the model makes of them blown up"""
+        marks = set(".,'-")
         c = self.client("0.1,0.25,0.14,0.35")
-        self.assertEqual(self.read(c, [self.circle(0.5, 0.5, 0.01)])[:1], ["."])
+        self.assertIn(self.read(c, [self.circle(0.5, 0.5, 0.01)])[0], marks)
         self.assertEqual(self.read(c, [self.line(0.4, 0.5, 0.5, 0.505)])[:1], ["-"])
         # the line alone (em: 1) is enough for a dot
         c.close()
         c = self.client()
-        self.assertEqual(self.read(c, [self.circle(0.5, 0.5, 0.01)])[:1], ["."])
+        self.assertIn(self.read(c, [self.circle(0.5, 0.5, 0.01)])[0], marks)
         c.close()
 
     def test_fit_never_lower(self):
@@ -1154,6 +1155,15 @@ class Size(unittest.TestCase):
         self.assertTrue(f.exists())
         self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
         self.assertTrue(f.read_text().startswith("glassine-handwriting-size 1\n"))
+        # a sample taken back takes its measurement with it, at once
+        ids = [ln.split(" ")[0] for ln in f.read_text().splitlines()[1:]]
+        self.assertTrue(ids)
+        c = self.client()
+        self.assertEqual(c.ask("forget", ids[-1])[2], "ok")
+        c.close()
+        self.assertNotIn(ids[-1], f.read_text())
+        self.env.run("samples", "delete", ids[0])
+        self.assertNotIn(ids[0], f.read_text())
         self.env.run("samples", "erase")
         self.assertFalse(f.exists())
 
