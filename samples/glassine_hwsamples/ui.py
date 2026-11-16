@@ -468,13 +468,22 @@ class UI:
             GLib.idle_add(lambda: (self.redraw(), False)[1])
 
         def go():
-            return self.cli.adapt(self.state.lang, on_line=line)
+            # its own thread: a run takes minutes, and the writing's requests (the worker's)
+            # must not wait for it
+            try:
+                last = self.cli.adapt(self.state.lang, on_line=line)
+            except Exception as e:      # shown on the page, the app keeps running
+                print("glassine-handwriting-samples: error: %s" % e, file=sys.stderr, flush=True)
+                last = ("skip", ["error"])
+            GLib.idle_add(lambda: (fin(last), False)[1])
 
         def fin(last):
             self.adapting = None
             self.result = last
+            self.redraw()
             self.refresh()
-        self.run(go, fin)
+        self.redraw()
+        threading.Thread(target=go, daemon=True).start()
 
     def revert(self):
         self.confirm = None
