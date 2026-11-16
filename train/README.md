@@ -228,8 +228,8 @@ read time): prose lines with words 241 → 243 ms (+1 %; 95th percentile +3 %), 
 
 ## Data for the next base model (model 4; `gen4`)
 
-Spec 001 FR-018 and FR-020. The data only: no model is trained on it yet, and the shipped
-features and model file are unchanged.
+Spec 001 FR-018 and FR-020. Model 4 is trained on it (Results, Model 4); the shipped model is
+still model 2.
 
 ```sh
 uv run glassine-train real STORE --out build/real --keep-test OLD/split.json  # the fixed test set
@@ -484,6 +484,117 @@ fonts; held-out fonts = 1000 lines each, greedy.
   the split), so on-device adaptation never re-learns the base model's own samples.
 - To ship real ink in the base: samples from several writers, so one hand's quirks
   average out; the same split and gate apply.
+
+### Model 4: reading the size (FR-018, FR-020; not released)
+
+**Recipe.** `ink4` train (600 k lines) featurized with `--ref mix` (six inputs: lengths in
+reference heights, y above the baseline, the ink's height); the characters of `CHARS4` (82,
+with `@ & + # % _ = $`); model 2's architecture (1.41 M parameters) and optimiser (AdamW,
+one-cycle to 3e-3, batch 32, slant-and-stretch augmentation, the size column moved with the
+stretch); best of `dev.xh` and `dev_kinds.xh` (mean CER). Synthetic ink only: no real ink and
+no contributor's letter model in the base. 32 k steps took 209 minutes on 9 host threads; a
+run of model 2's 16 k steps (139 minutes) ends at 9.7 % on the selection sets against 7.5 %.
+
+```sh
+uv run glassine-train train --run m4long --data train4-ref --val val.xh --select dev.xh,dev_kinds.xh \
+    --augment --hidden 176 --minutes 560 --steps-per-s 0.95238 --threads 9   # 32 000 steps
+```
+
+**How it is read.** Every number below is the recognizer program's own reading (`inkread`,
+`realeval`): the model file version 2 (`onnx2ghm`), the size weighing off (a version 2 model is
+not weighed; see below), each guide owning its line from two thirds above it to a third below.
+Synthetic lines are read as a person's samples: each line at a fixed letter height in a
+writing area of its own line height, the guide on its baseline, with the letter height known
+or the line alone. Modes: ink only (`read … raw`), the character model
+alone (`read … chars`), words, words + character model (the default of a field).
+
+**Real ink, same writer** (the fixed test session, 116 words; a fresh head trained on the
+training sessions, the person's letters from them; CER / WER, top 3):
+
+| | model 2 | model 4 | model 4 − model 2, CER (95 %) |
+|---|---|---|---|
+| ink only | 12.5 % / 63 %, 59 % | 10.1 % / 57 %, 62 % | −4.8 to +0.0 |
+| words | 7.9 % / 34 %, 78 % | 4.4 % / 20 %, 85 % | −6.0 to −0.9 |
+| character model | 5.0 % / 23 %, 79 % | 3.2 % / 17 %, 85 % | −3.9 to +0.1 |
+| words + character model | 5.2 % / 22 %, 80 % | 2.4 % / 13 %, 87 % | −5.1 to −0.8 |
+| without a head, words + character model | 32.9 % | 29.7 % | −7.6 to +1.3 |
+
+(paired bootstrap over the samples.) The choices (32 k steps, no weighing, no letter-model
+lines in the head) were made on the synthetic dev sets and the real dev session (65); the
+test session was read once.
+
+**Synthetic held-out ink** (the three held-out groups pooled: model 2's two held-out fonts and
+its twelve new ones, model 2's test texts and `test_kinds`; CER, words + character model):
+
+| | model 2, letter height known / line alone | model 4, known / line alone |
+|---|---|---|
+| test book (1500 lines) | 31.2 / 31.3 % | 5.2 / 9.7 % |
+| random words | 37.1 / 37.0 % | 6.0 / 11.0 % |
+| numbers and punctuation | 51.8 / 51.5 % | 23.3 / 31.3 % |
+| random letters (ink only) | 47.7 / 47.5 % | 29.4 / 38.3 % |
+| names | 45.9 / 46.1 % | 13.6 / 23.4 % |
+| codes (dates, emails, numbers, parts, phones, plates, postcodes, times, web) | 52.9 / 52.9 % | 14.5 / 22.5 % |
+| lone characters | 57.6 / 57.6 % | 23.1 / 31.5 % |
+
+Every set and every code kind is lower in every mode (paired bootstrap, 95 %: 15 to 37 points
+with the letter height known, 5 to 30 with the line alone). Per held-out font, greedy, letter
+height known: 4.5 to 10.6 %, `reeniebeanie` 22.1 % (model 2: 28 to 39 %, 52.9 %). **This
+ink is model 4's own generator**, which model 2 never saw (on its own generator's ink model 2
+reads the held-out fonts at 5 to 12 %), so the size of the gap overstates the gain; the real
+session above is the fair comparison.
+
+**Lone characters at their size** (`test_lone`: 40 of each per group, top reading right /
+read as the other case, words + character model, letter height known):
+
+| | `.` | `,` | `o` | `O` | `c` | `C` | `s` | `S` |
+|---|---|---|---|---|---|---|---|---|
+| model 2 (weighed) | 79 / – | 94 / – | 43 / 0 | 2 / 56 | 57 / 0 | 24 / 47 | 48 / 0 | 11 / 70 |
+| model 4 | 82 / – | 91 / – | 92 / 0 | 12 / 12 | 78 / 0 | 62 / 11 | 86 / 3 | 78 / 3 |
+
+The case of a lone letter is now mostly right. A lone `O` is read as the digit `0` (87 of 120;
+model 2 read it as `o`): alone the two are one shape, so it comes down to the field. Before the
+guide rule above, a lone comma read right 40 % of the time (as `'`, a line too high) and a dot
+67 %.
+
+**Size weighing.** Weighing model 4's reading by the size as well (FR-017) helps only the lone
+dot and comma: lone characters 9 to 16 points worse weighed (95 %), every other set equal or 0.1
+to 0.7 better unweighed; on the real dev session 2.3 % weighed, 2.1 % unweighed (measured on the
+16 k-step run). The recognizer weighs only version 1 models.
+
+**Regressions.**
+
+- Letters read as digits inside words: 53 of 3897 synthetic texts without digits (1.4 %;
+  model 2: 13) with the letter height known, 73 with the line alone (model 2: 14), mostly
+  capitals (`O→0`, `I→1`, `G→6`, `I→4`, `z→2`); on the real test session 2 of 116 (model 2: 0).
+- A lone `O` (above).
+- With the line alone (no letters of the person yet) model 4 reads 4 to 10 points worse than
+  with the letter height, but still far below model 2.
+
+**A head with letter-model lines.** Adding 400 lines written in the person's letter model
+(`gen4-letters`) to the training sessions of the fresh head makes it worse (real dev, words +
+character model 2.3 → 3.0 %), so the head learns from the person's real samples only.
+
+**Size and speed** (x86 host, one core, interleaved with model 2, the machine busy with
+training, so compare the two rather than the absolute times):
+
+| | model 2 | model 4 |
+|---|---|---|
+| parameters | 1.41 M | 1.41 M |
+| ONNX int8 | 1.45 MB | 1.45 MB; held-out CER 13.7 % (fp32 13.2 %) |
+| network, one line (ink4 held-out text), int8 | 5.3 ms, 686 points | 3.3 ms, 427 points |
+| recognizer program, prose line, words + character model | 32 ms | 25 ms |
+| … line of random words | 45 ms | 34 ms |
+
+Lengths in reference heights resample a line to 38 % fewer points, so the whole read is
+21 to 24 % faster (27 to 29 % ink only). By the same ratio the tablet's 243 ms per prose line
+and 88 ms per word (above) would be about 190 ms and 67 ms; not measured on the device.
+
+**Against the release gate** (Fine-tuning, above): model 4 beats model 2 + fresh head on the
+real session (words + character model 2.4 % against 5.2 %, 95 % interval of the difference
+−5.1 to −0.8 points), and no held-out group is worse (all three far lower; read in ink4's
+versions of model 2's held-out fonts and texts, since model 2's own test ink is kept only as
+model 2's features). Not released: the device run (time, the samples app, a person writing)
+is still to do.
 
 ## What limits accuracy
 
