@@ -675,11 +675,20 @@ class Pages(Case):
                                [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
                                             "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
         self.e.cli.run("samples", "import", str(f))
+        # before any letter model: the counts are there all the same (FR-030)
+        st = self.e.cli.letters()
+        self.assertEqual(st["state"], "none")
+        self.assertTrue(all(st["chars"][c] == (3, 0) for c in "abcdefghijk"))
+        self.assertEqual(st["chars"]["l"], (12, 0))
         u = self.make()
         u.wizard_done()
+        # opening the page learns the letters in the background, the font stays as it is
         u.open_font()
-        self.settle(u, lambda: u.font is not None)
-        self.assertEqual(u.font["status"]["state"], "none")      # no letter model before the first make
+        self.settle(u, lambda: u.font is not None and not u.letters_job and not u.letters_loading
+                    and u.font["status"]["state"] == "current")
+        self.assertIsNone(u.font["status"]["font"])
+        self.assertIsNotNone(u.font["model"])
+        self.assertEqual(self.e.cli.letters()["chars"]["a"][0], 3)
         u.make_font()
         self.settle(u, lambda: not u.font_busy and u.font and u.font["status"]["font"])
         st, model = u.font["status"], u.font["model"]
@@ -707,7 +716,7 @@ class Pages(Case):
         # a new name: made again under it, the version counts on
         u.open_best("intro")
         u.open_font()
-        self.settle(u, lambda: u.font is not None)
+        self.settle(u, lambda: u.font is not None and not u.letters_job and not u.letters_loading)
         u.font_name = "Notes hand"
         u.make_font()
         self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Notes hand", 2))
@@ -867,6 +876,26 @@ class Drawn(unittest.TestCase):
                         if (w, h) != size:                    # a dialog's backdrop
                             self.assertTrue(0 <= x and x + w <= size[0] + 1 and 0 <= y and y + h <= size[1] + 1,
                                             (voice, size, s, x, y, w, h))
+
+    def test_font_preview_fits_its_box(self):
+        """the font page's preview, in a hand with wide letters, stays inside its box"""
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from glassine_hwsamples import pages, ui
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        from glassine_hwsamples import fontview
+        f = ui.demo_font(False)
+        for d in f["model"]["chars"].values():
+            for v in d["variants"]:
+                v["width"] = 1.4
+        for maxw in (626, 1172):
+            xh = pages.hand_fit(f["model"], fontview.PREVIEW, 14, maxw, 56)
+            lines, line_h = pages.hand_lines(f["model"], fontview.PREVIEW, xh, maxw)
+            m = f["model"]["metrics"]
+            self.assertLessEqual(xh * m["ascender"] + (len(lines) - 1) * line_h - xh * m["descender"], 56)
+            self.assertGreaterEqual(xh, 6)
 
 
 if __name__ == "__main__":

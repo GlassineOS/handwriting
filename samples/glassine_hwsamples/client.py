@@ -268,14 +268,18 @@ class Cli:
     # the letter model and the font (spec 003)
 
     def letters(self):
-        """{"state": none|current|outdated, "covered": K, "font": (name, version) or None}"""
-        d = {"state": "none", "covered": 0, "font": None}
+        """{"state": none|current|outdated, "samples": N, "covered": K, "chars": {c: (usable,
+        versions)}, "font": (name, version) or None}: the counts from the samples as they are
+        now, built model or not (spec 003 FR-030); the versions from the model as built"""
+        d = {"state": "none", "samples": 0, "covered": 0, "chars": {}, "font": None}
         for line in self.run("letters", "status").splitlines():
             f = line.split("\t")
             if f[0] == "state":
                 d["state"] = f[1]
-            elif f[0] == "covered":
-                d["covered"] = int(f[1])
+            elif f[0] in ("samples", "covered"):
+                d[f[0]] = int(f[1])
+            elif f[0] == "char" and len(f) >= 4:
+                d["chars"][unesc(f[1])] = (int(f[2]), int(f[3]))
             elif f[0] == "font" and len(f) >= 3:
                 d["font"] = (unesc(f[1]), int(f[2]))
         return d
@@ -284,9 +288,22 @@ class Cli:
         """the letter model's file text ("" when there is none)"""
         return self.run("letters", "show")
 
-    def letters_build(self):
-        """asked for by the person: built, or skip with the reason"""
-        return self.run("letters", "build", "-r").strip().split("\t")
+    def letters_build(self, progress=None):
+        """asked for by the person (at the lowest priority): built, or skip with the reason;
+        progress(done, total) while it reads the samples"""
+        last = []
+        with subprocess.Popen([self.binary, "letters", "build", "-r", "--progress"], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True, env=self.env) as p:
+            for line in p.stdout:
+                f = line.rstrip("\n").split("\t")
+                if f[0] == "progress" and len(f) == 3:
+                    if progress:
+                        progress(int(f[1]), int(f[2]))
+                elif f[0]:
+                    last = f
+        if p.returncode:
+            raise Error("letters build failed")
+        return last
 
     def font_install(self, name=None):
         """builds and installs the font (under its name, or this one): its (name, version)"""

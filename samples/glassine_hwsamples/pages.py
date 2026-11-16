@@ -313,6 +313,10 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
         line, col = "Neatening…", k.soft
     elif ui.neat_text:
         line, col = "Read as “%s”" % ui.neat_text, k.soft
+    elif ui.letters_progress() is not None:
+        line, col = "Learning your letters… %d%%" % round(100 * ui.letters_progress()), k.soft
+    elif ((ui.font or {}).get("status") or {}).get("state") == "none":
+        line, col = "Letters not learned yet: lines and sizes only.", k.soft
     else:
         line, col = "Nothing here becomes a sample.", k.soft
     _, th = PT.text(cr, line, k["sub"], PAD, y, col, maxw=w - 2 * PAD)
@@ -1028,10 +1032,8 @@ def best_pick(cr, ui, hits, w, h):
     btns_right(cr, k, hits, w - PAD, by, [("Both fine", ui.next_pick, False), ("Skip", ui.next_pick, False)])
 
 
-def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
-    """text in the person's font as it will look (fontview.layout), wrapped at spaces; a
-    character the font lacks in the system's font. y: the first baseline. -> the last
-    baseline"""
+def hand_lines(model, text, xh, maxw):
+    """text wrapped at spaces for draw_hand -> (lines, line height)"""
     m = model["metrics"]
     line_h = xh * (m.get("ascender", 1.5) - m.get("descender", -0.5)) * 1.15
     words, cur = [], []
@@ -1052,6 +1054,27 @@ def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
         else:
             ln += wd
     lines.append(ln)
+    return lines, line_h
+
+
+def hand_fit(model, text, xh, maxw, maxh):
+    """the largest x-height up to xh at which text wraps into maxw by maxh (from the first
+    line's top to the last line's descender)"""
+    m = model["metrics"]
+    while xh > 6:
+        lines, line_h = hand_lines(model, text, xh, maxw)
+        if xh * m.get("ascender", 1.5) + (len(lines) - 1) * line_h - xh * m.get("descender", -0.5) <= maxh:
+            break
+        xh *= 0.9
+    return xh
+
+
+def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
+    """text in the person's font as it will look (fontview.layout), wrapped at spaces; a
+    character the font lacks in the system's font. y: the first baseline. -> the last
+    baseline"""
+    m = model["metrics"]
+    lines, line_h = hand_lines(model, text, xh, maxw)
     ink = max(1.5, m.get("ink_width", 0.07) * xh)
     cr.save()
     cr.set_line_width(ink)
@@ -1080,7 +1103,8 @@ def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
 
 def best_font(cr, ui, hits, w, h):
     """Your font (spec 003 Scenario 3): a preview in the font, which letters it has, what is
-    missing with a way to write it now, the name, make and install"""
+    missing with a way to write it now, the name, make and install. The counts come from the
+    samples, built model or not (FR-030); a missing or out-of-date model is being built"""
     k = ui.theme
     y = chrome(cr, ui, hits, w)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Your font",
@@ -1091,22 +1115,44 @@ def best_font(cr, ui, hits, w, h):
     f = ui.font or {}
     st, model = f.get("status") or {}, f.get("model")
     if not ui.font:
-        PT.text(cr, "Looking at your letters…", k["row"], PAD, y, k.soft, maxw=cw, wrap=True)
+        PT.text(cr, "Counting your letters…", k["row"], PAD, y, k.soft, maxw=cw, wrap=True)
         btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
         return
-    # the preview
+    cov = FV.coverage(model, status=st)
+    have = sum(1 for c in cov if c[2])
+    ready = sum(1 for c in cov if c[1] >= FV.MIN)
+    prog = ui.letters_progress()
+    state = st.get("state")
+    if prog is not None:
+        note = "Learning your letters… %d%%" % round(100 * prog)
+    elif state == "none" and st.get("samples"):
+        note = "Your letters aren’t learned yet"
+    elif state == "outdated":
+        note = "You wrote more since: your letters need updating"
+    else:
+        note = ""
+    # the preview, with where the letter model stands
     ph = 112
     soft_box(cr, k, PAD, y, cw, ph)
-    lbl(cr, k, "Preview" if model else "No font yet", PAD + 18, y + 14)
-    if model and any(c[2] for c in FV.coverage(model)):
-        draw_hand(cr, k, model, FV.PREVIEW, PAD + 18, y + 66, 14, cw - 36)
+    lw, _ = lbl(cr, k, "Preview" if have else "No font yet", PAD + 18, y + 14)
+    if note:
+        PT.text(cr, note, k["sub"], PAD + cw - 18, y + 10, k.soft, maxw=cw - lw - 60, align=2)
+    if prog is not None:
+        bar(cr, k, PAD + 18, y + ph - 16, cw - 36, 10, int(10 * prog), h=6)
+    if model and have:
+        xh = hand_fit(model, FV.PREVIEW, 14, cw - 36, ph - 56)
+        cr.save()
+        cr.rectangle(PAD, y, cw, ph - 18)
+        cr.clip()
+        draw_hand(cr, k, model, FV.PREVIEW, PAD + 18, y + 38 + xh * model["metrics"].get("ascender", 1.5), xh,
+                  cw - 36)
+        cr.restore()
     else:
-        PT.text(cr, "Write a few words with care first: once letters have 3 samples, they show here.", k["sub"],
-                PAD + 18, y + 44, k.ink, maxw=cw - 36, wrap=True)
+        t = ("The preview comes once your letters are learned." if prog is not None or (ready and state != "current")
+             else "Write a few words with care first: once letters have 3 samples, they show here.")
+        PT.text(cr, t, k["sub"], PAD + 18, y + 44, k.ink, maxw=cw - 36, wrap=True)
     y += ph + 16
     # the letters
-    cov = FV.coverage(model)
-    have = sum(1 for c in cov if c[2])
     lbl(cr, k, "In your font: %d of %d" % (have, len(cov)), PAD, y)
     y += 22
     cols = 26 if w > 900 else 13
@@ -1120,12 +1166,12 @@ def best_font(cr, ui, hits, w, h):
             PT.text(cr, c, k["row"], cx + cwid / 2, cy + 8, k.ink, align=1)
         else:
             PT.box(cr, cx, cy, cwid, chh, k["cellR"], bg=k.hi if n else k.paper,
-                   shadow="inset 0 0 0 1.5px " + k.soft)
-            PT.text(cr, c, k["sub"], cx + cwid / 2, cy + 2, k.soft, align=1)
+                   shadow="inset 0 0 0 1.5px " + (k.ink if n >= FV.MIN else k.soft))
+            PT.text(cr, c, k["sub"], cx + cwid / 2, cy + 2, k.ink if n >= FV.MIN else k.soft, align=1)
             PT.text(cr, "%d/%d" % (min(n, FV.MIN), FV.MIN), k["mono"], cx + cwid / 2, cy + chh - 17, k.soft,
                     align=1)
     y += ((len(cov) + cols - 1) // cols) * (chh + gap) + 10
-    miss = FV.missing(model)
+    miss = FV.missing(model, status=st)
     if miss:
         t = "Not in it yet: " + " ".join(miss[:24]) + (" …" if len(miss) > 24 else "")
         bw = btn_w(cr, k, "Write these now", "edit")
@@ -1145,20 +1191,24 @@ def best_font(cr, ui, hits, w, h):
     inst = st.get("font")
     if ui.font_busy:
         foot = "Making your font… The tablet stays usable meanwhile."
-    elif inst and st.get("state") == "current":
+    elif prog is not None:
+        foot = "Your letters are being learned. The tablet stays usable meanwhile; your font stays as it is."
+    elif inst and state == "current":
         foot = "Installed, version %d. Apps show it in their font lists." % inst[1]
     elif inst:
         foot = "Installed, version %d. You wrote more since: Update makes it again under the same name." % inst[1]
-    elif have:
+    elif ready:
         foot = "Not installed yet. Only you have it on this tablet; it is never donated."
     else:
         foot = ""
     btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
     btns = []
+    if state != "current" and st.get("samples") and prog is None and not ui.font_busy:
+        btns.append(("Learn letters now" if state == "none" else "Update letters", ui.build_letters, False))
     if inst and not ui.font_busy:
         btns.append(("Remove", ui.ask_remove_font, False))
     label = "Update" if inst else "Install"
-    can = have and not ui.font_busy and not (inst and st.get("state") == "current" and not ui.font_name)
+    can = ready and not ui.font_busy and not (inst and state == "current" and not ui.font_name)
     btns.append((label, ui.make_font if can else None, True))
     btns_right(cr, k, hits, w - PAD, by, btns)
     if ui.msg:

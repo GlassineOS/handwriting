@@ -255,6 +255,30 @@ int hw_neaten(struct hw_neat *q)
 		if (best >= 0 && bn < tot && bn * 4 >= tot * 3)
 			for (size_t i = 0; i < k->n; i++) if (q->own[j][i] >= 0) q->own[j][i] = best;
 	}
+	/* the alignment follows the order of writing, so a dot, bar or arm written after the
+	 * word sits with its last letter: it goes to the character it lies across, as the letter
+	 * model has it (letters.c, spec 003 FR-007); joined strokes stay as they are */
+	int **sp = calloc(nc + 1, sizeof *sp);
+	for (size_t c = 0; sp && c < nc; c++) {
+		sp[c] = malloc((n + 1) * sizeof **sp);
+		if (!sp[c]) { for (size_t d = 0; d < c; d++) free(sp[d]); free(sp); sp = NULL; break; }
+		int w = 0;
+		for (size_t j = 0; j < n; j++) {
+			if (q->keep && q->keep[j]) continue;
+			for (size_t i = 0; i < q->ink[j].n; i++) if (q->own[j][i] == (int)c) { sp[c][w++] = (int)j; break; }
+		}
+		sp[c][w] = -1;
+	}
+	if (sp && !hw_letters_place(q->ink, n, q->xh > 0 ? 5 * q->xh : 0, q->cp, nc, sp))
+		for (size_t j = 0; j < n; j++) {
+			int to = -1, many = 0;
+			for (size_t c = 0; c < nc; c++)
+				for (int *p = sp[c]; *p >= 0; p++) if (*p == (int)j) { if (to >= 0) many = 1; to = (int)c; }
+			if (to < 0 || many) continue;
+			for (size_t i = 0; i < q->ink[j].n; i++) if (q->own[j][i] >= 0) q->own[j][i] = to;
+		}
+	for (size_t c = 0; sp && c < nc; c++) free(sp[c]);
+	free(sp);
 	/* the characters' ink */
 	for (size_t j = 0; j < n; j++) {
 		sole[j] = -1;

@@ -280,7 +280,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   Characters joined in one stroke move together.
 - **The pull (FR-014).** A character with a fit of 0.5 or more (or from `ALIGN`) that the letter
   model covers, whose strokes are its own (a stroke mostly one character's, three quarters of
-  its points or more, counts as its), with as many strokes as one of its versions made of at
+  its points or more, counts as its; then the strokes are put right by where the ink lies as
+  for the letter model, so a dot or bar written after the word belongs to the letter it lies
+  across, not to the word's last one, five x-heights standing in for the area's line), with as many strokes as one of its versions made of at
   least two samples, and within 0.3 x-heights (centred RMS distance, the ink at the line's
   x-height) of the nearest such version, goes towards that version: each point to the point of
   the version at the same share of the stroke's length, the version placed on the straight
@@ -421,7 +423,7 @@ Nothing in it leaves the device except by export or a donation the person writes
   `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
-- `letters/model`: the letter model (below); `letters/font` (`NAME VERSION PATH`, tab-separated:
+- `letters/model`: the letter model (below); `letters/usable` (its usable samples, below); `letters/font` (`NAME VERSION PATH`, tab-separated:
   the installed font) and `letters/font-version` (the last version made, so a removed and
   remade font doesn't reuse one). An erase of all samples or of a client's takes out the letter
   model, the installed font and these files (the erased samples' preferences go with them).
@@ -453,15 +455,29 @@ result.
 
 `glassine-handwriting letters build` makes the letter model from the person's prompted samples:
 for each character, up to three versions of how they write it. A character's sample is usable
-when its spans are exact (`spans_source` `exact`, as the samples app stores them) and its strokes
+when its spans are exact (`spans_source` `exact`, as the samples app stores them), or the sample
+is one character alone kept with `keep` after a failed check (its strokes can only be that
+character's: lone full stops and commas fail the check most often), and its strokes
 are its own (not shared with a neighbour, so joined letters are never cut apart); a character is
-covered with 3 usable samples. A short stroke (shorter than 0.3 area lines, or 0.4 times the
-sample's median stroke without an area) written after the strokes it belongs with, such as an
-i's dot or a t's bar, can sit in the spans of characters that were written around the same time
-instead of, or beside, the one it stands over. When it is an extra stroke of each character that
-has it, it goes to the character whose other strokes it lies across, above their middle (of
-several, one that had it), and to that one alone; one that is a single character's and lies
-across it stays. Its samples are grouped by stroke count; the count with the most
+covered with 3 usable samples (unless none of its versions can be measured: no baseline or
+x-height to put it on). The spans follow the order of writing, split halfway between where the
+recognizer saw two characters, so before a character's strokes count as its own they are put
+right by where the ink lies:
+a stroke the alignment put with several characters goes to one of them alone when it lies
+beside the other strokes of another (across at most a quarter of the narrower of the two, and
+not under ink above it, so an i's dot keeps its stem), such as a letter's stroke in a full
+stop's span; and a short stroke (at most 0.4 area lines, or half the sample's median stroke
+without an area) written after the strokes it belongs with goes to the character it lies
+across (its middle over that character's ink, or over half of the narrower of the two, or
+touching its side), from the top of that character down to its baseline (rising at most that
+character's height above it, or above the rest only where the character has ink above: i, j,
+`:` `;` `!` `?` `=` `%` `"` and accented letters); a dot or accent above an i, a j or an
+accented letter goes to the nearest one up to two of its heights (or a fifth of the area's
+line) to either side. Of several, the one whose ink its middle is over, then one it lies
+across, then one it touches; among those the one it is centred over. That covers an i's or
+j's dot, the bar of a t or an f, the arms of an E, the bar of an H and the second stroke of an
+x or a k, in words as well as alone. A stroke that is all a character has stays with it.
+Its samples are grouped by stroke count; the count with the most
 weight is the way it is written (another gives versions only when it is about as strong), each
 sample is resampled by arc length and centred, and weighted by how it was written (careful above
 quick), the person's picks (the chosen character or sample up, the other down), how well it was
@@ -474,9 +490,17 @@ own letters); the line metrics (cap height, ascender, descender, slant, letter a
 ink width as the app's pen draws) come from all usable samples. The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
 
-It is made again when its inputs (the prompted samples and the picks) changed: after a background
-adaptation (the same conditions: charging and idle), or when asked (`-r`, any power; at the lowest
-priority, so the device stays usable). `-f` makes it even when nothing changed.
+It is made again when its inputs (the prompted samples and the picks, and the way it is built)
+changed: after a background adaptation (the same conditions: charging and idle), or when asked
+(`-r`, any power; at the lowest priority, so the device stays usable; a client asks while it
+shows a page about the letters, spec 003 FR-008). `-f` makes it even when nothing changed.
+
+The usable samples per character are known without a model (FR-030): `letters/usable` holds,
+per prompted sample, the characters it has with strokes of their own, by the same rules as the
+build. It is derived like `size`: a count or a build writes it (skipped while another process
+holds the lock), a sample it lacks is read once, and it is made again when the way the model is
+built changes. `letters status` counts from it, so its figures are the model's as a build would
+make them now, at once.
 
 **Model file** (`letters/model`, `letters show`): JSON lines. The first
 `{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
@@ -514,7 +538,7 @@ glassine-handwriting learning [on|off]          show or set handwriting.conf's l
 glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
-glassine-handwriting letters build [-f] [-r] | status | show
+glassine-handwriting letters build [-f] [-r] [--progress] | status | show
 glassine-handwriting font install [-n NAME] | remove | status | build [-n NAME] FILE
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
@@ -553,9 +577,12 @@ before the first donation), `donor new` replaces it with a new one and prints th
 donations then count as another writer's. `erase` keeps the donor ID.
 
 `letters build` prints `built SAMPLES COVERED` or `skip REASON` (`charging`, `nothing-new`,
-`erased`). `letters status` prints `state none|current|outdated` (outdated: samples or picks
-changed since it was made), `samples N` (usable), `covered K`, one `char C SAMPLES VERSIONS` per
-character seen (C escaped like a text field) and `font NAME VERSION PATH` or `font -`. `font
+`erased`); with `--progress` first `progress DONE TOTAL` lines (samples read of those stored) while
+it reads the samples. `letters status` prints `state none|current|outdated` (outdated: samples,
+picks or the way it is built changed since it was made), then from the samples as they are now,
+model or not: `samples N` (usable), `covered K` (characters with 3 usable samples), one `char C
+SAMPLES VERSIONS` per character seen (C escaped like a text field; VERSIONS the versions it has
+in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`. `font
 install` makes the font from the letter model as it is and prints `installed NAME VERSION PATH`,
 or `skip no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control
 characters is a usage error. `font status` prints `NAME VERSION PATH` or `none`; `font remove`

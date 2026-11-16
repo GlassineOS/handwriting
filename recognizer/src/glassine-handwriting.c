@@ -9,7 +9,7 @@
 //   glassine-handwriting adapt [-f] [-l LANG] ...    one adaptation (idle and charging)
 //   glassine-handwriting adaptation [show|revert] [-l LANG]
 //   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
-//   glassine-handwriting letters build [-f] [-r]|status|show   the letter model (spec 003)
+//   glassine-handwriting letters build [-f] [-r] [--progress]|status|show   the letter model (spec 003)
 //   glassine-handwriting font build [-n NAME] FILE|install [-n NAME]|remove|status
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
@@ -1620,7 +1620,7 @@ static void background_adapt(void)
 		hw_adapt_run(&o);
 	}
 	/* the letter model, when its samples, markings or preferences changed */
-	struct hw_letters_opts lo = { 0, 0, 0 };
+	struct hw_letters_opts lo = { 0, 0, 0, 0 };
 	hw_letters_run(&lo);
 	_exit(0);
 }
@@ -1712,7 +1712,7 @@ static void usage(void)
 	      "       glassine-handwriting adaptation [show|revert] [-l LANG]\n"
 	      "       glassine-handwriting charging\n"
 	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
-	      "       glassine-handwriting letters build [-f] [-r] | status | show\n"
+	      "       glassine-handwriting letters build [-f] [-r] [--progress] | status | show\n"
 	      "       glassine-handwriting font build [-n NAME] FILE | install [-n NAME] | remove | status\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
@@ -1924,10 +1924,11 @@ static int cmd_letters(int argc, char **argv)
 {
 	const char *sub = argc > 0 ? argv[0] : "status";
 	if (!strcmp(sub, "build")) {
-		struct hw_letters_opts o = { 0, 0, 1 };
+		struct hw_letters_opts o = { 0, 0, 1, 0 };
 		for (int i = 1; i < argc; i++) {
 			if (!strcmp(argv[i], "-f")) o.force = 1;
 			else if (!strcmp(argv[i], "-r")) o.requested = 1;
+			else if (!strcmp(argv[i], "--progress")) o.progress = 1;
 			else { usage(); return 2; }
 		}
 		/* asked for or not, it runs at the lowest priority: the device stays usable */
@@ -1955,19 +1956,28 @@ static int cmd_letters(int argc, char **argv)
 		char now[17];
 		if (hw_letters_inputs(now)) { if (r == 1) hw_letters_free(&L); return 1; }
 		printf("state\t%s\n", r == 0 ? "none" : strcmp(L.inputs, now) ? "outdated" : "current");
+		/* the counts from the samples as they are now, built model or not (FR-030); the
+		 * versions from the model as built */
+		struct hw_lcount *c;
+		size_t nc;
+		long usable;
+		if (hw_letters_usable(&c, &nc, &usable, NULL)) { if (r == 1) hw_letters_free(&L); return 1; }
 		int covered = 0;
-		for (size_t i = 0; r == 1 && i < L.n; i++) covered += L.l[i].covered;
-		printf("samples\t%ld\ncovered\t%d\n", r == 1 ? L.samples : 0L, covered);
-		for (size_t i = 0; r == 1 && i < L.n; i++) {
+		for (size_t i = 0; i < nc; i++) covered += c[i].samples >= HW_LETTERS_MIN;
+		printf("samples\t%ld\ncovered\t%d\n", usable, covered);
+		for (size_t i = 0; i < nc; i++) {
+			int nvar = 0;
+			for (size_t k = 0; r == 1 && k < L.n; k++) if (L.l[k].cp == c[i].cp && L.l[k].covered) nvar = L.l[k].nvar;
 			char u[8];
-			u[hw_utf8_encode(L.l[i].cp, u)] = 0;
+			u[hw_utf8_encode(c[i].cp, u)] = 0;
 			struct buf b = { 0 };
 			bstr(&b, "char\t");
 			besc(&b, u);
-			bfmt(&b, "\t%d\t%d", L.l[i].samples, L.l[i].covered ? L.l[i].nvar : 0);
+			bfmt(&b, "\t%d\t%d", c[i].samples, nvar);
 			puts(b.s);
 			free(b.s);
 		}
+		free(c);
 		if (r == 1) hw_letters_free(&L);
 		char name[256], path[4096];
 		unsigned v;
