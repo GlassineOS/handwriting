@@ -1248,7 +1248,8 @@ long hw_samples_erase(const char *client)
 	if (erased >= 0) {
 		/* the index first (derived, rebuilt from what is left), then the generation: a
 		 * running adaptation sees it and drops its result */
-		if (hw_store_replace("samples.index", NULL, 0) || hw_store_replace("samples.meta", meta, mlen) ||
+		if (hw_store_replace("samples.index", NULL, 0) || hw_store_replace("size", NULL, 0) ||
+		    hw_store_replace("samples.meta", meta, mlen) ||
 		    hw_store_replace("samples.jsonl", len ? data : NULL, len))
 			erased = -1;
 		char a[4096];

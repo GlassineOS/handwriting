@@ -1056,6 +1056,108 @@ def shapes(ch, rng):
     return [stroke([(i / 10, 0) for i in range(11)] + [(1 - i / 10, i / 10) for i in range(11)] + [(i / 10, 1) for i in range(11)])]
 
 
+
+class Size(unittest.TestCase):
+    """the ink's size (FR-017): lone marks and case by the person's letters or the line; words
+    as without it; the measurements kept beside the samples go with an erase"""
+
+    def setUp(self):
+        self.env = Env(REAL)
+
+    def tearDown(self):
+        self.env.close()
+
+    def client(self, size=None):
+        if size:
+            self.env.env["GLASSINE_HANDWRITING_SIZE"] = size
+        else:
+            self.env.env.pop("GLASSINE_HANDWRITING_SIZE", None)
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.samples")
+        return c
+
+    @staticmethod
+    def circle(x, y, r, n=24):
+        return [(x + r * math.cos(2 * math.pi * i / (n - 1)), y + r * math.sin(2 * math.pi * i / (n - 1)), i * 0.01)
+                for i in range(n)]
+
+    @staticmethod
+    def line(x0, y0, x1, y1, n=24):
+        return [(x0 + (x1 - x0) * i / (n - 1), y0 + (y1 - y0) * i / (n - 1), i * 0.01) for i in range(n)]
+
+    def read(self, c, strokes, area=None):
+        c.ask("begin", "s", "en", "normal", "em", "")
+        if area:
+            self.assertEqual(c.ask("area", "s", area)[2:], ["ok"])
+        for q in strokes:
+            c.ask("stroke", "s", pts(q))
+        r = parse_text(c.ask("read", "s", "3"))
+        c.ask("end", "s")
+        return [t for t, _, _ in r]
+
+    def test_area_base(self):
+        c = self.client()
+        c.ask("begin", "s", "en", "normal", "em", "")
+        self.assertEqual(c.ask("area", "s", "0,0,10,4,1,0,0.62")[2:], ["ok"])
+        self.assertEqual(c.ask("area", "s", "0,0,10,4,1,0,0.62,1")[2:], ["bad-area"])
+        self.assertEqual(c.ask("area", "s", "0,0,10,4,1,0,")[2:], ["bad-area"])
+        c.close()
+
+    def test_marks(self):
+        """a dot and a hyphen at their size next to the person's letters (x-height 0.1 em):
+        read as marks whatever the model makes of them blown up"""
+        c = self.client("0.1,0.25,0.14,0.35")
+        self.assertEqual(self.read(c, [self.circle(0.5, 0.5, 0.01)])[:1], ["."])
+        self.assertEqual(self.read(c, [self.line(0.4, 0.5, 0.5, 0.505)])[:1], ["-"])
+        # the line alone (em: 1) is enough for a dot
+        c.close()
+        c = self.client()
+        self.assertEqual(self.read(c, [self.circle(0.5, 0.5, 0.01)])[:1], ["."])
+        c.close()
+
+    def test_fit_never_lower(self):
+        """prompted writing of a lone character: the size only ever helps its fit"""
+        fits = []
+        for size in ("off", "0.1,0.25,0.14,0.35"):
+            c = self.client(size)
+            c.ask("begin", "s", "en", "normal", "em", "")
+            c.ask("stroke", "s", pts(self.circle(0.5, 0.5, 0.01)))
+            fits.append(float(c.ask("align", "s", ".")[2]))
+            c.close()
+        self.assertGreaterEqual(fits[1], fits[0])
+
+    def test_words_unchanged(self):
+        """words read the same with and without the size (ink the model reads as three
+        characters or more: the random model reads some words as two)"""
+        out = []
+        for size in ("off", "0.35,0.6,0.45,0.8"):
+            c = self.client(size)
+            got = []
+            for s in INK:
+                got.append(c.ask("recognize", "en", "normal", "em", "3", "",
+                                 ";".join(pts(q) for q in s["strokes"]))[2:])
+            c.close()
+            out.append(got)
+        words = [i for i, r in enumerate(out[0]) if r[0] == "text" and int(r[1]) and len(unesc(r[2])) >= 3]
+        self.assertGreater(len(words), 5)
+        self.assertEqual([out[0][i] for i in words], [out[1][i] for i in words])
+
+    def test_measured_letters_go_with_an_erase(self):
+        c = self.client()
+        for i, s in enumerate(INK * 2):
+            c.write_sample(s, session="k")
+            self.assertEqual(c.ask("confirm", "k", "corrected", esc(s["text"]))[2], "ok")
+            c.ask("end", "k")
+        self.read(c, [self.circle(0.5, 0.5, 0.01)])
+        c.close()
+        f = self.env.store / "size"
+        self.assertTrue(f.exists())
+        self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
+        self.assertTrue(f.read_text().startswith("glassine-handwriting-size 1\n"))
+        self.env.run("samples", "erase")
+        self.assertFalse(f.exists())
+
+
 class Adaptation(unittest.TestCase):
     ARGS = ["-f", "--min-train", "20", "--min-held", "5", "--epochs", "20", "--lr", "1e-2"]
 

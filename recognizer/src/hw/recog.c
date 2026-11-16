@@ -8,6 +8,7 @@
 #include <string.h>
 #include "adapt.h"
 #include "recog.h"
+#include "size.h"
 #include "store.h"
 #include "words.h"
 
@@ -84,7 +85,7 @@ void hw_lang_forget_all(void)
 
 void hw_run_free(struct hw_run *r)
 {
-	free(r->feats); free(r->logp); free(r->frames); free(r->org);
+	free(r->feats); free(r->logp); free(r->frames); free(r->org); free(r->logp0); free(r->size);
 	memset(r, 0, sizeof *r);
 }
 
@@ -201,6 +202,8 @@ long hw_align(const struct hw_lang *l, const struct hw_run *r, const unsigned *c
 				for (long f = first[j]; f <= last[j]; f++) {
 					double v = r->logp[(size_t)f * r->C + lab[j]];
 					if (v > best) best = v;
+					/* the size only ever helps a fit (FR-017) */
+					if (r->logp0 && (v = r->logp0[(size_t)f * r->C + lab[j]]) > best) best = v;
 				}
 				x->fit = exp(best);
 				if (cp[who[j]] != ' ') rows_of(r, from[j], to[j], &x->r0, &x->r1);
@@ -311,7 +314,8 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 	}
 	out->n = nc;
 	for (int i = 0; i < nc; i++) out->c[i].from = i ? HW_FROM_BEAM : HW_FROM_INK;
-	return nc;
+	hw_size_rerank(l, r, n, out);
+	return out->n;
 }
 
 /* ---------------------------------------------------------------- readings with words */
@@ -469,7 +473,7 @@ struct scored {
 	double fwd, total;
 };
 
-static double forward(const struct hw_lang *l, const struct hw_run *r, const unsigned *cp, int n)
+double hw_text_logp(const struct hw_lang *l, const struct hw_run *r, const unsigned *cp, int n)
 {
 	int lab[HW_MAX_LABELS], L = 0;
 	for (int k = 0; k < n; k++) {
@@ -706,7 +710,7 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 		c->len = cand[i].n;
 		for (int k = 0; k < c->len; k++) c->cp[k] = l->model.charset[cand[i].lab[k] - 1];
 		c->from = ns ? HW_FROM_BEAM : HW_FROM_INK;
-		c->fwd = forward(l, r, c->cp, c->len);
+		c->fwd = hw_text_logp(l, r, c->cp, c->len);
 		if (!isfinite(c->fwd)) c->fwd = cand[i].score;
 		score(x, c);
 		ns++;
@@ -724,7 +728,7 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 			for (int q = 0; q < ns; q++) dup |= same(&s[q], c->cp, c->len);
 			if (dup) continue;
 			c->from = HW_FROM_GUIDED;
-			c->fwd = forward(l, r, c->cp, c->len);
+			c->fwd = hw_text_logp(l, r, c->cp, c->len);
 			if (!isfinite(c->fwd) || c->fwd < s[0].fwd - W.near) continue;     /* not what the ink says */
 			score(x, c);
 			ns++;
@@ -753,7 +757,7 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 				int dup = 0;
 				for (int q = 0; q < ns; q++) dup |= same(&s[q], p->cp, m);
 				if (dup) continue;
-				p->fwd = forward(l, r, p->cp, p->len);
+				p->fwd = hw_text_logp(l, r, p->cp, p->len);
 				if (!isfinite(p->fwd) || p->fwd < s[0].fwd - W.near) continue;
 				p->from = HW_FROM_WORDS;
 				score(x, p);
@@ -793,7 +797,8 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 		out->c[i].from = order[i]->from;
 	}
 	out->n = k;
-	return k;
+	hw_size_rerank(l, r, n, out);
+	return out->n;
 }
 
 size_t hw_edit(const unsigned *a, size_t na, const unsigned *b, size_t nb)

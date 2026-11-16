@@ -37,6 +37,7 @@
 #include "hw/gesture.h"
 #include "hw/letters.h"
 #include "hw/recog.h"
+#include "hw/size.h"
 #include "hw/sample.h"
 #include "hw/store.h"
 #include "hw/words.h"
@@ -286,6 +287,8 @@ struct session {
 	int width;                      /* numbers per point: 3, or 4 with pressure; 0 none yet */
 	int pressure_all, tilt_all;
 	struct hw_area area;            /* the writing area, when the client said (area) */
+	int has_base;                   /* and its first guide line (area BASE) */
+	double base;
 	int words;                      /* readings use the words (a prose field, the setting on) */
 	char written[8], pair[17];      /* the marking its kept samples get (mark), "" none */
 	/* the last reply's candidates, for a pick: text, where each came from */
@@ -441,6 +444,12 @@ static void text_of(const unsigned *cp, int n, char *o, size_t max)
 	o[k] = 0;
 }
 
+/* the session's size reference (FR-017) */
+static void size_ref(const struct hw_lang *l, const struct session *s, struct hw_size_ref *ref)
+{
+	hw_size_ref_for(l->lang, &s->units, &s->area, s->has_base ? s->base : NAN, ref);
+}
+
 /* candidates (and their alignment) for ink; appends "\tTEXT\tSCORE\tALIGN" per candidate */
 static int candidates(struct hw_lang *l, struct session *s, int raw, int want, struct buf *b, int *ncand)
 {
@@ -451,7 +460,9 @@ static int candidates(struct hw_lang *l, struct session *s, int raw, int want, s
 	struct hw_stroke *st = strokes_of(ink, n, &np);
 	if (!st) return -1;
 	struct hw_run r;
-	int ret = hw_run(l, st, n, &r);
+	struct hw_size_ref ref;
+	size_ref(l, s, &ref);
+	int ret = hw_run_sized(l, st, n, &ref, &r);
 	*ncand = 0;
 	if (ret == 0 && r.rows > 0) {
 		r.npoints = np;
@@ -581,7 +592,9 @@ static void do_align(const char *id, struct session *s, const char *prompt)
 	size_t *np;
 	struct hw_stroke *st = strokes_of(s->ink, s->n, &np);
 	struct hw_run r;
-	if (!st || hw_run(l, st, s->n, &r) || r.rows <= 0) { free(st); free(np); reply("align\t%s\tshort", id); return; }
+	struct hw_size_ref ref;
+	size_ref(l, s, &ref);
+	if (!st || hw_run_sized(l, st, s->n, &ref, &r) || r.rows <= 0) { free(st); free(np); reply("align\t%s\tshort", id); return; }
 	r.npoints = np;
 	struct hw_charspan *cs;
 	long nc = hw_align(l, &r, cp, n, &cs);
@@ -638,7 +651,9 @@ static char *make_sample(struct hw_lang *l, const struct session *s, const char 
 	size_t *np;
 	struct hw_stroke *st = strokes_of(s->ink, s->n, &np);
 	struct hw_run r;
-	if (!st || hw_run(l, st, s->n, &r) || r.rows <= 0) { free(st); free(np); *reason = 2; return NULL; }
+	struct hw_size_ref ref;
+	size_ref(l, s, &ref);
+	if (!st || hw_run_sized(l, st, s->n, &ref, &r) || r.rows <= 0) { free(st); free(np); *reason = 2; return NULL; }
 	r.npoints = np;
 	struct hw_charspan *cs;
 	long nc = hw_align(l, &r, cp, n, &cs);
@@ -986,22 +1001,27 @@ static void do_forget(const char *id, const char *sid)
 	reply("forget\t%s\tok\t%s%s%s", id, r ? "samples" : "", r && d ? "," : "", d ? "donation" : "");
 }
 
-/* the writing area: X0,Y0,X1,Y1,LINE,ORIENTATION in the session's units */
-static int parse_area(const char *a, struct hw_area *o)
+/* the writing area: X0,Y0,X1,Y1,LINE,ORIENTATION[,BASE] in the session's units */
+static int parse_area(const char *a, struct hw_area *o, int *has_base, double *base)
 {
-	double v[6];
+	double v[7];
 	const char *p = a;
-	for (int i = 0; i < 6; i++) {
+	int n = 0;
+	for (int i = 0; i < 7; i++) {
 		char *e;
 		v[i] = strtod(p, &e);
 		if (e == p || !isfinite(v[i])) return -1;
-		if (i < 5 && *e != ',') return -1;
-		if (i == 5 && *e) return -1;
+		n = i + 1;
+		if (i >= 5 && !*e) break;
+		if (*e != ',' || i == 6) return -1;
 		p = e + 1;
 	}
+	if (n < 6) return -1;
 	int rot = (int)v[5];
 	if (v[5] != rot || rot < 0 || rot >= 360 || rot % 90 || v[2] <= v[0] || v[3] <= v[1] || v[4] < 0) return -1;
 	*o = (struct hw_area){ 1, { v[0], v[1], v[2], v[3] }, v[4], rot };
+	*has_base = n == 7;
+	*base = n == 7 ? v[6] : 0;
 	return 0;
 }
 
@@ -1179,7 +1199,7 @@ static void request(char *line, int skip_read)
 		do_donate(id, s, f[3], n == 5);
 	} else if (!strcmp(v, "area")) {
 		NEED(4);
-		if (parse_area(f[3], &s->area)) { reply("error\t%s\tbad-area", id); return; }
+		if (parse_area(f[3], &s->area, &s->has_base, &s->base)) { reply("error\t%s\tbad-area", id); return; }
 		reply("area\t%s\tok", id);
 	} else if (!strcmp(v, "forget")) {
 		NEED(3);
@@ -1700,7 +1720,9 @@ static int cmd_read(int argc, char **argv, int bench)
 		double t0 = now_s();
 		struct hw_run r;
 		struct hw_reading rd = { 0 };
-		if (!hw_run(l, st, s.nstrokes, &r) && r.rows > 0) {
+		struct hw_size_ref sz;
+		hw_size_ref_for(l->lang, &s.units, &s.area, NAN, &sz);
+		if (!hw_run_sized(l, st, s.nstrokes, &sz, &r) && r.rows > 0) {
 			r.npoints = np;
 			hw_read(l, &r, want, &rd);
 		}

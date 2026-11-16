@@ -15,6 +15,7 @@
 #include "../src/hw/model.h"
 #include "../src/hw/recog.h"
 #include "../src/hw/sample.h"
+#include "../src/hw/size.h"
 #include "../src/hw/words.h"
 
 static int fails;
@@ -386,6 +387,181 @@ static void test_words(const char *tmp)
 	unsetenv("GLASSINE_PREDICT_MODELS");
 }
 
+/* ---------------------------------------------------------------- size (FR-017) */
+
+/* a stroke: a circle (r > 0) or a line from (x, y) to (x2, y2), in 24 points */
+static void stroke_at(struct hw_ink *k, struct hw_stroke *s, double x, double y, double r, double x2, double y2)
+{
+	memset(k, 0, sizeof *k);
+	for (int i = 0; i < 24; i++) {
+		double a = 2 * M_PI * i / 23, u = i / 23.0;
+		if (r > 0) hw_ink_add(k, x + r * cos(a), y + r * sin(a), i * 0.01, NAN);
+		else hw_ink_add(k, x + (x2 - x) * u, y + (y2 - y) * u, i * 0.01, NAN);
+	}
+	*s = (struct hw_stroke){ k->n, k->x, k->y, k->t };
+}
+
+/* a run of 6 frames for ns strokes (each frame from stroke frame * ns / 6): blanks around two
+ * frames whose classes have the given log-probabilities (the rest -12, the blank -3) */
+static void run_of(const struct hw_lang *l, struct hw_run *r, size_t ns, const char *cps, const float *v)
+{
+	hw_run_free(r);
+	r->C = (int)l->model.cfg.nclass;
+	r->T = r->rows = 6;
+	r->down = 1;
+	r->logp = malloc(6 * (size_t)r->C * sizeof *r->logp);
+	r->org = calloc(6, sizeof *r->org);
+	for (int f = 0; f < 6; f++) {
+		float *row = r->logp + (size_t)f * r->C;
+		r->org[f].stroke = (int)((size_t)f * ns / 6);
+		for (int c = 0; c < r->C; c++) row[c] = -12;
+		if (f == 2 || f == 3) {
+			row[0] = -3;
+			for (int i = 0; cps[i]; i++) row[hw_class_of(&l->model, (unsigned char)cps[i])] = v[i];
+		} else {
+			row[0] = -0.01f;
+		}
+	}
+}
+
+static char first_of(const struct hw_lang *l, struct hw_run *r, int n, char *all)
+{
+	struct hw_reading rd;
+	hw_read(l, r, n, &rd);
+	all[0] = 0;
+	for (int i = 0; i < rd.n; i++) {
+		size_t k = strlen(all);
+		for (int j = 0; j < rd.c[i].len && k < 60; j++) all[k++] = (char)rd.c[i].cp[j];
+		all[k++] = '|'; all[k] = 0;
+	}
+	return rd.n && rd.c[0].len == 1 ? (char)rd.c[0].cp[0] : 0;
+}
+
+static void test_size(void)
+{
+	struct hw_lang l;
+	memset(&l, 0, sizeof l);
+	const char *cs = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?'-() ";
+	for (int k = 0; cs[k]; k++) l.model.charset[k] = (unsigned char)cs[k];
+	l.model.cfg.nclass = (uint32_t)strlen(cs) + 1;
+	/* the person's letters: x-height 10, capitals 25, alone 14 and 35 */
+	struct hw_size_ref ref = { 0 };
+	ref.kind = HW_SIZE_PERSON; ref.x = 10; ref.c = 25; ref.xs = 14; ref.cs = 35;
+	struct hw_ink k[4];
+	struct hw_stroke s[4];
+	struct hw_run r;
+	memset(&r, 0, sizeof r);
+	char all[64], t;
+
+	CHECK(hw_glyph_kind(2, 2, &ref) == HW_GLYPH_DOT && hw_glyph_kind(1, 10, &ref) == HW_GLYPH_FLAT &&
+	      hw_glyph_kind(7, 1, &ref) == HW_GLYPH_THIN && hw_glyph_kind(35, 4, &ref) == HW_GLYPH_BIG &&
+	      hw_glyph_kind(14, 14, &ref) == HW_GLYPH_BIG, "glyph kinds by size");
+
+	/* a dot at its size: the model, seeing it blown up, says L or O */
+	stroke_at(&k[0], &s[0], 50, 50, 1, 0, 0);
+	run_of(&l, &r, 1, "LO.,", (const float[]){ -0.1f, -1, -9, -10 });
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == '.', "a dot reads as a dot (%s)", all);
+	CHECK(r.logp0 && r.size && r.size->lone_mark == HW_GLYPH_DOT, "the ink's own reading kept beside");
+	/* whatever the model says: no letter first for a mark */
+	run_of(&l, &r, 1, "L.,'-", (const float[]){ -0.05f, -40, -40, -40, -40 });
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == '.', "a dot the model hardly sees still reads as a dot (%s)", all);
+	hw_ink_free(&k[0]);
+
+	/* a hyphen */
+	stroke_at(&k[0], &s[0], 40, 50, 0, 50, 50.5);
+	run_of(&l, &r, 1, "I-.", (const float[]){ -0.1f, -8, -9 });
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == '-', "a hyphen reads as one (%s)", all);
+	hw_ink_free(&k[0]);
+
+	/* a tick: comma or apostrophe; the line decides */
+	stroke_at(&k[0], &s[0], 50, 45, 0, 49, 52);
+	run_of(&l, &r, 1, "I1,'", (const float[]){ -0.1f, -0.5f, -9, -9.5f });
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == ',' || t == '\'', "a tick reads as a comma or an apostrophe (%s)", all);
+	struct hw_size_ref on = ref;
+	on.has_base = 1; on.line = 100; on.base = 50;          /* the tick hangs from the line */
+	run_of(&l, &r, 1, "I1,'", (const float[]){ -0.1f, -0.5f, -9.5f, -9 });
+	hw_size_weigh(&l, &r, s, 1, &on);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == ',', "on the line: a comma (%s)", all);
+	on.base = 70;                                          /* high above it */
+	run_of(&l, &r, 1, "I1,'", (const float[]){ -0.1f, -0.5f, -9, -9.5f });
+	hw_size_weigh(&l, &r, s, 1, &on);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == '\'', "high above the line: an apostrophe (%s)", all);
+	hw_ink_free(&k[0]);
+
+	/* case pairs: the same shape small and tall; the model can't tell them apart */
+	const char *pairs = "ocsxvwz";
+	for (const char *p = pairs; *p; p++) {
+		char two[3] = { *p, (char)(*p - 32), 0 };
+		for (int big = 0; big < 2; big++) {
+			stroke_at(&k[0], &s[0], 50, 50, big ? 17.5 : 7, 0, 0);
+			run_of(&l, &r, 1, two, (const float[]){ -0.7f, -0.7f });
+			hw_size_weigh(&l, &r, s, 1, &ref);
+			t = first_of(&l, &r, 3, all);
+			CHECK(t == two[big], "%c at %s height reads as %c (%s)", *p, big ? "capital" : "small-letter", two[big], all);
+			hw_ink_free(&k[0]);
+		}
+	}
+	/* the size moves a pair's chance between its forms only: a letter of another shape
+	 * the model prefers stays first */
+	stroke_at(&k[0], &s[0], 50, 50, 17.5, 0, 0);
+	run_of(&l, &r, 1, "awW", (const float[]){ -0.3f, -1.5f, -9 });
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == 'a', "a tall a stays a (%s)", all);
+	/* a lone letter is no mark */
+	run_of(&l, &r, 1, "'l", (const float[]){ -0.3f, -1 });
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == 'l', "a tall stroke isn't an apostrophe (%s)", all);
+	/* the fit: never lower than the ink's own */
+	run_of(&l, &r, 1, "oO", (const float[]){ -0.2f, -1.8f });
+	float raw = r.logp[2 * r.C + hw_class_of(&l.model, 'o')];
+	hw_size_weigh(&l, &r, s, 1, &ref);
+	struct hw_charspan *sp = NULL;
+	unsigned o1 = 'o';
+	CHECK(hw_align(&l, &r, &o1, 1, &sp) == 1 && sp && sp[0].fit >= exp(raw) - 1e-6, "size never lowers a fit");
+	free(sp);
+	hw_ink_free(&k[0]);
+
+	/* a word (three glyphs): read as it is */
+	for (int i = 0; i < 3; i++) stroke_at(&k[i], &s[i], 10 + 30 * i, 50, 7, 0, 0);
+	run_of(&l, &r, 3, "oO.", (const float[]){ -0.7f, -0.7f, -1 });
+	for (int f = 0; f < 6; f++) r.logp[f * r.C + hw_class_of(&l.model, 'a')] = f == 1 || f == 4 ? -0.1f : -12;
+	float *was = malloc(6 * (size_t)r.C * sizeof *was);
+	memcpy(was, r.logp, 6 * (size_t)r.C * sizeof *was);
+	hw_size_weigh(&l, &r, s, 3, &ref);
+	CHECK(!r.logp0 && !memcmp(was, r.logp, 6 * (size_t)r.C * sizeof *was), "a word reads as without the size");
+	free(was);
+	for (int i = 0; i < 3; i++) hw_ink_free(&k[i]);
+
+	/* no reference: nothing changes */
+	stroke_at(&k[0], &s[0], 50, 50, 1, 0, 0);
+	run_of(&l, &r, 1, "LO.,", (const float[]){ -0.1f, -1, -9, -10 });
+	struct hw_size_ref none = { 0 };
+	hw_size_weigh(&l, &r, s, 1, &none);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == 'L' && !r.logp0, "without a reference the ink's own reading (%s)", all);
+	/* the line alone tells a dot */
+	struct hw_size_ref line = { 0 };
+	line.kind = HW_SIZE_LINE; line.line = 50; line.x = 10; line.c = 25; line.xs = 14; line.cs = 35;
+	run_of(&l, &r, 1, "LO.,", (const float[]){ -0.1f, -1, -9, -10 });
+	hw_size_weigh(&l, &r, s, 1, &line);
+	t = first_of(&l, &r, 3, all);
+	CHECK(t == '.', "with the line only, a dot still reads as a dot (%s)", all);
+	hw_ink_free(&k[0]);
+	hw_run_free(&r);
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -410,6 +586,7 @@ int main(int argc, char **argv)
 	test_ctc();
 	test_head_grad();
 	test_words(tmp);
+	test_size();
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 	printf("test-engine: ok\n");
 	return 0;
