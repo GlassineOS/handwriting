@@ -140,6 +140,17 @@ class Worker:
         return ev.wait(timeout)
 
 
+def new_sheet(c):
+    """a character's sheet: "seg" (versions, samples, write, pick), "occ" (letters samples, None
+    until read), "page", "undo" (the sample just left out), "changed" (relearn it on close),
+    "pick", "picks"; one sample opened (FR-033): "open" ((id, place) or None), "vlist" (the
+    version whose samples are listed, or None), "vpage", "asking" (Delete's question), "redo"
+    (Write it again: None, or {"busy", "shown": the failed check, "old": the sample's line}),
+    "redone" (the sample shown took an old one's place)"""
+    return {"char": c, "seg": None, "occ": None, "page": 0, "undo": None, "changed": False, "pick": None, "picks": 0,
+            "open": None, "vlist": None, "vpage": 0, "asking": False, "redo": None, "redone": False}
+
+
 class UI:
     """the pages' state and actions; redraw() repaints. The pages (pages.py) read this
     state and call these actions; none of them talks to the recognizer itself."""
@@ -214,9 +225,7 @@ class UI:
         self.letters_loading = 0        # letters status reads running (off the worker)
         self.letters_then = []          # what waits for the build running now
         self.pick = None                # {"a": (id, strokes, k), "b": ..., "chosen": i}
-        # the character sheet over the font page (spec 003 FR-031): {"char", "seg" (versions,
-        # samples, write, pick), "occ" (letters samples, None until read), "page", "undo" (the
-        # sample just left out), "changed" (relearn it on close), "pick", "picks"}
+        # the character sheet over the font page (spec 003 FR-031, FR-033): new_sheet()
         self.sheet = None
         self.relearn = None             # (char, done, total) while one character is learned again
         self.relearn_then = []          # what waits for it
@@ -804,17 +813,14 @@ class UI:
         self.asking_delete = False
         self.redraw()
 
-    def delete_sample(self, sid):
-        """from the samples and from the donation (forget takes both)"""
-        rec, wr = self.rec, self.writer
-
-        def go():
-            rec.forget(sid)
-            wr.forgotten(sid)
+    def delete_sample(self, sid, then=None):
+        """from the samples and from the donation (Writer.delete; the character sheet's Delete
+        is this one, spec 002 FR-009)"""
+        wr = self.writer
         self.detail = None
         self.asking_delete = False
         self.inks.pop(sid, None)
-        self.run(go, lambda _: self.refresh())
+        self.run(lambda: wr.delete(sid), lambda _: (then and then(), self.refresh()))
 
     def ask_erase_all(self):
         """the session's own samples only (spec 002 FR-024): the owner's leaves every other
@@ -1143,8 +1149,7 @@ class UI:
         more while it has fewer than 3 samples"""
         n, d, _ = self.char_info(c)
         seg = "versions" if d and d.get("variants") else "write" if n < fontview.MIN else "samples"
-        self.sheet = {"char": c, "seg": None, "occ": None, "page": 0, "undo": None, "changed": False, "pick": None,
-                      "picks": 0}
+        self.sheet = new_sheet(c)
         self.sheet_seg(seg)
 
     def sheet_seg(self, seg):
@@ -1307,6 +1312,148 @@ class UI:
 
     def sheet_page(self, p):
         self.sheet["page"] = p
+        self.redraw()
+
+    # ---- one of the character's samples (spec 003 FR-033)
+
+    def sheet_sample(self, sid, pos):
+        """a tile tapped: that sample opened in the sheet (its whole ink, fetched when the grid
+        hasn't got it)"""
+        self.sheet.update(open=(sid, pos), asking=False, redo=None, redone=False)
+        self.want_inks([sid])
+        self.redraw()
+
+    def version_samples(self, v):
+        """a version's Show its samples: exactly the samples that form it (its ids)"""
+        sh = self.sheet
+        sh.update(vlist=v, vpage=0, open=None)
+        if sh["occ"] is None:
+            self.load_occ()
+        self.redraw()
+
+    def version_ids(self, v):
+        _, d, _ = self.char_info(self.sheet["char"])
+        vs = (d or {}).get("variants") or []
+        return list(vs[v].get("ids") or []) if 0 <= v < len(vs) else []
+
+    def sheet_vpage(self, p):
+        self.sheet["vpage"] = p
+        self.redraw()
+
+    def sheet_back(self):
+        """Back: from a sample to the list it was opened from (Samples or the version's), from
+        a version's list to the versions"""
+        sh = self.sheet
+        if sh["open"]:
+            sh.update(open=None, asking=False, redone=False)
+        else:
+            sh["vlist"] = None
+        self.redraw()
+
+    def opened(self):
+        """the opened sample: (id, place, its line in letters samples or None, its sample dict or
+        None while it is fetched)"""
+        sh = self.sheet
+        if not sh or not sh["open"]:
+            return None
+        sid, pos = sh["open"]
+        o = next((o for o in sh["occ"] or [] if o[0] == sid and o[1] == pos), None)
+        return sid, pos, o, self.inks.get(sid)
+
+    def ask_sheet_delete(self, on=True):
+        self.sheet["asking"] = on
+        self.redraw()
+
+    def sheet_delete(self):
+        """Delete in the sheet: the same deletion as in Samples (delete_sample), then the list
+        it was opened from, read again"""
+        sh = self.sheet
+        sid = sh["open"][0]
+        sh.update(open=None, asking=False, undo=None if sh["undo"] == sid else sh["undo"])
+        sh["occ"] = [o for o in sh["occ"] or [] if o[0] != sid]
+        self.sheet_changed()
+
+        def then():
+            if self.sheet is sh:
+                self.load_occ()
+            self.load_font()
+        self.delete_sample(sid, then)
+        self.redraw()
+
+    def redo_start(self):
+        """Write it again: the same text in a writing area inside the sheet (the old sample's
+        line held for it)"""
+        got = self.opened()
+        if not got or not got[3]:
+            return
+        self.sheet.update(redo={"busy": False, "shown": None, "old": got[3]}, asking=False, redone=False)
+        self.msg = ""
+        if self.on_switch:              # the area starts empty (Write's own ink stays as it is)
+            self.on_switch()
+        self.redraw()
+
+    def redo_cancel(self):
+        """Cancel: the old sample as it was"""
+        if self.on_switch:
+            self.on_switch()
+        self.sheet["redo"] = None
+        self.redraw()
+
+    def redo_again(self):
+        """after a failed check: the new ink goes, the old sample still stays"""
+        r = self.sheet["redo"]
+        if r:
+            r["shown"] = None
+        self.redraw()
+
+    def redo_done(self, canvas):
+        """Done: the new ink read and checked; once it is kept it takes the old one's place
+        (Writer.rewrite) and the sheet shows the new sample, which is learned on close
+        (FR-032)"""
+        sh = self.sheet
+        r = sh and sh["redo"]
+        got = self.opened()
+        if not r or r["busy"] or not got or not canvas.strokes:
+            return
+        sid, pos, old = got[0], got[1], r["old"]
+        strokes, units, area = canvas.payload()
+        canvas.clear()
+        r.update(busy=True, shown=None)
+        wr, donated, c = self.writer, sid in self.donated, sh["char"]
+
+        def go():
+            try:
+                return wr.rewrite(sid, old, strokes, units, area, donated=donated)
+            except client.Error as e:
+                return str(e)
+
+        def fin(new):
+            r["busy"] = False
+            here = self.sheet is sh and sh["redo"] is r
+            if isinstance(new, flow.Shown) and new.status == "kept" and new.sample_id:
+                log("written again", sid, "->", new.sample_id)
+                self.inks.pop(sid, None)
+                self.donated = (self.donated - {sid}) | ({new.donated_id} if new.donated_id else set())
+                if here:
+                    sh.update(redo=None, open=(new.sample_id, pos), redone=True,
+                              undo=None if sh["undo"] == sid else sh["undo"])
+                    self.sheet_changed()
+                    self.load_occ()
+                elif ((self.font or {}).get("status") or {}).get("state") != "none":
+                    self.relearn_char(c)        # the sheet closed meanwhile: learned again as on close
+                self.load_font()
+                self.refresh()
+            elif not here:
+                return
+            elif isinstance(new, flow.Shown) and new.status == "check":
+                r["shown"] = new
+            else:
+                sh["redo"] = None
+                self.msg = ("Something went wrong: %s. The old one stays as it was." % new if isinstance(new, str) else
+                            "Not kept: learning is off. The old one stays as it was." if new and new.why == "learning"
+                            else "Not kept. The old one stays as it was.")
+                self.load_occ()
+        self.run(go, fin)
         self.redraw()
 
     def char_pick(self):
@@ -1703,13 +1850,17 @@ class Canvas(Gtk.DrawingArea):
         self.queue_draw()
         self.on_change()
 
+    def slot(self):
+        """whose ink: Neaten my writing's, Write it again's, or Write's"""
+        return "neat" if self.ui.page == "neat" else "redo" if redoing(self.ui) else "write"
+
     @property
     def strokes(self):
-        return self.inks["neat" if self.ui.page == "neat" else "write"]
+        return self.inks.setdefault(self.slot(), [])
 
     @strokes.setter
     def strokes(self, v):
-        self.inks["neat" if self.ui.page == "neat" else "write"] = v
+        self.inks[self.slot()] = v
 
     @staticmethod
     def point(e):
@@ -1768,6 +1919,8 @@ class Canvas(Gtk.DrawingArea):
         if self.ui.page == "neat":
             self.timer = GLib.timeout_add(NEAT_PAUSE_MS, self.paused)
             return True
+        if redoing(self.ui):              # Write it again waits for Done (never the Write page's prompt)
+            return True
         p = self.ui.writer.prompt if self.ui.writer else None
         self.timer = GLib.timeout_add(PAUSE_MS.get(p.kind if p else "word", 1500), self.paused)
         return True
@@ -1781,7 +1934,7 @@ class Canvas(Gtk.DrawingArea):
         """a pause: submitted when the ink already fits the whole prompt, else it waits for
         more ink or Next"""
         self.timer = None
-        if not self.strokes or self.cur is not None:
+        if not self.strokes or self.cur is not None or redoing(self.ui):
             return False
         if self.ui.page == "neat":        # a pause on Neaten my writing: the ink comes back neater
             self.ui.neaten(self.payload())
@@ -1933,9 +2086,15 @@ def writing(ui):
 
 
 def sheet_writing(ui):
-    """the character sheet on Write more: a writing page inside the sheet"""
-    return bool(ui.page == "learn" and ui.best == "font" and ui.sheet and ui.sheet["seg"] == "write" and
-                not ui.renaming)
+    """the character sheet on Write more, or writing a sample again: a writing page inside
+    the sheet"""
+    return bool(ui.page == "learn" and ui.best == "font" and ui.sheet and not ui.renaming and
+                (redoing(ui) or (ui.sheet["seg"] == "write" and not pages.drilled(ui.sheet))))
+
+
+def redoing(ui):
+    """Write it again of a sample opened in the sheet (spec 003 FR-033)"""
+    return bool(ui.sheet and ui.sheet.get("redo") and ui.sheet.get("open"))
 
 
 def parts(ui):
@@ -1944,6 +2103,8 @@ def parts(ui):
         return pages.try_top, pages.try_bottom
     if ui.page == "neat":
         return pages.neat_top, pages.neat_bottom
+    if redoing(ui):
+        return pages.sheet_redo_top, pages.sheet_redo_bottom
     if sheet_writing(ui):
         return pages.sheet_write_top, pages.sheet_write_bottom
     return pages.write_top, pages.write_bottom
@@ -2214,6 +2375,7 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
            "best.pick", "font.none", "font.learning", "font.current", "font.installed", "font.outdated",
            "font.rename", "font.relearn", "char.versions", "char.samples", "char.write", "char.pick", "char.missing",
+           "char.sample", "char.redo", "char.delete", "char.version-samples",
            "neat.write", "neat.original", "neat.unlearned", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved",
            "others.list", "others.empty", "others.add", "others.rename", "others.taken", "others.long", "others.remove",
            "others.remove-plain", "others.done", "others.done-kept", "guest.hello", "guest.try", "guest.share", "guest.age",
@@ -2289,10 +2451,15 @@ def demo_font(installed, state="current"):
     return {"status": status, "model": model}
 
 
+# t's samples as the design's boards have them: version A 13, B 6, C 3, two that can't be used
 DEMO_OCC = (("t", 0, "usable", 0), ("that", 0, "usable", 0), ("water", 2, "usable", 1),
-            ("little", 2, "joined-after", -1), ("start", 1, "out", -1), ("tea", 0, "usable", 1),
+            ("little", 2, "joined-after", -1), ("start", 1, "usable", 0), ("tea", 0, "usable", 1),
             ("not", 2, "usable", 0), ("it", 1, "usable", 2), ("after", 2, "usable", 0), ("t", 0, "usable", 1),
-            ("street", 1, "unread", -1), ("out", 2, "usable", 0), ("ten", 0, "usable", 0), ("cat", 2, "usable", 1))
+            ("street", 1, "unread", -1), ("out", 2, "usable", 0), ("time", 0, "usable", 0), ("but", 2, "usable", 1),
+            ("best", 3, "usable", 0), ("hot", 2, "usable", 2), ("into", 2, "usable", 0), ("ten", 0, "usable", 1),
+            ("tree", 0, "usable", 0), ("sit", 2, "usable", 0), ("its", 1, "usable", 1), ("left", 3, "usable", 0),
+            ("cat", 2, "usable", 2), ("top", 0, "usable", 0))
+DEMO_READ = {"little": "litle", "street": "stveet"}
 
 
 def demo(screen, voice="white"):
@@ -2430,20 +2597,33 @@ def demo(screen, voice="white"):
         ui.best = "font"
         ui.font = demo_font(True)
         c = "Q" if sub == "missing" else "t"
-        ui.sheet = {"char": c, "seg": {"versions": "versions", "samples": "samples", "pick": "pick"}.get(sub, "write"),
-                    "occ": None, "page": 0, "undo": None, "changed": False, "pick": None, "picks": 0}
-        if sub == "samples":
+        ui.sheet = new_sheet(c)
+        ui.sheet["seg"] = {"versions": "versions", "version-samples": "versions", "pick": "pick"}.get(
+            sub, "samples" if sub in ("samples", "sample", "redo", "delete") else "write")
+        if sub in ("samples", "sample", "redo", "delete", "version-samples"):
             occ = []
+            vs = ui.font["model"]["chars"]["t"]["variants"]
+            for v in vs:
+                v["ids"] = []
             for i, (word, pos, state, var) in enumerate(DEMO_OCC):
                 sid = "%016x" % (900 + i)
                 s_, sp = demo_ink(word, 30 + i)
-                ui.inks[sid] = {"strokes": s_, "spans": sp, "text": word}
+                ui.inks[sid] = {"strokes": s_, "spans": sp, "text": word, "written": ("quick", "careful")[i % 3 > 0],
+                                "reading": [{"text": DEMO_READ.get(word, word), "score": -1.0}]}
+                ui.samples.append((sid, now - 60 * (17 - i) if i < 6 else now - 86400 * (1 if i < 12 else 7), word))
+                if sub == "samples" and i == 4:
+                    state, var = "out", -1          # left out just now, with Undo
                 occ.append((sid, pos, state, var, word))
+                if var >= 0:                    # the versions name these samples
+                    vs[var]["ids"].append(sid)
             ui.sheet["occ"] = occ
-            ui.sheet["undo"] = occ[4][0]
-            for o in occ:                   # the versions name these samples
-                if o[3] >= 0:
-                    ui.font["model"]["chars"]["t"]["variants"][o[3]]["ids"].append(o[0])
+            if sub == "samples":
+                ui.sheet["undo"] = occ[4][0]
+            elif sub == "version-samples":
+                ui.sheet["vlist"] = 1
+            else:
+                ui.sheet.update(open=(occ[2][0], occ[2][1]), asking=sub == "delete",
+                                redo={"busy": False, "shown": None, "old": ui.inks[occ[2][0]]} if sub == "redo" else None)
         if sub == "pick":
             a, _ = demo_ink("t", 3)
             b, _ = demo_ink("t", 11)
@@ -2551,7 +2731,8 @@ def render(argv):
     ui = demo(screen, opt("--theme", "white"))
     surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
     paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try", "guest.try") else
-          demo_ink("Call back about", 5)[0] if screen.startswith("neat.") else None)
+          demo_ink("Call back about", 5)[0] if screen.startswith("neat.") else
+          demo_ink("water", 5)[0] if screen == "char.redo" else None)
     surf.write_to_png(opt("--render"))
 
 

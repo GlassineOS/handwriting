@@ -204,14 +204,19 @@ def shown_strip(cr, ui, hits, x, y, w):
     return h
 
 
-def check_note(cr, ui, hits, x, y, w, sh):
-    """the ink didn't look like the prompt: Redo first, Keep it and Skip beside it"""
+def check_note(cr, ui, hits, x, y, w, sh, redo=False):
+    """the ink didn't look like the prompt: Redo first, Keep it and Skip beside it. redo: Write
+    it again's check, which keeps nothing then (spec 003 FR-033): only writing it again"""
     k = ui.theme
     read = sh.reading[0][0] if sh.reading else ""
     t1 = "This doesn’t quite look like “%s”." % sh.prompt.text
-    t2 = ("The tablet read “%s”. That may be its mistake: if you wrote “%s”, keep it." % (read, sh.prompt.text)
-          if read else "The tablet couldn’t read it. That may be its mistake: if you wrote “%s”, keep it."
-          % sh.prompt.text)
+    if redo:
+        t2 = ("The tablet read “%s”. " % read if read else "The tablet couldn’t read it. ") + \
+            "It isn’t kept, and the old one stays as it was."
+    else:
+        t2 = ("The tablet read “%s”. That may be its mistake: if you wrote “%s”, keep it." % (read, sh.prompt.text)
+              if read else "The tablet couldn’t read it. That may be its mistake: if you wrote “%s”, keep it."
+              % sh.prompt.text)
     narrow = w < NARROW
     tx, tw = (x + 14, w - 28) if narrow else (x + 160, w - 174)
     ty = y + 82 if narrow else y + 14
@@ -223,7 +228,7 @@ def check_note(cr, ui, hits, x, y, w, sh):
     draw_ink(cr, k, sh.strokes, x + 22, y + 18, 114, 48, 1.6)
     PT.text(cr, t1, k["row"], tx, ty, k.ink, weight=600, maxw=tw, wrap=True)
     PT.text(cr, t2, k["sub"], tx, ty + h1 + 4, k.soft, maxw=tw, wrap=True)
-    btns_right(cr, k, hits, x + w - 14, y + h - 14 - BTN_H, [
+    btns_right(cr, k, hits, x + w - 14, y + h - 14 - BTN_H, [("Write it again", ui.redo_again, True)] if redo else [
         ("Keep it", lambda: ui.act("keep_anyway"), False), ("Skip", lambda: ui.act("skip"), False),
         ("Redo", lambda: ui.act("redo"), True)])
     return h
@@ -1652,8 +1657,14 @@ def sheet_info(ui):
     return c, n, d, inf, nv
 
 
-def sheet_head(cr, ui, hits, x, y, w):
-    """the sheet's head: the character, where it stands, Close; its segments -> the y below"""
+def drilled(sh):
+    """a sample or a version's samples open in the sheet: no segments then (spec 003 FR-033)"""
+    return bool(sh and (sh.get("open") or sh.get("vlist") is not None))
+
+
+def sheet_head(cr, ui, hits, x, y, w, tabs=True):
+    """the sheet's head: the character, where it stands, Close; its segments (tabs) -> the y
+    below"""
     k = ui.theme
     c, n, d, inf, nv = sheet_info(ui)
     m = ((ui.font or {}).get("model") or {}).get("metrics", {})
@@ -1674,6 +1685,8 @@ def sheet_head(cr, ui, hits, x, y, w):
     cw = btn_w(cr, k, "Close", "close")
     btn(cr, k, hits, x + w - cw, y + 8, "Close", ui.close_char, icon_name="close", w=cw)
     y += 64 + 14
+    if not tabs:
+        return y
     learned = bool(d and d.get("variants"))
     segs(cr, k, hits, x, y, w, [("versions", "Versions", (lambda: ui.sheet_seg("versions")) if learned else None),
                                  ("samples", "Samples", lambda: ui.sheet_seg("samples")),
@@ -1745,19 +1758,26 @@ def char_sheet(cr, ui, hits, w, h):
     PT.box(cr, SHEET_M, y0, w - 2 * SHEET_M, h - y0 - SHEET_M, k["cardR"], bg=k.paper,
            shadow="inset 0 0 0 1.5px " + k.ink)
     x, cw = SHEET_M + 20, w - 2 * SHEET_M - 40
-    y = sheet_head(cr, ui, hits, x, y0 + 16, cw)
+    sh = ui.sheet
+    y = sheet_head(cr, ui, hits, x, y0 + 16, cw, tabs=not drilled(sh))
     ft = PT.measure(cr, sheet_foot_text(ui), k["sub"], maxw=cw - 36, wrap=True)[1] + 28
     fy = h - SHEET_M - 12 - ft
     sheet_foot(cr, ui, x, fy, cw)
-    seg = ui.sheet["seg"]
-    if seg == "versions":
+    seg = sh["seg"]
+    if sh["open"]:
+        sheet_opened(cr, ui, hits, x, y, cw, fy - 12 - y)
+    elif sh["vlist"] is not None:
+        sheet_vlist(cr, ui, hits, x, y, cw, fy - 12 - y)
+    elif seg == "versions":
         sheet_versions(cr, ui, hits, x, y, cw, fy - 12 - y)
     elif seg == "samples":
         sheet_samples(cr, ui, hits, x, y, cw, fy - 12 - y)
     elif seg == "pick":
         sheet_pick(cr, ui, hits, x, y, cw, fy - 12 - y)
-    if ui.msg:
+    if ui.msg and not sh["open"]:       # an opened sample has it above its buttons
         PT.text(cr, ui.msg, k["sub"], x, fy - 26, k.ink, maxw=cw)
+    if sh["open"] and sh["asking"]:
+        delete_question(cr, ui, hits, x, w, h)
 
 
 LETTERS = "ABCDE"
@@ -1771,8 +1791,9 @@ def sheet_versions(cr, ui, hits, x, y, w, h):
     per = max(1, min(len(vs), 5 if w > 900 else 3))
     gap = 14
     cw = (w - gap * (per - 1)) / per
-    art = 150
-    ch = 12 + art + 12 + 26 + 44 + 10 + BTN_H + 10 + BTN_H + 12
+    row = w > 900                       # turned: Favourite and Leave out side by side, the art lower
+    art = 88 if row else 150
+    ch = 12 + art + 12 + 26 + 44 + 10 + BTN_H + 10 + BTN_H + 12 + (0 if row else BTN_H + 10)
     for i, v in enumerate(vs):
         cx, cy = x + (i % per) * (cw + gap), y + (i // per) * (ch + gap)
         out, fav = v.get("left_out"), v.get("favourite")
@@ -1799,16 +1820,20 @@ def sheet_versions(cr, ui, hits, x, y, w, h):
         PT.text(cr, desc, k["sub"], cx + 12, ty + 26, k.ink, maxw=cw - 24, wrap=True)
         by = ty + 26 + 44 + 10
         bw = cw - 24
+        hw = (bw - 10) / 2 if row else bw
         btn(cr, k, hits, cx + 12, by, "Favourite", None if out else (lambda i=i: ui.mark_version(i, "favourite")),
-            pri=bool(fav), icon_name="star" if fav else "star_border", w=bw)
-        btn(cr, k, hits, cx + 12, by + BTN_H + 10, "Put back" if out else "Leave out",
-            lambda i=i, out=out: ui.mark_version(i, "back" if out else "out"), icon_name="undo" if out else "block", w=bw)
+            pri=bool(fav), icon_name="star" if fav else "star_border", w=hw)
+        bx, by2 = (cx + 12 + hw + 10, by) if row else (cx + 12, by + BTN_H + 10)
+        btn(cr, k, hits, bx, by2, "Put back" if out else "Leave out",
+            lambda i=i, out=out: ui.mark_version(i, "back" if out else "out"), icon_name="undo" if out else "block", w=hw)
+        btn(cr, k, hits, cx + 12, by2 + BTN_H + 10, "Show its samples", lambda i=i: ui.version_samples(i), w=bw)
     rows = (len(vs) + per - 1) // per
+    bottom = y + h
     y += rows * (ch + gap) + 4
     t = ("Your font switches between the ways you write %s, each about as often as you do. A favourite is used more. "
          "Leaving one out doesn’t delete anything." % c)
     _, th = PT.measure(cr, t, k["sub"], maxw=w - 70, wrap=True)
-    if y + th + 28 <= y + h:
+    if not row and y + th + 28 <= bottom:      # turned, the cards take the room
         PT.box(cr, x, y, w, th + 28, k["cardR"], bg=k.sheet)
         icon(cr, "info", 22, x + 26, y + 14 + th / 2, k.ink)
         PT.text(cr, t, k["sub"], x + 52, y + 14, k.ink, maxw=w - 70, wrap=True)
@@ -1863,6 +1888,32 @@ def sample_word(cr, ui, x, y, w, h, o):
     PT.fill(cr, x + 10 + pw, y + 8 + th, max(cw_, 6), 2, k.ink)
 
 
+def card_versions(ui, occ):
+    """the samples' versions as the cards show them (the stored model's order, by its ids)"""
+    _, d, _ = ui.char_info(ui.sheet["char"])
+    vof = {i: n for n, v in enumerate((d or {}).get("variants") or []) for i in v.get("ids") or []}
+    return [(o[0], o[1], o[2], vof.get(o[0], -1) if o[2] in ("usable", "way-out") else o[3], o[4]) for o in occ]
+
+
+def occ_tile(cr, ui, hits, tx, ty, tw, th, o, c):
+    """one of the character's samples: its word, the character underlined, how it counts; a
+    tap opens it (FR-033)"""
+    k = ui.theme
+    st = o[2]
+    top_h = th - 34
+    if st in ("usable", "way-out"):
+        PT.box(cr, tx, ty, tw, th, k["cellR"], bg=k.paper, shadow="inset 0 0 0 1.5px " + k.ink)
+        PT.box(cr, tx + 1.5, ty + 1.5, tw - 3, top_h - 1.5, k["cellR"], bg=k.sheet)
+    elif st == "out":
+        PT.box(cr, tx, ty, tw, th, k["cellR"], bg=k.paper, shadow="inset 0 0 0 1px " + k.rule)
+    else:
+        dashed_box(cr, k, tx, ty, tw, th)
+    sample_word(cr, ui, tx, ty, tw, top_h, o)
+    baseline(cr, k, tx + 4, tx + tw - 4, ty + top_h)
+    PT.text(cr, occ_label(o, c), k["sub"], tx + 10, ty + top_h + 9, k.ink, maxw=tw - 20)
+    hits.add(tx, ty, tw, th, lambda: ui.sheet_sample(o[0], o[1]))
+
+
 def sheet_samples(cr, ui, hits, x, y, w, h):
     k = ui.theme
     sh = ui.sheet
@@ -1874,10 +1925,7 @@ def sheet_samples(cr, ui, hits, x, y, w, h):
     if not occ:
         PT.text(cr, "No sample has %s yet: Write more puts some in." % c, k["row"], x, y, k.soft, maxw=w, wrap=True)
         return
-    # the version each sample belongs to as the cards show them (the stored model's order)
-    _, d, _ = ui.char_info(c)
-    vof = {i: n for n, v in enumerate((d or {}).get("variants") or []) for i in v.get("ids") or []}
-    occ = [(o[0], o[1], o[2], vof.get(o[0], -1) if o[2] in ("usable", "way-out") else o[3], o[4]) for o in occ]
+    occ = card_versions(ui, occ)
     use = sum(1 for o in occ if o[2] == "usable")
     out = sum(1 for o in occ if o[2] in ("out", "way-out"))
     bad = len(occ) - use - out
@@ -1893,29 +1941,14 @@ def sheet_samples(cr, ui, hits, x, y, w, h):
     tw = (w - gap * (cols - 1)) / cols
     th = 96
     undo = sh.get("undo")
-    nh = 76 if undo else 0
+    hint = "Tap a sample to see it whole: write it again, delete it, or leave it out of your font."
+    nh = 76 if undo else PT.measure(cr, hint, k["sub"], maxw=w, wrap=True)[1] + 10
     rows = max(1, int((h - 28 - nh - BTN_H - 24) // (th + gap)))
     per = rows * cols
     pages = max(1, (len(occ) + per - 1) // per)
     page = min(sh.get("page", 0), pages - 1)
     for i, o in enumerate(occ[page * per:(page + 1) * per]):
-        tx, ty = x + (i % cols) * (tw + gap), y + (i // cols) * (th + gap)
-        st = o[2]
-        top_h = th - 34
-        if st in ("usable", "way-out"):
-            PT.box(cr, tx, ty, tw, th, k["cellR"], bg=k.paper, shadow="inset 0 0 0 1.5px " + k.ink)
-            PT.box(cr, tx + 1.5, ty + 1.5, tw - 3, top_h - 1.5, k["cellR"], bg=k.sheet)
-        elif st == "out":
-            PT.box(cr, tx, ty, tw, th, k["cellR"], bg=k.paper, shadow="inset 0 0 0 1px " + k.rule)
-        else:
-            dashed_box(cr, k, tx, ty, tw, th)
-        sample_word(cr, ui, tx, ty, tw, top_h, o)
-        baseline(cr, k, tx + 4, tx + tw - 4, ty + top_h)
-        label = occ_label(o, c)
-        PT.text(cr, label, k["sub"], tx + 10, ty + top_h + 9, k.ink, maxw=tw - (46 if st in ("usable", "out") else 20))
-        if st in ("usable", "out"):
-            checkbox(cr, k, tx + tw - 34, ty + top_h + 6, st == "usable")
-            hits.add(tx, ty, tw, th, lambda sid=o[0]: ui.mark_sample(sid))
+        occ_tile(cr, ui, hits, x + (i % cols) * (tw + gap), y + (i // cols) * (th + gap), tw, th, o, c)
     gy = y + rows * (th + gap)
     if undo:
         word = next((o[4] for o in occ if o[0] == undo), "")
@@ -1926,6 +1959,9 @@ def sheet_samples(cr, ui, hits, x, y, w, h):
         icon(cr, "info", 22, x + 26, gy + (nh - 10) / 2, k.ink)
         PT.text(cr, t, k["sub"], x + 52, gy + 12, k.ink, maxw=w - uw - 80, wrap=True)
         btn(cr, k, hits, x + w - uw - 12, gy + (nh - 10 - BTN_H) / 2, "Undo", ui.undo_out, icon_name="undo", w=uw)
+        gy += nh
+    else:
+        PT.text(cr, hint, k["sub"], x, gy, k.soft, maxw=w, wrap=True)
         gy += nh
     if pages > 1:
         pager(cr, ui, hits, x, gy + 4, page, pages, lambda d: ui.sheet_page(page + d))
@@ -1962,6 +1998,319 @@ def sheet_pick(cr, ui, hits, x, y, w, h):
     n = ui.char_picks() + sh.get("picks", 0)
     PT.text(cr, "%d pick%s for %s so far" % (n, "" if n == 1 else "s", c), k["sub"], x, by + 15, k.ink)
     btns_right(cr, k, hits, x + w, by, [("Both fine", ui.char_pick, False), ("Skip", ui.char_pick, False)])
+
+
+# ---- one sample opened in the sheet (spec 003 FR-033)
+
+
+def opened_state(ui, o, c):
+    """how the opened sample counts for the character, in words (None while it is read)"""
+    if not o:
+        return None
+    o = card_versions(ui, [o])[0]
+    st, var = o[2], o[3]
+    v = " · version %s" % LETTERS[var] if 0 <= var < len(LETTERS) else ""
+    if st == "usable":
+        return "Counts towards %s%s" % (c, v)
+    if st in ("out", "way-out"):
+        return occ_label(o, c)
+    why = occ_label(o, c)
+    return "Can’t be used: " + why[:1].lower() + why[1:]
+
+
+def opened_rows(ui):
+    """the opened sample's rows, (label, value): the text it was written for, what the tablet
+    read when it was written (only when the sample kept that reading), when and how it was
+    written, how it counts for the character"""
+    sid, pos, o, smp = ui.opened()
+    smp = smp or {}
+    rows = [("Written for", "“%s”" % (smp.get("text") or (o[4] if o else "")))]
+    rd = smp.get("reading") or []
+    if rd and rd[0].get("text") is not None:
+        rows.append(("The tablet read", "“%s”" % rd[0]["text"]))
+    t = next((r[1] for r in ui.samples if r[0] == sid), None)
+    how = ", ".join(v for v in (when(t) if t else "", smp.get("written") or "") if v)
+    if how:
+        rows.append(("Written", how))
+    st = opened_state(ui, o, ui.sheet["char"])
+    if st:
+        rows.append(("In your font", st))
+    return rows
+
+
+def _ink(cr, strokes, f, col, width):
+    cr.save()
+    cr.set_source_rgba(*PT.color(col))
+    cr.set_line_width(width)
+    cr.set_line_cap(1)
+    cr.set_line_join(1)
+    for st in strokes:
+        if st:
+            cr.move_to(*f(st[0]))
+            for p in st[1:]:
+                cr.line_to(*f(p))
+            if len(st) == 1:
+                cr.rel_line_to(0.1, 0)
+            cr.stroke()
+    cr.restore()
+
+
+def whole_sample(cr, ui, x, y, w, h, smp, pos, text):
+    """the whole sample, the character's strokes (its span) picked out on the highlight, the
+    rest softer; its text in the script font while the ink is fetched"""
+    k = ui.theme
+    strokes = (smp or {}).get("strokes") or []
+    b = ink_bounds(strokes)
+    if not b:
+        f = k.script % 60
+        tw, th = PT.measure(cr, text, f)
+        PT.text(cr, text, f, x + (w - tw) / 2, y + (h - th) / 2, k.soft, maxw=w)
+        return
+    bw, bh = max(b[2] - b[0], 1e-6), max(b[3] - b[1], 1e-6)
+    s = min((w - 40) / bw, (h - 40) / bh)
+    ox, oy = x + (w - bw * s) / 2, y + (h - bh * s) / 2
+    f = lambda p: (ox + (p[0] - b[0]) * s, oy + (p[1] - b[1]) * s)
+    spans = smp.get("spans") or []
+    mine = set(spans[pos]) if pos < len(spans) and spans[pos] else set()
+    mb = ink_bounds([strokes[i] for i in mine if i < len(strokes)])
+    if mb:
+        (x0, y0), (x1, y1) = f(mb[:2]), f(mb[2:])
+        PT.box(cr, x0 - 8, y0 - 8, x1 - x0 + 16, y1 - y0 + 16, k["cellR"], bg=k.hi)
+    wd = max(2.6, min(6.0, s * 3))
+    _ink(cr, [st for i, st in enumerate(strokes) if i not in mine], f, k.soft, wd)
+    _ink(cr, [strokes[i] for i in sorted(mine) if i < len(strokes)], f, k.pen, wd)
+
+
+def back_button(cr, ui, hits, x, y, label):
+    k = ui.theme
+    btn(cr, k, hits, x, y, label, ui.sheet_back, icon_name="arrow_back", w=btn_w(cr, k, label, "arrow_back"))
+    return y + BTN_H + 14
+
+
+def opened_note(o):
+    """the line under the rows: what leaving it out means, or how it can count"""
+    st = o[2] if o else None
+    if st == "out":
+        return "Left out, not deleted: it still helps the tablet read you. Put back returns it to your font."
+    if st == "way-out":
+        return "Its version is left out of your font. Put back on the version returns it."
+    if st and st != "usable":
+        return "Writing it again is how it can count."
+    return "Leaving it out of the font doesn’t delete it: it stays in Samples and still helps the tablet read you."
+
+
+def sheet_opened(cr, ui, hits, x, y, w, h):
+    """one sample opened from Samples or from a version's list: the whole word, its rows,
+    Leave out of the font (Put back), Delete and Write it again"""
+    k = ui.theme
+    sh = ui.sheet
+    sid, pos, o, smp = ui.opened()
+    if smp is None:
+        ui.want_inks([sid])
+    v = sh["vlist"]
+    bottom = y + h
+    y = back_button(cr, ui, hits, x, y, "Version %s" % LETTERS[v] if v is not None and v < len(LETTERS) else "Samples")
+    text = (smp or {}).get("text") or (o[4] if o else "")
+    land = w > 900
+    ih = 130 if land else 176
+    rows = opened_rows(ui)
+    rx, rw = x, w
+    if land:                            # turned: the word beside its rows
+        iw = int(w * 0.42)
+        ih = max(ih, len(rows) * 46)
+        rx, rw = x + iw + 20, w - iw - 20
+    else:
+        iw = w
+    PT.box(cr, x, y, iw, ih, k["rowR"], bg=k.sheet)
+    baseline(cr, k, x + 20, x + iw - 20, y + ih * 0.74)
+    whole_sample(cr, ui, x, y, iw, ih, smp, pos, text)
+    ry = y if land else y + ih + 14
+    sep(cr, k, rx, ry, rw, strong=True)
+    for name, value in rows:
+        _, vh = PT.measure(cr, value, k["row"], maxw=rw - 164, wrap=True)
+        rh = max(46, vh + 16)
+        lbl(cr, k, name, rx, ry + (rh - 12) / 2)
+        PT.text(cr, value, k["row"], rx + 164, ry + (rh - vh) / 2, k.ink, maxw=rw - 164, wrap=True)
+        ry += rh
+        sep(cr, k, rx, ry, rw)
+    y = max(ry, y + ih) + 14
+    if sh["redone"]:
+        t = "Written again. The new “%s” took the old one’s place." % text
+        _, th = PT.measure(cr, t, k["sub"], maxw=w - 70, wrap=True)
+        note(cr, k, x, y, w, th + 22)
+        icon(cr, "check_circle", 24, x + 28, y + 11 + th / 2, k.ink)
+        PT.text(cr, t, k["sub"], x + 54, y + 11, k.ink, maxw=w - 70, wrap=True)
+        y += th + 22 + 12
+    if not sh["asking"]:
+        PT.text(cr, opened_note(o), k["sub"], x, y, k.soft, maxw=w, wrap=True)
+    by = bottom - BTN_H
+    if ui.msg:
+        PT.text(cr, ui.msg, k["sub"], x, by - 30, k.ink, maxw=w)
+    st = o[2] if o else None
+    if st in ("usable", "out"):         # an unusable sample (and one of a left-out version) has no Leave out
+        lab, ic = ("Put back", "undo") if st == "out" else ("Leave out of the font", "block")
+        btn(cr, k, hits, x, by, lab, lambda: ui.mark_sample(sid), icon_name=ic, w=btn_w(cr, k, lab, ic))
+    rx = x + w
+    for lab, ic, fn in (("Write it again", "draw", ui.redo_start if smp else None),
+                        ("Delete", "delete", lambda: ui.ask_sheet_delete(True))):
+        bw = btn_w(cr, k, lab, ic)
+        rx -= bw
+        btn(cr, k, hits, rx, by, lab, fn, icon_name=ic, w=bw)
+        rx -= 10
+
+
+def delete_question(cr, ui, hits, x, w, h):
+    """Delete's question over the sheet: the same deletion as in Samples (spec 002 FR-009)"""
+    k = ui.theme
+    _, _, o, smp = ui.opened()
+    text = (smp or {}).get("text") or (o[4] if o else "")
+    t = ("The whole %s “%s” goes for good, with all its letters: from your font, from what the tablet learns to "
+         "read you, and from your contribution. It’s the same as deleting it in Samples." %
+         ("word" if " " not in text else "sample", text))
+    dw = w - 2 * x
+    _, th = PT.measure(cr, t, k["sub"], maxw=dw - 44, wrap=True)
+    nh = 20 + 30 + th + 16 + BTN_H + 20
+    ny = h - SHEET_M - 14 - nh
+    hits.add(0, 0, w, h, lambda: None)
+    PT.box(cr, x, ny, dw, nh, k["cardR"], bg=k.paper, shadow=k["dialogSh"])
+    PT.text(cr, "Delete this sample?", k["row"], x + 22, ny + 20, k.ink, weight=600)
+    PT.text(cr, t, k["sub"], x + 22, ny + 52, k.ink, maxw=dw - 44, wrap=True)
+    btns_right(cr, k, hits, x + dw - 22, ny + nh - 20 - BTN_H,
+               [("Keep it", lambda: ui.ask_sheet_delete(False), False), ("Delete", ui.sheet_delete, True)])
+
+
+def vlist_occ(ui):
+    """a version's samples: one line of letters samples per id the version names that is
+    still stored (its ids, spec 003 FR-033)"""
+    sh = ui.sheet
+    by = {}
+    for o in card_versions(ui, sh["occ"] or []):
+        if o[0] not in by or (by[o[0]][2] not in ("usable", "way-out", "out") and o[2] in ("usable", "way-out", "out")):
+            by[o[0]] = o
+    return [by[i] for i in ui.version_ids(sh["vlist"]) if i in by]
+
+
+def sheet_vlist(cr, ui, hits, x, y, w, h):
+    """a version's Show its samples: the version, then exactly its samples, each opening as
+    from Samples"""
+    k = ui.theme
+    sh = ui.sheet
+    c, n, d, inf, nv = sheet_info(ui)
+    vs = (d or {}).get("variants") or []
+    v = sh["vlist"]
+    bottom = y + h
+    y = back_button(cr, ui, hits, x, y, "Versions")
+    if not 0 <= v < len(vs):
+        return
+    var = vs[v]
+    m = ((ui.font or {}).get("model") or {}).get("metrics", {})
+    PT.box(cr, x, y, 72, 88, k["rowR"], bg=k.sheet)
+    base = draw_var(cr, k, var, m, x + 8, y + 8, 56, 64)
+    baseline(cr, k, x + 8, x + 64, base)
+    ids = len(var.get("ids") or [])
+    if var.get("left_out"):
+        t1 = "Version %s · left out" % LETTERS[v]
+    else:
+        on = [j for j, u in enumerate(vs) if not u.get("left_out")]
+        t1 = "Version %s · %d in 10" % (LETTERS[v], FV.in_ten(FV.font_view((ui.font or {}).get("model"))["chars"][c],
+                                                            on.index(v)))
+    PT.text(cr, t1, k["row"], x + 86, y + 22, k.ink, weight=600, maxw=w - 86)
+    PT.text(cr, "%s · %d sample%s" % (FV.strokes_desc(var), ids, "" if ids == 1 else "s"), k["sub"], x + 86, y + 50,
+            k.ink, maxw=w - 86)
+    y += 88 + 14
+    if sh["occ"] is None:
+        PT.text(cr, "Reading its samples…", k["row"], x, y, k.soft, maxw=w)
+        return
+    occ = vlist_occ(ui)
+    cols = 6 if w > 900 else 4
+    gap = 10
+    tw = (w - gap * (cols - 1)) / cols
+    th = 96
+    hint = ("The samples that make this way of writing it. Tap one to see it whole: write it again, delete it, or "
+            "leave it out of your font.")
+    hh = PT.measure(cr, hint, k["sub"], maxw=w, wrap=True)[1] + 14
+    rows = max(1, int((bottom - y - hh - BTN_H - 10) // (th + gap)))
+    per = rows * cols
+    pages = max(1, (len(occ) + per - 1) // per)
+    page = min(sh.get("vpage", 0), pages - 1)
+    shown = occ[page * per:(page + 1) * per]
+    ui.want_inks([o[0] for o in shown])
+    for i, o in enumerate(shown):
+        occ_tile(cr, ui, hits, x + (i % cols) * (tw + gap), y + (i // cols) * (th + gap), tw, th, o, c)
+    y += ((len(shown) + cols - 1) // cols) * (th + gap) + 4
+    PT.text(cr, hint, k["sub"], x, y, k.soft, maxw=w, wrap=True)
+    if pages > 1:
+        pager(cr, ui, hits, x, y + hh, page, pages, lambda dd: ui.sheet_vpage(page + dd))
+
+
+# ---- writing a sample again (FR-033): the same text, checked as usual, kept in its place
+
+
+def sheet_redo_top(cr, ui, hits, w, h=None, head=True):
+    """Write it again in the sheet: its head, the text, what happens to the old one, a
+    failed check"""
+    k = ui.theme
+    if h:
+        fill(cr, k, w, h)
+    y = chrome(cr, ui, hits, w) if head else 0
+    y += SHEET_M
+    land = not head
+    x, cw = (SHEET_M + 20, w - 2 * SHEET_M - 40) if not land else (PAD, w - 2 * PAD)
+    top = y
+    y = sheet_head(cr, ui, hits, x, y + 16, cw, tabs=False)
+    chip(cr, k, x, y, "Write it again", ic="draw")
+    y += 32 + 16
+    _, _, o, smp = ui.opened()
+    text = (smp or {}).get("text") or (o[4] if o else "")
+    what = "letter" if len(text) == 1 else "word" if " " not in text else "text"
+    t = "The same %s again, slowly and with care. The old one stays until this one is kept." % what
+    f = k["promptS"] if len(text) > 16 or cw < NARROW else k["prompt"]
+    pw, ph = PT.measure(cr, text, f, maxw=cw, wrap=True)
+    PT.text(cr, text, f, x, y, k.ink, maxw=cw, wrap=True)
+    _, th = PT.measure(cr, t, k["sub"], maxw=cw - pw - 16, wrap=True)
+    if cw - pw - 16 >= 200 and th < ph:
+        PT.text(cr, t, k["sub"], x + pw + 16, y + ph - th - 6, k.ink, maxw=cw - pw - 16, wrap=True)
+        y += ph + 12
+    else:
+        _, th = PT.text(cr, t, k["sub"], x, y + ph + 6, k.ink, maxw=cw, wrap=True)
+        y += ph + 6 + th + 12
+    shown = (ui.sheet.get("redo") or {}).get("shown")
+    if shown:
+        y += check_note(cr, ui, hits, x, y, cw, shown, redo=True) + 12
+    if head:
+        sheet_frame(cr, k, w, top, y + 1 if not h else h, top=True, bottom=False)
+    return y
+
+
+def sheet_redo_bottom(cr, ui, hits, w, h, canvas):
+    """Clear, Cancel, Done and the sheet's foot -> height"""
+    k = ui.theme
+    fill(cr, k, w, h)
+    land = pages_land()
+    x, cw = (SHEET_M + 20, w - 2 * SHEET_M - 40) if not land else (PAD, w - 2 * PAD)
+    r = ui.sheet.get("redo") or {}
+    has_ink = bool(canvas and canvas.strokes)
+    free = not r.get("busy") and not r.get("shown")
+    narrow = cw < NARROW
+    by = 46 if narrow else 14
+    bx = btns_right(cr, k, hits, x + cw, by, [
+        ("Clear", (lambda: canvas.clear()) if has_ink and free else None, False),
+        ("Cancel", ui.redo_cancel if not r.get("busy") else None, False),
+        ("Done", (lambda: ui.redo_done(canvas)) if has_ink and free else None, True)])
+    line = "Checking it…" if r.get("busy") else "It is checked as usual before it’s kept"
+    if narrow:
+        PT.text(cr, line, k["sub"], x, 14, k.soft, maxw=cw)
+    else:
+        PT.text(cr, line, k["sub"], x, by + 15, k.soft, maxw=bx - x - 12, wrap=True)
+    y = by + BTN_H + 14
+    if ui.msg:
+        PT.text(cr, ui.msg, k["sub"], x, y, k.ink, maxw=cw)
+        y += 24
+    y += sheet_foot(cr, ui, x, y, cw)
+    y += 12 + SHEET_M
+    if not land:
+        sheet_frame(cr, k, w, 0, y - SHEET_M, top=False, bottom=True)
+    return y
 
 
 def sheet_write_top(cr, ui, hits, w, h=None, head=True):
