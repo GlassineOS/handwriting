@@ -110,7 +110,9 @@ size, spacing) and keep their shape.
   person's. A variant is made from versions of the character with the same strokes, never
   by mixing versions written with a different number of strokes.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
-  prompt with its fit check passed (spans exact), and with strokes of its own (a stroke
+  prompt with its fit check passed (spans exact) or, for a prompt of one character alone,
+  kept on the person's confirmation after a failed check (its strokes can only be that
+  character's: a lone full stop or comma counts), and with strokes of its own (a stroke
   shared with a neighbour, as in joined writing, is not cut). Which strokes are a
   character's goes by where the ink lies as well as by the order of writing: a stroke written
   after the rest (an i's dot, the bar of a t or an f, the arms of an E, the second stroke of
