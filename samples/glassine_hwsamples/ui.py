@@ -5,13 +5,17 @@ writing area is its own widget, so the session's ink protocol gets exactly its b
 GTK ink module (GLASSINE_INK_WIDGETS names its type) and ink appears under the pen.
 
   glassine-handwriting-samples                 open (or raise) the app
-  glassine-handwriting-samples --render OUT.png [--page P] [--theme T] [--size WxH]
-                                               draw one page into a PNG (no display needed)
+  glassine-handwriting-samples --render OUT.png [--screen S] [--theme T] [--size WxH]
+                                               draw one of the design's screens (SCREENS)
+                                               into a PNG, from made-up data (no display, no
+                                               recognizer, no store)
 """
+import collections
 import itertools
 import math
 import os
 import queue
+import random
 import statistics
 import sys
 import threading
@@ -29,9 +33,10 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from glassine_ui import paint as PT, voices  # noqa: E402
+from glassine_ui import paint as PT  # noqa: E402
 
-from . import APP_ID, client, flow, prompts as P  # noqa: E402
+from . import APP_ID, client, flow, pages, prompts as P  # noqa: E402
+from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
 W0, H0 = 702, 884
 RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
@@ -59,12 +64,6 @@ def note(sh):
     if sh.donated_id and sh.sample_id:
         what += ", donated %s" % sh.donated_id
     print("glassine-handwriting-samples: %s sample: %s" % (p.set if p else "-", what), file=sys.stderr, flush=True)
-TABS = (("write", "Write"), ("samples", "Samples"), ("coverage", "Coverage"), ("learn", "Learn"), ("donate", "Donate"))
-SET_NAMES = {P.AUTO: "What needs practice", "words": "Words", "sentences": "Sentences", "pangrams": "Pangrams",
-             "letters": "Single letters", "digits": "Digits and punctuation", P.OWN: "My own words"}
-LICENCES = (("CC0-1.0", "CC0 (public domain)"), ("CC-BY-4.0", "CC BY 4.0 (with credit)"))
-
-
 def read_file(path):
     try:
         with open(path) as f:
@@ -84,119 +83,6 @@ def free_name(folder, stem, ext):
     while os.path.exists(os.path.join(folder, f"{stem}-{k}{ext}")):
         k += 1
     return os.path.join(folder, f"{stem}-{k}{ext}")
-
-
-class Theme:
-    def __init__(self, name):
-        g = voices.voice(name)
-        s, k = g["scheme"], g["card"]
-        self.name = g["name"]
-        self.ink, self.paper, self.sheet = s["ink"], s["paper"], s["sheet"]
-        self.dim, self.rule, self.soft = s["dim"], s["rule"], s["ink-soft"]
-        self.accent, self.on_accent = s["accent"], s["on-accent"]
-        self.F = k["F"]
-        self.row, self.sub, self.val, self.big, self.head, self.title = k["row"], k["sub"], k["val"], k["big"], \
-            k["head"], k["title"]
-
-    def font(self, px, weight=500, lh=1.25):
-        return f"{weight} {px}px/{lh} {self.F}"
-
-
-def rgba(col, a=1.0):
-    c = PT.color(col)
-    return (c[0], c[1], c[2], a * c[3]) if c else (0, 0, 0, a)
-
-
-# ---------------------------------------------------------------- drawing helpers
-
-
-class Hits:
-    """the tap targets of one paint: boxes with what a tap does"""
-
-    def __init__(self):
-        self.boxes = []
-
-    def add(self, x, y, w, h, fn):
-        self.boxes.append((x, y, w, h, fn))
-
-    def at(self, x, y):
-        return self.find(x, y)[1]
-
-    def find(self, x, y):
-        """(the box, what a tap on it does); the box stays the same across repaints while
-        the function is made anew each time"""
-        for bx, by, bw, bh, fn in reversed(self.boxes):
-            if bx <= x < bx + bw and by <= y < by + bh:
-                return (round(bx), round(by), round(bw), round(bh)), fn
-        return None, None
-
-
-def pill(cr, t, hits, x, y, label, fn, primary=False, w=None, on=True):
-    h = 48
-    tw, _ = PT.measure(cr, label, t.row)
-    w = w or tw + 40
-    if primary and on:
-        PT.box(cr, x, y, w, h, "999px", bg=t.accent)
-        col = t.on_accent
-    else:
-        PT.box(cr, x, y, w, h, "999px", bg=t.paper, shadow="inset 0 0 0 1.5px " + (t.ink if on else t.dim))
-        col = t.ink if on else t.dim
-    PT.text(cr, label, t.row, x + w / 2, y + (h - PT.measure(cr, label, t.row)[1]) / 2, col, align=1)
-    if on and fn:
-        hits.add(x, y, w, h, fn)
-    return w
-
-
-def pills_right(cr, t, hits, right, y, items):
-    """[(label, fn, primary)] laid out from the right edge leftwards; returns the left edge"""
-    x = right
-    for label, fn, primary in reversed(items):
-        w = PT.measure(cr, label, t.row)[0] + 40
-        x -= w
-        pill(cr, t, hits, x, y, label, fn, primary, w=w, on=fn is not None)
-        x -= 12
-    return x
-
-
-def draw_ink(cr, t, strokes, x, y, w, h, width=2.0):
-    """strokes [(x, y, ...)] scaled into a box, keeping their shape"""
-    pts = [p for s in strokes for p in s]
-    if not pts:
-        return
-    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
-    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
-    k = min(w / max(x1 - x0, 1), h / max(y1 - y0, 1), 1.0)
-    ox, oy = x + (w - (x1 - x0) * k) / 2, y + (h - (y1 - y0) * k) / 2
-    cr.save()
-    cr.set_source_rgba(*rgba(t.ink))
-    cr.set_line_width(width)
-    cr.set_line_cap(cairo.LINE_CAP_ROUND)
-    cr.set_line_join(cairo.LINE_JOIN_ROUND)
-    for s in strokes:
-        if not s:
-            continue
-        cr.move_to(ox + (s[0][0] - x0) * k, oy + (s[0][1] - y0) * k)
-        for p in s[1:]:
-            cr.line_to(ox + (p[0] - x0) * k, oy + (p[1] - y0) * k)
-        if len(s) == 1:
-            cr.line_to(ox + (s[0][0] - x0) * k + 0.1, oy + (s[0][1] - y0) * k)
-        cr.stroke()
-    cr.restore()
-
-
-def guides(cr, t, w, h, line, ctl=40):
-    """the keyboard's writing paper: one dashed guide per line, at two thirds of it"""
-    cr.save()
-    cr.set_source_rgba(*rgba(t.ink, 0.35))
-    cr.set_line_width(1.5)
-    cr.set_dash([ctl / 8, ctl / 8])
-    y = line * 2 / 3
-    while y < h:
-        cr.move_to(ctl * 0.75, y)
-        cr.line_to(w - ctl * 0.75, y)
-        cr.stroke()
-        y += line
-    cr.restore()
 
 
 # ---------------------------------------------------------------- the work behind the pages
@@ -233,7 +119,10 @@ class Worker:
 
 
 class UI:
-    """the pages' state and actions; redraw() repaints"""
+    """the pages' state and actions; redraw() repaints. The pages (pages.py) read this
+    state and call these actions; none of them talks to the recognizer itself."""
+
+    INKS = 64                           # samples' strokes kept for the grids
 
     def __init__(self, redraw, demo=False):
         self.redraw = redraw
@@ -242,7 +131,8 @@ class UI:
         self.cli = client.Cli()
         self.writer = None
         self.page = "write"
-        self.theme = Theme(read_file(THEME_FILE) or "white")
+        self.tab = "write"
+        self.theme = Look(read_file(THEME_FILE) or "white")
         self.msg = ""
         self.busy = 0                   # calls queued or running in the worker
         self.loaded = demo              # counts, plan, donation, learning, adaptations are in
@@ -254,20 +144,35 @@ class UI:
         self.samples = []               # [(id, time, text)]
         self.sp = 0                     # samples page
         self.detail = None              # (id, sample dict)
+        self.asking_delete = False
+        self.inks = collections.OrderedDict()   # {id: sample dict}: what the grids show
+        self.ink_wanted = set()         # being fetched
+        self.donated = set()            # ids in the donation
+        self.marked = {}                # {id: (written, pair)}
+        self.prefs = []                 # [(chosen, other, cchar, ochar)]
         self.plan = None
         self.adapts = {}
-        self.adapting = None            # progress text while a run goes
+        self.adapting = None            # True while a run goes
+        self.adapt_plan = None          # (learns from, kept aside) of the run
+        self.adapt_round = None         # (round, rounds)
         self.waiting_charge = False
         self.result = None
         self.donation = (None, 0, None)
         self.learning = True
         self.picking_licence = False
+        self.licence_pick = None        # the licence card picked, not yet confirmed
+        self.saved = None               # the donation file just written
         self.earlier = []               # [(id, time, text)] kept before donating was on, to offer
         self.earlier_out = set()        # ids the person leaves out
         self.reviewing = False          # the list of the earlier samples is open
         self.ep = 0                     # its page
-        self.confirm = None             # (question, yes-label, fn) for a destructive action
+        self.confirm = None             # (title, text, yes-label, fn) for a destructive action
         self.sets_open = False
+        self.best = None                # Learn's Your handwriting: None, "intro", "pick"
+        self.pick = None                # {"a": (id, strokes, k), "b": ..., "chosen": i}
+        self.pick_loading = False
+        self.wstep = "w-welcome"        # the introduction's step
+        self.tried = False              # its one prompt was written
         self.demo = demo
         self.work = Worker() if not demo else None
         if not demo:
@@ -280,7 +185,6 @@ class UI:
         if self.demo:
             return
         self.busy += 1
-        self.redraw()
 
         def fin(r, err):
             self.busy -= 1
@@ -296,7 +200,8 @@ class UI:
         """what the pages show from a refresh: a refresh that changes none of it repaints
         nothing (each repaint is a refresh of the e-ink panel)"""
         return (self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier,
-                self.fresh, self.loaded, self.cov_loaded, self.reviewing, len(self.writer.counted) if self.writer else 0)
+                self.fresh, self.loaded, self.cov_loaded, self.reviewing, self.donated, self.marked, self.prefs,
+                self.page, self.wstep, len(self.writer.counted) if self.writer else 0)
 
     def refresh(self):
         """counts, samples, coverage, the donation, the adaptation: in the background, after
@@ -316,9 +221,11 @@ class UI:
             self.writer.set_coverage(rows)
             don = self.cli.donation()
             earlier = self.cli.donation_earlier() if self.state.donating and don[0] else []
-            r = (self.writer.counts(rows=[(x[0], x[1], x[4]) for x in rows]), self.cli.plan(self.state.lang), don,
-                 self.cli.learning(), self.cli.adaptations(self.state.lang), [(x[0], x[1], x[4]) for x in rows],
-                 earlier)
+            donated = self.cli.donation_ids() if don[0] else set()
+            short = [(x[0], x[1], x[4]) for x in rows]
+            r = (self.writer.counts(rows=short), self.cli.plan(self.state.lang), don, self.cli.learning(),
+                 self.cli.adaptations(self.state.lang), short, earlier, donated, self.rec.marked(),
+                 self.rec.preferences())
             log("refresh %.0f ms, %d samples" % ((time.monotonic() - t) * 1000, len(rows)))
             return r
 
@@ -329,23 +236,112 @@ class UI:
                 print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
                 self.msg = "Something went wrong: %s" % err
             else:
-                self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier = r
+                (self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier,
+                 self.donated, self.marked, self.prefs) = r
                 self.earlier_out &= {e[0] for e in self.earlier}
                 if not self.earlier:
                     self.reviewing = False
                 self.fresh = self.plan["new"]
+                first = not self.loaded
                 self.loaded = self.cov_loaded = True
+                if first:
+                    self.first_start()
             if err or self.shown_state() != before:
                 self.redraw()
             if self.again:
                 self.refresh()
         self.work.do(get, got, low=True)
 
+    def first_start(self):
+        if flow.needs_intro(self.state, self.counts[1]):
+            self.page = "wizard"
+            self.wstep = "w-welcome"
+
+    # ---------------------------------------------------------- navigation
+
+    def go(self, page):
+        self.page = page
+        self.tab = page
+        self.detail = None
+        self.asking_delete = False
+        self.confirm = None
+        self.msg = ""
+        self.sets_open = False
+        self.saved = None
+        self.picking_licence = False
+        self.reviewing = False
+        if page != "learn":
+            self.best = None
+            self.pick = None
+        if page != "write" and not self.demo:
+            self.refresh()
+        self.redraw()
+
+    def open_sets(self):
+        self.sets_open = True
+        self.redraw()
+
+    def close_sets(self):
+        self.sets_open = False
+        self.redraw()
+
+    def cancel_confirm(self):
+        self.confirm = None
+        self.redraw()
+
+    def need(self):
+        """about how many samples learning starts with"""
+        pl = self.plan or {}
+        return pl.get("min_train", 40) + pl.get("min_held", 10)
+
+    # ---------------------------------------------------------- the introduction
+
+    def wizard_to(self, step):
+        self.wstep = step
+        self.msg = ""
+        if step == "w-try" and self.writer and self.writer.shown and self.tried:
+            self.wstep = "w-try"
+        self.redraw()
+
+    def wizard_next(self):
+        nxt = {"w-welcome": "w-try", "w-try": "w-private", "w-private": "w-learning", "w-learning": "w-share"}
+        s = self.wstep
+        if s in nxt:
+            return self.wizard_to(nxt[s])
+        if s == "w-licence" and self.licence_pick:
+            self.donating(True, self.licence_pick)
+            return self.wizard_to("w-ready")
+        if s == "w-ready":
+            return self.wizard_done()
+
+    def wizard_decline(self):
+        """Not now: donating stays off; no licence, no donor ID"""
+        self.licence_pick = None
+        if self.state.donating:
+            self.donating(False)
+        self.wizard_to("w-ready")
+
+    def wizard_skip(self):
+        self.wizard_done()
+
+    def wizard_done(self):
+        self.state.introduced = True
+        if not self.demo:
+            self.state.save()
+        self.go("write")
+
+    def pick_licence(self, key):
+        self.licence_pick = key
+        self.redraw()
+
     # ---------------------------------------------------------- writing
 
     def submit(self, strokes, units, area, prompt):
         """the ink written to prompt (taken by Next, the next prompt is already up) is read
         and kept in the background"""
+        if self.page == "wizard":
+            self.tried = True
+
         def go():
             return self.writer.submit(strokes, units, area, prompt)
 
@@ -357,6 +353,10 @@ class UI:
             if sh and sh.status == "kept":
                 self.counts = (self.counts[0] + bool(sh.sample_id), self.counts[1] + bool(sh.sample_id))
                 self.fresh += bool(sh.sample_id)
+                if sh.sample_id and (sh.prompt.written or sh.prompt.pair):
+                    self.marked = dict(self.marked)
+                    self.marked[sh.sample_id] = (sh.prompt.written, sh.prompt.pair)
+                    self.samples = self.samples + [(sh.sample_id, int(time.time()), sh.prompt.text)]
                 if sh.donated_id:
                     self.donation = (self.donation[0], self.donation[1] + 1, self.donation[2])
         self.run(go, fin)
@@ -376,6 +376,8 @@ class UI:
     def act(self, name):
         fn = getattr(self.writer, name)
         was = self.writer.shown
+        if self.page == "wizard" and name == "redo":
+            self.tried = False
 
         def fin(_):
             if was and name == "keep_anyway":
@@ -386,22 +388,91 @@ class UI:
             self.refresh()
         self.run(fn, fin)
 
+    def skip(self):
+        self.act("skip")
+
     def choose_set(self, name):
         self.sets_open = False
         self.run(lambda: self.writer.choose_set(name))
 
+    def practise(self):
+        """Coverage's Practise these: the prompts that favour the weak characters"""
+        self.choose_set(P.AUTO)
+        self.go("write")
+
+    def careful_today(self):
+        day0 = flow.day_start()
+        return sum(1 for sid, t, _ in self.samples if t >= day0 and self.marked.get(sid, ("",))[0] == "careful")
+
     # ---------------------------------------------------------- samples
 
+    def samples_page(self, d):
+        self.sp += d
+        self.redraw()
+
+    def want_inks(self, ids):
+        """the grids' samples: fetched in the background (only the ones on the page, never all
+        of them), repainted once they are in"""
+        if self.demo:
+            return
+        miss = [i for i in ids if i not in self.inks and i not in self.ink_wanted]
+        if not miss:
+            for i in ids:
+                if i in self.inks:
+                    self.inks.move_to_end(i)
+            return
+        self.ink_wanted |= set(miss)
+
+        def get():
+            out = {}
+            for i in miss:
+                try:
+                    out[i] = self.rec.sample(i)
+                except client.Error:
+                    out[i] = {}
+            return out
+
+        def got(r, err):
+            self.ink_wanted -= set(miss)
+            if r:
+                self.inks.update(r)
+                while len(self.inks) > self.INKS:
+                    self.inks.popitem(last=False)
+                self.redraw()
+        self.work.do(get, got, low=True)
+
     def open_sample(self, sid):
+        self.asking_delete = False
         self.run(lambda: self.rec.sample(sid), lambda s: setattr(self, "detail", (sid, s)))
 
+    def close_sample(self):
+        self.detail = None
+        self.asking_delete = False
+        self.redraw()
+
+    def ask_delete(self):
+        self.asking_delete = True
+        self.redraw()
+
+    def keep_sample(self):
+        self.asking_delete = False
+        self.redraw()
+
     def delete_sample(self, sid):
+        """from the samples and from the donation (forget takes both)"""
         def go():
             self.rec.forget(sid)
             self.writer.forgotten(sid)
         self.detail = None
-        self.confirm = None
+        self.asking_delete = False
+        self.inks.pop(sid, None)
         self.run(go, lambda _: self.refresh())
+
+    def ask_erase_all(self):
+        n = len(self.samples)
+        self.confirm = ("Erase all %d samples?" % n, "They’re removed from this tablet for good. Your donation keeps its copies "
+                        "until you erase it in Donate. What it has already learned stays until it learns again.", "Erase all", self.erase_all)
+        self.redraw()
 
     def erase_all(self):
         self.confirm = None
@@ -410,11 +481,13 @@ class UI:
             n = self.cli.erase()
             self.writer.forgotten()
             return n
+        self.inks.clear()
         self.run(go, lambda n: (setattr(self, "msg", "%d samples erased." % n), self.refresh()))
 
     def export(self):
         path = free_name(os.path.join(documents_dir(), "Handwriting"), "handwriting-samples", ".jsonl")
-        self.run(lambda: self.cli.export(path), lambda _: setattr(self, "msg", "Exported to " + path))
+        self.run(lambda: self.cli.export(path), lambda _: setattr(self, "msg", "Saved in Documents › Handwriting as " +
+                                                                  os.path.basename(path)))
 
     def import_latest(self):
         folder = os.path.join(documents_dir(), "Handwriting")
@@ -424,7 +497,7 @@ class UI:
         except OSError:
             files = []
         if not files:
-            self.msg = "No export file in " + folder
+            self.msg = "No saved samples in Documents › Handwriting."
             self.redraw()
             return
         self.run(lambda: self.cli.import_(files[-1]),
@@ -433,14 +506,11 @@ class UI:
 
     def donate_one(self, sid):
         self.run(lambda: self.cli.donation_add(sid),
-                 lambda _: (setattr(self, "msg", "Added to the donation."), self.refresh()))
+                 lambda _: (setattr(self, "msg", "Added to your donation."), self.refresh()))
 
     # ---------------------------------------------------------- learning
 
     def adapt(self):
-        def check():
-            return self.cli.charging()
-
         def got(charging):
             if charging:
                 self.waiting_charge = False
@@ -448,7 +518,7 @@ class UI:
             else:
                 self.waiting_charge = True
                 GLib.timeout_add_seconds(10, self.poll_charge)
-        self.run(check, got)
+        self.run(self.cli.charging, got)
 
     def poll_charge(self):
         if not self.waiting_charge:
@@ -457,19 +527,20 @@ class UI:
         return False
 
     def start_adapt(self):
+        """a run in its own thread (it takes minutes; the writing's requests must not wait for
+        it); the page shows its plan and rounds as the run reports them"""
         self.result = None
-        self.adapting = "Starting"
+        self.adapting = True
+        self.adapt_plan = self.adapt_round = None
 
         def line(kind, f):
             if kind == "plan":
-                self.adapting = "Learning from %s samples, %s held back to check" % (f[0], f[1])
+                self.adapt_plan = (int(f[0]), int(f[1]))
             elif kind == "epoch":
-                self.adapting = "Pass %s of %s" % (f[0], f[1])
+                self.adapt_round = (int(f[0]), int(f[1]))
             GLib.idle_add(lambda: (self.redraw(), False)[1])
 
         def go():
-            # its own thread: a run takes minutes, and the writing's requests (the worker's)
-            # must not wait for it
             try:
                 last = self.cli.adapt(self.state.lang, on_line=line)
             except Exception as e:      # shown on the page, the app keeps running
@@ -485,27 +556,126 @@ class UI:
         self.redraw()
         threading.Thread(target=go, daemon=True).start()
 
+    def ask_revert(self):
+        self.confirm = ("Use the version before?", "It goes back to what it read you with before it last learned. "
+                        "What it learned last is set aside.", "Use it", self.revert)
+        self.redraw()
+
     def revert(self):
         self.confirm = None
+        self.result = None
         self.run(lambda: self.cli.revert(self.state.lang), lambda _: self.refresh())
+
+    # ---------------------------------------------------------- Your handwriting
+
+    def open_best(self, mode):
+        """Learn's Your handwriting (mode "intro"), or back to Learn (None); either way the
+        careful writing stops"""
+        if self.writer and self.writer.best is not None:
+            self.run(self.writer.stop_best)
+        self.page = self.tab = "learn"
+        self.best = mode
+        self.pick = None
+        self.sets_open = False
+        self.redraw()
+
+    def start_best(self):
+        self.best = None
+        self.run(self.writer.start_best)
+        self.go("write")
+
+    def start_pick(self):
+        self.best = "pick"
+        self.pick = None
+        self.next_pick()
+
+    def next_pick(self):
+        """two versions of one character from the person's own samples: chosen from the
+        listing (no strokes), then only those two are fetched"""
+        self.pick = None
+        self.pick_loading = True
+        self.redraw()
+        if self.demo:
+            return
+        rows, prefs = list(self.samples), list(self.prefs)
+
+        def get():
+            return flow.load_pick(self.rec, rows, prefs)
+
+        def got(r):
+            self.pick_loading = False
+            self.pick = r
+        self.run(get, got)
+
+    def choose_pick(self, i):
+        pk = self.pick
+        if not pk or pk.get("chosen") is not None:
+            return
+        pk["chosen"] = i
+        a, b = (pk["a"], pk["b"]) if i == 0 else (pk["b"], pk["a"])
+        self.state.picks[flow.today()] = self.picks_today() + 1
+        self.state.save()
+        self.redraw()
+
+        def go():
+            self.rec.prefer(a[0], b[0], a[2], b[2])
+        self.run(go, lambda _: (self.refresh(), self.next_pick()))
+
+    def picks_today(self):
+        return self.state.picks.get(flow.today(), 0)
 
     # ---------------------------------------------------------- donation
 
+    def turn_on(self):
+        """the licence is chosen once per donation: asked when none is started"""
+        if self.donation[0]:
+            self.donating(True)
+        else:
+            self.picking_licence = True
+            self.licence_pick = None
+            self.redraw()
+
+    def cancel_licence(self):
+        self.picking_licence = False
+        self.licence_pick = None
+        self.redraw()
+
     def donating(self, on, licence=None):
         def go():
-            if on and licence:
+            if on and licence and not self.cli.donation()[0]:
                 self.cli.donation_start(licence)
             self.state.donating = on
             self.state.save()
         self.picking_licence = False
         self.run(go, lambda _: self.refresh())
 
+    def ask_turn_off(self):
+        """Turn off is undone by Turn on: no question"""
+        self.donating(False)
+
+    def review_earlier(self):
+        self.reviewing = True
+        self.ep = 0
+        self.redraw()
+
+    def close_review(self):
+        self.reviewing = False
+        self.redraw()
+
+    def flip_earlier(self, sid):
+        self.earlier_out ^= {sid}
+        self.redraw()
+
+    def earlier_page(self, d):
+        self.ep += d
+        self.redraw()
+
     def add_earlier(self):
         """the earlier samples the person didn't leave out go into the donation"""
         ids = [e[0] for e in self.earlier if e[0] not in self.earlier_out]
         self.reviewing = False
         self.run(lambda: self.cli.donation_add_all(ids),
-                 lambda n: (setattr(self, "msg", "%d earlier samples added to the donation." % n), self.refresh()))
+                 lambda n: (setattr(self, "msg", "%d earlier samples added to your donation." % n), self.refresh()))
 
     def write_donation(self):
         lic = self.donation[0]
@@ -516,11 +686,21 @@ class UI:
             # one file per donation: the next starts empty, with the same licence
             self.cli.donation_erase()
             self.cli.donation_start(lic)
-        self.run(go, lambda _: (setattr(self, "msg", "Written to " + path), self.refresh()))
+        self.run(go, lambda _: (setattr(self, "saved", path), self.refresh()))
+
+    def ask_new_donor(self):
+        self.confirm = ("Get a new donor ID?", "Your next donations then count as another writer’s. The ones you "
+                        "already sent keep the old one.", "Get a new one", self.new_donor)
+        self.redraw()
 
     def new_donor(self):
         self.confirm = None
         self.run(self.cli.donor_new, lambda _: self.refresh())
+
+    def ask_erase_donation(self):
+        self.confirm = ("Erase your donation?", "The copy set aside for donating goes. Your own samples stay.", "Erase",
+                        self.erase_donation)
+        self.redraw()
 
     def erase_donation(self):
         self.confirm = None
@@ -533,409 +713,8 @@ class UI:
         self.run(go, lambda _: self.refresh())
 
 
-# ---------------------------------------------------------------- pages
-
-
-def header(cr, ui, hits, w):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, 64, t.paper)
-    PT.text(cr, "Handwriting", t.title, 20, 10, t.ink)
-    x = 20
-    y = 40
-    for key, label in TABS:
-        tw, th = PT.measure(cr, label, t.sub)
-        on = ui.page == key
-        PT.text(cr, label, t.sub, x, y, t.ink, weight=600 if on else 400)
-        if on:
-            cr.set_source_rgba(*rgba(t.ink))
-            cr.rectangle(x, y + th + 2, tw, 2)
-            cr.fill()
-        hits.add(x - 8, 30, tw + 16, 34, lambda k=key: ui_go(ui, k))
-        x += tw + 22
-    if ui.busy:
-        PT.text(cr, "…", t.row, w - 20, 14, t.ink, align=2)
-    PT.rule(cr, 0, 63, w, "1px solid " + t.ink)
-
-
 def ui_go(ui, page):
-    ui.page = page
-    ui.detail = None
-    ui.confirm = None
-    ui.msg = ""
-    ui.sets_open = False
-    if page != "write" and not ui.demo:
-        ui.refresh()
-    ui.redraw()
-
-
-def write_top(cr, ui, hits, w, h):
-    """the prompt, and the sample just written with what was read"""
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    wr = ui.writer
-    p = wr.prompt if wr else P.Prompt("The quick brown fox jumps over the lazy dog.", "pangrams", "en")
-    st = ui.state
-    label = SET_NAMES.get(st.set, st.set) + "  ▾"
-    lw, _ = PT.measure(cr, label, t.sub)
-    PT.text(cr, label, t.sub, 20, 76, t.soft)
-    hits.add(12, 70, lw + 16, 30, lambda: (setattr(ui, "sets_open", True), ui.redraw()))
-    if p is None:
-        PT.text(cr, "Nothing to write in this set." + (" Add your own words." if st.set == P.OWN else ""),
-                t.row, 20, 110, t.ink, maxw=w - 40, wrap=True)
-    else:
-        size = 34 if len(p.text) < 24 else 26
-        PT.text(cr, p.text, t.font(size, 500, 1.2), 20, 102, t.ink, maxw=w - 40, wrap=True)
-    sh = wr.shown if wr else None
-    y = h - 112
-    PT.rule(cr, 20, y - 8, w - 40, "1px solid " + t.rule)
-    if sh:
-        box_w = 150
-        PT.box(cr, 20, y, box_w, 64, "6px", bg=t.sheet)
-        draw_ink(cr, t, sh.strokes, 26, y + 6, box_w - 12, 52, 1.5)
-        read = sh.reading[0][0] if sh.reading else "(nothing)"
-        if sh.status == "check":
-            what = "This doesn't look like “%s”." % sh.prompt.text
-            PT.text(cr, what, t.row, 184, y, t.ink, maxw=w - 204)
-            PT.text(cr, "Read as “%s”" % read, t.sub, 184, y + 26, t.soft, maxw=w - 204)
-            pills_right(cr, t, hits, w - 20, y + 56, [("Redo", lambda: ui.act("redo"), False),
-                                                      ("Skip", lambda: ui.act("skip"), False),
-                                                      ("Keep it", lambda: ui.act("keep_anyway"), True)])
-        else:
-            kept = "Kept" if sh.sample_id else "Donated" if sh.donated_id else "Not kept"
-            if sh.status == "not-kept" and sh.why == "learning":
-                kept = "Not kept: learning is off"
-            extra = ("" if sh.exact or not sh.sample_id else " (letters placed by guess)") + \
-                (" · donated" if sh.donated_id and sh.sample_id else "")
-            PT.text(cr, "“%s” · %s%s" % (sh.prompt.text, kept, extra), t.row, 184, y, t.ink, maxw=w - 204)
-            PT.text(cr, "Read before learning: “%s”" % read, t.sub, 184, y + 26, t.soft, maxw=w - 204)
-            pills_right(cr, t, hits, w - 20, y + 56, [("Redo", lambda: ui.act("redo"), False),
-                                                      ("Discard", lambda: ui.act("discard"), False)])
-    else:
-        PT.text(cr, "Write it on the lines below, then pause or tap Next.", t.sub, 20, y, t.soft)
-    if ui.msg:
-        PT.text(cr, ui.msg, t.sub, 20, h - 22, t.ink, maxw=w - 40)
-
-
-def write_bottom(cr, ui, hits, w, h, canvas):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    PT.rule(cr, 0, 0, w, "1px solid " + t.ink)
-    today, total = ui.counts
-    PT.text(cr, "Today %d · total %d · new since learning %d" % (today, total, ui.fresh) if ui.loaded else "Loading…",
-            t.sub, 20, 16, t.soft)
-    has_ink = bool(canvas and canvas.strokes)
-    pills_right(cr, t, hits, w - 20, h - 64, [
-        ("Clear", (lambda: canvas.clear()) if has_ink else None, False),
-        ("Skip", (lambda: ui.act("skip")) if not has_ink else None, False),
-        ("Next", (lambda: canvas.submit()) if has_ink else None, True)])
-
-
-def sets_page(cr, ui, hits, w, h):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    PT.text(cr, "What to write", t.title, 20, 84, t.ink)
-    y = 130
-    for name in (P.AUTO,) + P.SETS + (P.OWN,):
-        n = len(ui.writer.sets.get(name, [])) if ui.writer and name != P.AUTO else None
-        label = SET_NAMES[name] + ("" if n is None else "  (%d)" % n)
-        on = ui.state.set == name
-        PT.box(cr, 20, y, w - 40, 52, "8px", bg=t.sheet if on else t.paper, shadow="inset 0 0 0 1.5px " + t.ink)
-        PT.text(cr, label, t.row, 36, y + 15, t.ink, weight=600 if on else 500)
-        hits.add(20, y, w - 40, 52, lambda k=name: ui.choose_set(k))
-        y += 62
-    PT.text(cr, "Your own words are in %s, one per line. They stay on this device and are never donated as a set."
-            % P.own_words_path(), t.sub, 20, y + 8, t.soft, maxw=w - 40, wrap=True)
-    pill(cr, t, hits, 20, h - 72, "Back", lambda: (setattr(ui, "sets_open", False), ui.redraw()))
-
-
-def samples_page(cr, ui, hits, w, h):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    if ui.detail:
-        sid, s = ui.detail
-        PT.text(cr, s.get("text", ""), t.title, 20, 84, t.ink, maxw=w - 40, wrap=True)
-        rd = s.get("reading") or []
-        info = "Read when written: “%s”" % rd[0]["text"] if rd else "No reading kept"
-        info += " · letters %s" % ("placed exactly" if s.get("spans_source") == "exact" else "placed by guess")
-        PT.text(cr, info, t.sub, 20, 120, t.soft, maxw=w - 40)
-        PT.box(cr, 20, 150, w - 40, h - 330, "8px", bg=t.sheet)
-        draw_ink(cr, t, s.get("strokes", []), 36, 166, w - 72, h - 362, 2.0)
-        n = sum(len(q) for q in s.get("strokes", []))
-        u = s.get("units", {})
-        PT.text(cr, "%d strokes, %d points as the pen gave them%s" % (
-            len(s.get("strokes", [])), n, ", %g per mm" % u["per_mm"] if u.get("per_mm") else ""),
-            t.sub, 20, h - 168, t.soft)
-        items = [("Back", lambda: (setattr(ui, "detail", None), ui.redraw()), False)]
-        if ui.donation[0] and ui.state.donating:
-            items.append(("Add to donation", lambda: ui.donate_one(sid), False))
-        items.append(("Delete", lambda: ask(ui, "Delete this sample?", "Delete", lambda: ui.delete_sample(sid)), True))
-        pills_right(cr, t, hits, w - 20, h - 72, items)
-        return
-    PT.text(cr, "Samples from this app: %d" % len(ui.samples), t.title, 20, 84, t.ink)
-    per = max(1, (h - 300) // 52)
-    pages = max(1, math.ceil(len(ui.samples) / per))
-    ui.sp = min(ui.sp, pages - 1)
-    rows = list(reversed(ui.samples))[ui.sp * per:(ui.sp + 1) * per]
-    y = 130
-    for sid, when, text in rows:
-        PT.rule(cr, 20, y + 51, w - 40, "1px solid " + t.rule)
-        PT.text(cr, text, t.row, 20, y + 14, t.ink, maxw=w - 200)
-        PT.text(cr, time.strftime("%d %b %H:%M", time.localtime(when)), t.sub, w - 20, y + 16, t.soft, align=2)
-        hits.add(20, y, w - 40, 52, lambda i=sid: ui.open_sample(i))
-        y += 52
-    if pages > 1:
-        PT.text(cr, "Page %d of %d" % (ui.sp + 1, pages), t.sub, w / 2, h - 158, t.soft, align=1)
-        pill(cr, t, hits, 20, h - 170, "‹", (lambda: (setattr(ui, "sp", ui.sp - 1), ui.redraw())) if ui.sp else None,
-             w=60, on=ui.sp > 0)
-        pill(cr, t, hits, w - 80, h - 170, "›", lambda: (setattr(ui, "sp", ui.sp + 1), ui.redraw()), w=60,
-             on=ui.sp < pages - 1)
-    pills_right(cr, t, hits, w - 20, h - 72, [
-        ("Import", ui.import_latest, False), ("Export", ui.export, False),
-        ("Erase all", (lambda: ask(ui, "Erase all %d samples from this app? Your adaptation stays until it is "
-                                   "redone." % len(ui.samples), "Erase", ui.erase_all)) if ui.samples else None, False)])
-    if ui.msg:
-        PT.text(cr, ui.msg, t.sub, 20, h - 112, t.ink, maxw=w - 40)
-
-
-def coverage_page(cr, ui, hits, w, h):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    PT.text(cr, "Samples per character", t.title, 20, 84, t.ink)
-    PT.text(cr, "Count, and how often it was read wrongly when written. Prompts favour the weak ones.",
-            t.sub, 20, 114, t.soft, maxw=w - 40, wrap=True)
-    cov = ui.writer.cov if ui.writer else P.Coverage()
-    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?'-()"
-    cols = 6
-    cw, ch = (w - 40) / cols, 50
-    y0 = 160
-    for i, (c, n, err) in enumerate(cov.table(chars)):
-        x, y = 20 + (i % cols) * cw, y0 + (i // cols) * ch
-        if y + ch > h - 10:
-            break
-        weak = n < 3 or (err is not None and err > 0.3)
-        PT.box(cr, x + 2, y + 2, cw - 4, ch - 4, "6px", bg=t.sheet if weak else t.paper,
-               shadow="inset 0 0 0 1px " + t.rule)
-        PT.text(cr, c, t.font(22, 500, 1), x + 12, y + 12, t.ink)
-        PT.text(cr, "%d%s" % (n, "" if err is None else " · %d%%" % round(err * 100)), t.sub, x + cw - 10, y + 16,
-                t.soft, align=2)
-
-
-def pct(v):
-    return "%.1f%%" % (100 * v)
-
-
-def learn_page(cr, ui, hits, w, h):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    PT.text(cr, "Learn your handwriting", t.title, 20, 84, t.ink)
-    pl = ui.plan or {"train": 0, "held": 0, "new": 0, "min_train": 40, "min_held": 10, "charging": False}
-    y = 124
-    lines = ["%d new samples since the last time it learned." % pl["new"],
-             "It learns from %d of your samples and checks itself on %d others it doesn't learn from."
-             % (pl["train"], pl["held"])]
-    if pl["train"] < pl["min_train"] or pl["held"] < pl["min_held"]:
-        lines.append("It needs at least %d to learn from and %d to check on: keep writing."
-                     % (pl["min_train"], pl["min_held"]))
-    if not ui.learning:
-        lines.append("Learning is off in Settings: nothing is learned or kept.")
-    for s in lines:
-        _, th = PT.text(cr, s, t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
-        y += th + 10
-    y += 6
-    if ui.adapting:
-        PT.text(cr, "Learning… " + ui.adapting, t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
-        PT.text(cr, "You can keep using the device; it runs at the lowest priority.", t.sub, 20, y + 30, t.soft)
-    elif ui.waiting_charge:
-        PT.text(cr, "The device isn't charging. Learning takes a while, so it waits for the charger and "
-                "starts once it is plugged in while this app is open; otherwise it learns by itself the next "
-                "time the device is idle and charging.", t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
-    elif ui.result:
-        kind, f = ui.result
-        if kind == "result":
-            before, after = float(f[1]), float(f[2])
-            if f[0] == "kept":
-                s = "Better: errors on your held-back samples went from %s to %s. It uses the new one now." % (
-                    pct(before), pct(after))
-            else:
-                s = "Not better (%s before, %s with the new one), so it keeps the one it had." % (pct(before),
-                                                                                                    pct(after))
-        else:
-            s = {"too-few": "Not enough samples yet.", "nothing-new": "Nothing new to learn from.",
-                 "charging": "The device isn't charging.", "unplugged": "Stopped: the charger was unplugged.",
-                 "learning": "Learning is off in Settings.", "erased": "Samples were erased meanwhile; dropped."
-                 }.get(f[0] if f else "", "It didn't run.")
-        PT.text(cr, s, t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
-    cur, prev = ui.adapts.get("current"), ui.adapts.get("previous")
-    y = h - 200
-    PT.rule(cr, 20, y - 10, w - 40, "1px solid " + t.rule)
-    if cur:
-        PT.text(cr, "In use since %s: %s → %s on held-back samples." % (
-            time.strftime("%d %b %H:%M", time.localtime(cur["time"])), pct(cur["before"]), pct(cur["after"])),
-            t.sub, 20, y, t.soft, maxw=w - 40)
-    else:
-        PT.text(cr, "In use: the base model only.", t.sub, 20, y, t.soft)
-    if prev:
-        PT.text(cr, "The one before is kept (%s); you can go back to it." % time.strftime(
-            "%d %b %H:%M", time.localtime(prev["time"])), t.sub, 20, y + 24, t.soft, maxw=w - 40)
-    can = not ui.adapting and not ui.busy and ui.learning
-    items = []
-    if prev and not ui.adapting:
-        items.append(("Go back", lambda: ask(ui, "Go back to the adaptation before?", "Go back", ui.revert), False))
-    if ui.waiting_charge:
-        items.append(("Stop waiting", lambda: (setattr(ui, "waiting_charge", False), ui.redraw()), False))
-    else:
-        items.append(("Learn now", ui.adapt if can else None, True))
-    pills_right(cr, t, hits, w - 20, h - 72, items)
-
-
-def donate_page(cr, ui, hits, w, h):
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    PT.text(cr, "Help the base models", t.title, 20, 84, t.ink)
-    y = 124
-    _, th = PT.text(cr, "When donating is on, every sample you keep for a shipped prompt also goes into a donation. "
-                    "You write the donation into a file and send it to the project yourself; nothing is sent from "
-                    "here. It holds only your strokes and the prompt, under the licence you choose, and a random "
-                    "donor number, the same in all your donations: no name, device, app or time.", t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
-    y += th + 18
-    lic, n, donor = ui.donation
-    if ui.picking_licence:
-        PT.text(cr, "Choose the licence for this donation:", t.row, 20, y, t.ink)
-        y += 36
-        for key, label in LICENCES:
-            PT.box(cr, 20, y, w - 40, 52, "8px", bg=t.paper, shadow="inset 0 0 0 1.5px " + t.ink)
-            PT.text(cr, label, t.row, 36, y + 15, t.ink)
-            hits.add(20, y, w - 40, 52, lambda k=key: ui.donating(True, k))
-            y += 62
-        pill(cr, t, hits, 20, h - 72, "Cancel", lambda: (setattr(ui, "picking_licence", False), ui.redraw()))
-        return
-    on = ui.state.donating and lic
-    if on and ui.reviewing and ui.earlier:
-        earlier_review(cr, ui, hits, w, h, y)
-        return
-    PT.text(cr, "Donating: %s" % ("on, " + lic if on else "off"), t.row, 20, y, t.ink, weight=600)
-    y += 34
-    PT.text(cr, "%d samples in this donation." % n, t.row, 20, y, t.ink)
-    y += 34
-    if on and ui.earlier:
-        # the prompted samples kept before donating was on: offered, never added unasked
-        k = len(ui.earlier)
-        PT.box(cr, 20, y, w - 40, 112, "8px", bg=t.paper, shadow="inset 0 0 0 1.5px " + t.rule)
-        PT.text(cr, "%d sample%s you kept before for shipped prompts can go into this donation too. "
-                "Review them and leave out any you like; nothing is added unless you add them."
-                % (k, "" if k == 1 else "s"), t.row, 36, y + 14, t.ink, maxw=w - 200, wrap=True)
-        pill(cr, t, hits, w - 150, y + 34, "Review", lambda: (setattr(ui, "reviewing", True), setattr(ui, "ep", 0),
-                                                            ui.redraw()),
-             primary=True)
-        y += 124
-    if donor:
-        # quiet: what the donor ID is, and a way to start over as a new writer
-        _, th = PT.text(cr, "Donor ID: %s… — a random number, the same in all your donations, so they count as one "
-                        "writer's. It says nothing about you." % donor[:4], t.sub, 20, y, t.soft, maxw=w - 200,
-                        wrap=True)
-        PT.text(cr, "Get a new one", t.sub, w - 20, y, t.ink, align=2)
-        tw, _ = PT.measure(cr, "Get a new one", t.sub)
-        hits.add(w - 28 - tw, y - 8, tw + 16, 40, lambda: ask(
-            ui, "Get a new donor ID? Your next donations then count as another writer's.", "Get a new one",
-            ui.new_donor))
-        y += max(th, 30) + 14
-    if ui.msg:
-        PT.text(cr, ui.msg, t.sub, 20, y, t.ink, maxw=w - 40, wrap=True)
-    pills_right(cr, t, hits, w - 20, h - 72, [
-        ("Erase", (lambda: ask(ui, "Erase the donation? Your own samples stay.", "Erase", ui.erase_donation))
-         if n else None, False),
-        ("Write file", ui.write_donation if n and lic else None, False),
-        ("Turn off", lambda: ui.donating(False), False) if on else ("Turn on", lambda: turn_on(ui), True)])
-
-
-def earlier_review(cr, ui, hits, w, h, y):
-    """the earlier samples, each in or left out by a tap; Add adds those in, Cancel none"""
-    t = ui.theme
-    keep = [e for e in ui.earlier if e[0] not in ui.earlier_out]
-    PT.text(cr, "Samples kept before: tap one to leave it out.", t.row, 20, y, t.ink, weight=600)
-    y += 40
-    rows = max(1, int(h - 100 - y) // 56)
-    pages = (len(ui.earlier) + rows - 1) // rows
-    ui.ep = min(ui.ep, pages - 1)
-    for sid, when, text in ui.earlier[ui.ep * rows:(ui.ep + 1) * rows]:
-        inside = sid not in ui.earlier_out
-        PT.box(cr, 20, y, w - 40, 48, "8px", bg=t.sheet if inside else t.paper,
-               shadow="inset 0 0 0 1.5px " + (t.ink if inside else t.rule))
-        PT.text(cr, ("✓  " if inside else "—  ") + text, t.row, 36, y + 12, t.ink if inside else t.soft,
-                maxw=w - 220)
-        PT.text(cr, time.strftime("%d %b", time.localtime(when)), t.sub, w - 36, y + 15, t.soft, align=2)
-
-        def flip(i=sid):
-            ui.earlier_out ^= {i}
-            ui.redraw()
-        hits.add(20, y, w - 40, 48, flip)
-        y += 56
-    def page(d):
-        ui.ep += d
-        ui.redraw()
-    more = []
-    if pages > 1:
-        PT.text(cr, "Page %d of %d" % (ui.ep + 1, pages), t.sub, 20, y, t.soft)
-        more = [("Back", (lambda: page(-1)) if ui.ep else None, False),
-                ("More", (lambda: page(1)) if ui.ep < pages - 1 else None, False)]
-    pills_right(cr, t, hits, w - 20, h - 72, more + [
-        ("Cancel", lambda: (setattr(ui, "reviewing", False), ui.redraw()), False),
-        ("Add %d" % len(keep), ui.add_earlier if keep else None, True)])
-
-
-def turn_on(ui):
-    """the licence is chosen once per donation: asked when none is started"""
-    if ui.donation[0]:
-        ui.donating(True)
-    else:
-        ui.picking_licence = True
-        ui.redraw()
-
-
-def ask(ui, question, yes, fn):
-    ui.confirm = (question, yes, fn)
-    ui.redraw()
-
-
-def confirm_sheet(cr, ui, hits, w, h):
-    t = ui.theme
-    q, yes, fn = ui.confirm
-    cr.set_source_rgba(*rgba(t.paper, 0.85))
-    cr.paint()
-    hits.boxes.clear()
-    bh = 190
-    PT.box(cr, 20, h - bh - 20, w - 40, bh, "12px", bg=t.paper, shadow="inset 0 0 0 1.5px " + t.ink)
-    PT.text(cr, q, t.row, 40, h - bh, t.ink, maxw=w - 80, wrap=True)
-    pills_right(cr, t, hits, w - 40, h - 92, [("Cancel", lambda: (setattr(ui, "confirm", None), ui.redraw()), False),
-                                             (yes, fn, True)])
-
-
-PAGES = {"samples": samples_page, "coverage": coverage_page, "learn": learn_page, "donate": donate_page}
-
-
-def loading_page(cr, ui, hits, w, h):
-    """before the first values are in: nothing that looks like a fact"""
-    t = ui.theme
-    PT.fill(cr, 0, 0, w, h, t.paper)
-    header(cr, ui, hits, w)
-    PT.text(cr, ui.msg or "Loading…", t.row, 20, 84, t.soft, maxw=w - 40, wrap=True)
-
-
-def paint_full(cr, ui, hits, w, h):
-    if ui.sets_open:
-        sets_page(cr, ui, hits, w, h)
-    elif not ui.loaded or (ui.page == "coverage" and not ui.cov_loaded):
-        loading_page(cr, ui, hits, w, h)
-    else:
-        PAGES[ui.page](cr, ui, hits, w, h)
-    if ui.confirm:
-        confirm_sheet(cr, ui, hits, w, h)
+    ui.go(page)
 
 
 # ---------------------------------------------------------------- widgets
@@ -1135,8 +914,8 @@ class Canvas(Gtk.DrawingArea):
         t = self.ui.theme
         a = self.get_allocation()
         PT.fill(cr, 0, 0, a.width, a.height, t.paper)
-        guides(cr, t, a.width, a.height, LINE)
-        cr.set_source_rgba(*rgba(t.ink))
+        guides(cr, t, 0, 0, a.width, a.height, LINE)
+        cr.set_source_rgba(*PT.color(t.pen))
         cr.set_line_width(max(2.0, LINE / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
@@ -1150,31 +929,183 @@ class Canvas(Gtk.DrawingArea):
         return True
 
 
+class Moved:
+    """tap targets of a part drawn elsewhere in the window"""
+
+    def __init__(self, hits, dx, dy):
+        self.hits, self.dx, self.dy = hits, dx, dy
+
+    def add(self, x, y, w, h, fn):
+        self.hits.add(x + self.dx, y + self.dy, w, h, fn)
+
+
+class Shifted:
+    """tap targets of a part drawn lower down in the same widget"""
+
+    def __init__(self, hits, dy):
+        self.hits, self.dy = hits, dy
+
+    def add(self, x, y, w, h, fn):
+        self.hits.add(x, y + self.dy, w, h, fn)
+
+
+def writing(ui):
+    """the pages with the writing area: Write (also Your best) and the introduction's Try one"""
+    if ui.confirm or not ui.loaded:
+        return False
+    return (ui.page == "write" and not ui.sets_open) or (ui.page == "wizard" and ui.wstep == "w-try")
+
+
+def parts(ui):
+    """the top and bottom painters of a writing page"""
+    if ui.page == "wizard":
+        return pages.try_top, pages.try_bottom
+    return pages.write_top, pages.write_bottom
+
+
+RESERVE = 160          # room under the prompt for the last sample or the failed check
+
+
+def _probe():
+    return cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
+
+
+def top_height(ui, w, head=True):
+    """the writing page's top: measured without the last sample, plus room for it, so the
+    writing area keeps its place while readings come in"""
+    top, _ = parts(ui)
+    wr = ui.writer
+    sh = wr.shown if wr else None
+    if wr:
+        wr.shown = None
+    try:
+        h = int(top(_probe(), ui, Hits(), w, head=head))
+    finally:
+        if wr:
+            wr.shown = sh
+    return h + (RESERVE if ui.page == "write" else 0)
+
+
+def bottom_height(ui, w, canvas=None, foot=True):
+    if ui.page == "wizard":
+        y = pages.try_bottom(_probe(), ui, Hits(), w, 2000, canvas, foot=False)
+        return int(y) + 12 + (pages.WIZ_FOOT if foot else 0)
+    return int(pages.write_bottom(_probe(), ui, Hits(), w, 200, canvas))
+
+
+def side_width(w):
+    return max(300, int(w * 0.34))
+
+
+def layout(ui, W, H, canvas=None):
+    """where the parts of a writing page go: {name: (x, y, w, h)}. Portrait: the top, the
+    writing area, the bottom. Landscape: the head across, a column beside the area, and
+    the introduction's foot across"""
+    if W > H * 1.1:
+        pages.LAND[0] = True
+        hh = int(pages.write_head(_probe(), ui, Hits(), W))
+        fh = pages.WIZ_FOOT if ui.page == "wizard" else 0
+        sw = side_width(W)
+        out = {"head": (0, 0, W, hh), "side": (0, hh, sw, H - hh - fh), "area": (sw, hh, W - sw, H - hh - fh)}
+        if fh:
+            out["foot"] = (0, H - fh, W, fh)
+        return out
+    pages.LAND[0] = False
+    th, bh = top_height(ui, W), bottom_height(ui, W, canvas)
+    return {"top": (0, 0, W, th), "area": (0, th, W, H - th - bh), "bottom": (0, H - bh, W, bh)}
+
+
+def paint_part(name, cr, ui, hits, w, h, canvas):
+    """one part of a writing page, at its own origin"""
+    top, bottom = parts(ui)
+    k = ui.theme
+    PT.fill(cr, 0, 0, w, h, k.paper)
+    if name == "head":
+        pages.write_head(cr, ui, hits, w)
+    elif name == "top":
+        pages.LAND[0] = False
+        top(cr, ui, hits, w)
+    elif name == "bottom":
+        bottom(cr, ui, hits, w, h, canvas)
+    elif name == "foot":
+        cr.save()
+        cr.translate(0, -(2000 - h))
+        pages.wizard_foot(cr, ui, Shifted(hits, -(2000 - h)), w, 2000)
+        cr.restore()
+    elif name == "side":
+        pages.LAND[0] = True
+        PT.fill(cr, w - 1.5, 0, 1.5, h, k.ink)
+        top(cr, ui, hits, w - 2, head=False)
+        bh = bottom_height(ui, w - 2, canvas, foot=False)
+        cr.save()
+        cr.translate(0, h - bh)
+        if ui.page == "wizard":
+            bottom(cr, ui, Shifted(hits, h - bh), w - 2, bh, canvas, foot=False)
+        else:
+            bottom(cr, ui, Shifted(hits, h - bh), w - 2, bh, canvas)
+        cr.restore()
+
+
 class Window(Gtk.ApplicationWindow):
+    """a writing page is its parts (layout()) around the writing area, each its own widget;
+    every other page is one self-drawn widget"""
+
+    PARTS = ("head", "top", "side", "bottom", "foot")
+
     def __init__(self, app, ui):
         super().__init__(application=app, title="Handwriting")
         self.ui = ui
         self.set_default_size(W0, H0)
         self.stack = Gtk.Stack()
         self.add(self.stack)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.canvas = Canvas(ui, lambda: self.bottom.queue_draw())
-        self.top = Panel(lambda cr, hits, w, h: write_top(cr, ui, hits, w, h))
-        self.top.set_size_request(-1, 300)
-        self.bottom = Panel(lambda cr, hits, w, h: write_bottom(cr, ui, hits, w, h, self.canvas))
-        self.bottom.set_size_request(-1, 110)
-        box.pack_start(self.top, False, True, 0)
-        box.pack_start(self.canvas, True, True, 0)
-        box.pack_start(self.bottom, False, True, 0)
-        self.full = Panel(lambda cr, hits, w, h: paint_full(cr, ui, hits, w, h))
-        self.stack.add_named(box, "write")
+        self.canvas = Canvas(ui, lambda: [self.panels[n].queue_draw() for n in ("bottom", "side")])
+        self.fixed = Gtk.Layout()             # unlike Gtk.Fixed, it asks no size of its own: the window can turn
+        self.panels = {}
+        for n in self.PARTS:
+            p = Panel(lambda cr, hits, w, h, n=n: paint_part(n, cr, ui, hits, w, h, self.canvas))
+            self.panels[n] = p
+            self.fixed.put(p, 0, 0)
+        self.fixed.put(self.canvas, 0, 0)
+        self.full = Panel(lambda cr, hits, w, h: pages.paint_full(cr, ui, hits, w, h))
+        self.stack.add_named(self.fixed, "write")
         self.stack.add_named(self.full, "full")
+        self.geom = None
+        self.connect("size-allocate", lambda w, a: GLib.idle_add(self.fit))
+
+    def fit(self):
+        """the writing page's parts placed for the window; only while the area is empty (or
+        the window turned), so ink never moves under the pen"""
+        a = self.stack.get_allocation()
+        if a.width <= 1 or not writing(self.ui):
+            return False
+        land = a.width > a.height * 1.1
+        if self.canvas.strokes and self.geom and self.geom[0] == land:
+            return False
+        lay = layout(self.ui, a.width, a.height, self.canvas)
+        geom = (land, a.width, a.height, tuple(sorted(lay.items())))
+        if geom == self.geom:
+            return False
+        self.geom = geom
+        for n, p in self.panels.items():
+            if n in lay:
+                x, y, w, h = lay[n]
+                self.fixed.move(p, x, y)
+                p.set_size_request(w, h)
+                p.show()
+            else:
+                p.hide()
+        x, y, w, h = lay["area"]
+        self.fixed.move(self.canvas, x, y)
+        self.canvas.set_size_request(w, h)
+        return False
 
     def redraw(self):
-        writing = self.ui.page == "write" and not self.ui.sets_open and not self.ui.confirm
-        self.stack.set_visible_child_name("write" if writing else "full")
-        for w in (self.top, self.bottom, self.full):
-            w.queue_draw()
+        w = writing(self.ui)
+        self.stack.set_visible_child_name("write" if w else "full")
+        if w:
+            self.fit()
+        for p in list(self.panels.values()) + [self.full]:
+            p.queue_draw()
 
 
 class App(Gtk.Application):
@@ -1204,57 +1135,206 @@ class App(Gtk.Application):
         def changed(*a):
             name = read_file(THEME_FILE)
             if name and name != self.ui.theme.name:
-                self.ui.theme = Theme(name)
+                self.ui.theme = Look(name)
+                self.win.sizes = None
                 self.win.redraw()
                 self.win.canvas.queue_draw()
         self.mon.connect("changed", changed)
 
 
+# ---------------------------------------------------------------- the design's screens, drawn
+
+
+SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", "wizard.learning", "wizard.donate",
+           "wizard.licence", "wizard.ready", "write.prompt", "write.ink", "write.kept", "write.check", "write.sentence",
+           "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
+           "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
+           "best.pick", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
+DEMO_WORDS = ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o’clock", "garden", "bright",
+              "yellow", "Thursday", "minimum", "fifty"]
+
+
+def demo_ink(text, seed=1, x0=0.0):
+    """made-up handwriting for the drawn screens: a loop per letter (no one's real writing)"""
+    rnd = random.Random(seed)
+    strokes, spans, x = [], [], x0
+    for ch in text:
+        if ch == " ":
+            spans.append([])
+            x += 18
+            continue
+        tall = ch.isupper() or ch in "bdfhklt0123456789"
+        h = 34 if tall else 20
+        pts = []
+        for i in range(19):
+            a = i / 18 * 2 * math.pi
+            pts.append((x + 9 + 8 * math.sin(a) + rnd.uniform(-.6, .6), 40 - h / 2 - h / 2 * math.cos(a) +
+                        rnd.uniform(-.6, .6), 10 * i))
+        spans.append([len(strokes)])
+        strokes.append(pts)
+        x += 20 + rnd.uniform(-2, 2)
+    return strokes, spans
+
+
+def demo(screen, voice="white"):
+    """the UI object in the state a screen of the design shows (no recognizer, no store)"""
+    ui = UI(lambda: None, demo=True)
+    ui.theme = Look(voice)
+    st = ui.state
+    st.save = lambda: None
+    st.set, st.used, st.current = P.AUTO, {}, None
+    st.donating, st.picks = False, {flow.today(): 4}
+    sets = {"words": [P.Prompt(w, "words", "en") for w in ("quiet", "garden", "bright", "yellow", "Thursday")],
+            "sentences": [P.Prompt("A small step every day.", "sentences", "en")],
+            "pangrams": [P.Prompt("Jackdaws love my big sphinx of quartz.", "pangrams", "en")],
+            "letters": [P.Prompt("g", "letters", "en")], "digits": [P.Prompt("7:30", "digits", "en")], P.OWN: []}
+    w = ui.writer = flow.Writer(None, None, st, sets=sets)
+    w.prompt = sets["words"][0]
+    now = time.time()
+    ui.counts, ui.fresh = (12, 148), 23
+    ui.plan = {"train": 120, "held": 28, "new": 23, "min_train": 40, "min_held": 10, "charging": False}
+    ui.adapts = {"current": {"time": now - 3 * 86400, "train": 110, "held": 26, "before": 0.182, "after": 0.121},
+                 "previous": {"time": now - 9 * 86400}}
+    ui.samples = [("%016x" % i, now - 3000 * (40 - i), DEMO_WORDS[i % len(DEMO_WORDS)]) for i in range(40)]
+    for i, (sid, t, text) in enumerate(ui.samples):
+        s, sp = demo_ink(text, i)
+        ui.inks[sid] = {"strokes": s, "spans": sp, "text": text}
+    ui.donated = {r[0] for r in ui.samples[::3]}
+    ui.marked = {r[0]: ("careful", "") for r in ui.samples[-5:]}
+    ui.prefs = [("0", "1", 0, 0)] * 4
+    for c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,?!:;’-()\"&@":
+        n = 0 if c in "QXZ&@\"" else 2 if c in "jkvwxyzJKV(),;" else 12
+        for _ in range(n):
+            w.cov.add(c, c if c not in "eS" else "?")
+    ink = lambda text: demo_ink(text, 7)[0]
+    shown = lambda text, status="kept", read=None, **kw: flow.Shown(
+        P.Prompt(text, "words", "en"), ink(text), "em", (0, 0, 702, 474, 150, 0), [(read or text, -1.0)], status,
+        sample_id="00000000000000aa" if status == "kept" else None, **kw)
+    sec, _, sub = screen.partition(".")
+    if sec == "wizard":
+        ui.page = "wizard"
+        ui.wstep = {"welcome": "w-welcome", "try": "w-try", "try-done": "w-try", "samples": "w-private",
+                    "learning": "w-learning", "donate": "w-share", "licence": "w-licence", "ready": "w-ready"}[sub]
+        if sub == "try-done":
+            ui.tried = True
+            w.shown = shown("quiet")
+            w.prompt = sets["words"][1]
+        if sub == "licence":
+            ui.licence_pick = "CC0-1.0"
+        ui.counts, ui.fresh = (0, 0), 0
+    elif sec == "write":
+        ui.page = ui.tab = "write"
+        if sub == "kept":
+            w.shown = shown("garden")
+            w.prompt = sets["words"][2]
+        elif sub == "check":
+            w.shown = shown("yellow", "check", read="yellar", fit=0.3)
+            w.prompt = sets["words"][1]
+        elif sub == "sentence":
+            st.set = "sentences"
+            w.prompt = sets["sentences"][0]
+        elif sub == "sets":
+            ui.sets_open = True
+    elif sec == "samples":
+        ui.page = ui.tab = "samples"
+        if sub in ("detail", "delete"):
+            sid = ui.samples[-3][0]
+            ui.detail = (sid, dict(ui.inks[sid], reading=[{"text": ui.inks[sid]["text"]}],
+                                   area={"orientation": 0}))
+            ui.donated.add(sid)
+            ui.asking_delete = sub == "delete"
+    elif sec == "coverage":
+        ui.page = ui.tab = "coverage"
+    elif sec == "learn":
+        ui.page = ui.tab = "learn"
+        if sub == "few":
+            ui.counts, ui.fresh, ui.adapts = (6, 18), 18, {}
+            ui.plan = dict(ui.plan, train=14, held=4, new=18)
+        elif sub == "running":
+            ui.adapting, ui.adapt_plan, ui.adapt_round = True, (120, 28), (3, 8)
+        elif sub == "better":
+            ui.fresh, ui.result = 0, ("result", ["kept", "0.182", "0.121", "120", "28"])
+        elif sub == "kept":
+            ui.fresh, ui.result = 0, ("result", ["rejected", "0.121", "0.127", "120", "28"])
+    elif sec == "best":
+        if sub == "intro":
+            ui.page = ui.tab = "learn"
+            ui.best = "intro"
+        elif sub == "pick":
+            ui.page = ui.tab = "learn"
+            ui.best = "pick"
+            a, sa = demo_ink("g", 3)
+            b, sb = demo_ink("g", 11)
+            ui.pick = {"a": ("a", a, 0), "b": ("b", b, 0), "char": "g", "chosen": None}
+        else:
+            ui.page = ui.tab = "write"
+            w.best = {"step": {"write": "careful", "quick": "quick", "careful": "pair"}[sub], "pair": "0" * 16, "n": 2}
+            w.prompt = P.Prompt("Thursday", "words", "en", written="quick" if sub == "quick" else "careful")
+            if sub == "careful":
+                w.shown = shown("Thursday")
+                w.shown.prompt = P.Prompt("Thursday", "words", "en", written="quick", pair="0" * 16)
+    elif sec == "donate":
+        ui.page = ui.tab = "donate"
+        if sub == "off":
+            ui.donation = (None, 0, None)
+        elif sub == "licence":
+            ui.donation, ui.picking_licence, ui.licence_pick = (None, 0, None), True, "CC-BY-4.0"
+        else:
+            st.donating = True
+            ui.donation = ("CC0-1.0", 57, "3f2a9c1e-5b7d-4e2a-9f10-6c8d2b4a7e31")
+            ui.earlier = [r for r in ui.samples if r[0] not in ui.donated][:14]
+            if sub == "earlier":
+                ui.reviewing = True
+                ui.earlier_out = {ui.earlier[1][0], ui.earlier[4][0]}
+            if sub == "saved":
+                ui.saved = os.path.join(documents_dir(), "Handwriting donations", "handwriting-donation-3.jsonl")
+    return ui
+
+
+class Drawn:
+    """the writing area of a drawn screen: its ink, nothing more"""
+
+    def __init__(self, ink):
+        self.strokes = ink or []
+
+    def clear(self):
+        self.strokes = []
+
+    def submit(self):
+        self.strokes = []
+
+
+def paint(cr, ui, W, H, ink=None):
+    """one whole window as the app draws it -> the tap targets"""
+    hits = Hits()
+    canvas = Drawn(ink)
+    if not writing(ui):
+        pages.paint_full(cr, ui, hits, W, H)
+        return hits
+    lay = layout(ui, W, H, canvas)
+    for name, (x, y, w, h) in lay.items():
+        cr.save()
+        cr.translate(x, y)
+        if name == "area":
+            PT.fill(cr, 0, 0, w, h, ui.theme.paper)
+            guides(cr, ui.theme, 0, 0, w, h, LINE)
+            if ink:
+                draw_ink(cr, ui.theme, ink, 40, LINE * 0.62 - 80, w * 0.6, 90, 3.0, align="left")
+        else:
+            paint_part(name, cr, ui, Moved(hits, x, y), w, h, canvas)
+        cr.restore()
+    return hits
+
+
 def render(argv):
-    """--render OUT.png [--page P] [--theme T] [--size WxH]: the demo state on one page"""
+    """--render OUT.png [--screen S] [--theme T] [--size WxH]: one of the design's screens"""
     def opt(name, default=None):
         return argv[argv.index(name) + 1] if name in argv else default
     W, H = (int(v) for v in opt("--size", "%dx%d" % (W0, H0)).split("x"))
-    ui = UI(lambda: None, demo=True)
-    ui.theme = Theme(opt("--theme", "white"))
-    page = opt("--page", "write")
-    ui.counts, ui.fresh = (23, 312), 41
-    ui.plan = {"train": 250, "held": 62, "new": 41, "min_train": 40, "min_held": 10, "charging": True}
-    ui.adapts = {"current": {"time": 1763200000, "train": 210, "held": 52, "before": 0.182, "after": 0.121},
-                 "previous": None}
-    ui.donation = ("CC0-1.0", 57, "3f2a9c1e-5b7d-4e2a-9f10-6c8d2b4a7e31")
-    ui.state.donating = True
-    ui.samples = [("%016x" % i, 1763200000 + 60 * i, w) for i, w in enumerate(
-        ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o'clock"] * 3)]
-    if page == "sets":
-        ui.sets_open, page = True, "write"
-    if page in ("donate-earlier", "donate-review"):
-        ui.earlier = [("%016x" % (99 + i), 1762900000 + 3600 * i, w) for i, w in enumerate(
-            ["The quick brown fox jumps over the lazy dog", "zebra", "minimum", "fifty", "1984"] * 3)]
-        ui.earlier_out = {ui.earlier[1][0]}
-        ui.reviewing, page = page == "donate-review", "donate"
-    if page == "result":
-        page, ui.result = "learn", ("result", ["kept", "0.121", "0.094", "250", "62"])
-    ui.page = page
+    screen = opt("--screen", opt("--page", "write.prompt"))
+    ui = demo(screen, opt("--theme", "white"))
     surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-    cr = cairo.Context(surf)
-    hits = Hits()
-    if page == "write" and not ui.sets_open:
-        top, bottom = 300, 110
-        cr.save()
-        write_top(cr, ui, hits, W, top)
-        cr.restore()
-        cr.save()
-        cr.translate(0, top)
-        PT.fill(cr, 0, 0, W, H - top - bottom, ui.theme.paper)
-        guides(cr, ui.theme, W, H - top - bottom, LINE)
-        cr.restore()
-        cr.save()
-        cr.translate(0, H - bottom)
-        write_bottom(cr, ui, hits, W, bottom, None)
-        cr.restore()
-    else:
-        paint_full(cr, ui, hits, W, H)
+    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try") else None)
     surf.write_to_png(opt("--render"))
 
 
