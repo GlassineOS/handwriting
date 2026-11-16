@@ -258,6 +258,151 @@ class LetterModel(unittest.TestCase):
         self.assertEqual(self.e.run("letters", "build", "-r").stdout.split("\t")[0], "built")
 
 
+# Characters written with a stroke that comes after the rest (a dot, a bar, an arm): their
+# first strokes and the late ones, in x-heights (x from 0, y up from the baseline)
+LATE = {
+    "t": ([[(0.3, 1.5), (0.3, 0.0), (0.45, 0.05)]], [[(0.05, 1.0), (0.6, 1.0)]]),
+    "f": ([[(0.65, 1.4), (0.4, 1.5), (0.3, 1.2), (0.3, 0.0)]], [[(0.05, 0.95), (0.6, 0.95)]]),
+    "i": ([[(0.2, 1.0), (0.2, 0.0)]], [[(0.3, 1.45), (0.32, 1.47)]]),
+    "j": ([[(0.35, 1.0), (0.35, -0.5), (0.05, -0.6)]], [[(0.45, 1.45), (0.47, 1.47)]]),
+    "k": ([[(0.1, 1.5), (0.1, 0.0)]], [[(0.6, 1.0), (0.15, 0.5), (0.6, 0.0)]]),
+    "x": ([[(0.0, 1.0), (0.6, 0.0)]], [[(0.6, 1.0), (0.0, 0.0)]]),
+    "E": ([[(0.0, 1.5), (0.0, 0.0)]], [[(0.0, 1.5), (0.6, 1.5)], [(0.0, 0.75), (0.45, 0.75)], [(0.0, 0.0), (0.6, 0.0)]]),
+    "H": ([[(0.0, 1.5), (0.0, 0.0)], [(0.6, 1.5), (0.6, 0.0)]], [[(0.0, 0.75), (0.6, 0.75)]]),
+}
+ROUND = [[(0.3 + 0.3 * math.cos(a / 11 * 2 * math.pi), 0.5 + 0.5 * math.sin(a / 11 * 2 * math.pi)) for a in range(12)]]
+
+
+def late_sample(word, rnd, where, line=150.0, xh=30.0):
+    """a prompted sample of word as a person writes it: each letter in turn, the late strokes
+    of LATE's characters after the whole word, and spans as the alignment gives them, which
+    follow the order of writing: a late stroke in the span of the word's last letter
+    (where "next"), or in both its own letter's span and that one's ("shared"); a full stop's
+    span also holds its neighbour's stroke"""
+    strokes, spans, late = [], [[] for _ in word], []
+    base, x, t = line * 2 / 3, 20.0, 0.0
+
+    def put(st, x0):
+        nonlocal t
+        pts = []
+        for px, py in st:
+            pts.append([round(x0 + px * xh + rnd.gauss(0, 0.3), 3), round(base - py * xh + rnd.gauss(0, 0.3), 3),
+                        round(t, 3), 0.5])
+            t += 0.01
+        # a few points more along each segment, as a pen gives them
+        dense = [pts[0]]
+        for a, b in zip(pts, pts[1:]):
+            for k in range(1, 6):
+                dense.append([round(a[0] + (b[0] - a[0]) * k / 5, 3), round(a[1] + (b[1] - a[1]) * k / 5, 3),
+                              round(a[2] + (b[2] - a[2]) * k / 5, 3), 0.5])
+        strokes.append(dense)
+        return len(strokes) - 1
+
+    for k, c in enumerate(word):
+        if c == ".":
+            spans[k] = [put([(0.0, 0.0), (0.03, 0.02)], x)]
+            spans[k].insert(0, spans[k - 1][-1])
+            x += 0.4 * xh
+            continue
+        first, rest = LATE.get(c, (ROUND, []))
+        for st in first:
+            spans[k].append(put(st, x))
+        late += [(k, st, x) for st in rest]
+        x += 1.0 * xh
+    for k, st, x0 in late:
+        j = put(st, x0)
+        spans[-1].append(j)
+        if where == "shared":
+            spans[k].append(j)
+    for sp in spans:
+        sp.sort()
+    return {"version": 1, "text": word, "lang": "en", "strokes": strokes, "spans": spans, "spans_source": "exact",
+            "source": "prompted", "units": {"xy": "device", "per_mm": 4.0, "rate": 200},
+            "area": {"box": [0, 0, max(x + 20, 200), line * 3], "line": line, "orientation": 0},
+            "reading": [{"text": word, "score": -1.0}]}
+
+
+class LateStrokes(unittest.TestCase):
+    """FR-007: strokes go by where they lie; FR-030: counted without a model"""
+
+    def setUp(self):
+        self.e = Env()
+
+    def tearDown(self):
+        self.e.close()
+
+    def versions(self):
+        out = {}
+        for x in self.e.model().splitlines():
+            d = json.loads(x)
+            if "char" in d:
+                out[d["char"]] = [len(v["strokes"]) for v in d["variants"]]
+        return out
+
+    def test_late_strokes_stay_with_their_letter(self):
+        rnd = random.Random(21)
+        ss = []
+        for c in LATE:
+            for k in range(4):
+                ss.append(late_sample("a" + c + "o", rnd, "next" if k % 2 else "shared"))
+            ss.append(late_sample(c, rnd, "next"))
+        self.e.put(ss)
+        self.e.run("letters", "build", "-r")
+        v, st = self.versions(), self.e.status()
+        for c, (first, rest) in LATE.items():
+            with self.subTest(c=c):
+                self.assertEqual(st["chars"][c][0], 5)
+                self.assertTrue(v[c], f"{c} not covered")
+                self.assertEqual(set(v[c]), {len(first) + len(rest)})
+        # the letters the late strokes were put with count too
+        self.assertEqual(st["chars"]["o"][0], 4 * len(LATE))
+        self.assertEqual(st["chars"]["a"][0], 4 * len(LATE))
+
+    def test_full_stop_and_its_neighbour(self):
+        rnd = random.Random(22)
+        self.e.put([late_sample("ao.", rnd, "next") for _ in range(4)])
+        self.e.run("letters", "build", "-r")
+        st = self.e.status()
+        self.assertEqual(st["chars"]["."][0], 4)
+        self.assertEqual(st["chars"]["o"][0], 4)
+        self.assertEqual(self.versions()["."], [1] * len(self.versions()["."]))
+
+    def test_counted_without_a_model(self):
+        rnd = random.Random(23)
+        ss = [late_sample("a" + c + "o", rnd, "shared") for c in "tix" for _ in range(3)]
+        self.e.put(ss)
+        st = self.e.status()
+        self.assertEqual(st["state"], ["none"])
+        before = (st["samples"], st["covered"], {c: n for c, (n, _) in st["chars"].items()})
+        self.assertEqual(before[2]["t"], 3)
+        self.assertTrue(all(nv == 0 for _, nv in st["chars"].values()))
+        self.e.run("letters", "build", "-r")
+        st = self.e.status()
+        self.assertEqual((st["samples"], st["covered"], {c: n for c, (n, _) in st["chars"].items()}), before)
+        model = {json.loads(x)["char"]: json.loads(x)["samples"] for x in self.e.model().splitlines()[2:]}
+        self.assertEqual(model, before[2])
+        # more samples: the counts follow at once, the model is out of date
+        self.e.put([late_sample("ako", rnd, "next") for _ in range(3)])
+        st = self.e.status()
+        self.assertEqual(st["state"], ["outdated"])
+        self.assertEqual(st["chars"]["k"], (3, 0))
+        self.assertEqual(st["chars"]["o"][0], 12)
+        # the counts come from the derived file next time; erasing takes it out
+        self.assertTrue((self.e.store / "letters" / "usable").exists())
+        self.assertEqual(self.e.status(), st)
+        self.e.run("samples", "erase")
+        self.assertFalse((self.e.store / "letters").exists())
+        self.assertEqual(self.e.status()["chars"], {})
+
+    def test_build_progress(self):
+        rnd = random.Random(24)
+        self.e.put([late_sample("ato", rnd, "next") for _ in range(3)])
+        out = self.e.run("letters", "build", "-r", "--progress").stdout.splitlines()
+        self.assertTrue(out[0].startswith("progress\t"))
+        self.assertTrue(all(x.startswith("progress\t") for x in out[:-1]))
+        self.assertEqual(out[-1].split("\t")[0], "built")
+
+
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
 class Font(unittest.TestCase):
     @classmethod
