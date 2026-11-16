@@ -169,6 +169,88 @@ def spaced_sample(text, rnd, gaps=None, gap=0.35, word=1.2, line=150.0, xh=30.0)
     return s
 
 
+MID_Y0, MID_Y1 = 0.0, 1.0       # letters.h HW_MID_*
+
+
+def middle(strokes):
+    """a letter's middle as spacing.c hw_mid_of takes it: the mean x of its ink between the
+    baseline and the x-height, each piece weighted by how far it runs up or down"""
+    sx = sw = 0.0
+    for st in strokes:
+        for (x0, y0), (x1, y1) in zip(st, st[1:]):
+            if y0 == y1:
+                continue
+            t0, t1 = sorted(((MID_Y0 - y0) / (y1 - y0), (MID_Y1 - y0) / (y1 - y0)))
+            t0, t1 = max(t0, 0.0), min(t1, 1.0)
+            if t1 <= t0:
+                continue
+            w = abs(y1 - y0) * (t1 - t0)
+            sx += w * (x0 + (x1 - x0) * (t0 + t1) / 2)
+            sw += w
+    return sx / sw if sw > 1e-9 else float("nan")
+
+
+def overhang_shape(c, where, rnd):
+    """strokes (x-heights, y up) of letters whose overhang differs between words and alone,
+    as a person's does: an f's bar low in words (meeting the next letter) and above the
+    x-height alone; a T's bar short in words and long alone; an o and an l the same both ways"""
+    def line(x0, y0, x1, y1, n=12):
+        return [(x0 + (x1 - x0) * i / (n - 1) + rnd.gauss(0, 0.005), y0 + (y1 - y0) * i / (n - 1) + rnd.gauss(0, 0.005))
+                for i in range(n)]
+    if c == "f":
+        stem = line(0.15, -0.5, 0.15, 1.4) + line(0.2, 1.48, 0.6, 1.55, 4)
+        bar = line(-0.1, 0.55, 0.75, 0.55) if where == "word" else line(-0.1, 1.15, 0.75, 1.15)
+        return [stem, bar]
+    if c == "T":
+        stem = line(0.5, 0.0, 0.5, 1.5)
+        bar = line(0.1, 1.55, 0.9, 1.55) if where == "word" else line(-0.5, 1.55, 1.9, 1.55)
+        return [stem, bar]
+    if c == "o":
+        return [[(0.35 + 0.35 * math.cos(2 * math.pi * i / 23) + rnd.gauss(0, 0.005),
+                  0.5 + 0.5 * math.sin(2 * math.pi * i / 23) + rnd.gauss(0, 0.005)) for i in range(24)]]
+    if c == "l":
+        return [line(0.1, 1.5, 0.1, 0.1) + line(0.15, 0.03, 0.35, 0.0, 4)]
+    raise ValueError(c)
+
+
+def ink_sample(text, letters, line=150.0, xh=30.0):
+    """a prompted sample of the given letters: per character its strokes (x-heights, y up)
+    and its x (x-heights), None for a space"""
+    strokes, spans = [], []
+    base, t = line * 2 / 3, 0.0
+    for c, lt in zip(text, letters):
+        if lt is None:
+            spans.append([])
+            continue
+        sh, x = lt
+        sp = []
+        for st in sh:
+            pts = []
+            for px, py in st:
+                pts.append([round((x + px) * xh + 20, 3), round(base - py * xh, 3), round(t, 3), 0.5])
+                t += 0.01
+            sp.append(len(strokes))
+            strokes.append(pts)
+        spans.append(sp)
+    right = max(p[0] for st in strokes for p in st)
+    return {"version": 1, "text": text, "lang": "en", "strokes": strokes, "spans": spans, "spans_source": "exact",
+            "source": "prompted", "units": {"xy": "device", "per_mm": 4.0, "rate": 200},
+            "area": {"box": [0, 0, right + 40, line * 3], "line": line, "orientation": 0},
+            "reading": [{"text": text, "score": -1.0}]}
+
+
+def overhang_word(text, rnd, dist, where="word"):
+    """a word of overhang_shape letters whose middles stand dist apart (by pair)"""
+    letters, prev = [], None
+    for c in text:
+        sh = overhang_shape(c, where, rnd)
+        m = middle(sh)
+        x = 0.0 if prev is None else prev[0] + prev[1] + dist[prev[2] + c] - m
+        letters.append((sh, x))
+        prev = (x, m, c)
+    return ink_sample(text, letters)
+
+
 class Env:
     def __init__(self):
         self.dir = Path(tempfile.mkdtemp(prefix="hw-letters-"))
@@ -240,6 +322,28 @@ class LetterModel(unittest.TestCase):
 
     def tearDown(self):
         self.e.close()
+
+    def test_variant_sits_where_its_versions_do(self):
+        """a variant sits on the line where its versions sit on average (FR-006), not where
+        one of them happens to: an o written a little high or low in turn comes out on the
+        baseline"""
+        rnd = random.Random(41)
+        ss = []
+        for k in range(8):
+            dy = 0.12 if k % 2 else -0.12
+            letters = []
+            for i, c in enumerate("aoe"):
+                sh = shape(c, 0, rnd)
+                y0, y1 = min(p[1] for st in sh for p in st), max(p[1] for st in sh for p in st)
+                sh = [[(px, (py - y0) / (y1 - y0) + (dy if c == "o" else 0)) for px, py in st] for st in sh]
+                letters.append((sh, 0.9 * i))
+            ss.append(ink_sample("aoe", letters))
+        self.e.put(ss)
+        self.e.run("letters", "build", "-r")
+        o = next(d for d in map(json.loads, self.e.model().splitlines()) if d.get("char") == "o")
+        for v in o["variants"]:
+            ys = [p[1] for st in v["strokes"] for p in st]
+            self.assertLess(abs(min(ys)), 0.05, (min(ys), max(ys)))
 
     def test_deterministic_and_order_free(self):
         ss = alphabet_samples(per=3)
@@ -579,9 +683,10 @@ class LateStrokes(unittest.TestCase):
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
 class Spacing(unittest.TestCase):
-    """spec 003 FR-006, FR-007, FR-009: one spacing from the letters' profiles: a pair's own
-    gap, a rare pair its side shapes', an unseen pair one from the profiles; the font sets
-    each shaped pair at its gap and words at the word spacing"""
+    """spec 003 FR-006, FR-007, FR-009: one spacing from the letters' profiles and middles: a
+    pair's own gap and distance, a rare pair its side shapes' gap, an unseen pair one from
+    the profiles; letters written the same in words and alone come out at their gap, words
+    at the word spacing"""
     GAPS = {"lo": 0.05, "ol": 0.7, "ab": 0.5}
 
     @classmethod
@@ -646,7 +751,7 @@ class Spacing(unittest.TestCase):
         ds = [pb[0][k] - pa[1][k] for k in range(BANDS) if pa[1][k] == pa[1][k] and pb[0][k] == pb[0][k]]
         return min(ds) + b[2] - a[2]
 
-    def test_font_sets_the_gaps(self):
+    def test_font_places_the_pairs(self):
         pairs = {p[0] + p[1]: p[2] for p in self.sp["pairs"]}
         for text in ("lol", "olo", "abc", "lolol ab abc"):
             pl = self.placed(text)
@@ -664,6 +769,65 @@ class Spacing(unittest.TestCase):
         # a pair never written: a gap from its side shapes or its profiles, near the typical one
         pl = self.placed("qz")
         self.assertLess(abs(self.gap_of(pl[0], pl[1]) - self.sp["letter"]), 0.31)
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class Overhangs(Spacing):
+    """spec 003 FR-007, FR-009: letters with an overhang (a bar, a hook) that sits differently
+    in the person's words than in a variant come out at the pair's real distance (the
+    letters' middles), not at the gap the overhang happened to set in the words: an o not
+    tucked under an f's bar, an l not pushed out past a long T bar"""
+    DIST = {"fo": 1.0, "Tl": 0.6}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(31)
+        ss = []
+        for _ in range(6):
+            ss += [overhang_word(w, rnd, cls.DIST) for w in ("fo", "Tl")]
+        for _ in range(4):
+            ss += [overhang_word(c, rnd, cls.DIST, "alone") for c in "fTfTfTol"]
+        cls.words = ss[:12]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        lines = [json.loads(x) for x in cls.e.model().splitlines()]
+        cls.sp = next(d["spacing"] for d in lines if "spacing" in d)
+        cls.chars = {d["char"]: d for d in lines if "char" in d}
+        cls.ttf = cls.e.dir / "f.ttf"
+        cls.e.run("font", "build", "-n", "Overhangs", str(cls.ttf))
+
+    def scale(self):
+        """the letter model's x-height against the writing's (the o's height sets it)"""
+        return 1 / max(p[1] for v in self.chars["o"]["variants"] for st in v["strokes"] for p in st)
+
+    def test_learned(self):
+        pairs = {p[0] + p[1]: p for p in self.sp["pairs"]}
+        r = self.scale()
+        for ab, d in self.DIST.items():
+            self.assertAlmostEqual(pairs[ab][4], d * r, delta=0.05, msg=ab)
+        # the variants alone carry their long overhang
+        self.assertTrue(any(max(p[0] for st in v["strokes"] for p in st) > 2 for v in self.chars["T"]["variants"]))
+        self.assertTrue(any(min(p[1] for p in v["strokes"][1]) > 1 for v in self.chars["f"]["variants"]))
+
+    def test_font_places_the_pairs(self):
+        r = self.scale()
+        letter = self.sp["letter"]
+        for text in ("fo", "Tl", "fo Tl Tl fo"):
+            pl = self.placed(text)
+            for a, b in zip(pl, pl[1:]):
+                if a[0] == " " or b[0] == " ":
+                    continue
+                d = (b[2] + b[1]["middle"]) - (a[2] + a[1]["middle"])
+                self.assertAlmostEqual(d, self.DIST[a[0] + b[0]] * r, delta=0.08, msg=(text, a[0] + b[0]))
+                # between the baseline and the x-height they never come closer than their
+                # gap, or half the typical gap
+                pa, pb = self.prof(a[1]), self.prof(b[1])
+                body = [pb[0][k] + b[2] - pa[1][k] - a[2] for k in range(BANDS)
+                        if Y0 + (k + 1) * (Y1 - Y0) / BANDS > MID_Y0 and Y0 + k * (Y1 - Y0) / BANDS < MID_Y1
+                        and pa[1][k] == pa[1][k] and pb[0][k] == pb[0][k]]
+                gap = {p[0] + p[1]: p[2] for p in self.sp["pairs"]}[a[0] + b[0]]
+                self.assertGreaterEqual(min(body), min(gap, letter / 2) - 0.02, msg=(text, a[0] + b[0]))
 
 
 class Marks(unittest.TestCase):

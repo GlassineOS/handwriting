@@ -98,9 +98,9 @@ def of_strokes(strokes, xh: float, base: float = 0.0) -> Profile:
 def pair_gap(spacing: dict, a: str, b: str, pa: Profile, pb: Profile) -> float:
     """hw_spacing_gap without side shapes: a pair's own gap, else the typical gap less
     `open` times the open space beyond open0, within 0.3 of the typical gap."""
-    for x, y, g, _ in spacing.get("pairs", []):
-        if x == a and y == b:
-            return float(g)
+    for p in spacing.get("pairs", []):
+        if p[0] == a and p[1] == b:
+            return float(p[2])
     g = spacing["letter"]
     if spacing.get("open", 0) > 0:
         g -= spacing["open"] * (open_space(pa, pb) - spacing.get("open0", 0.0))

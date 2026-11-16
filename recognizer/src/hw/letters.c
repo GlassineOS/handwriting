@@ -114,6 +114,19 @@ static void num(struct sbuf *b, double x)
 	b->s[b->n] = 0;
 }
 
+/* the same, null for none */
+static void numn(struct sbuf *b, double x)
+{
+	if (isfinite(x)) num(b, x); else sput(b, "null");
+}
+
+/* a number of the model file, NAN for null or none */
+static double jdn(json_object *e, size_t i)
+{
+	json_object *x = json_object_array_length(e) > i ? json_object_array_get_idx(e, i) : NULL;
+	return x && (json_object_is_type(x, json_type_double) || json_object_is_type(x, json_type_int)) ? json_object_get_double(x) : NAN;
+}
+
 char *hw_letters_format(const struct hw_letters *L, size_t *len)
 {
 	struct sbuf b = { 0 };
@@ -151,13 +164,28 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 			     json_object_to_json_string_ext(jb, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
 			json_object_put(ja); json_object_put(jb);
 			num(&b, sp->pairs[i].gap);
-			sput(&b, ",%d]", sp->pairs[i].n);
+			sput(&b, ",%d,", sp->pairs[i].n);
+			numn(&b, sp->pairs[i].mid);
+			sput(&b, "]");
 		}
 		sput(&b, "],\"sides\":[");
 		for (size_t i = 0; i < sp->nsides; i++) {
 			sput(&b, "%s[%d,%d,", i ? "," : "", sp->sides[i].rc, sp->sides[i].lc);
 			num(&b, sp->sides[i].gap);
 			sput(&b, ",%d]", sp->sides[i].n);
+		}
+		sput(&b, "],\"reach\":[");
+		for (size_t i = 0; i < sp->nreach; i++) {
+			char u[16];
+			size_t k = hw_utf8_encode(sp->reach[i].cp, u);
+			u[k] = 0;
+			json_object *jc = json_object_new_string(u);
+			sput(&b, "%s[%s,", i ? "," : "", json_object_to_json_string_ext(jc, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
+			json_object_put(jc);
+			numn(&b, sp->reach[i].right);
+			sput(&b, ",");
+			numn(&b, sp->reach[i].left);
+			sput(&b, ",%d,%d]", sp->reach[i].nr, sp->reach[i].nl);
 		}
 		for (int side = 0; side < 2; side++) {
 			sput(&b, side ? "],\"right_shapes\":[" : "],\"left_shapes\":[");
@@ -201,6 +229,8 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 				}
 				sput(&b, "]");
 			}
+			sput(&b, ",\"middle\":");
+			numn(&b, x->mid);
 			sput(&b, ",\"strokes\":[");
 			for (size_t j = 0; j < x->nstrokes; j++) {
 				sput(&b, "%s[", j ? "," : "");
@@ -231,6 +261,22 @@ static double jnum(json_object *o, const char *k, double def)
 {
 	json_object *v;
 	return json_object_object_get_ex(o, k, &v) ? json_object_get_double(v) : def;
+}
+
+/* a variant's profiles and middle, from its strokes */
+static void variant_measure(struct hw_variant *v)
+{
+	struct hw_mid md = { 0, 0 };
+	hw_profile_clear(&v->prof);
+	for (size_t j = 0; v->s && j < v->nstrokes; j++) {
+		const struct hw_lstroke *t = &v->s[j];
+		for (size_t i = 0; t->x && t->y && i < t->n; i++) {
+			size_t i0 = i ? i - 1 : 0;
+			hw_profile_seg(&v->prof, t->x[i0], t->y[i0], t->x[i], t->y[i]);
+			hw_mid_seg(&md, t->x[i0], t->y[i0], t->x[i], t->y[i]);
+		}
+	}
+	v->mid = round(hw_mid_of(&md) * 1e4) / 1e4;
 }
 
 int hw_letters_parse(const char *text, struct hw_letters *L)
@@ -278,7 +324,20 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 2) != 1 ||
 					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 1)), c2, 2) != 1) continue;
 					sp->pairs[sp->npairs++] = (struct hw_pair){ c1[0], c2[0], json_object_get_double(json_object_array_get_idx(e, 2)),
-										   json_object_get_int(json_object_array_get_idx(e, 3)) };
+										   json_object_get_int(json_object_array_get_idx(e, 3)), jdn(e, 4) };
+				}
+			}
+			if (json_object_object_get_ex(v, "reach", &a) && json_object_is_type(a, json_type_array)) {
+				size_t na = json_object_array_length(a);
+				sp->reach = calloc(na + 1, sizeof *sp->reach);
+				for (size_t i = 0; sp->reach && i < na; i++) {
+					json_object *e = json_object_array_get_idx(a, i);
+					unsigned c1[2];
+					if (json_object_array_length(e) < 5 ||
+					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 2) != 1) continue;
+					sp->reach[sp->nreach++] = (struct hw_reach){ c1[0], jdn(e, 1), jdn(e, 2),
+										     json_object_get_int(json_object_array_get_idx(e, 3)),
+										     json_object_get_int(json_object_array_get_idx(e, 4)) };
 				}
 			}
 			if (json_object_object_get_ex(v, "sides", &a) && json_object_is_type(a, json_type_array)) {
@@ -359,11 +418,8 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 							w->s[j].y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
 						}
 					}
-					/* its profiles, from its strokes as the build makes them */
-					hw_profile_clear(&w->prof);
-					for (size_t j = 0; w->s && j < w->nstrokes; j++)
-						for (size_t i = 0; w->s[j].x && w->s[j].y && i < w->s[j].n; i++)
-							hw_profile_seg(&w->prof, w->s[j].x[i ? i - 1 : 0], w->s[j].y[i ? i - 1 : 0], w->s[j].x[i], w->s[j].y[i]);
+					/* its profiles and middle, from its strokes as the build makes them */
+					variant_measure(w);
 				}
 			}
 			json_object *sl;
@@ -600,19 +656,25 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 	}
 	if (wsum <= 0) { free(acc); return -1; }
 	for (int i = 0; i < 2 * g->total; i++) acc[i] /= wsum;
-	/* back where the seed's ink sits: the centred average plus the seed's centre */
-	struct inst *s = &in[seed];
+	/* back on the line where its versions sit: the centred average plus their centres'
+	 * average, with the same weights (one version's baseline is off by its own error) */
 	double scx = 0, scy = 0;
 	{
-		int tot = 0;
-		for (size_t j = 0; j < s->nstrokes; j++) tot += g->pts[j];
-		double *raw = malloc((size_t)tot * 2 * sizeof *raw);
+		double *raw = malloc((size_t)g->total * 2 * sizeof *raw), cw = 0;
 		if (!raw) { free(acc); return -1; }
-		int o = 0;
-		for (size_t j = 0; j < s->nstrokes; j++) { resample(&s->s[j], (size_t)g->pts[j], raw + 2 * o); o += g->pts[j]; }
-		for (int i = 0; i < tot; i++) { scx += raw[2 * i]; scy += raw[2 * i + 1]; }
-		scx /= tot; scy /= tot;
+		for (int k = 0; k < g->n; k++) {
+			struct inst *x = &in[g->members[k]];
+			double d = rdist(x->rs, sr, g->total);
+			if (d > 2 * SIGMA) continue;
+			double kw = x->w * exp(-(d / SIGMA) * (d / SIGMA)), cx = 0, cy = 0;
+			int o = 0;
+			for (size_t j = 0; j < x->nstrokes; j++) { resample(&x->s[j], (size_t)g->pts[j], raw + 2 * o); o += g->pts[j]; }
+			for (int i = 0; i < o; i++) { cx += raw[2 * i]; cy += raw[2 * i + 1]; }
+			if (!o) continue;
+			scx += kw * cx / o; scy += kw * cy / o; cw += kw;
+		}
 		free(raw);
+		if (cw > 0) { scx /= cw; scy /= cw; }
 	}
 	v->nstrokes = g->nstrokes;
 	v->s = calloc(g->nstrokes, sizeof *v->s);
@@ -650,12 +712,7 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 			v->s[j].x[i] = round(v->s[j].x[i] * 1e4) / 1e4;
 			v->s[j].y[i] = round(v->s[j].y[i] * 1e4) / 1e4;
 		}
-	hw_profile_clear(&v->prof);
-	for (size_t j = 0; j < v->nstrokes; j++) {
-		const struct hw_lstroke *t = &v->s[j];
-		for (size_t i = 0; i < t->n; i++)
-			hw_profile_seg(&v->prof, t->x[i ? i - 1 : 0], t->y[i ? i - 1 : 0], t->x[i], t->y[i]);
-	}
+	variant_measure(v);
 	v->lc = v->rc = -1;
 	free(acc);
 	return 0;
@@ -1679,15 +1736,20 @@ int hw_letters_build(struct hw_letters *L)
 				g->b = b->cp;
 				hw_profile_clear(&g->pa);
 				hw_profile_clear(&g->pb);
+				struct hw_mid md[2] = { { 0, 0 }, { 0, 0 } };
 				for (int side = 0; side < 2; side++)
 					for (const int *p = side ? spb : spa; *p >= 0; p++) {
 						const struct hw_ink *st = &m->s.strokes[*p];
 						for (size_t q = 0; q < st->n; q++) {
 							size_t q0 = q ? q - 1 : 0;
-							hw_profile_seg(side ? &g->pb : &g->pa, st->x[q0] / m->xh, (m->base - st->y[q0]) / m->xh,
-								       st->x[q] / m->xh, (m->base - st->y[q]) / m->xh);
+							double x0 = st->x[q0] / m->xh, y0 = (m->base - st->y[q0]) / m->xh;
+							double x1 = st->x[q] / m->xh, y1 = (m->base - st->y[q]) / m->xh;
+							hw_profile_seg(side ? &g->pb : &g->pa, x0, y0, x1, y1);
+							hw_mid_seg(&md[side], x0, y0, x1, y1);
 						}
 					}
+				g->ma = hw_mid_of(&md[0]);
+				g->mb = hw_mid_of(&md[1]);
 				if (hw_profile_empty(&g->pa) || hw_profile_empty(&g->pb)) continue;
 				g->gap = hw_profile_gap(&g->pa, &g->pb, 0);
 				nobs++;
