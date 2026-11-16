@@ -8,7 +8,7 @@
 //   glassine-handwriting learning [on|off]
 //   glassine-handwriting adapt [-f] [-l LANG] ...    one adaptation (idle and charging)
 //   glassine-handwriting adaptation [show|revert] [-l LANG]
-//   glassine-handwriting donation start LICENCE|add ID|list|earlier|donor [new]|write FILE|erase|prompts
+//   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -284,6 +284,7 @@ struct session {
 	int pressure_all, tilt_all;
 	struct hw_area area;            /* the writing area, when the client said (area) */
 	int words;                      /* readings use the words (a prose field, the setting on) */
+	char written[8], pair[17];      /* the marking its kept samples get (mark), "" none */
 	/* the last reply's candidates, for a pick: text, where each came from */
 	char *cand[MAX_CANDS];
 	int cand_from[MAX_CANDS], ncand;
@@ -666,6 +667,8 @@ static char *make_sample(struct hw_lang *l, const struct session *s, const char 
 	smp.pressure = s->pressure_all;
 	smp.tilt = s->tilt_all;
 	smp.area = s->area;
+	strcpy(smp.written, s->written);
+	strcpy(smp.pair, s->pair);
 	smp.pick_rank = pick_rank;
 	snprintf(smp.pick_from, sizeof smp.pick_from, "%s", pick_rank > 0 ? pick_from : "");
 	struct hw_reading rd = { 0 };
@@ -777,6 +780,76 @@ static void do_samples(const char *id, const char *which, int full)
 		besc(&out, es[i].read);
 	}
 	bput(&out, "\n", 1);
+}
+
+/* the client's (or with all, everyone's) samples with a marking or a pair link */
+static void do_marked(const char *id, const char *which)
+{
+	if (!strcmp(client, "-")) { reply("error\t%s\tno-client", id); return; }
+	int all = !strcmp(which, "all");
+	if (*which && !all) { reply("error\t%s\tbad-line", id); return; }
+	if (all && !reader_granted()) { reply("error\t%s\tdenied", id); return; }
+	const struct hw_index_entry *es;
+	size_t n;
+	if (hw_samples_index(&es, &n)) { reply("error\t%s\tstore", id); return; }
+	size_t k = 0;
+#define MARKED(e) (((e).written[0] || (e).pair[0]) && (all || !strcmp((e).meta.client, client)))
+	for (size_t i = 0; i < n; i++) k += MARKED(es[i]);
+	bfmt(&out, "marked\t%s\t%zu", id, k);
+	for (size_t i = 0; i < n; i++)
+		if (MARKED(es[i])) bfmt(&out, "\t%s\t%s\t%s", es[i].meta.id, es[i].written[0] ? es[i].written : "-",
+				       es[i].pair[0] ? es[i].pair : "-");
+#undef MARKED
+	bput(&out, "\n", 1);
+}
+
+static int span_arg(const char *a, int *v)
+{
+	if (!strcmp(a, "-")) { *v = -1; return 0; }
+	char *e;
+	long x = strtol(a, &e, 10);
+	if (e == a || *e || x < 0 || x > 100000) return -1;
+	*v = (int)x;
+	return 0;
+}
+
+/* prefer ID CHOSEN OTHER [CHOSEN_CHAR OTHER_CHAR] */
+static void do_prefer(const char *id, char **f, int n)
+{
+	if (!strcmp(client, "-")) { reply("error\t%s\tno-client", id); return; }
+	struct hw_pref p = { .cspan = -1, .ospan = -1 };
+	if (!valid_name(f[2], 16) || !valid_name(f[3], 16) || strlen(f[2]) != 16 || strlen(f[3]) != 16) {
+		reply("error\t%s\tunknown-sample", id); return;
+	}
+	strcpy(p.chosen, f[2]);
+	strcpy(p.other, f[3]);
+	if (n == 6 && (span_arg(f[4], &p.cspan) || span_arg(f[5], &p.ospan))) { reply("error\t%s\tbad-char", id); return; }
+	int r = hw_prefer(&p, reader_granted() ? NULL : client);
+	if (r == -2) reply("error\t%s\tdenied", id);
+	else if (r == -3) reply("error\t%s\tunknown-sample", id);
+	else if (r == -4) reply("error\t%s\tbad-char", id);
+	else if (r) reply("error\t%s\tstore", id);
+	else reply("prefer\t%s\tok", id);
+}
+
+static void do_preferences(const char *id, const char *which)
+{
+	if (!strcmp(client, "-")) { reply("error\t%s\tno-client", id); return; }
+	int all = !strcmp(which, "all");
+	if (*which && !all) { reply("error\t%s\tbad-line", id); return; }
+	if (all && !reader_granted()) { reply("error\t%s\tdenied", id); return; }
+	struct hw_pref *ps;
+	size_t n;
+	if (hw_prefs(&ps, &n, all ? NULL : client)) { reply("error\t%s\tstore", id); return; }
+	bfmt(&out, "preferences\t%s\t%zu", id, n);
+	for (size_t i = 0; i < n; i++) {
+		bfmt(&out, "\t%s\t%s\t", ps[i].chosen, ps[i].other);
+		if (ps[i].cspan >= 0) bfmt(&out, "%d", ps[i].cspan); else bput(&out, "-", 1);
+		bput(&out, "\t", 1);
+		if (ps[i].ospan >= 0) bfmt(&out, "%d", ps[i].ospan); else bput(&out, "-", 1);
+	}
+	bput(&out, "\n", 1);
+	free(ps);
 }
 
 static void do_sample(const char *id, const char *sid)
@@ -1047,7 +1120,7 @@ static void request(char *line, int skip_read)
 	struct session *s = n >= 3 ? find_session(f[2]) : NULL;
 	if (!strcmp(v, "stroke") || !strcmp(v, "read") || !strcmp(v, "align") || !strcmp(v, "remove") ||
 	    !strcmp(v, "clear") || !strcmp(v, "end") || !strcmp(v, "confirm") || !strcmp(v, "donate") ||
-	    !strcmp(v, "area")) {
+	    !strcmp(v, "area") || !strcmp(v, "mark")) {
 		if (n < 3) { reply("error\t%s\tbad-line", id); return; }
 		if (!s) { reply("error\t%s\tunknown-session", id); return; }
 	}
@@ -1114,6 +1187,23 @@ static void request(char *line, int skip_read)
 	} else if (!strcmp(v, "sample")) {
 		NEED(3);
 		do_sample(id, f[2]);
+	} else if (!strcmp(v, "mark")) {
+		/* mark ID S WRITTEN PAIR: what the session's kept samples carry (spec 003) */
+		NEED(5);
+		const char *w = strcmp(f[3], "-") ? f[3] : "", *pr = strcmp(f[4], "-") ? f[4] : "";
+		if (strlen(w) >= sizeof s->written || !hw_written_ok(w) || strlen(pr) >= sizeof s->pair || !hw_pair_ok(pr)) {
+			reply("error\t%s\tbad-mark", id); return;
+		}
+		strcpy(s->written, w);
+		strcpy(s->pair, pr);
+		reply("mark\t%s\tok", id);
+	} else if (!strcmp(v, "marked") || !strcmp(v, "preferences")) {
+		if (n != 2 && n != 3) { reply("error\t%s\tbad-line", id); return; }
+		if (!strcmp(v, "marked")) do_marked(id, n == 3 ? f[2] : "");
+		else do_preferences(id, n == 3 ? f[2] : "");
+	} else if (!strcmp(v, "prefer")) {
+		if (n != 4 && n != 6) { reply("error\t%s\tbad-line", id); return; }
+		do_prefer(id, f, n);
 	} else {
 		reply("error\t%s\tunknown-verb", id);
 	}
@@ -1245,7 +1335,7 @@ static void usage(void)
 	      "       glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]\n"
 	      "       glassine-handwriting adaptation [show|revert] [-l LANG]\n"
 	      "       glassine-handwriting charging\n"
-	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
+	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
 }
@@ -1394,6 +1484,14 @@ static int cmd_donation(int argc, char **argv)
 		if (!line) fprintf(stderr, err ? "glassine-handwriting: can't read the samples\n" : "glassine-handwriting: no sample %s\n", argv[1]);
 		free(line);
 		return r;
+	}
+	if (!strcmp(argv[0], "samples") && argc == 1) {
+		char (*ids)[17];
+		size_t n;
+		if (hw_donation_ids(&ids, &n)) return 1;
+		for (size_t i = 0; i < n; i++) puts(ids[i]);
+		free(ids);
+		return 0;
 	}
 	if (!strcmp(argv[0], "earlier") && (argc == 1 || (argc == 3 && !strcmp(argv[1], "-c")))) {
 		/* the prompted samples written to shipped prompts that the donation hasn't got:

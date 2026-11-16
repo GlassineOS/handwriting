@@ -74,6 +74,10 @@ microsecond.
 | `recognize ID LANGS FIELD UNITS COUNT BEFORE STROKES` | as `read`, with the verb `recognize`; or `recognize ID private` |
 | `samples ID [all]` | `samples ID K SAMPLE…` |
 | `list ID [all]` | `list ID K {SAMPLE TIME SOURCE LANG TEXT READ}×K` |
+| `mark ID S WRITTEN PAIR` | `mark ID ok` |
+| `marked ID [all]` | `marked ID K {SAMPLE WRITTEN PAIR}×K` |
+| `prefer ID CHOSEN OTHER [CHOSEN_CHAR OTHER_CHAR]` | `prefer ID ok` |
+| `preferences ID [all]` | `preferences ID K {CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR}×K` |
 | `sample ID SAMPLE` | `sample ID JSON` (the sample's line, escaped) |
 | `donate ID S TEXT [keep]` | `donate ID ok COUNT SAMPLE`, or `donate ID skip REASON` |
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
@@ -184,7 +188,24 @@ for a client that has the whole ink at once. It stores nothing.
 `all` lists everyone's and needs the client in the `readers` setting. **list** is the same
 listing with, per sample, its confirmation time (seconds since 1970), source, language, text and
 the first reading kept when it was written (`READ`, empty when none), both text fields escaped:
-what a client shows of its samples without fetching each one. **sample** returns one
+what a client shows of its samples without fetching each one.
+
+**mark** (spec 003 FR-001, FR-002) says how session `S`'s writing is meant: `WRITTEN` `careful`
+(written to "Write it your best"), `quick` (the quick half of a pair) or `-`, and `PAIR` the link a
+quick and a careful sample share (16 hex digits the client makes at random) or `-`. Samples the
+session keeps from then on (`confirm`, `donate`) carry them as `written` and `pair` (sample
+format); it lasts until the session ends or the next `mark`. Anything else is `bad-mark`.
+**marked** lists the client's samples that carry a marking or a link (with `all`, everyone's, as
+for `samples`), `-` for the part they don't have. A pair whose other sample was deleted links
+nothing.
+
+**prefer** (FR-003) records that of two of the client's samples the person chose `CHOSEN` over
+`OTHER`; with `CHOSEN_CHAR OTHER_CHAR`, one character of each, by its place in the sample's text
+(0-based code points). Errors: `unknown-sample`, `denied` (another client's sample, unless a
+reader), `bad-char` (no such character, or the same sample and character twice). "Both fine" and
+"Skip" record nothing: the client sends nothing. **preferences** lists the client's preferences
+whose two samples are both stored (`-` for a whole sample). Deleting either sample takes the
+preference with it; so does erasing them. **sample** returns one
 sample's line (sample format v1, escaped as a text field): the client's own, or any with
 `readers`. Both need a client name from `hello` (`no-client`) and are what an app that builds a
 font from the person's writing uses.
@@ -259,17 +280,20 @@ Nothing in it leaves the device except by export or a donation the person writes
   1970; `CLIENT` `-` when none was named). `ID` is the sample's id: the first 16 hex digits of a
   hash of its line, so the same sample is stored once.
 - `samples.index`: derived from the two files above, so listing, counting, looking up and
-  deleting never read the whole of `samples.jsonl`. First line `glassine-handwriting-index 1 INODE
+  deleting never read the whole of `samples.jsonl`. First line `glassine-handwriting-index 2 INODE
   GEN` (the inode of `samples.jsonl` and the erase count it belongs to), then one line per stretch
-  of `samples.jsonl` in file order: `ID OFFSET LENGTH CLIENT TIME SOURCE LANG TEXT READ` for a
+  of `samples.jsonl` in file order: `ID OFFSET LENGTH CLIENT TIME SOURCE LANG TEXT READ MARK` for a
   sample (its line without the newline; `TEXT` and the first reading `READ` escaped as text
-  fields), `- OFFSET LENGTH` for bytes that are no sample. It is checked against the files at every
+  fields; `MARK` its `written` or `-`, then `:PAIR` when it has a pair link), `- OFFSET LENGTH` for
+  bytes that are no sample. An index of another version is made again. It is checked against the files at every
   open (inode, erase count, the last sample's id and place); lines after the last one it covers
   (written by an earlier version, or an index line lost in a crash) are added from the file, and
   an index that doesn't fit is made again from the file (also when a sample it lists no longer
   begins its line). A deletion writes the index (for the next erase count) first, then the file,
   then `samples.meta`, so a crash on the way leaves the sample with its client and time or takes
   it out. A store without an index gets one at its first open.
+- `preferences`: one line per preference, `CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR` (sample ids;
+  `-1` for a whole sample). A deletion takes a sample's preferences out before the sample.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
   `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
@@ -315,12 +339,15 @@ glassine-handwriting learning [on|off]          show or set handwriting.conf's l
 glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
-glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
+glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
 ```
 
-`export -c CLIENT` writes only that client's samples and no adaptation. `delete` deletes one
+`export -c CLIENT` writes only that client's samples and no adaptation. An export holds the
+preferences between the samples it holds, as `{"preference": …}` lines (docs/samples.md, the
+samples named by their ids); `import` adds those whose two samples are stored once the file is
+read. `delete` deletes one
 sample by id; it counts as a change for the next adaptation (a running one drops its result), but
 the adaptation in use stays.
 
@@ -341,8 +368,10 @@ one); `earlier` lists the person's prompted samples written to a shipped prompt 
 `prompts/`, the sample's language or its base) that the donation hasn't got, `ID TIME LANG TEXT`
 per sample in the order stored (`-c`: one client's), for the offer to add the samples kept before
 donating was on (spec 002 FR-011); `remove` takes one out by id; `write` writes the donation as sample
-format v1 lines, each with `licence` and `donor`, times from 0 and no client or time of day.
-`list` prints `licence LICENCE|-`, `samples N` and `donor ID|-`. `donor` prints the donor ID (`-`
+format v1 lines, each with `licence` and `donor`, times from 0 and no client or time of day, then
+a preference record for each preference whose two samples are both in the donation, naming them
+by their ids in that file.
+`list` prints `licence LICENCE|-`, `samples N` and `donor ID|-`. `samples` prints the id of each sample in the donation, once, in the order added. `donor` prints the donor ID (`-`
 before the first donation), `donor new` replaces it with a new one and prints that: later
 donations then count as another writer's. `erase` keeps the donor ID.
 
