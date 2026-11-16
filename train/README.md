@@ -148,6 +148,69 @@ sources. Out-of-list words: 1.5 % of the test book's words, 8 % of its random-wo
 3 % of the dev text. Order 6 with every n-gram seen 3 times (4.9 M entries, 52 MB) read
 the dev fonts 0.3 points better (with the 7-font baseline); order 4 0.7 points worse.
 
+## The recognizer's character model (`charlm.py`)
+
+The recognizer program reads with a character model (`docs/recognizer.md`, Characters; spec
+001 FR-019); `glassine-train charlm --version N` builds it and packs its release
+(`../models/README.md`). Interpolated Witten-Bell over character 5-grams (counts only, the
+module docstring is the specification), from the nine training books' paragraphs (pinned by
+sha256; the test book never) plus generated number and code lines for 3 % of the
+characters (`codes()`: numbers, prices, times, dates, ordinals, measures, phone numbers,
+postcodes, plates, part numbers), so digits have their real neighbours. A context seen fewer
+than 20 times backs off to the shorter one as a whole. One paragraph in 50 (by CRC-32) is
+held out of it. 1.1 MB, 26 k contexts.
+
+Held-out bits per character (no code lines): order 4 2.25, order 5 2.00, order 6 1.91 (2.2
+MB), order 7 (pruned at 50) 1.95; Kneser-Ney was within 0.03 unpruned and needs its own
+pruning, so Witten-Bell. A small character RNN was not tried: the decoder asks for a
+probability at every new prefix of its searches (thousands per reading), which an n-gram
+lookup answers in a few table probes.
+
+**Decoder weights,** tuned through the recognizer program itself (`eval-samples.py`) on
+synthetic dev ink only: held-out paragraphs of the training books (never in the character
+model) rendered in the 4 dev fonts as prose lines (500), single words (500), number lines
+(150), codes (150: ordinals, times, measures, plates, part numbers, dates), random letter
+strings (150) and lone characters (150). Grid over weight, floor, bonus per character,
+margin, beam, order and pruning, the share of code lines; the choice: weight 0.35, floor −8,
+bonus 1, beam 8, margin 0 (with words 1). CER, model 2, `read … raw` / `chars`:
+
+| set | ink only | character model | words (before) | words + character model |
+|---|---|---|---|---|
+| prose lines | 4.3 % | 2.2 % | 3.5 % | 2.3 % |
+| single words | 4.7 % | 1.9 % | 3.6 % | 2.1 % |
+| codes | 25.0 % | 23.4 % | 25.0 % | 23.5 % |
+| number lines | 6.3 % | 6.2 % | 6.3 % | 6.6 % |
+| random letters | 22.2 % | 23.2 % | 22.2 % | 24.2 % |
+| lone characters | 39.3 % | 39.3 % | 39.3 % | 40.0 % |
+
+Without the code lines the character model cost codes 1 to 5 points; a higher weight (0.5)
+reads prose a little better (2.0 %) but random letters 4 points worse.
+
+**On one writer's real ink** (prompted samples, mostly single words, read by the recognizer
+program, three candidates; frozen weights, the test session read once). Model 2 with a fresh
+per-writer head trained on the other sessions (`glassine-handwriting adapt`), CER / WER:
+
+| | ink only | character model | words (before) | words + character model |
+|---|---|---|---|---|
+| the fixed test session (116) | 13.9 / 66 % | 5.6 / 25 % | 8.2 / 33 % | **5.4 / 22 %** |
+| each session held out once (756) | 14.4 / 51 % | 8.4 / 29 % | 9.6 / 34 % | **7.2 / 23 %** |
+| later sessions (96) | 13.7 / 57 % | 7.4 / 30 % | 7.1 / 25 % | **5.9 / 22 %** |
+| model 2 alone, each session held out once | 37.4 / 91 % | 32.0 / 82 % | 35.6 / 85 % | 30.7 / 76 % |
+
+Words + character model against words alone (paired bootstrap over samples, 95 %): with
+the head −3.1 to −1.7 CER points held-out-session pooled, −4.3 to −1.4 on the fixed test
+session; without a head −5.9 to −3.9. Texts with digits (41, all in the first two sessions)
+read no worse (head: 26.0 → 25.2 %); letters read as digits inside words stayed as rare as
+they were with the head (6 → 7 of 623 texts) and fell without it (5 → 2). Lone characters (97)
+read as before with words, but 6 points worse with the character model alone (`read … chars`,
+margin 0): the margin was tuned on synthetic lone characters, where it cost nothing.
+
+**Time on the device** (the e-ink tablet's Cortex-A53/A73 cores, the recognizer program
+before and after this change, interleaved, three rounds of 60 synthetic lines each, median
+read time): prose lines with words 241 → 243 ms (+1 %; 95th percentile +3 %), single words
+85 → 88 ms (+4 %; +6 %); with the character model alone against the ink alone, 222 → 227 ms
+(+2 %) and 81 → 85 ms (+4 %). Round-to-round spread is about ±5 %.
+
 ## Results
 
 CER = character edit distance / reference length, WER the same over words, "greedy" =
@@ -346,6 +409,42 @@ fonts; held-out fonts = 1000 lines each, greedy.
   punctuation at their true size relative to the line (synthetic lines with lone marks and
   letters, and real samples' area line). This changes the features and so the model file:
   a new ghm version that says how its input is scaled, read beside version 1.
+- **Open requirement for the next base model (spec 001 FR-020): training text with real
+  character statistics.** The text above mixes random word sequences, numbers and codes (1
+  in 12) and random letter strings with every letter equally likely (1 in 12). With CTC,
+  each frame's output is independent of the earlier ones, so whatever the model knows about
+  which character follows which it has to learn from the text, and uniform strings teach it
+  that any letter, or a digit, is as likely as any other inside a word (one writer's "light"
+  read as "lig4t"). The recognizer's character model (`charlm.py`, below) makes up for it
+  after the model; the next base model's text should:
+  - replace the uniform letter strings with pseudo-words sampled from a character model of
+    the language (the one `charlm.py` builds can serve): not words of the word list, so no
+    word is learned by heart, but with real letter sequences; uniform strings at most a
+    small remainder;
+  - generate numbers and codes as line kinds of their own, as they are written: ordinals
+    and units (4th, 10:30, 5 km), dates, phone numbers, postcodes, number plates and part
+    numbers (B-XY 123, R2D2), email and web addresses, so a digit stands next to letters
+    only where it really does;
+  - take names from public name lists.
+  No short continuation fine-tune of model 2 for this: the fix is the next base model,
+  with the character model in the decoder until then.
+- **Option for the next base model: an output-dependent decoder** (attention, or CTC with
+  attention), measured against CTC with the character model in the decoder. Not required.
+- **Nice to have: delayed strokes as people write them.** Measured on one writer's
+  prompted words: about a third of the words have a delayed stroke; i and j dots are
+  delayed about 80 % of the time, bars (t, f and others) 5 to 20 %; several are added
+  mostly right to left, about 10 % in the middle of the word, after a pause of about 0.17 s
+  against 0.11 s between letters. The generator delays only dots and crosses of i, j, t and
+  f, with chance 0.5 (`delay`), left to right, at the word's end, and the `hand` sets
+  render with `delay=0.0`. No accuracy problem has been measured from this, so it comes
+  last.
+- **The generator's dynamics from real ink, broadly.** The `real1` preset copies one
+  writer's geometry; instead fit a timing model (for example sigma-lognormal) to real ink of
+  many writers and sample its timing and dynamics, keeping the shapes broad (the fonts),
+  not one writer's.
+- **A test set of other real writers' ink** as soon as donations with donor IDs give one:
+  the synthetic held-out fonts only stand in for other hands; report the base model's
+  real-ink error per writer.
 - Real ink from more writers (`../docs/samples.md`): one writer improves that writer
   but costs other hands (see above).
 - Joined script in the generator: connect letters within a word into pen-down strokes

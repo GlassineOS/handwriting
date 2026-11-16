@@ -6,7 +6,7 @@ how often the text is among the candidates, per prompt set, and against an earli
 (readings fixed and broken). Nothing is stored; the store given is only read.
 
     eval-samples.py BIN SAMPLES.jsonl [--models DIR] [--adaptation FILE] [--split held|train|all]
-                    [--field FIELD] [--count N] [--raw] [--prompts DIR] [--save OUT.json]
+                    [--field FIELD] [--count N] [--raw | --chars] [--prompts DIR] [--save OUT.json]
                     [--against EARLIER.json] [--per-sample]
 
 --split: the adaptation's split (one sample in five by id is held back, docs/recognizer.md);
@@ -103,7 +103,8 @@ def main():
     ap.add_argument("--field", default="normal")
     ap.add_argument("--before", default="")
     ap.add_argument("--count", type=int, default=3)
-    ap.add_argument("--raw", action="store_true", help="ask for the reading without the dictionary")
+    ap.add_argument("--raw", action="store_true", help="ask for the ink's reading alone (read … raw)")
+    ap.add_argument("--chars", action="store_true", help="ask for the reading without words (read … chars)")
     ap.add_argument("--prompts")
     ap.add_argument("--save")
     ap.add_argument("--against")
@@ -185,7 +186,7 @@ def main():
                 rec.ask("stroke", "s", " ".join(",".join(num(round(p[2] * 1000, 3)) if i == 2 else num(v)
                                                          for i, v in enumerate(p)) for p in st))
             t0 = time.perf_counter()
-            r = rec.ask("read", "s", str(a.count), *(["raw"] if a.raw else []))
+            r = rec.ask("read", "s", str(a.count), *(["raw"] if a.raw else ["chars"] if a.chars else []))
             times.append(time.perf_counter() - t0)
             fit = None
             if a.align and len(s["text"]) <= 2:

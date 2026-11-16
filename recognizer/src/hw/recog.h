@@ -5,6 +5,7 @@
 #define HW_RECOG_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include "ctc.h"
 #include "featurize.h"
@@ -70,8 +71,9 @@ int *hw_span_strokes(const struct hw_run *r, const struct hw_charspan *c, size_t
 /* Candidates: up to n readings, best first. */
 #define HW_READ_MAX 16
 /* the ink's best reading, another reading of the ink, a word of the list one edit from a
- * reading, a reading found with the words guiding the search */
-enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS, HW_FROM_GUIDED };
+ * reading, a reading found with the words guiding the search, one found with the character
+ * model weighing the search */
+enum { HW_FROM_INK, HW_FROM_BEAM, HW_FROM_WORDS, HW_FROM_GUIDED, HW_FROM_CHARS };
 struct hw_reading {
 	int n;
 	struct {
@@ -87,15 +89,25 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 /* The words around a reading: the language's words and the two before it (from the text
  * before the cursor). */
 struct hw_words;
+struct hw_chars;
 struct hw_context {
-	const struct hw_words *w;
+	const struct hw_words *w;       /* NULL: no words */
 	long prev2, prev1;
+	const struct hw_chars *ch;      /* the character model, NULL: none */
+	uint64_t cctx;                  /* its context: the text before */
 };
+/* the words' context (and no character model) */
 void hw_context_of(const struct hw_words *w, const char *before, struct hw_context *x);
-/* readings ranked with the words: the ink's readings re-scored by the words they make and
- * the words before, plus up to two words of the list one edit from a reading that isn't one
- * (never first); the ink's best reading stays first unless another one wins by a clear
- * margin and it isn't all words, and it is among the first two. x NULL: hw_read. */
+/* the reading's context: words (w, may be NULL) and the character model (ch, may be NULL);
+ * returns x, or NULL when neither (the ink's reading alone) */
+struct hw_context *hw_context_make(const struct hw_words *w, const struct hw_chars *ch, const char *before,
+				   struct hw_context *x);
+/* readings ranked with the words and the character model: the ink's readings, those of a
+ * search the character model weighs (x->ch) and of one the words guide (x->w), re-scored by
+ * the words they make after the words before and by the character model, plus up to two
+ * words of the list one edit from a reading that isn't one (never first); the ink's best
+ * reading stays first unless another one wins by a clear margin and it isn't all words,
+ * and it is among the first two. x NULL: hw_read. */
 int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct hw_context *x, int n,
 		  struct hw_reading *out);
 

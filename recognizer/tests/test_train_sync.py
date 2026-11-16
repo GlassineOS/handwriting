@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The recognizer against the trainer as it is now (../train): the C features against
-features.py on fresh random ink, and the character set against text.py. A change to
+features.py on fresh random ink, the character set against text.py, and the character model
+(chars.c) against charlm.py on a model built from text written for this test. A change to
 either side that the other doesn't follow fails here. Needs numpy.
 
     python3 tests/test_train_sync.py [TEST_ENGINE]
@@ -10,6 +11,7 @@ either side that the other doesn't follow fails here. Needs numpy.
 import ast
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -64,6 +66,53 @@ def ink(rng):
     return strokes
 
 
+# text written for this test (not from any book): the character model built from it
+TEXT = """The kettle sang on the stove while the cat watched the rain run down the window.
+Nobody had planned the walk, but by noon the three of them were halfway up the hill, light
+packs on their backs and the village small below. At the top a bent fence and an old sign:
+Path closed 4th May, keep left. They kept left. The view was worth it, and the soup at the
+inn afterwards was better still. On the way back she said the hill looked taller from the
+bottom, which was true of most things."""
+
+
+def check_chars(rng):
+    charlm = load("charlm")
+    text_chars = chars()
+    lines = [ln.strip() for ln in TEXT.splitlines()]
+    lines += ["".join(rng.choice(list(text_chars), int(rng.integers(1, 30)))).strip() for _ in range(40)]
+    lines = [ln for ln in lines if ln]
+    cases = []
+    with tempfile.TemporaryDirectory() as d:
+        for order, mh in ((1, 1), (3, 1), (5, 2), (8, 3)):
+            data = charlm.encode(charlm.prune(charlm.count(lines, order), mh), text_chars, order)
+            again = charlm.encode(charlm.prune(charlm.count(lines, order), mh), text_chars, order)
+            if data != again:
+                raise SystemExit("charlm.py: the same text gave other bytes")
+            m = charlm.Model(data)
+            lang = f"x{order}"
+            (Path(d) / lang).mkdir()
+            (Path(d) / lang / "chars.gclm").write_bytes(data)
+            probes = [("", "light"), ("", "lig4t"), ("the ", "hill"), ("Path closed ", "4th May"),
+                      ("x", "R2D2 @ the inn"), ("a@", "bc"), ("", " "), ("kept left.", " They")]
+            probes += [("".join(rng.choice(list(text_chars), int(rng.integers(0, 12)))),
+                        "".join(rng.choice(list(text_chars + "@\u00e9"), int(rng.integers(1, 20))))) for _ in range(60)]
+            cs = []
+            for before, t in probes:
+                ctx = before if before else " "
+                lp = []
+                for c in t:
+                    lp.append(m.logp(ctx, c))
+                    ctx += c
+                cs.append({"before": before, "text": t, "logp": lp})
+            f = Path(d) / f"{lang}.json"
+            f.write_text(json.dumps({"lang": lang, "missing": "zz", "cases": cs}))
+            cases.append(f)
+        for f in cases:
+            r = subprocess.run([str(ENGINE), "--chars", str(f)], env=dict(os.environ, GLASSINE_HANDWRITING_MODELS=d))
+            if r.returncode:
+                sys.exit(r.returncode)
+
+
 def main():
     features = load("features").features
     text_chars = chars()
@@ -74,6 +123,7 @@ def main():
     if vec["charset"] != text_chars:
         raise SystemExit("tests/data/model-en.json: charset differs from the trainer's text.py")
     rng = np.random.default_rng(int(sys.argv[2]) if len(sys.argv) > 2 else 1)
+    check_chars(rng)
     cases = []
     for i in range(300):
         s = ink(rng)
