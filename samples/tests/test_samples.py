@@ -766,6 +766,43 @@ class Pages(Case):
         self.settle(u)
         self.assertEqual(len(self.e.cli.samples()), before)
 
+    def test_pen_ink(self):
+        """Neaten my writing through the pen interface: the compositor's strokes take the
+        place of the pen's own drawing, neat strokes are shown by the page's index, in the
+        writing area's coordinates; a stroke without one joins as written"""
+        from glassine_hwsamples import neat
+
+        class Pen:
+            def __init__(s):
+                s.calls = []
+
+            def __getattr__(s, name):
+                return lambda *a: s.calls.append((name, a))
+        page, changes = [], []
+        pi = neat.PenInk(Pen(), page, lambda: changes.append(1))
+        pi.place(10, 20, 300, 200, 150, 93)
+        self.assertEqual(pi.pen.calls, [("set_area", (10, 20, 300, 200)), ("set_guides", (150, 113))])
+        own = [(1, 2, 0, 0.5, 0, 0)]
+        pi.down(own)
+        self.assertEqual(pi.pending, [own])
+        pi.stroke(0, [(11, 22, 5, 0.5, 1, 2), (12, 23, 6, 0.5, 1, 2)])
+        self.assertEqual((pi.pending, page), ([], [[(1, 2, 5, 0.5, 1, 2), (2, 3, 6, 0.5, 1, 2)]]))
+        pi.neat(0, "pulled", [(15, 25, 5, 0.5, 1, 2), (16, 26, 6, 0.5, 1, 2)])
+        self.assertEqual(pi.shown, {0: [(5, 5), (6, 6)]})
+        u = self.make()
+        u.page, u.pen_ink = "neat", pi
+        self.assertEqual(self.U.neat_view(u, page), [[(5, 5), (6, 6)]])
+        mouse = [(3, 3, 0, None, None, None)]
+        pi.down(mouse)
+        pi.lost(mouse)
+        self.assertEqual(page[1], mouse)
+        pi.reading("hi", [0])
+        self.assertEqual(pi.text, "hi")
+        u.set_strength(1.0, ([], "device", ()))
+        self.assertEqual(pi.pen.calls[-1], ("set_neaten", (True, 1.0)))
+        pi.clear()
+        self.assertEqual((pi.shown, pi.index, pi.text), ({}, {}, ""))
+
     def test_neat_lines(self):
         from glassine_hwsamples import neat
         s = lambda y: [(0, y - 10, 0), (5, y, 5), (9, y + 10, 9)]

@@ -186,6 +186,7 @@ class UI:
         self.neat_gen = 0               # counts the clears: a result for ink cleared since is dropped
         self.neat_busy = False
         self.neat_again = None          # the payload to neaten once the running call is done
+        self.pen_ink = None             # a neat.PenInk while the page goes through the pen interface
         self.wstep = "w-welcome"        # the introduction's step
         self.tried = False              # its one prompt was written
         self.demo = demo
@@ -786,8 +787,8 @@ class UI:
     def neaten(self, payload):
         """the page's ink (the writing area's payload) neatened at the strength chosen; a
         call while one runs waits for it, only the newest ink goes"""
-        if self.neat is None or self.demo:
-            return
+        if self.neat is None or self.demo or self.pen_ink:
+            return                        # through the pen interface the service neatens
         if self.neat_busy:
             self.neat_again = payload
             return
@@ -821,7 +822,9 @@ class UI:
     def set_strength(self, s, payload):
         self.neat_strength = s
         self.neat_orig = False
-        if payload[0]:
+        if self.pen_ink:                  # the service neatens what it holds again
+            self.pen_ink.pen.set_neaten(True, s)
+        elif payload[0]:
             self.neaten(payload)
         self.redraw()
 
@@ -1029,6 +1032,52 @@ class Canvas(Gtk.DrawingArea):
         self.connect("motion-notify-event", self.on_motion)
         self.connect("button-release-event", self.on_release)
         self.connect("touch-event", lambda w, e: True)      # fingers don't write (palms rest on it)
+        self.connect("size-allocate", lambda w, a: self.pen_place())
+        self.pen_tried = False
+
+    # ---- Neaten my writing through the pen interface (neat.PenInk), when there is one
+
+    def pen_sync(self):
+        """the pen interface on while Neaten my writing is open (and the window is a Wayland
+        surface whose compositor has it), off on every other page"""
+        want = self.ui.page == "neat" and not self.ui.demo and self.get_window() is not None
+        pi = self.ui.pen_ink
+        if want and pi is None and not self.pen_tried:
+            self.pen_tried = True
+            mod = N.pen_module()
+            pen = mod.Pen.for_gdk_window(self.get_window()) if mod else None
+            if pen is None:
+                return
+            pi = N.PenInk(pen, self.inks["neat"], self.pen_changed)
+            pen.listener = pi
+            self.ui.pen_ink = pi
+            self.pen_place()
+            pen.set_neaten(True, self.ui.neat_strength)
+            pen.set_text(True)              # "Read as"
+            log("pen interface on")
+        elif not want and pi is not None:
+            pi.pen.close()
+            self.ui.pen_ink = None
+        if not want:
+            self.pen_tried = False
+
+    def pen_place(self):
+        pi = self.ui.pen_ink
+        win = self.get_window()
+        if not pi or not win:
+            return
+        x = y = 0
+        while win is not None and win.get_window_type() == Gdk.WindowType.CHILD:
+            px, py = win.get_position()      # the surface: the toplevel's window, shadow and all
+            x, y = x + px, y + py
+            win = win.get_parent()
+        a = self.get_allocation()
+        pi.place(x, y, a.width, a.height, LINE, LINE * 0.62)
+
+    def pen_changed(self):
+        self.ui.neat_text = self.ui.pen_ink.text if self.ui.pen_ink else self.ui.neat_text
+        self.queue_draw()
+        self.on_change()
 
     @property
     def strokes(self):
@@ -1064,7 +1113,10 @@ class Canvas(Gtk.DrawingArea):
             return True
         self.stop_timer()
         self.cur = [self.point(e)]
-        self.strokes.append(self.cur)
+        if self.ui.pen_ink and self.ui.page == "neat":
+            self.ui.pen_ink.down(self.cur)  # shown until the compositor's stroke for it comes
+        else:
+            self.strokes.append(self.cur)
         self.queue_draw()
         return True
 
@@ -1083,8 +1135,12 @@ class Canvas(Gtk.DrawingArea):
             return True
         self.cur.append(self.point(e))
         log("release", len(self.cur), "points,", len(self.strokes), "strokes")
-        self.cur = None
+        cur, self.cur = self.cur, None
         self.on_change()
+        if self.ui.pen_ink and self.ui.page == "neat":
+            pi = self.ui.pen_ink
+            GLib.timeout_add(1000, lambda: pi.lost(cur) and False)
+            return True
         if self.ui.page == "neat":
             self.timer = GLib.timeout_add(NEAT_PAUSE_MS, self.paused)
             return True
@@ -1125,6 +1181,9 @@ class Canvas(Gtk.DrawingArea):
     def clear(self):
         self.stop_timer()
         self.strokes, self.cur = [], None
+        if self.ui.page == "neat" and self.ui.pen_ink:
+            self.ui.pen_ink.page = self.strokes
+            self.ui.pen_ink.clear()
         if self.ui.page == "neat":
             self.ui.neat_cleared()
         self.queue_draw()
@@ -1182,7 +1241,8 @@ class Canvas(Gtk.DrawingArea):
         cr.set_line_width(max(2.0, LINE / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
-        for s in neat_view(self.ui, self.strokes):
+        pending = self.ui.pen_ink.pending if self.ui.pen_ink and self.ui.page == "neat" else []
+        for s in neat_view(self.ui, self.strokes) + pending:
             cr.move_to(s[0][0], s[0][1])
             for p in s[1:]:
                 cr.line_to(p[0], p[1])
@@ -1195,9 +1255,10 @@ class Canvas(Gtk.DrawingArea):
 def neat_view(ui, strokes):
     """the strokes as the page shows them: on Neaten my writing each neatened one in its
     neatened form (unless the original is shown), the ones written since as written"""
-    if ui.page != "neat" or ui.neat_orig or not ui.neat_shown:
+    shown = ui.pen_ink.shown if ui.pen_ink else ui.neat_shown
+    if ui.page != "neat" or ui.neat_orig or not shown:
         return strokes
-    return [ui.neat_shown.get(i, s) for i, s in enumerate(strokes)]
+    return [shown.get(i, s) for i, s in enumerate(strokes)]
 
 
 class Moved:
@@ -1380,6 +1441,7 @@ class Window(Gtk.ApplicationWindow):
             self.fit()
         for p in list(self.panels.values()) + [self.full, self.canvas]:
             p.queue_draw()
+        self.canvas.pen_sync()
 
 
 class App(Gtk.Application):

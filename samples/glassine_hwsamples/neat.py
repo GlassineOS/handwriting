@@ -5,10 +5,13 @@ strength they chose. The raw strokes stay the app's; nothing written here become
 (no confirm, no donate: FR-016, FR-024)."""
 
 import math
+import os
+import sys
 
 STRENGTHS = ((0.25, "Light"), (0.5, "Medium"), (0.75, "Strong"), (1.0, "Neatest"))
 DEFAULT = 0.5
 SESSION = "neaten"
+PEN_PYTHON = "/usr/lib/glassine/python"     # where the handwriting package puts the binding
 
 
 def lines(strokes, line, first):
@@ -65,3 +68,78 @@ class Neat:
             self.rec.end(SESSION)
         self.open = False
         self.done.clear()
+
+
+def pen_module():
+    """glassine_handwriting (the pen interface's binding), or None"""
+    if os.environ.get("GLASSINE_HWSAMPLES_NO_PEN") == "1":
+        return None
+    try:
+        import glassine_handwriting
+    except ImportError:
+        sys.path.append(PEN_PYTHON)
+        try:
+            import glassine_handwriting
+        except ImportError:
+            return None
+    return glassine_handwriting
+
+
+class PenInk:
+    """the page's ink through the pen interface (docs/pen-interface.md): the compositor's
+    strokes are the page's, its neat strokes what is shown, the service reads and neatens
+    (word by word, line by line on the guides). The pen's own drawing on the page waits
+    in `pending` until the compositor's stroke for it comes; one that never comes (a mouse)
+    joins the page as written after a second.
+
+    page: the list the page draws (the canvas's strokes); shown: {index: [(x, y)]} the
+    neatened ones; offset: the writing area's origin on the window's surface."""
+
+    def __init__(self, pen, page, on_change):
+        self.pen, self.page, self.on_change = pen, page, on_change
+        self.pending = []
+        self.index = {}             # the compositor's stroke number -> index on the page
+        self.shown = {}
+        self.text = ""
+        self.offset = (0, 0)
+
+    def place(self, x, y, w, h, line, first):
+        """the writing area on the surface and its guides (in the area's coordinates)"""
+        self.offset = (x, y)
+        self.pen.set_area(x, y, w, h)
+        self.pen.set_guides(line, first + y)
+
+    def down(self, stroke):
+        self.pending.append(stroke)
+
+    def lost(self, stroke):
+        """a second after the pen lifted: no stroke from the compositor for it"""
+        if stroke in self.pending:
+            self.pending.remove(stroke)
+            self.page.append(stroke)
+            self.on_change()
+
+    def clear(self):
+        self.pen.clear()
+        self.pending, self.index, self.shown, self.text = [], {}, {}, ""
+
+    # the binding's listener
+    def stroke(self, k, points):
+        if self.pending:
+            self.pending.pop(0)
+        ox, oy = self.offset
+        self.index[k] = len(self.page)
+        self.page.append([(x - ox, y - oy, t, p, tx, ty) for x, y, t, p, tx, ty in points])
+        self.on_change()
+
+    def neat(self, k, how, points):
+        i = self.index.get(k)
+        if i is None:
+            return
+        ox, oy = self.offset
+        self.shown[i] = [(x - ox, y - oy) for x, y, *_ in points]
+        self.on_change()
+
+    def reading(self, text, strokes):
+        self.text = text
+        self.on_change()
