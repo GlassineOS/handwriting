@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -237,8 +238,11 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.c.get(), ["error", "-", "too-long"])
         self.assertEqual(self.c.ask("end", "s")[2:], ["ok"])
         # more lines at once than one batch: every one is answered, in order
-        self.c.send(*(f"clear\t{i}\tz" for i in range(6000)))
+        # (written from a thread: the replies fill the pipe before the lines are all in)
+        w = threading.Thread(target=self.c.send, args=[f"clear\t{i}\tz" for i in range(6000)])
+        w.start()
         got = [self.c.get() for _ in range(6000)]
+        w.join()
         self.assertEqual(got[0], ["error", "0", "unknown-session"])
         self.assertEqual([g[1] for g in got], [str(i) for i in range(6000)])
 
