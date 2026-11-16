@@ -139,7 +139,12 @@ included unless they pick them one by one.
   samples the person picks one by one from their own; each is shown before it is kept.
   The person chooses the licence (CC0 or CC BY 4.0) once per donation. The donation file
   uses the sample format with no client, wall-clock time, device or person named in it
-  (`docs/samples.md`). The recognizer only writes the file; sending it is a step the
+  (`docs/samples.md`), and carries one donor ID: a random identifier made when the person
+  first starts a donation, kept with their data on the device and the same in every later
+  donation from it, so the project can tell writers apart and count each writer's
+  samples across donations. It is not derived from the device, the account or anything
+  else about the person. The person sees it where they donate and can replace it with a
+  new one, after which their donations count as a new writer's. The recognizer only writes the file; sending it is a step the
   person takes outside this program. Donations are separate from the samples used for
   the person's own adaptation, and stopping or erasing a donation never touches those.
 
@@ -163,6 +168,15 @@ included unless they pick them one by one.
     words are only read, never written.
   - Words never make reading miss FR-004's time budget, and a client can ask for the
     ink's reading alone.
+
+- **FR-016**: The samples stay quick to work with however many there are: keeping a
+  sample, listing them (with their text and the reading at the time of writing), counting
+  them, looking one up, and taking one back take the same time with ten thousand samples
+  as with ten, and none of them reads the strokes of other samples. A sample taken back
+  (FR-010, FR-014) is gone from the stored files when the request returns, not at a later
+  cleanup. A store written by an earlier version keeps working as it is, and a crash or
+  power loss at any point leaves every confirmed sample readable and no taken-back one
+  readable again.
 
 ## Key entities
 
@@ -198,6 +212,9 @@ included unless they pick them one by one.
   make wrong are far fewer than those they make right, also for text the list lacks.
 - Scenario 4's prompted mode returns one stroke group per prompted character for a
   pangram written in one go.
+- With 10,000 samples stored, on the reference device: a prompted sample is kept within
+  100 ms of its confirmation beyond the reading itself, the listing of a client's samples
+  answers within 100 ms, and taking a sample back within 100 ms (FR-016).
 
 ## Device scope and risk
 

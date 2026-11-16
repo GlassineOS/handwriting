@@ -272,29 +272,28 @@ static int in_base(const struct hw_model *m, const struct hw_entry *e)
 
 int hw_adapt_plan(const char *lang, long *train, long *held, long *fresh)
 {
-	struct hw_entry *es;
+	/* from the index: the texts, without reading any strokes */
+	const struct hw_index_entry *ix;
 	size_t ne;
-	unsigned long gen;
 	*train = *held = *fresh = 0;
-	if (hw_samples_load(&es, &ne, &gen)) return -1;
+	if (hw_samples_index(&ix, &ne)) return -1;
+	struct hw_entry *es = calloc(ne + 1, sizeof *es);
+	if (!es) return -1;
+	for (size_t i = 0; i < ne; i++) es[i].meta = ix[i].meta;
 	struct hw_lang *l = hw_lang_get(lang);
 	for (size_t i = 0; i < ne; i++) {
 		if (strcmp(es[i].meta.lang, lang) || (l && in_base(&l->model, &es[i]))) continue;
-		struct hw_sample s;
-		char err[128];
-		if (hw_sample_parse(es[i].json, &s, err, sizeof err)) continue;
 		unsigned cp[HW_MAX_LABELS];
-		size_t nc = hw_utf8_decode(s.text, cp, HW_MAX_LABELS);
+		size_t nc = hw_utf8_decode(ix[i].text, cp, HW_MAX_LABELS);
 		int ok = nc && nc <= HW_MAX_LABELS;
 		for (size_t k = 0; ok && l && k < nc; k++) ok = hw_class_of(&l->model, cp[k]) != 0;
-		hw_sample_free(&s);
 		if (!ok) continue;
 		if (strtoull(es[i].meta.id, NULL, 16) % 5 == 0) (*held)++; else (*train)++;
 	}
 	struct state st;
 	read_state(lang, &st);
 	*fresh = fresh_since(es, ne, lang, &st);
-	hw_entries_free(es, ne);
+	free(es);
 	return 0;
 }
 

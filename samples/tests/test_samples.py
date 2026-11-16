@@ -302,39 +302,43 @@ class Writing(Case):
         for _ in range(3):
             texts.append(w.prompt.text)
             self.write(w)
-        cache = {}
-        cov = w.load_coverage(cache)
+        w2 = self.e.writer(flow.State())         # a new start: from the listing alone
+        cov = w2.load_coverage()
         self.assertEqual(sum(cov.count(c) for c in texts), 3)
-        self.assertEqual(len(cache), 3)
+        self.assertEqual(len(w2.counted), 3)
+        rows = self.e.rec.list()
+        self.assertEqual([r[0] for r in rows], [r[0] for r in self.e.cli.samples()])
+        self.assertEqual([r[4] for r in rows], texts)
+        self.assertTrue(all(r[2] == "prompted" and r[3] == "en" and r[5] is not None for r in rows))
 
-    def test_coverage_in_steps(self):
-        """the coverage is read a few samples at a time; samples kept meanwhile count, those
-        taken back don't, and one gone meanwhile isn't asked for again"""
+    def test_coverage_follows_the_listing(self):
+        """the coverage counts each sample once: those kept here, those in a listing, and
+        drops those taken back or deleted elsewhere"""
         st = flow.State()
         st.set = "letters"
         w = self.e.writer(st)
         texts = []
-        for _ in range(5):
+        for _ in range(4):
             texts.append(w.prompt.text)
             self.write(w)
+        total = lambda cov: sum(n for n, _ in cov.chars.values())
+        self.assertEqual(total(w.cov), 4)
+        w.load_coverage()                                          # nothing counted twice
+        self.assertEqual(total(w.cov), 4)
         ids = self.e.rec.sample_ids()
-        self.e.cli.delete(ids[0])                                  # gone before it is read
-        cache = {}
-        self.assertEqual(w.read_coverage(ids, cache, 2), 3)
-        self.assertEqual(w.read_coverage(ids, cache, 2), 1)
-        texts.append(w.prompt.text)
-        sh, _ = self.write(w)                                      # kept while it is read
+        self.e.cli.delete(ids[0])                                  # deleted elsewhere
+        w.load_coverage()
+        self.assertEqual(total(w.cov), 3)
         p = w.prompt
-        sh2, _ = self.write(w)
+        self.write(w)
         w.redo()                                                   # taken back
         self.assertEqual(w.prompt, p)
-        self.assertEqual(w.read_coverage(ids, cache, 2), 0)
-        self.assertIsNone(cache[ids[0]])
-        cov = w.set_coverage(ids, cache)
-        self.assertEqual(sum(cov.count(c) for c in set(texts[1:])), 5)
-        self.assertEqual(w.read_coverage(ids, cache, 2), 0)        # nothing asked again
-        cov = w.set_coverage(self.e.rec.sample_ids(), cache)       # the next listing has it
-        self.assertEqual(sum(cov.count(c) for c in set(texts[1:])), 5)
+        self.assertEqual(total(w.cov), 3)
+        w.load_coverage()
+        self.assertEqual(total(w.cov), 3)
+        w.forgotten()
+        self.assertEqual(total(w.cov), 0)
+        self.assertEqual(w.cov.pairs, {})
 
 
 class Donation(Case):
@@ -344,13 +348,17 @@ class Donation(Case):
         st.set = "words"
         w = self.e.writer(st)
         self.write(w)                                              # donating off: nothing donated
-        self.assertEqual(self.e.cli.donation(), (None, 0))
+        self.assertEqual(self.e.cli.donation()[:2], (None, 0))
         self.e.cli.donation_start("CC-BY-4.0")
         w.state.donating = True
         sh, _ = self.write(w)                                      # a shipped prompt: donated
         self.assertTrue(sh.donated_id)
         self.assertEqual(sh.donated_id, sh.sample_id)
-        self.assertEqual(self.e.cli.donation(), ("CC-BY-4.0", 1))
+        self.assertEqual(self.e.cli.donation()[:2], ("CC-BY-4.0", 1))
+        donor = self.e.cli.donation()[2]
+        self.assertRegex(donor, "^[0-9a-f-]{36}$")                 # a donor ID, made at the start
+        self.assertNotEqual(self.e.cli.donor_new(), donor)
+        self.assertNotEqual(self.e.cli.donation()[2], donor)
         w.reload_sets()
         w.choose_set(P.OWN)
         self.assertEqual(w.prompt.text, "Grünewald")
@@ -380,7 +388,45 @@ class Donation(Case):
         self.assertEqual(len(self.e.cli.samples()), n)
         w.state.donating = False
         self.write(w)
-        self.assertEqual(self.e.cli.donation(), (None, 0))
+        self.assertEqual(self.e.cli.donation()[:2], (None, 0))
+
+    def test_earlier_offer(self):
+        """prompted samples kept before donating was on: offered for the donation, reviewed,
+        any left out; own-list and everyday samples never in the offer"""
+        P.save_own(["Grünewald"])
+        st = flow.State()
+        st.set = "words"
+        w = self.e.writer(st)
+        before = [self.write(w)[0] for _ in range(3)]               # shipped prompts, donating off
+        w.reload_sets()
+        w.choose_set(P.OWN)
+        own, _ = self.write(w)                                     # the own list
+        r = self.e.rec
+        r.write(flow.SESSION, "en", "em", None, ink(self.rng, n=4))
+        every = r.ask("confirm", flow.SESSION, "corrected", "tabby")   # an everyday sample
+        r.end(flow.SESSION)
+        self.assertEqual(every[0], "ok", every)
+        self.assertEqual(self.e.cli.donation()[:2], (None, 0))
+        self.e.cli.donation_start("CC0-1.0")
+        offer = self.e.cli.donation_earlier()
+        self.assertEqual([o[0] for o in offer], [sh.sample_id for sh in before])
+        self.assertEqual([o[2] for o in offer], [sh.prompt.text for sh in before])
+        self.assertNotIn(own.sample_id, [o[0] for o in offer])
+        self.assertEqual(self.e.cli.donation()[1], 0)              # nothing added by itself
+        keep = [o[0] for o in offer if o[0] != before[1].sample_id]   # one left out
+        self.assertEqual(self.e.cli.donation_add_all(keep), 2)
+        self.assertEqual(self.e.cli.donation()[1], 2)
+        self.assertEqual([o[0] for o in self.e.cli.donation_earlier()], [before[1].sample_id])  # the offer stays
+        self.e.cli.donation_add(keep[0])                           # once only
+        self.assertEqual(self.e.cli.donation()[1], 2)
+        w.state.donating = True
+        w.choose_set("words")
+        now, _ = self.write(w)                                     # donated while on: not offered
+        self.assertTrue(now.donated_id)
+        self.assertEqual([o[0] for o in self.e.cli.donation_earlier()], [before[1].sample_id])
+        self.e.cli.donation_erase()                                # a new donation offers them again
+        self.e.cli.donation_start("CC0-1.0")
+        self.assertEqual(len(self.e.cli.donation_earlier()), 4)
 
     def test_learning_off_still_donates(self):
         self.e.cli.run("learning", "off")
