@@ -580,7 +580,9 @@ double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke
 			size_t k = 0;
 			for (size_t i = 0; i < ns; i++) for (size_t j = 0; j < s[i].n; j++) y[k++] = s[i].y[j];
 			double med = median(y, n);
-			double g = ceil((med - rf.base) / rf.line);
+			/* each guide owns its line from two thirds above it to a third below (descenders,
+			 * a comma): ink just under a guide is still that guide's */
+			double g = ceil((med - rf.base) / rf.line - 1.0 / 3);
 			*base = rf.base + (g > 0 ? g : 0) * rf.line;
 			free(y);
 		}

@@ -839,9 +839,10 @@ ink scaled by a reference height instead of its own (the trainer's `features_ref
 in reference heights, y above the baseline of the guide the ink sits on, and a sixth input, the
 ink's size, log(max(height, width / 4) / reference), clipped to ±4, the same in every row. The
 reference is the person's small letters in the session's units (Size, below), else 0.2 of the
-area's line (or of 1 em); the baseline the area's guide line at or below the median of the ink's
-y (`BASE`; a stored sample's guides are at two thirds of each of its area's lines), else the
-median of its y. Without any reference the ink's own core height stands in. A version 1 model
+area's line (or of 1 em); the baseline the area's guide line whose line holds the median of the
+ink's y, each guide's line running from two thirds of a line above it to a third below, so a
+comma or a descender just under its guide stays on it (`BASE`; a stored sample's guides are at
+two thirds of each of its area's lines), else the median of its y. Without any reference the ink's own core height stands in. A version 1 model
 reads as before; the recognizer reads both.
 
 **gclm, version 1** (the character model, little-endian), made by the trainer's

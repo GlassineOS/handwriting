@@ -206,6 +206,9 @@ def test_real_reference_from_the_area():
     r = reference(s, 14.0)
     assert r == {"xh": 14.0, "line": 150, "base": 250.0}
     assert reference({"strokes": s["strokes"]}, None) == {"xh": None, "line": None, "base": None}
+    # a comma just under the first guide (at 100) is still on it, not on the next line's
+    comma = {"area": s["area"], "strokes": [[[10, 95, 0], [8, 125, 0.1]]]}
+    assert reference(comma, 14.0)["base"] == 100.0
 
 
 def test_calibrate_keeps_rank_and_moves_spread():
