@@ -719,7 +719,7 @@ class Pages(Case):
         ttf = self.e.dir / "preview-check.ttf"
         self.e.cli.run("font", "build", "-n", "Check", str(ttf))
         for text in ("lllll abcde lol", "hello kid"):
-            sh = json.loads(subprocess.run(["hb-shape", "--output-format=json", str(ttf), text], capture_output=True,
+            sh = json.loads(subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(ttf), text], capture_output=True,
                                            text=True, check=True).stdout)
             xs, x = [], 0
             for g in sh:
