@@ -52,10 +52,12 @@ def _one(args):
 
 
 def build(out: Path, texts: list[str], fonts: list[str], params: Params, seed: int,
-          font_cache: Path, workers: int = 8, provenance: dict | None = None):
-    """Render texts (one sample each) with only `fonts`, store features under out/."""
+          font_cache: Path, workers: int = 8, provenance: dict | None = None,
+          glyph_tables: list | None = None):
+    """Render texts (one sample each) with only `fonts` (or the given glyph tables),
+    store features under out/."""
     global _TABLES, _PARAMS
-    _TABLES = tables(font_cache, fonts, workers)
+    _TABLES = glyph_tables if glyph_tables is not None else tables(font_cache, fonts, workers)
     _PARAMS = params
     out.mkdir(parents=True, exist_ok=True)
     seeds = np.random.default_rng(seed).integers(0, 2**62, len(texts))

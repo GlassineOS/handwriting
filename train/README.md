@@ -276,13 +276,56 @@ fine-tune 35–42 ms per line. A small head still learns a far hand quickly (`re
 23.6 → 3.2 %, against 50 → 8 % with the 7-font baseline), at the cost of some drift on
 other hands; keep the base head to fall back to, as FR-009 says.
 
+### Fine-tuning on real ink from one writer (`real`, `finetune`, `realeval`)
+
+Not released: no run kept the model as good on other hands. The data is 756 prompted
+samples from one writer in three sessions. It is split by session (`glassine-train real`):
+train 549 (97 of them single characters), dev 91 (the end blocks of the second
+session), test 116 words (the last session, no text shared with train or dev). Every run
+starts from model 2 and mixes a fixed real share into each batch (point-level
+augmentation on the real ink). It keeps the best dev step or the average of the five
+best, whichever is better on dev. The test session is read by the recognizer program
+itself, ink only and with words; "+ fresh head" is model 2 with an adaptation head
+trained only on the train and dev sessions. Synthetic dev = 300 lines in the training
+fonts; held-out fonts = 1000 lines each, greedy.
+
+| run | real share | words CER / WER | top 3 | synthetic dev | new held-out fonts | original held-out fonts |
+|---|---|---|---|---|---|---|
+| model 2 | – | 37.0 / 112 % | 19 % | 3.8 % | 5.0 % | 12.0 % |
+| model 2 + fresh head | – | 8.2 / 33 % | 78 % | – | – | – |
+| `s20` | 80 % | 5.3 / 28 % | 82 % | 5.1 % | 6.8 % | 13.1 % |
+| `s20h` (+ own-letter font) | 80 % | 5.1 / 28 % | 82 % | 5.9 % | 8.0 % | 15.9 % |
+| `s20adv` (domain head) | 80 % | 6.1 / 32 % | 79 % | 5.0 % | – | – |
+| `s20l2` (L2-SP 0.05) | 80 % | 7.6 / 36 % | 77 % | 5.2 % | 7.6 % | 15.1 % |
+| `s50` | 50 % | 7.7 / 38 % | 78 % | 4.6 % | 5.7 % | 12.2 % |
+| `s50t` (half `real1` synth) | 50 % | 5.7 / 33 % | 85 % | 4.3 % | 5.7 % | 13.8 % |
+| `s50l2` (L2-SP 0.05) | 50 % | 10.1 / 49 % | 72 % | 4.7 % | 6.1 % | 12.6 % |
+| `s100h` (own-letter font, no real ink) | 0 % | 18.1 / 64 % | 53 % | 5.6 % | – | – |
+| `s100t` (`real1` synth, no real ink) | 0 % | 29.6 / 99 % | 33 % | 4.3 % | – | – |
+
+(one seed each; s50h and s50adv are close to s50. New held-out fonts = mean over the
+12 new print and script fonts, test text.)
+
+- Real ink is what helps this writer: `s20` beats model 2 + fresh head on the test
+  session (paired bootstrap over samples: 99.7 %, CER lower by 0.8–5.0 points). A
+  tuned generator or the writer's letters spliced as a font help a little, never alone.
+- Every run is worse than model 2 on the held-out fonts (other hands), more so with more
+  real ink: one writer's habits are learned too, not only what handwriting has in common.
+  The release gate (beat model 2 + fresh head on real ink AND no held-out group more than
+  about 0.5 points worse) is not met, so model 2 stays the base; the per-writer head
+  already closes most of the gap for this writer.
+- Model files now record when their training data ends (`--trained-until`, written from
+  the split), so on-device adaptation never re-learns the base model's own samples.
+- To ship real ink in the base: samples from several writers, so one hand's quirks
+  average out; the same split and gate apply.
+
 ## What limits accuracy
 
 1. **Generator realism.** Fonts give tidy, repeatable glyphs laid out letter by letter;
    real hands vary letter to letter, join untidily (script fonts here are not joined into
    one pen-down stroke) and use stroke orders the generator does not have. Synthetic
-   held-out fonts are only a proxy; there is still no real-ink number, and the gap from
-   the proxy to real ink is likely larger now than the gap between the proxy and training.
+   held-out fonts are only a proxy. On one writer's real ink model 2 reads 37 % CER
+   with words (8 % with a fresh per-writer head).
 2. **Far hands.** A font unlike all 158 (`reeniebeanie`) still reads at 24 % greedy; the
    per-writer head fixes it in a few hundred lines.
 3. **Capitals and context-free strings.** Random letters (16 % on training fonts) and
@@ -292,8 +335,8 @@ other hands; keep the base head to fall back to, as FR-009 says.
 
 ## Next steps
 
-- Real ink to test on: a small donated set under clear terms (`../docs/samples.md`), now
-  the most important missing number.
+- Real ink from more writers (`../docs/samples.md`): one writer improves that writer
+  but costs other hands (see above).
 - Joined script in the generator: connect letters within a word into pen-down strokes
   where the font's letters meet, so script reads like it is written; measure on a joined
   held-out set and on real ink, not on the generator alone.
