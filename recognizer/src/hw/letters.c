@@ -78,6 +78,7 @@ void hw_letters_free(struct hw_letters *L)
 	for (size_t i = 0; i < L->n; i++)
 		for (int k = 0; k < L->l[i].nvar; k++) variant_free(&L->l[i].var[k]);
 	free(L->l);
+	hw_spacing_free(&L->sp);
 	memset(L, 0, sizeof *L);
 }
 
@@ -123,6 +124,48 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 	sput(&b, "{\"metrics\":{\"x_height\":1");
 	for (int i = 0; i < 7; i++) { sput(&b, ",\"%s\":", names[i]); num(&b, vals[i]); }
 	sput(&b, "}}\n");
+	/* the spacing */
+	{
+		const struct hw_spacing *sp = &L->sp;
+		sput(&b, "{\"spacing\":{\"letter\":");
+		num(&b, sp->letter);
+		sput(&b, ",\"word\":");
+		num(&b, sp->word);
+		sput(&b, ",\"open\":");
+		num(&b, sp->open);
+		sput(&b, ",\"open0\":");
+		num(&b, sp->open0);
+		sput(&b, ",\"pairs\":[");
+		for (size_t i = 0; i < sp->npairs; i++) {
+			char u[16];
+			size_t k = hw_utf8_encode(sp->pairs[i].a, u);
+			u[k] = 0;
+			json_object *ja = json_object_new_string(u);
+			k = hw_utf8_encode(sp->pairs[i].b, u);
+			u[k] = 0;
+			json_object *jb = json_object_new_string(u);
+			sput(&b, "%s[%s,%s,", i ? "," : "", json_object_to_json_string_ext(ja, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE),
+			     json_object_to_json_string_ext(jb, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
+			json_object_put(ja); json_object_put(jb);
+			num(&b, sp->pairs[i].gap);
+			sput(&b, ",%d]", sp->pairs[i].n);
+		}
+		sput(&b, "],\"sides\":[");
+		for (size_t i = 0; i < sp->nsides; i++) {
+			sput(&b, "%s[%d,%d,", i ? "," : "", sp->sides[i].rc, sp->sides[i].lc);
+			num(&b, sp->sides[i].gap);
+			sput(&b, ",%d]", sp->sides[i].n);
+		}
+		for (int side = 0; side < 2; side++) {
+			sput(&b, side ? "],\"right_shapes\":[" : "],\"left_shapes\":[");
+			for (int c = 0; c < (side ? sp->nr : sp->nl); c++) {
+				sput(&b, "%s[", c ? "," : "");
+				for (int k = 0; k < HW_PROF_BANDS; k++) { if (k) sput(&b, ","); num(&b, side ? sp->rshape[c][k] : sp->lshape[c][k]); }
+				sput(&b, "]");
+			}
+		}
+		sput(&b, "]}}\n");
+	}
 	for (size_t i = 0; i < L->n; i++) {
 		const struct hw_letter *l = &L->l[i];
 		char u[8];
@@ -138,7 +181,17 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 			num(&b, x->width);
 			sput(&b, ",\"weight\":");
 			num(&b, x->weight);
-			sput(&b, ",\"members\":%d,\"use\":%d,\"strokes\":[", x->members, x->use);
+			sput(&b, ",\"members\":%d,\"use\":%d,\"lc\":%d,\"rc\":%d", x->members, x->use, x->lc, x->rc);
+			for (int side = 0; side < 2; side++) {
+				sput(&b, side ? ",\"right\":[" : ",\"left\":[");
+				for (int k = 0; k < HW_PROF_BANDS; k++) {
+					double y = side ? x->prof.r[k] : x->prof.l[k];
+					if (k) sput(&b, ",");
+					if (isnan(y)) sput(&b, "null"); else num(&b, y);
+				}
+				sput(&b, "]");
+			}
+			sput(&b, ",\"strokes\":[");
 			for (size_t j = 0; j < x->nstrokes; j++) {
 				sput(&b, "%s[", j ? "," : "");
 				for (size_t p = 0; p < x->s[j].n; p++) {
@@ -197,6 +250,50 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			L->m = (struct hw_metrics){ jnum(v, "cap_height", 1.4), jnum(v, "ascender", 1.5), jnum(v, "descender", -0.5),
 						    jnum(v, "slant", 0), jnum(v, "letter_spacing", 0.15), jnum(v, "word_spacing", 0.7),
 						    jnum(v, "ink_width", 0.07) };
+		} else if (json_object_object_get_ex(o, "spacing", &v)) {
+			struct hw_spacing *sp = &L->sp;
+			sp->letter = jnum(v, "letter", L->m.letter_gap);
+			sp->word = jnum(v, "word", L->m.word_gap);
+			sp->open = jnum(v, "open", 0);
+			sp->open0 = jnum(v, "open0", 0);
+			json_object *a;
+			if (json_object_object_get_ex(v, "pairs", &a) && json_object_is_type(a, json_type_array)) {
+				size_t na = json_object_array_length(a);
+				sp->pairs = calloc(na + 1, sizeof *sp->pairs);
+				for (size_t i = 0; sp->pairs && i < na; i++) {
+					json_object *e = json_object_array_get_idx(a, i);
+					unsigned c1[2], c2[2];
+					if (json_object_array_length(e) < 4 ||
+					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 2) != 1 ||
+					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 1)), c2, 2) != 1) continue;
+					sp->pairs[sp->npairs++] = (struct hw_pair){ c1[0], c2[0], json_object_get_double(json_object_array_get_idx(e, 2)),
+										   json_object_get_int(json_object_array_get_idx(e, 3)) };
+				}
+			}
+			if (json_object_object_get_ex(v, "sides", &a) && json_object_is_type(a, json_type_array)) {
+				size_t na = json_object_array_length(a);
+				sp->sides = calloc(na + 1, sizeof *sp->sides);
+				for (size_t i = 0; sp->sides && i < na; i++) {
+					json_object *e = json_object_array_get_idx(a, i);
+					if (json_object_array_length(e) < 4) continue;
+					sp->sides[sp->nsides++] = (struct hw_side_pair){ json_object_get_int(json_object_array_get_idx(e, 0)),
+											json_object_get_int(json_object_array_get_idx(e, 1)),
+											json_object_get_double(json_object_array_get_idx(e, 2)),
+											json_object_get_int(json_object_array_get_idx(e, 3)) };
+				}
+			}
+			for (int side = 0; side < 2; side++) {
+				if (!json_object_object_get_ex(v, side ? "right_shapes" : "left_shapes", &a) || !json_object_is_type(a, json_type_array)) continue;
+				int na = (int)json_object_array_length(a), *nn = side ? &sp->nr : &sp->nl;
+				for (int c = 0; c < na && c < HW_SIDE_CLASSES; c++) {
+					json_object *e = json_object_array_get_idx(a, (size_t)c);
+					for (int k = 0; k < HW_PROF_BANDS; k++) {
+						double y = json_object_get_double(json_object_array_get_idx(e, (size_t)k));
+						if (side) sp->rshape[c][k] = y; else sp->lshape[c][k] = y;
+					}
+					*nn = c + 1;
+				}
+			}
 		} else if (json_object_object_get_ex(o, "char", &v)) {
 			unsigned cp[2];
 			if (hw_utf8_decode(json_object_get_string(v), cp, 2) != 1) { json_object_put(o); goto bad; }
@@ -222,6 +319,8 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 					w->weight = jnum(x, "weight", 0);
 					w->members = (int)jnum(x, "members", 0);
 					w->use = (int)jnum(x, "use", 1);
+					w->lc = (int)jnum(x, "lc", -1);
+					w->rc = (int)jnum(x, "rc", -1);
 					if (!json_object_object_get_ex(x, "strokes", &st)) continue;
 					w->nstrokes = json_object_array_length(st);
 					w->s = calloc(w->nstrokes + 1, sizeof *w->s);
@@ -237,6 +336,11 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 							w->s[j].y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
 						}
 					}
+					/* its profiles, from its strokes as the build makes them */
+					hw_profile_clear(&w->prof);
+					for (size_t j = 0; w->s && j < w->nstrokes; j++)
+						for (size_t i = 0; w->s[j].x && w->s[j].y && i < w->s[j].n; i++)
+							hw_profile_seg(&w->prof, w->s[j].x[i ? i - 1 : 0], w->s[j].y[i ? i - 1 : 0], w->s[j].x[i], w->s[j].y[i]);
 				}
 			}
 			json_object *sl;
@@ -250,7 +354,11 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 		json_object_put(o);
 		line++;
 	}
-	if (ok) return 0;
+	if (ok) {
+		/* a model from before the spacing: its gaps */
+		if (!L->sp.letter && !L->sp.word) { L->sp.letter = L->m.letter_gap; L->sp.word = L->m.word_gap; }
+		return 0;
+	}
 bad:
 	hw_letters_free(L);
 	return -1;
@@ -510,6 +618,19 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 	v->width = xmax - xmin;
 	v->weight = wsum;
 	v->members = members;
+	/* its strokes as the model file keeps them, then its profiles from those */
+	for (size_t j = 0; j < v->nstrokes; j++)
+		for (size_t i = 0; i < v->s[j].n; i++) {
+			v->s[j].x[i] = round(v->s[j].x[i] * 1e4) / 1e4;
+			v->s[j].y[i] = round(v->s[j].y[i] * 1e4) / 1e4;
+		}
+	hw_profile_clear(&v->prof);
+	for (size_t j = 0; j < v->nstrokes; j++) {
+		const struct hw_lstroke *t = &v->s[j];
+		for (size_t i = 0; i < t->n; i++)
+			hw_profile_seg(&v->prof, t->x[i ? i - 1 : 0], t->y[i ? i - 1 : 0], t->x[i], t->y[i]);
+	}
+	v->lc = v->rc = -1;
 	free(acc);
 	return 0;
 }
@@ -779,7 +900,7 @@ static struct urec *usable_load(size_t *n)
 	if (hw_store_path(p, sizeof p, "letters/usable")) return NULL;
 	FILE *f = fopen(p, "re");
 	if (!f) return NULL;
-	snprintf(head, sizeof head, "%s %d\n", USABLE_HEAD, HW_LETTERS_BUILD);
+	snprintf(head, sizeof head, "%s %d\n", USABLE_HEAD, HW_LETTERS_USABLE);
 	char *line = NULL;
 	size_t cap = 0, rc = 0;
 	struct urec *r = NULL;
@@ -808,7 +929,7 @@ static void usable_save(const struct urec *r, size_t n)
 	if (fd < 0) return;
 	if (flock(fd, LOCK_EX | LOCK_NB)) { close(fd); return; }
 	struct sbuf b = { 0 };
-	sput(&b, "%s %d\n", USABLE_HEAD, HW_LETTERS_BUILD);
+	sput(&b, "%s %d\n", USABLE_HEAD, HW_LETTERS_USABLE);
 	for (size_t i = 0; i < n; i++) sput(&b, "%s %s\n", r[i].id, r[i].cps);
 	if (b.s && !hw_store_mkdir("letters")) hw_store_replace("letters/usable", b.s, b.n);
 	free(b.s);
@@ -1322,8 +1443,11 @@ int hw_letters_build(struct hw_letters *L)
 	}
 	free(uc);
 
-	/* gaps between letters and words: neighbouring own letters of one sample */
-	struct dvec lgs = { 0 }, wgs = { 0 };
+	/* spacing (FR-007): the profile gaps of neighbouring own letters of one sample (their
+	 * strokes placed by where they lie), the box gaps between words */
+	struct hw_gap_obs *obs = NULL;
+	size_t nobs = 0, cobs = 0;
+	struct dvec wgs = { 0 };
 	for (size_t si = 0; si < ns; si++) {
 		struct smp *m = &S[si];
 		size_t nc = hw_utf8_decode(m->s.text, cps, 4096);
@@ -1331,19 +1455,43 @@ int hw_letters_build(struct hw_letters *L)
 		for (int k = m->first; k + 1 < m->first + m->ninst; k++) {
 			struct inst *a = &in[k], *b = &in[k + 1];
 			if (a->dropped || b->dropped) continue;
-			/* the ink's right and left edges in the sample */
 			const int *spa = m->s.spans[a->pos], *spb = m->s.spans[b->pos];
-			double axr = -INFINITY, bxl = INFINITY;
-			for (const int *p = spa; *p >= 0; p++) for (size_t q = 0; q < m->s.strokes[*p].n; q++) if (m->s.strokes[*p].x[q] > axr) axr = m->s.strokes[*p].x[q];
-			for (const int *p = spb; *p >= 0; p++) for (size_t q = 0; q < m->s.strokes[*p].n; q++) if (m->s.strokes[*p].x[q] < bxl) bxl = m->s.strokes[*p].x[q];
-			double gap = (bxl - axr) / m->xh;
-			if (b->pos == a->pos + 1) dpush(&lgs, gap);
-			else if (b->pos == a->pos + 2 && b->pos - 1 < (int)nc && cps[b->pos - 1] == ' ') dpush(&wgs, gap);
+			if (b->pos == a->pos + 1) {
+				if (nobs == cobs) {
+					cobs = cobs ? 2 * cobs : 256;
+					struct hw_gap_obs *x = realloc(obs, cobs * sizeof *x);
+					if (!x) continue;
+					obs = x;
+				}
+				struct hw_gap_obs *g = &obs[nobs];
+				g->a = a->cp;
+				g->b = b->cp;
+				hw_profile_clear(&g->pa);
+				hw_profile_clear(&g->pb);
+				for (int side = 0; side < 2; side++)
+					for (const int *p = side ? spb : spa; *p >= 0; p++) {
+						const struct hw_ink *st = &m->s.strokes[*p];
+						for (size_t q = 0; q < st->n; q++) {
+							size_t q0 = q ? q - 1 : 0;
+							hw_profile_seg(side ? &g->pb : &g->pa, st->x[q0] / m->xh, (m->base - st->y[q0]) / m->xh,
+								       st->x[q] / m->xh, (m->base - st->y[q]) / m->xh);
+						}
+					}
+				if (hw_profile_empty(&g->pa) || hw_profile_empty(&g->pb)) continue;
+				g->gap = hw_profile_gap(&g->pa, &g->pb, 0);
+				nobs++;
+			} else if (b->pos == a->pos + 2 && b->pos - 1 < (int)nc && cps[b->pos - 1] == ' ') {
+				double axr = -INFINITY, bxl = INFINITY;
+				for (const int *p = spa; *p >= 0; p++) for (size_t q = 0; q < m->s.strokes[*p].n; q++) if (m->s.strokes[*p].x[q] > axr) axr = m->s.strokes[*p].x[q];
+				for (const int *p = spb; *p >= 0; p++) for (size_t q = 0; q < m->s.strokes[*p].n; q++) if (m->s.strokes[*p].x[q] < bxl) bxl = m->s.strokes[*p].x[q];
+				dpush(&wgs, (bxl - axr) / m->xh);
+			}
 		}
 	}
-	L->m.letter_gap = clampd(median(lgs.v, lgs.n, 0.15), 0.04, 0.6);
-	L->m.word_gap = clampd(median(wgs.v, wgs.n, L->m.letter_gap + 0.55), L->m.letter_gap + 0.2, 2.0);
-	free(lgs.v); free(wgs.v);
+	if (hw_spacing_learn(L, obs, nobs, wgs.v, wgs.n)) { free(obs); free(wgs.v); goto fail; }
+	L->m.letter_gap = L->sp.letter;
+	L->m.word_gap = L->sp.word;
+	free(obs); free(wgs.v);
 
 	for (size_t si = 0; si < ns; si++) {
 		if (S[si].time > L->built) L->built = S[si].time;

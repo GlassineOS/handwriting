@@ -430,51 +430,6 @@ int hw_neaten(struct hw_neat *q)
 		double off = target_base - c->ty1 - c->dy;
 		if (c->fit >= HW_NEAT_FIT_PULL && on_base(q->cp[k]) && fabs(off) <= 0.35 * xh) c->dy += off;
 	}
-	/* even spacing: the gaps between letters and between words towards the line's own */
-	{
-		double *lg = v, *wg = v + nc + 1;
-		size_t nl = 0, nw = 0;
-		int prev = -1, space = 0;
-		for (size_t k = 0; k < nc; k++) {
-			if (!C[k].npts) { if (q->cp[k] == ' ') space = 1; continue; }
-			if (prev >= 0) {
-				int joined = 0;
-				for (size_t j = 0; j < n && !joined; j++) {
-					if (nown[j] < 2) continue;
-					int a = 0, b = 0;
-					for (size_t i = 0; i < q->ink[j].n; i++) { a |= q->own[j][i] == prev; b |= q->own[j][i] == (int)k; }
-					joined = a && b;
-				}
-				double g = C[k].tx0 - C[prev].tx1;
-				if (!joined && C[k].ok && C[prev].ok) { if (space) wg[nw++] = g; else lg[nl++] = g; }
-			}
-			prev = (int)k;
-			space = 0;
-		}
-		double tl = nl >= 2 ? median(lg, nl, 0) : q->L ? q->L->m.letter_gap * xh : NAN;
-		double tw = nw >= 2 ? median(wg, nw, 0) : q->L ? q->L->m.word_gap * xh : NAN;
-		double shift = 0;
-		prev = -1;
-		space = 0;
-		for (size_t k = 0; k < nc; k++) {
-			if (!C[k].npts) { if (q->cp[k] == ' ') space = 1; continue; }
-			if (prev >= 0) {
-				int joined = 0;
-				for (size_t j = 0; j < n && !joined; j++) {
-					if (nown[j] < 2) continue;
-					int a = 0, b = 0;
-					for (size_t i = 0; i < q->ink[j].n; i++) { a |= q->own[j][i] == prev; b |= q->own[j][i] == (int)k; }
-					joined = a && b;
-				}
-				double g = C[k].tx0 - C[prev].tx1, t = space ? tw : tl;
-				if (on.space && !joined && C[k].ok && C[prev].ok && isfinite(t)) shift += clampd(t - g, -0.3 * xh, 0.3 * xh);
-			}
-			C[k].dx = shift;
-			prev = (int)k;
-			space = 0;
-		}
-	}
-
 	/* the pull: a character read well, covered, with strokes of its own, near a variant */
 	if (q->L && on.pull && !q->line_only) {
 		for (size_t k = 0; k < nc; k++) {
@@ -516,6 +471,99 @@ int hw_neaten(struct hw_neat *q)
 			free(sx); free(sn);
 			c->pull = !bad && c->v && best <= HW_NEAT_NEAR;
 		}
+	}
+
+	/* spacing (FR-014): each pair of neighbouring letters towards the letter model's gap for
+	 * it (spacing.c: the narrowest distance between their ink profiles, taken from the ink
+	 * as the line-level map leaves it), without a letter model towards the line's own median;
+	 * the gaps between words (their boxes) towards the word spacing */
+	{
+		struct hw_profile *P = malloc((nc + 1) * sizeof *P);
+		if (!P) { ret = -1; goto done; }
+		for (size_t k = 0; k < nc; k++) hw_profile_clear(&P[k]);
+		for (size_t j = 0; j < n; j++) {
+			if (!nown[j]) continue;
+			double px = 0, py = 0;
+			int po = -1;
+			for (size_t i = 0; i < q->ink[j].n; i++) {
+				int o = q->own[j][i];
+				if (o < 0) { po = -1; continue; }
+				struct ch *c = &C[o];
+				double x, y;
+				line_map(c, q->ink[j].x[i], q->ink[j].y[i], &x, &y);
+				double base = hasbase ? target_base : c->ay;
+				x /= xh;
+				y = (base - (y + c->dy)) / xh;
+				hw_profile_seg(&P[o], po == o ? px : x, po == o ? py : y, x, y);
+				px = x; py = y; po = o;
+			}
+		}
+		/* a character pulled to its variant: at full strength its variant's profile, about its
+		 * middle as the pull places it */
+		for (size_t k = 0; k < nc && hasbase; k++) {
+			struct ch *c = &C[k];
+			if (!c->pull) continue;
+			double acx = 0, vcx = 0;
+			size_t tot = 0, vt = 0;
+			for (int a = 0; a < c->ns; a++) {
+				size_t j = (size_t)c->st[a], m = q->ink[j].n, r = c->v->s[a].n < 2 ? 2 : c->v->s[a].n;
+				double *tx = malloc((m + 1) * 2 * sizeof *tx), *rx = malloc((r + 1) * 2 * sizeof *rx);
+				if (tx && rx) {
+					for (size_t i = 0; i < m; i++) line_map(c, q->ink[j].x[i], q->ink[j].y[i], &tx[i], &tx[m + 1 + i]);
+					resample(tx, tx + m + 1, m, r, rx, rx + r + 1);
+					for (size_t i = 0; i < r; i++) acx += rx[i];
+					tot += r;
+					resample(c->v->s[a].x, c->v->s[a].y, c->v->s[a].n, r, rx, rx + r + 1);
+					for (size_t i = 0; i < r; i++) vcx += rx[i];
+					vt += r;
+				}
+				free(tx); free(rx);
+			}
+			if (!tot || !vt) continue;
+			double off = acx / tot / xh - vcx / vt;
+			for (int bnd = 0; bnd < HW_PROF_BANDS; bnd++) {
+				P[k].l[bnd] = c->v->prof.l[bnd] + off;
+				P[k].r[bnd] = c->v->prof.r[bnd] + off;
+			}
+		}
+		double *lg = v, *wg = v + nc + 1;
+		size_t nl = 0, nw = 0;
+		int prev = -1, space = 0;
+		for (int pass = 0; pass < 2; pass++) {
+			double tl = nl >= 2 ? median(lg, nl, 0) : q->L ? q->L->sp.letter * xh : NAN;
+			double tw = q->L ? q->L->sp.word * xh : nw >= 2 ? median(wg, nw, 0) : NAN;
+			double shift = 0;
+			prev = -1;
+			space = 0;
+			for (size_t k = 0; k < nc; k++) {
+				if (!C[k].npts) { if (q->cp[k] == ' ') space = 1; continue; }
+				if (prev >= 0) {
+					int joined = 0;
+					for (size_t j = 0; j < n && !joined; j++) {
+						if (nown[j] < 2) continue;
+						int a = 0, b = 0;
+						for (size_t i = 0; i < q->ink[j].n; i++) { a |= q->own[j][i] == prev; b |= q->own[j][i] == (int)k; }
+						joined = a && b;
+					}
+					int use = !joined && C[k].ok && C[prev].ok;
+					double g = space ? C[k].tx0 - C[prev].tx1 : hw_profile_gap(&P[prev], &P[k], 0) * xh;
+					if (!pass) {
+						if (use) { if (space) wg[nw++] = g; else lg[nl++] = g; }
+					} else {
+						double t = tw;
+						if (!space && q->L)
+							t = hw_spacing_gap(&q->L->sp, q->cp[prev], &P[prev], hw_spacing_side(&q->L->sp, &P[prev], 1),
+									   q->cp[k], &P[k], hw_spacing_side(&q->L->sp, &P[k], 0)) * xh;
+						else if (!space) t = tl;
+						if (on.space && use && isfinite(t)) shift += clampd(t - g, -0.3 * xh, 0.3 * xh);
+					}
+				}
+				if (pass) C[k].dx = shift;
+				prev = (int)k;
+				space = 0;
+			}
+		}
+		free(P);
 	}
 
 	/* the points */

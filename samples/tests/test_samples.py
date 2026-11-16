@@ -715,6 +715,20 @@ class Pages(Case):
         lay = fontview.layout(model, text)
         self.assertIsNone(lay[text.index("x")][1])            # x: the system's font
         self.assertTrue(all(lay[i][2] < lay[i + 1][2] for i in range(len(lay) - 1)))
+        # the preview spaces letters as the font does: each pen position where shaping puts it
+        ttf = self.e.dir / "preview-check.ttf"
+        self.e.cli.run("font", "build", "-n", "Check", str(ttf))
+        for text in ("lllll abcde lol", "hello kid"):
+            sh = json.loads(subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(ttf), text], capture_output=True,
+                                           text=True, check=True).stdout)
+            xs, x = [], 0
+            for g in sh:
+                xs.append(x + g["dx"])
+                x += g["ax"]
+            lay = fontview.layout(model, text)
+            self.assertEqual(len(lay), len(xs))
+            for (c, _, lx, _), hx in zip(lay, xs):
+                self.assertAlmostEqual(lx * fontview.XH, hx, delta=1.01, msg=(text, c))
         # the missing ones, one at a time, written with care
         u.write_missing()
         self.settle(u)
