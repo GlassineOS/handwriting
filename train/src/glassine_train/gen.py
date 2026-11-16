@@ -43,7 +43,8 @@ from .timing import RATE, Fit, Timing, WriterTiming, draw_writer
 XH_LINE = (0.14, 0.4, 0.06, 0.35)
 
 DOT_CHARS = "ij"
-GAP_SD = 0.15  # median spread of a writer's gaps pair to pair (x-heights)
+GAP_SD = 0.12  # median spread of a writer's gaps pair to pair (x-heights)
+OVER_MIN = -0.5  # x-heights: the most a bar or hook reaches over the next letter
 GAP_MIN = -0.12  # x-heights: letters touch, cross or overlap a little, never sit on each other
 BAR_CHARS = "tfAEFHT"
 
@@ -72,7 +73,7 @@ class Style:
 # real ink broadly (one writer measured: letter gaps median 0.42 x-heights, sd 0.29, 7 %
 # touching; word gaps about 1.4). Letter gaps normal (median, sd); word gaps lognormal
 # (median, sigma), in x-heights.
-CALIB = {"gap": (0.45, 0.09), "word": (1.35, 0.2)}
+CALIB = {"gap": (0.46, 0.09), "word": (1.35, 0.2)}
 
 
 def calibrate(styles: list[tuple[float, float]], calib: dict | None = None) -> list[tuple[float, float]]:
@@ -195,7 +196,7 @@ def delayable(ch: str, strokes: list[np.ndarray]) -> list[str | None]:
 # ---------------------------------------------------------------------------- layout
 
 def font_spacing(table: dict, bigrams: list[str]) -> tuple[float, float, float]:
-    """A font's own spacing in x-heights: the median profile gap of `bigrams` laid out at the
+    """A font's own spacing in x-heights: the median x-height-band gap of `bigrams` laid out at the
     font's advances, the median open space, and its word gap (box to box: the space's
     advance plus the letters' side bearings)."""
     prof, box = {}, {}
@@ -208,7 +209,8 @@ def font_spacing(table: dict, bigrams: list[str]) -> tuple[float, float, float]:
     for bg in bigrams:
         a, b = bg
         if a in prof and b in prof:
-            gaps.append(S.gap(prof[a], prof[b], table[a].advance / XH))
+            h = S.guard_gap(prof[a], prof[b], table[a].advance / XH)
+            gaps.append(h if np.isfinite(h) else S.gap(prof[a], prof[b], table[a].advance / XH))
             opens.append(S.open_space(prof[a], prof[b]))
     sp = table.get(" ")
     space = (sp.advance / XH) if sp is not None else 0.6
@@ -257,7 +259,7 @@ class Generator:
             else:
                 fid, g = letters.glyph(ch, rng)
             if g is None or not g.strokes:
-                glyphs.append((ci, word, [], [], None, fid))
+                glyphs.append((ci, word, [], [], None, fid, float("nan")))
                 continue
             strokes = [q[:, :2] for q in g.strokes]
             kinds = delayable(ch, strokes)
@@ -272,24 +274,31 @@ class Generator:
                 q = q.copy()
                 q[:, 0] += -slant * q[:, 1]
                 out.append(q)
-            glyphs.append((ci, word, out, kinds, S.of_strokes(out, XH), fid))
+            glyphs.append((ci, word, out, kinds, S.of_strokes(out, XH), fid,
+                           S.middle([np.c_[q[:, 0] / XH, -q[:, 1] / XH] for q in out])))
 
         # placement by profiles: in a word at the drawn pair gap, words at the drawn word gap
         placed = []  # (char index, word, strokes moved, kinds, font)
         prev, prev_word, word_right = None, None, None
         word_profs = []
-        for ci, w, strokes, kinds, prof, fid in glyphs:
+        for ci, w, strokes, kinds, prof, fid, mid in glyphs:
             if prof is None:
                 continue
             if prev is not None and w == prev_word:
-                pch, pprof, _ = prev
+                pch, pprof, _, pmid = prev
                 if letters is not None:
-                    g = S.pair_gap(letters.spacing, text[pch], text[ci], pprof, prof)
+                    # where the letter model's spacing puts the pair (by middles, guarded)
+                    dx = S.place(letters.spacing, text[pch], text[ci], pprof, prof, pmid, mid)
+                    dx += rng.normal(0, st.gap_sd)
                 else:
+                    # the writer's gap in the x-height band (bars and hooks above or below
+                    # may reach over the next letter), as the letter model's guard measures
                     g = st.gap - st.open * (S.open_space(pprof, prof) - self.open0)
-                g += rng.normal(0, st.gap_sd)
-                g = float(np.clip(g, GAP_MIN, 1.2))
-                dx = g - S.gap(pprof, prof)
+                    g += rng.normal(0, st.gap_sd)
+                    g = float(np.clip(g, GAP_MIN, 1.2))
+                    have = S.guard_gap(pprof, prof)
+                    dx = g - (have if np.isfinite(have) else S.gap(pprof, prof))
+                dx = max(dx, OVER_MIN - S.gap(pprof, prof))
                 for ep in word_profs[:-1]:  # never far into a letter before the last one
                     dx = max(dx, GAP_MIN - S.gap(ep, prof))
             elif prev is not None:
@@ -303,7 +312,7 @@ class Generator:
             placed.append((ci, w, moved, kinds, fid))
             right = mp.box()[1]
             word_right = right if (w != prev_word or word_right is None) else max(word_right, right)
-            prev, prev_word = (ci, mp, fid), w
+            prev, prev_word = (ci, mp, fid, mid + dx), w
         # baseline wander
         for ci, w, strokes, kinds, fid in placed:
             for q in strokes:
