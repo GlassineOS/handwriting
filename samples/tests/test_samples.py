@@ -975,16 +975,16 @@ class Writers(Case):
         self.assertEqual(wl.problem("x" * 41), "long")
         self.assertIsNone(wl.problem("x" * 40))
         wid = self.e.cli.writer_new()
-        wl.add(wid, "  Ada   Lovelace ")
-        self.assertEqual(wl.name(wid), "Ada Lovelace")
-        self.assertEqual(wl.problem("ada lovelace"), "taken")
-        self.assertIsNone(wl.problem("ada lovelace", wid))     # renaming to itself
+        wl.add(wid, "  Garden   Neighbour ")
+        self.assertEqual(wl.name(wid), "Garden Neighbour")
+        self.assertEqual(wl.problem("garden neighbour"), "taken")
+        self.assertIsNone(wl.problem("garden neighbour", wid))     # renaming to itself
         with self.assertRaises(ValueError):
-            wl.add("0123456789abcdef", "ADA LOVELACE")
+            wl.add("0123456789abcdef", "GARDEN NEIGHBOUR")
         with self.assertRaises(ValueError):
-            wl.add("Ada", "Someone")                            # only a store's id goes in the list
-        wl.rename(wid, "Ada")
-        self.assertEqual(WR.Writers().items, [{"id": wid, "name": "Ada"}])
+            wl.add("Neighbour", "Someone")                            # only a store's id goes in the list
+        wl.rename(wid, "Neighbour")
+        self.assertEqual(WR.Writers().items, [{"id": wid, "name": "Neighbour"}])
         st = os.stat(wl.path)
         self.assertEqual(st.st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(os.path.dirname(wl.path)).st_mode & 0o777, 0o700)
@@ -1014,7 +1014,7 @@ class Writers(Case):
         subprocess.Popen, subprocess.run = rec_popen, rec_run
         self.addCleanup(setattr, subprocess, "Popen", popen)
         self.addCleanup(setattr, subprocess, "run", run)
-        s = WR.Session(wid, "Ada", binary=BIN, env=self.e.env)
+        s = WR.Session(wid, "Neighbour", binary=BIN, env=self.e.env)
         self.addCleanup(s.close)
         w = s.writer
         p = w.take()
@@ -1029,7 +1029,7 @@ class Writers(Case):
         self.assertTrue(seen)
         for argv in seen:
             self.assertEqual(argv[:3], [BIN, "--writer", wid], argv)
-            self.assertNotIn("Ada", " ".join(argv))
+            self.assertNotIn("Neighbour", " ".join(argv))
         self.assertEqual(len(self.e.rec.list()), 0)            # nothing reached the owner's store
         self.assertEqual(len(s.rec.list()), 1)
 
@@ -1058,9 +1058,33 @@ class Guests(Case):
         self.settle(u, lambda: u.writers.items and name in [w["name"] for w in u.writers.items])
         return next(w["id"] for w in u.writers.items if w["name"] == name)
 
+    def record(self):
+        """every argument list the app starts a program with, and what it logs"""
+        import contextlib
+        import io
+        seen = []
+        popen, run = subprocess.Popen, subprocess.run
+
+        def rec_popen(argv, *a, **kw):
+            seen.append(list(argv))
+            return popen(argv, *a, **kw)
+
+        def rec_run(argv, *a, **kw):
+            seen.append(list(argv))
+            return run(argv, *a, **kw)
+        subprocess.Popen, subprocess.run = rec_popen, rec_run
+        self.addCleanup(setattr, subprocess, "Popen", popen)
+        self.addCleanup(setattr, subprocess, "run", run)
+        err = io.StringIO()
+        cm = contextlib.redirect_stderr(err)
+        cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        return seen, err
+
     def test_guest_session(self):
         from glassine_hwsamples import look, pages
         u = self.make()
+        seen, err = self.record()
         name = "Grandmother Rose"
         wid = self.add(u, name)
         self.settle(u, lambda: wid in u.wcounts)
@@ -1123,7 +1147,7 @@ class Guests(Case):
         self.assertTrue(saved and os.path.isfile(saved), u.done)
         self.assertEqual(os.path.basename(os.path.dirname(saved)), self.U.CONTRIB_DIR)
         self.assertRegex(os.path.basename(saved), r"^handwriting-contribution-\d+\.jsonl$")
-        self.assertNotIn(name, open(saved, encoding="utf-8").read())
+        self.assertNotIn(name, Path(saved).read_text(encoding="utf-8"))
         self.assertEqual(u.done["samples"], 2)
         gc = client.Cli(BIN, env=self.e.env, writer=wid)
         self.assertEqual(gc.donation()[:2], ("CC0-1.0", 0))  # the next one starts empty, same licence
@@ -1136,6 +1160,39 @@ class Guests(Case):
         u.finish()
         self.settle(u, lambda: u.done and not u.done.get("busy"))
         self.assertIsNone(u.done["saved"])                    # nothing new to save
+        u.ask_name(wid)
+        u.name_text = lambda: name + " B"
+        u.use_writer_name()
+        u.ask_remove(wid)
+        self.settle(u, lambda: u.removing)
+        u.remove_writer()
+        self.settle(u, lambda: not u.writers.items)
+        # the name in no argument and no log line, through add, the session, Finish, rename, Remove
+        self.assertTrue(seen)
+        for argv in seen:
+            self.assertNotIn("Rose", " ".join(map(str, argv)), argv)
+            if "--writer" in argv:
+                self.assertEqual(argv[1:3], ["--writer", wid])
+        self.assertTrue(any("--writer" in a for a in seen))
+        self.assertNotIn("Rose", err.getvalue())
+
+    def test_owner_learning_across_a_guest(self):
+        """the owner's learning run, started before a guest's session opens, ends as the
+        owner's: Learn is not left running after Finish"""
+        u = self.make()
+        for _ in range(3):
+            self.submit(u)
+        wid = self.add(u, "Pat")
+        u.start_adapt()
+        self.assertTrue(u.adapting)
+        u.open_writer(wid)
+        self.settle(u, lambda: u.loaded and not u.adapting)
+        self.assertTrue(u.guest)
+        u.finish()
+        self.settle(u, lambda: u.done and not u.done.get("busy"))
+        self.assertIsNone(u.adapting)
+        self.assertIsNotNone(u.result)
+        self.assertEqual(client.Cli(BIN, env=self.e.env, writer=wid).samples(), [])
 
     def test_finish_during_intro_and_decline(self):
         u = self.make()

@@ -39,8 +39,8 @@ LIC = {k: (n, c) for k, n, c, _ in LICENCES}
 # what a contribution holds, as hw_donation_write writes it (docs/samples.md)
 HOLDS = ["The pen strokes you write for the words the app shows", "Those words themselves",
          "The size of the writing area, and which way the tablet was turned",
-         "What the tablet read when you wrote it", "Quick or careful, and your picks (with both versions)",
-         "A random contributor number, the same in all your contributions"]
+         "What the tablet read when you wrote it", "Quick or careful, and your picks (with both versions)"]
+# the contributor number is in the list nowhere: it has a card of its own (donor_row)
 NEVER = ["Your name, or anything else about you", "Anything else about this tablet", "Dates and times",
          "Anything you write in other apps, or words from your own list unless you add them one by one",
          "A font made from your handwriting"]
@@ -2179,7 +2179,8 @@ def donor_row(cr, ui, hits, x, y, w, donor):
     nw, nh = PT.measure(cr, "Your contributor number", k["row"])
     ch = max(64, nh + th + 20)
     PT.box(cr, x, y, w, ch, k["cardR"], bg=k.paper, shadow=k["cardFlat"])
-    icon(cr, "tag", 24, x + 29, y + ch / 2, k.ink)
+    tw_, th_ = PT.measure(cr, "#", k["row"], weight=600)
+    PT.text(cr, "#", k["row"], x + 29 - tw_ / 2, y + (ch - th_) / 2, k.ink, weight=600)
     PT.text(cr, "Your contributor number", k["row"], x + 56, y + 8, k.ink, maxw=tw)
     PT.text(cr, donor_label(donor), k["mono"], x + 66 + nw, y + 10, k.ink)
     PT.text(cr, sub, k["sub"], x + 56, y + 10 + nh, k.soft, maxw=tw, wrap=True)
@@ -2457,7 +2458,8 @@ def done_note(cr, ui, hits, x, y, w):
             os.path.basename(d["saved"]), who, CONTRIB, who)
     else:
         n = d["samples"] or 0
-        text = "Nothing to save. Their %s %s kept for next time." % (plural(n, "sample"), "is" if n == 1 else "are")
+        text = ("Nothing to save. " if d.get("donating", True) else "Nothing to save: %s isn’t contributing. " % who) + \
+            "Their %s %s kept for next time." % (plural(n, "sample"), "is" if n == 1 else "are")
     bw = btn_w(cr, k, "Remove") + btn_w(cr, k, "OK") + 10
     narrow = w < 560
     tw = w - 32 - 40 - (0 if narrow else bw + 16)
