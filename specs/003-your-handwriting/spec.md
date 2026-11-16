@@ -74,11 +74,15 @@ size, spacing) and keep their shape.
   best"), `quick` (the quick half of a pair) or nothing (normal). The marking is part of the
   sample format (docs/samples.md) and travels with the sample in export and donation.
 - **FR-002**: A pair links a quick and a careful sample of the same prompt; deleting one
-  sample of a pair keeps the other, unlinked.
+  sample of a pair keeps the other, unlinked. The link is a random value both samples carry,
+  so it says nothing about the person and survives export and donation unchanged.
 - **FR-003**: A preference records two samples (or the same character in two samples, by
   its span) and which one the person chose. Preferences are the person's data: kept with the
   samples, exported with them, erased with them, donated only together with both samples
-  they refer to and under the same donation rules (spec 002 FR-011).
+  they refer to and under the same donation rules (spec 002 FR-011). Deleting either sample
+  removes the preference. In a file of samples (an export, a donation) a preference is a
+  record of its own beside the samples, naming the two samples of that same file it refers
+  to; a reader that wants only samples can pass over it.
 - **FR-004**: "Which one is nicer?" picks pairs that teach the most: characters with few
   preferences, versions that differ visibly, and characters the font or neatening uses
   most. It never shows a sample from a private field.
@@ -140,7 +144,7 @@ size, spacing) and keep their shape.
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Sample format (marking, pair) | owned | minor bump of v1 | docs/samples.md |
+| Sample format (marking, pair, preference records) | owned | minor bump of v1 | docs/samples.md |
 | Recognizer interface (letter model build, font build, neaten) | owned | minor bump | docs/recognizer.md |
 | Per-person font installation | consumed (freedesktop font directories, the system font cache) | — | — |
 | Font choice in the settings app | consumed (GlassineOS/shell settings) | — | shell specs |
