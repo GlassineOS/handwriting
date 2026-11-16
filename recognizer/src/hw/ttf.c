@@ -166,9 +166,11 @@ static void glyph_of(struct glyph *g, const struct hw_variant *v, double gap, do
 	memset(g, 0, sizeof *g);
 	double r = ink * XH / 2;
 	if (r < 6) r = 6;
-	double ox = gap / 2 * XH + r;
+	/* the side bearings: half the person's typical gap each side, between the pen's centre
+	 * lines as the spacing measures it (GPOS kerns each pair to its own gap) */
+	double ox = gap / 2 * XH;
 	for (size_t j = 0; j < v->nstrokes; j++) outline_stroke(g, &v->s[j], ox, r);
-	g->adv = (int)lround((v->width + gap) * XH + 2 * r);
+	g->adv = (int)lround((v->width + gap) * XH);
 }
 
 static void glyph_box(struct glyph *g)
@@ -320,6 +322,113 @@ static uint32_t tsum(const unsigned char *d, size_t n)
 	return s;
 }
 
+/* GPOS: pair kerning (FR-009), one class per variant, so every pair of variants comes out
+ * at the spacing's gap for its two characters (spacing.c). PairPos format 2 subtables of
+ * as many first classes as fit 16-bit offsets, behind Extension lookups (32-bit). The
+ * classes: the glyph of character i at step s has its variant's, the space none. */
+static int gl_at(int i, int s, void *ctx);
+static void gpos(struct bb *b, const struct hw_letters *L, const struct hw_letter *const *ls, int nl)
+{
+	enum { S = HW_LETTERS_SLOTS };
+	int nv = 0;
+	int *first = malloc((size_t)(nl + 1) * sizeof(int));
+	if (!first) { b->bad = 1; return; }
+	for (int i = 0; i < nl; i++) { first[i] = nv; nv += ls[i]->nvar; }
+	const struct hw_letter **vl = malloc((size_t)(nv + 1) * sizeof *vl);
+	const struct hw_variant **vv = malloc((size_t)(nv + 1) * sizeof *vv);
+	short *kern = malloc((size_t)(nv + 1) * (size_t)(nv + 1) * sizeof *kern);
+	int *cov = malloc((size_t)(nl * S + 1) * sizeof(int));
+	if (!vl || !vv || !kern || !cov) { b->bad = 1; free(first); free(vl); free(vv); free(kern); free(cov); return; }
+	for (int i = 0; i < nl; i++) for (int v = 0; v < ls[i]->nvar; v++) { vl[first[i] + v] = ls[i]; vv[first[i] + v] = &ls[i]->var[v]; }
+	double letter = L->sp.letter;
+	for (int a = 0; a < nv; a++)
+		for (int c = 0; c < nv; c++) {
+			const struct hw_variant *va = vv[a], *vc = vv[c];
+			double at = hw_profile_gap(&va->prof, &vc->prof, va->width + letter);
+			double want = hw_spacing_gap(&L->sp, vl[a]->cp, &va->prof, va->rc, vl[c]->cp, &vc->prof, vc->lc);
+			long k = lround((want - at) * XH);
+			kern[a * nv + c] = (short)(k < -3 * XH ? -3 * XH : k > 3 * XH ? 3 * XH : k);
+		}
+	/* the first classes per subtable: what keeps its classes and coverage in 16-bit reach */
+	int cdsz = 6 + 2 * nl * S, per = (60000 - 16 - 3 * cdsz) / (2 * (nv + 1)) - 1;
+	if (per < 1) per = 1;
+	int nsub = (nv + per - 1) / per;
+	if (nsub < 1) nsub = 1;
+	size_t g0 = b->n;
+	u16(b, 1); u16(b, 0);
+	size_t at_sl = b->n; u16(b, 0);
+	size_t at_fl = b->n; u16(b, 0);
+	size_t at_ll = b->n; u16(b, 0);
+	put16(b, at_sl, (unsigned)(b->n - g0));
+	size_t sl = b->n;
+	u16(b, 2);
+	const char *tags[2] = { "DFLT", "latn" };
+	size_t at_s[2];
+	for (int i = 0; i < 2; i++) { for (int c = 0; c < 4; c++) u8(b, (unsigned char)tags[i][c]); at_s[i] = b->n; u16(b, 0); }
+	for (int i = 0; i < 2; i++) {
+		put16(b, at_s[i], (unsigned)(b->n - sl));
+		u16(b, 4); u16(b, 0);
+		u16(b, 0); u16(b, 0xffff); u16(b, 1); u16(b, 0);
+	}
+	put16(b, at_fl, (unsigned)(b->n - g0));
+	u16(b, 1);
+	u8(b, 'k'); u8(b, 'e'); u8(b, 'r'); u8(b, 'n'); u16(b, 8);
+	u16(b, 0); u16(b, 1); u16(b, 0);
+	put16(b, at_ll, (unsigned)(b->n - g0));
+	size_t ll = b->n;
+	u16(b, 1); u16(b, 4);
+	/* the lookup: Extension (type 9), its subtables the extension records right after */
+	size_t lk = b->n;
+	u16(b, 9); u16(b, 0); u16(b, (unsigned)nsub);
+	size_t at_x = b->n;
+	for (int i = 0; i < nsub; i++) u16(b, 0);
+	size_t ext[64];
+	for (int i = 0; i < nsub && i < 64; i++) {
+		put16(b, at_x + 2 * (size_t)i, (unsigned)(b->n - lk));
+		ext[i] = b->n;
+		u16(b, 1); u16(b, 2); u32(b, 0);
+	}
+	(void)ll;
+	for (int si = 0; si < nsub && si < 64; si++) {
+		int c0 = si * per, c1 = c0 + per < nv ? c0 + per : nv;
+		put32(b, ext[si] + 4, (uint32_t)(b->n - ext[si]));
+		size_t st = b->n;
+		u16(b, 2);
+		size_t at_cov = b->n; u16(b, 0);
+		u16(b, 0x0004); u16(b, 0);
+		size_t at_cd1 = b->n; u16(b, 0);
+		size_t at_cd2 = b->n; u16(b, 0);
+		u16(b, (unsigned)(c1 - c0 + 1)); u16(b, (unsigned)(nv + 1));
+		for (int x = 0; x < (nv + 1); x++) u16(b, 0);           /* class 0: none */
+		for (int a = c0; a < c1; a++) {
+			u16(b, 0);
+			for (int c = 0; c < nv; c++) s16(b, kern[a * nv + c]);
+		}
+		/* coverage: the step glyphs of this subtable's variants, ascending */
+		int nc = 0;
+		for (int i = 0; i < nl; i++)
+			for (int s2 = 0; s2 < S; s2++) {
+				int vid = first[i] + ls[i]->slot[s2];
+				if (vid >= c0 && vid < c1) cov[nc++] = gl_at(i + 1, s2, NULL);
+			}
+		put16(b, at_cov, (unsigned)(b->n - st));
+		coverage(b, cov, nc);
+		/* class defs, format 1 over the letters' step glyphs */
+		for (int k = 0; k < 2; k++) {
+			put16(b, k ? at_cd2 : at_cd1, (unsigned)(b->n - st));
+			u16(b, 1); u16(b, (unsigned)gl_at(1, 0, NULL)); u16(b, (unsigned)(nl * S));
+			for (int i = 0; i < nl; i++)
+				for (int s2 = 0; s2 < S; s2++) {
+					int vid = first[i] + ls[i]->slot[s2];
+					if (k) u16(b, (unsigned)(vid + 1));
+					else u16(b, vid >= c0 && vid < c1 ? (unsigned)(vid - c0 + 1) : 0);
+				}
+		}
+		if (b->n - st > 0xffff) b->bad = 1;
+	}
+	free(first); free(vl); free(vv); free(kern); free(cov);
+}
+
 /* the glyph ids: .notdef, the space at each step, each covered character (code point
  * order) at each step, then each character's variants (its outlines; the glyph at a step
  * is a reference to the variant the letter shows there) */
@@ -346,10 +455,11 @@ unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsig
 	int *ref = malloc((size_t)ngl * sizeof *ref);       /* the glyph a step glyph refers to, -1 none */
 	if (!G || !ref) { free(G); free(ref); free(ls); free(base); free(outl); return NULL; }
 	for (int i = 0; i < ngl; i++) ref[i] = -1;
-	double gap = L->m.letter_gap, ink = L->m.ink;
+	double gap = L->sp.letter, ink = L->m.ink;
 	G[0].adv = XH;
-	int sp = (int)lround((L->m.word_gap - gap) * XH);
-	if (sp < XH / 5) sp = XH / 5;
+	/* the space: the word gap less the two side bearings beside it */
+	int sp = (int)lround((L->sp.word - gap) * XH);
+	if (sp < XH / 10) sp = XH / 10;
 	for (int s2 = 0; s2 < S; s2++) G[gl_at(0, s2, NULL)].adv = sp;
 	for (int i = 0; i < nl; i++) {
 		for (int v = 0; v < ls[i]->nvar; v++) glyph_of(&G[outl[i] + v], &ls[i]->var[v], gap, ink);
@@ -385,10 +495,11 @@ unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsig
 	if (desc > fymin) desc = fymin;
 	int gapline = (int)lround(0.15 * (asc - desc));
 
-	struct bb t[11] = { 0 }, f = { 0 };
-	enum { GSUB, OS2, CMAP, GLYF, HEAD, HHEA, HMTX, LOCA, MAXP, NAME, POST };
-	const char *tag[11] = { "GSUB", "OS/2", "cmap", "glyf", "head", "hhea", "hmtx", "loca", "maxp", "name", "post" };
+	struct bb t[12] = { 0 }, f = { 0 };
+	enum { GPOS, GSUB, OS2, CMAP, GLYF, HEAD, HHEA, HMTX, LOCA, MAXP, NAME, POST };
+	const char *tag[12] = { "GPOS", "GSUB", "OS/2", "cmap", "glyf", "head", "hhea", "hmtx", "loca", "maxp", "name", "post" };
 	int have_gsub = 1;
+	gpos(&t[GPOS], L, ls, nl);
 	gsub(&t[GSUB], nl + 1, gl_at, NULL);
 
 	/* glyf + loca (long) */
@@ -549,8 +660,8 @@ unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsig
 	free(cps); free(gid);
 
 	/* the file */
-	int nt = 0, order[11];
-	for (int i = 0; i < 11; i++) if (i != GSUB || have_gsub) order[nt++] = i;
+	int nt = 0, order[12];
+	for (int i = 0; i < 12; i++) if (i != GSUB || have_gsub) order[nt++] = i;
 	int sr = 1, es = 0;
 	while (sr * 2 <= nt) { sr *= 2; es++; }
 	u32(&f, 0x00010000); u16(&f, (unsigned)nt); u16(&f, (unsigned)sr * 16); u16(&f, (unsigned)es); u16(&f, (unsigned)(nt - sr) * 16);
@@ -574,13 +685,13 @@ unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsig
 	}
 	if (f.bad) goto fail;
 	put32(&f, headat + 8, 0xB1B0AFBAu - tsum(f.d, f.n));
-	for (int i = 0; i < 11; i++) free(t[i].d);
+	for (int i = 0; i < 12; i++) free(t[i].d);
 	for (int i = 0; i < ngl; i++) { free(G[i].p); free(G[i].ends); }
 	free(G); free(ref); free(ls); free(base); free(outl);
 	*len = f.n;
 	return f.d;
 fail:
-	for (int i = 0; i < 11; i++) free(t[i].d);
+	for (int i = 0; i < 12; i++) free(t[i].d);
 	for (int i = 0; i < ngl; i++) { free(G[i].p); free(G[i].ends); }
 	free(f.d);
 	free(G); free(ref); free(ls); free(base); free(outl);

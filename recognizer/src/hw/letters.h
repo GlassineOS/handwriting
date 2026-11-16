@@ -10,7 +10,8 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 5      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 6      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
 #define HW_LETTERS_VARIANTS 5   /* variants per character at most (FR-006) */
 #define HW_LETTERS_SLOTS 10     /* the font's cycle of variants along the text (FR-010): a tenth each */
@@ -25,11 +26,34 @@ struct hw_lstroke {
 	double *x, *y;
 };
 
+/* An ink profile (spec 003 FR-006, FR-007): how far the ink reaches to the left (l, its
+ * smallest x) and the right (r, its largest x) in each height band, in x-heights, y up from
+ * the baseline; the bands run from HW_PROF_Y0 to HW_PROF_Y1 (descender to cap height), the
+ * first and the last open-ended. NAN: no ink in that band. */
+#define HW_PROF_BANDS 8
+#define HW_PROF_Y0 (-0.6)
+#define HW_PROF_Y1 1.6
+struct hw_profile {
+	double l[HW_PROF_BANDS], r[HW_PROF_BANDS];
+};
+void hw_profile_clear(struct hw_profile *p);
+/* the segment (x0, y0)-(x1, y1) (x-heights, y up) into p, every band it crosses */
+void hw_profile_seg(struct hw_profile *p, double x0, double y0, double x1, double y1);
+int hw_profile_empty(const struct hw_profile *p);
+/* the narrowest distance between a's right profile and b's left one, b moved right by
+ * shift (between the pen's centre lines); their boxes when they share no band */
+double hw_profile_gap(const struct hw_profile *a, const struct hw_profile *b, double shift);
+/* how much open space they leave: the mean, over the bands they share, of the distance
+ * beyond the narrowest (0 when they share fewer than two) */
+double hw_profile_open(const struct hw_profile *a, const struct hw_profile *b);
+
 struct hw_variant {
 	double width;                   /* of the ink, x-heights */
 	double weight;                  /* the sum of its samples' weights */
 	int members;                    /* versions it was made from */
 	int use;                        /* versions written this way (nearest to it of their strokes) */
+	struct hw_profile prof;         /* x from the variant's left edge */
+	int lc, rc;                     /* the side shapes of its left and right side */
 	size_t nstrokes;
 	struct hw_lstroke *s;
 };
@@ -51,6 +75,24 @@ struct hw_metrics {
 	double ink;                     /* the pen's width */
 };
 
+/* The spacing (FR-007): a pair's median gap, a pair of side shapes' gap, and for the rest
+ * the person's typical gap less open * (the profiles' open space - open0); words at word.
+ * Gaps are hw_profile_gap's, in x-heights. */
+#define HW_PAIR_MIN 3                   /* times written for a pair's own gap */
+#define HW_SIDE_PAIR_MIN 5              /* for a pair of side shapes' gap */
+#define HW_SIDE_CLASSES 16              /* side shapes per side at most */
+struct hw_pair { unsigned a, b; double gap; int n; };
+struct hw_side_pair { int rc, lc; double gap; int n; };
+struct hw_spacing {
+	double letter, word, open, open0;
+	struct hw_pair *pairs;          /* sorted by a, b */
+	size_t npairs;
+	struct hw_side_pair *sides;     /* sorted by rc, lc */
+	size_t nsides;
+	int nl, nr;                     /* side shapes: their typical side, as hw_spacing_side compares */
+	double lshape[HW_SIDE_CLASSES][HW_PROF_BANDS], rshape[HW_SIDE_CLASSES][HW_PROF_BANDS];
+};
+
 struct hw_letters {
 	char inputs[17];                /* hash of what it was built from */
 	long samples;                   /* usable samples */
@@ -58,7 +100,20 @@ struct hw_letters {
 	struct hw_metrics m;
 	size_t n;                       /* characters seen, sorted by code point */
 	struct hw_letter *l;
+	struct hw_spacing sp;
 };
+
+/* the side shape of a profile's left (side 0) or right (1) side: the nearest typical one */
+int hw_spacing_side(const struct hw_spacing *sp, const struct hw_profile *p, int side);
+/* the gap between a (its right side) and b (its left side) the person sets them at */
+double hw_spacing_gap(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, int rc,
+		      unsigned b, const struct hw_profile *pb, int lc);
+/* one observed pair of neighbouring letters, in x-heights, for hw_spacing_learn */
+struct hw_gap_obs { unsigned a, b; struct hw_profile pa, pb; double gap; };
+/* the spacing from observed letter pairs and word gaps; the variants' side shapes set
+ * (lc, rc) on L's letters. 0, -1 out of memory. */
+int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n, const double *words, size_t nw);
+void hw_spacing_free(struct hw_spacing *sp);
 
 void hw_letters_free(struct hw_letters *L);
 
