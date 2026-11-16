@@ -50,17 +50,37 @@ class Error(Exception):
     pass
 
 
-class Recognizer:
-    """One recognizer child process; restarted when it went away (an idle exit)."""
+WRITER = re.compile(r"[0-9a-f]{16}")
 
-    def __init__(self, binary=BIN, client=APP_ID, env=None):
+
+def writer_args(writer):
+    """--writer WRITER for a guest writer's store (docs/recognizer.md, Writer stores), nothing
+    for the owner's: only a store's random id goes, never anything else of a writer"""
+    if writer is None:
+        return []
+    if not isinstance(writer, str) or not WRITER.fullmatch(writer):
+        raise ValueError("not a writer's store id")
+    return ["--writer", writer]
+
+
+class Recognizer:
+    """One recognizer child process; restarted when it went away (an idle exit). writer: a
+    guest writer's store (spec 002 FR-016), named for the whole process"""
+
+    def __init__(self, binary=BIN, client=APP_ID, env=None, writer=None):
         self.binary, self.client, self.env = binary, client, env
+        self.writer = writer
+        self.args = writer_args(writer)
         self.p = None
         self.n = 0
         self.lock = threading.Lock()
+        self.ended = False              # closed for good: a session left (nothing starts it again)
+
+    def argv(self):
+        return [self.binary, *self.args]
 
     def _start(self):
-        self.p = subprocess.Popen([self.binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.p = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1, env=self.env)
         self.n = 0
         self._ask("hello", "1", self.client)
@@ -87,6 +107,8 @@ class Recognizer:
 
     def ask(self, verb, *fields):
         with self.lock:
+            if self.ended:
+                raise Error("session-ended")
             for attempt in (0, 1):
                 try:
                     if self.p is None or self.p.poll() is not None:
@@ -106,8 +128,9 @@ class Recognizer:
                         raise Error("no recognizer")
         raise Error("no recognizer")
 
-    def close(self):
+    def close(self, end=False):
         with self.lock:
+            self.ended = self.ended or end
             if self.p:
                 for f in (self.p.stdin, self.p.stdout):
                     try:
@@ -232,13 +255,19 @@ class Recognizer:
 
 
 class Cli:
-    """The command line part of contract 1 (settings, adaptation, donation)."""
+    """The command line part of contract 1 (settings, adaptation, donation). writer: a guest
+    writer's store, named in every command (spec 002 FR-016)"""
 
-    def __init__(self, binary=BIN, env=None, client=APP_ID):
+    def __init__(self, binary=BIN, env=None, client=APP_ID, writer=None):
         self.binary, self.env, self.client = binary, env, client
+        self.writer = writer
+        self.args = writer_args(writer)
+
+    def argv(self, *args):
+        return [self.binary, *self.args, *args]
 
     def run(self, *args, check=True):
-        p = subprocess.run([self.binary, *args], capture_output=True, text=True, env=self.env, timeout=600)
+        p = subprocess.run(self.argv(*args), capture_output=True, text=True, env=self.env, timeout=600)
         if check and p.returncode:
             raise Error(p.stderr.strip() or f"{args[0]} failed")
         return p.stdout
@@ -312,7 +341,7 @@ class Cli:
         (FR-032)"""
         last = []
         args = ["-c", char] if char else ["-r"]
-        with subprocess.Popen([self.binary, "letters", "build", *args, "--progress"], stdout=subprocess.PIPE,
+        with subprocess.Popen(self.argv("letters", "build", *args, "--progress"), stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, text=True, env=self.env) as p:
             for line in p.stdout:
                 f = line.rstrip("\n").split("\t")
@@ -355,7 +384,7 @@ class Cli:
     def adapt(self, lang="en", on_line=None, extra=()):
         """runs a requested adaptation; on_line(kind, fields) per progress line; returns the
         last line's (kind, fields)"""
-        p = subprocess.Popen([self.binary, "adapt", "-r", "--progress", "-l", lang, *extra], stdout=subprocess.PIPE,
+        p = subprocess.Popen(self.argv("adapt", "-r", "--progress", "-l", lang, *extra), stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True, env=self.env)
         last = ("skip", ["error"])
         with p:
@@ -431,3 +460,38 @@ class Cli:
 
     def donation_erase(self):
         self.run("donation", "erase")
+
+    # the writers' stores (contract 1.3): asked of the owner's command line only
+
+    def _owner(self, *args):
+        if self.writer is not None:
+            raise Error("writer-store")
+        return self.run(*args)
+
+    def writer_new(self):
+        """a new guest store: its random id"""
+        w = self._owner("writer", "new").strip()
+        writer_args(w)
+        return w
+
+    def writers(self):
+        """{id: (samples, contribution samples not saved yet)} of every guest store"""
+        d = {}
+        for line in self._owner("writer", "list").splitlines():
+            f = line.split("\t")
+            if len(f) >= 3:
+                d[f[0]] = (int(f[1]), int(f[2]))
+        return d
+
+    def writer_remove(self, writer):
+        """the whole store gone when it returns (False: there was none)"""
+        writer_args(writer)
+        if self.writer is not None:
+            raise Error("writer-store")
+        p = subprocess.run([self.binary, "writer", "remove", writer], capture_output=True, text=True, env=self.env,
+                           timeout=600)
+        if p.returncode and p.stderr.strip() == "unknown-writer":
+            return False
+        if p.returncode:
+            raise Error(p.stderr.strip() or "writer remove failed")
+        return True

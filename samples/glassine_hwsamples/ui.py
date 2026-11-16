@@ -35,7 +35,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from glassine_ui import paint as PT  # noqa: E402
 
-from . import APP_ID, client, flow, fontview, neat as N, pages, prompts as P  # noqa: E402
+from . import APP_ID, client, flow, fontview, neat as N, pages, prompts as P, writers as WR  # noqa: E402
 from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
 W0, H0 = 702, 884
@@ -90,6 +90,23 @@ def free_name(folder, stem, ext):
     return os.path.join(folder, f"{stem}-{k}{ext}")
 
 
+def writer_counts(cli):
+    """{id: (samples, contribution not saved, contributing)} of the guest stores, for the list"""
+    return {wid: (n, d, flow.State(flow.state_path(wid)).donating) for wid, (n, d) in cli.writers().items()}
+
+
+def save_contribution(cli, state, lic):
+    """one file per contribution, in the same folder and named the same for every writer
+    (spec 002 FR-021); the next contribution starts empty, with the same licence and number"""
+    path = free_name(os.path.join(documents_dir(), CONTRIB_DIR), "handwriting-contribution", ".jsonl")
+    cli.donation_write(path)
+    cli.donation_erase()
+    cli.donation_start(lic)
+    state.files += 1
+    state.save()
+    return path
+
+
 # ---------------------------------------------------------------- the work behind the pages
 
 
@@ -129,17 +146,33 @@ class UI:
 
     INKS = 64                           # samples' strokes kept for the grids
 
-    def __init__(self, redraw, demo=False):
+    # the session shown (spec 002 FR-015): its recognizer, command line, place and prompts
+    rec = property(lambda self: self.session.rec, lambda self, v: setattr(self.session, "rec", v))
+    cli = property(lambda self: self.session.cli, lambda self, v: setattr(self.session, "cli", v))
+    state = property(lambda self: self.session.state, lambda self, v: setattr(self.session, "state", v))
+    writer = property(lambda self: self.session.writer, lambda self, v: setattr(self.session, "writer", v))
+    guest = property(lambda self: self.session.guest)
+
+    def __init__(self, redraw, demo=False, kw=None):
         self.redraw = redraw
-        self.state = flow.State()
-        self.rec = client.Recognizer()
-        self.cli = client.Cli()
-        self.writer = None
+        self.kw = kw or {}              # the recognizer's binary and environment for new sessions
+        # the app opens in the owner's session, also after it was closed in a guest's (FR-015)
+        self.session = self.owner = WR.Session(writer=False, **self.kw)
+        self.writers = WR.Writers(os.devnull if demo else None)
         self.page = "write"
         self.tab = "write"
         self.theme = Look(read_file(THEME_FILE) or "white")
         self.msg = ""
         self.busy = 0                   # calls queued or running in the worker
+        self.on_switch = None           # the window's: the writing area emptied for the next session
+        self.wcounts = {}               # {writer id: (samples, contribution not saved)} for the list
+        self.naming = None              # {"kind": add|rename, "id", "text"}: a writer's name being typed
+        self.name_text = None           # the window's private name field, read when the name is used
+        self.name_rect = None           # where the dialog's field is (pages.name_dialog)
+        self.removing = None            # the Remove question: {"id", "name", "samples", "unsaved", "donor", "saved"}
+        self.done = None                # after Finish: {"id", "name", "saved", "samples"}
+        self.adult = False              # the guest's 18-or-older box: ticked on screen only, kept nowhere
+        self.gflow = None               # a guest's age and licence steps: "intro" or "tab" (from Contribute)
         self.loaded = demo              # counts, plan, donation, learning, adaptations are in
         self.cov_loaded = demo          # the coverage is read
         self.refreshing = False         # a refresh is queued or running
@@ -208,19 +241,41 @@ class UI:
             self.writer = flow.Writer(self.rec, self.cli, self.state)
             self.refresh()
 
+    def view_reset(self):
+        """a session's pages as they start: nothing of the session before stays on screen"""
+        self.counts, self.fresh, self.samples, self.sp, self.detail = (0, 0), 0, [], 0, None
+        self.asking_delete = False
+        self.inks.clear()
+        self.ink_wanted = set()
+        # the learning run's state and result stay: they are the owner's, shown on Learn alone
+        self.donated, self.marked, self.prefs, self.plan, self.adapts = set(), {}, [], None, {}
+        self.donation, self.learning = (None, 0, None), True
+        self.picking_licence, self.licence_pick, self.saved = False, None, None
+        self.earlier, self.earlier_out, self.reviewing, self.ep = [], set(), False, 0
+        self.confirm, self.sets_open, self.best, self.pick, self.pick_loading = None, False, None, None, False
+        self.msg, self.loaded, self.cov_loaded = "", False, False
+        self.waiting_charge = False     # a learning run waiting for the charger is called off
+        self.wstep, self.tried, self.adult, self.gflow = "w-welcome", False, False, None
+        self.naming = self.removing = None
+        self.page = self.tab = "write"
+
     # ---------------------------------------------------------- background
 
     def run(self, fn, done=None):
+        """fn in the worker; done(r) on the main loop, only while the session that asked is
+        still the one shown (fn binds the session's objects itself, when it is queued)"""
         if self.demo:
             return
         self.busy += 1
+        s = self.session
 
         def fin(r, err):
             self.busy -= 1
             if err:
                 print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
-                self.msg = "Something went wrong: %s" % err
-            elif done:
+                if s is self.session:
+                    self.msg = "Something went wrong: %s" % err
+            elif done and s is self.session:
                 done(r)
             self.redraw()
         self.work.do(fn, fin)
@@ -230,7 +285,7 @@ class UI:
         nothing (each repaint is a refresh of the e-ink panel)"""
         return (self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier,
                 self.fresh, self.loaded, self.cov_loaded, self.reviewing, self.donated, self.marked, self.prefs,
-                self.page, self.wstep, len(self.writer.counted) if self.writer else 0)
+                self.page, self.wstep, len(self.writer.counted) if self.writer else 0, self.wcounts)
 
     def refresh(self):
         """counts, samples, coverage, the donation, the adaptation: in the background, after
@@ -243,34 +298,43 @@ class UI:
             return
         self.refreshing = True
         self.again = False
+        ss = self.session
 
         def get():
             t = time.monotonic()
-            rows = self.rec.list()
-            self.writer.set_coverage(rows)
-            don = self.cli.donation()
-            earlier = self.cli.donation_earlier() if self.state.donating and don[0] else []
-            donated = self.cli.donation_ids() if don[0] else set()
+            rec, cli, st = ss.rec, ss.cli, ss.state
+            rows = rec.list()
+            ss.writer.set_coverage(rows)
+            don = cli.donation()
+            earlier = cli.donation_earlier() if st.donating and don[0] else []
+            donated = cli.donation_ids() if don[0] else set()
             short = [(x[0], x[1], x[4]) for x in rows]
-            r = (self.writer.counts(rows=short), self.cli.plan(self.state.lang), don, self.cli.learning(),
-                 self.cli.adaptations(self.state.lang), short, earlier, donated, self.rec.marked(),
-                 self.rec.preferences())
+            # a guest store has no adaptation and no learning switch (spec 002 FR-018); the
+            # owner's session lists the other writers' stores with their counts (FR-014)
+            g = ss.guest
+            r = (ss.writer.counts(rows=short), None if g else cli.plan(st.lang), don, True if g else cli.learning(),
+                 {} if g else cli.adaptations(st.lang), short, earlier, donated, rec.marked(), rec.preferences(),
+                 {} if g else writer_counts(cli))
             log("refresh %.0f ms, %d samples" % ((time.monotonic() - t) * 1000, len(rows)))
             return r
 
         def got(r, err):
             self.refreshing = False
+            if ss is not self.session:          # a session left meanwhile: its readings aren't shown
+                if self.again:
+                    self.refresh()
+                return
             before = self.shown_state()
             if err:
                 print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
                 self.msg = "Something went wrong: %s" % err
             else:
                 (self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier,
-                 self.donated, self.marked, self.prefs) = r
+                 self.donated, self.marked, self.prefs, self.wcounts) = r
                 self.earlier_out &= {e[0] for e in self.earlier}
                 if not self.earlier:
                     self.reviewing = False
-                self.fresh = self.plan["new"]
+                self.fresh = self.plan["new"] if self.plan else 0
                 first = not self.loaded
                 self.loaded = self.cov_loaded = True
                 if first:
@@ -282,13 +346,190 @@ class UI:
         self.work.do(get, got, low=True)
 
     def first_start(self):
+        if self.guest:
+            # a guest's introduction, the first time their session opens (FR-019): shown once,
+            # also when they finish before its end
+            if not self.state.introduced:
+                self.state.introduced = True
+                self.state.save()
+                self.page, self.wstep, self.gflow = "wizard", "g-hello", "intro"
+            return
         if flow.needs_intro(self.state, self.counts[1]):
             self.page = "wizard"
             self.wstep = "w-welcome"
 
+    # ---------------------------------------------------------- other writers (spec 002 FR-014 to FR-025)
+
+    def enter(self, session):
+        """a session shown in the window: its pages start afresh, the writing area empty"""
+        self.close_neat()
+        if self.sheet:
+            self.sheet = None
+        self.renaming = None
+        self.session = session
+        self.view_reset()
+        if self.on_switch:
+            self.on_switch()
+        self.refresh()
+        self.redraw()
+
+    def open_others(self):
+        """Someone else writes: the list of writers, from the owner's session only"""
+        if self.guest:
+            return
+        self.go("others")
+
+    def open_writer(self, wid):
+        """a writer's session: their store named in every request, their place in the prompts"""
+        name = self.writers.name(wid)
+        if self.guest or name is None or self.demo:
+            return
+        self.done = None
+        self.enter(WR.Session(wid, name, **self.kw))
+
+    def finish(self):
+        """Finish (FR-022): back to the owner's session in one step. The guest's calls queued
+        before it go first; then an unsaved contribution is saved as a file (the next one starts
+        empty, with the same licence and number), and their recognizer stops"""
+        s = self.session
+        if not s.guest:
+            return
+        self.done = {"id": s.wid, "name": s.name, "saved": None, "samples": None, "busy": True,
+                     "donating": s.state.donating}
+        done = self.done
+
+        def go():
+            try:
+                lic, n, _ = s.cli.donation()
+                saved = None
+                if s.state.donating and lic and n:
+                    saved = save_contribution(s.cli, s.state, lic)
+                return saved, len(s.cli.samples())
+            finally:
+                s.close()
+
+        def fin(r, err):
+            self.busy -= 1
+            done["busy"] = False
+            if err:
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
+                done["error"] = str(err)
+            else:
+                done["saved"], done["samples"] = r
+            self.refresh()
+            self.redraw()
+        self.busy += 1
+        self.work.do(go, fin)
+        self.enter(self.owner)
+
+    def close_done(self):
+        self.done = None
+        self.redraw()
+
+    def ask_name(self, wid=None):
+        """Add a writer (wid None) or Rename: the name in a private field (FR-014)"""
+        self.naming = {"kind": "rename" if wid else "add", "id": wid, "text": self.writers.name(wid) or ""}
+        self.redraw()
+
+    def name_changed(self, text):
+        """a repaint only when what the dialog says changes (each one refreshes the panel)"""
+        if not self.naming:
+            return
+        before = self.writers.problem(self.naming["text"], self.naming["id"])
+        self.naming["text"] = text
+        if self.writers.problem(text, self.naming["id"]) != before:
+            self.redraw()
+
+    def name_problem(self):
+        n = self.naming
+        return self.writers.problem(n["text"], n["id"]) if n else None
+
+    def cancel_name(self):
+        self.naming = None
+        self.redraw()
+
+    def use_writer_name(self):
+        """Add writer: a new store, then the name beside its id in the list; Use this name:
+        only the label changes"""
+        n = self.naming
+        if not n:
+            return
+        if self.name_text:
+            n["text"] = self.name_text()
+        if self.writers.problem(n["text"], n["id"]):
+            self.redraw()
+            return
+        self.naming = None
+        name = WR.clean(n["text"])
+        if n["kind"] == "rename":
+            self.writers.rename(n["id"], name)
+            self.redraw()
+            return
+        cli = self.owner.cli
+        self.run(cli.writer_new, lambda wid: (self.writers.add(wid, name), self.refresh()))
+        self.redraw()
+
+    def ask_remove(self, wid):
+        """the Remove question names what goes (FR-023): read from the writer's store first"""
+        name = self.writers.name(wid)
+        if name is None or self.guest:
+            return
+        if self.page != "others":
+            self.go("others")
+        self.done = None
+
+        def get():
+            gc = client.Cli(writer=wid, **self.kw)
+            lic, n, donor = gc.donation()
+            st = flow.State(flow.state_path(wid))
+            return {"id": wid, "name": name, "samples": len(gc.samples()), "unsaved": n if lic else 0,
+                    "donor": donor, "files": st.files, "saved": None}
+        self.run(get, lambda r: setattr(self, "removing", r))
+
+    def save_for_removal(self):
+        """Save their contribution first: the question stays open, without that line"""
+        rm = self.removing
+        if not rm or not rm["unsaved"]:
+            return
+        wid = rm["id"]
+
+        def go():
+            gc = client.Cli(writer=wid, **self.kw)
+            return save_contribution(gc, flow.State(flow.state_path(wid)), gc.donation()[0])
+
+        def got(p):
+            if self.removing is rm:
+                rm["saved"], rm["unsaved"], rm["files"] = p, 0, rm["files"] + 1
+        self.run(go, got)
+
+    def cancel_remove(self):
+        self.removing = None
+        self.redraw()
+
+    def remove_writer(self):
+        """the store gone for good when the request returns, then the name leaves the list and
+        their place in the prompts goes"""
+        rm, self.removing = self.removing, None
+        if not rm or self.guest:
+            return
+        cli = self.owner.cli
+
+        def go():
+            cli.writer_remove(rm["id"])
+            WR.forget_place(rm["id"])
+
+        def got(_):
+            self.writers.remove(rm["id"])
+            self.msg = "%s was removed." % rm["name"]
+            self.refresh()
+        self.run(go, got)
+        self.redraw()
+
     # ---------------------------------------------------------- navigation
 
     def go(self, page):
+        if self.guest and page in ("learn", "neat", "others"):
+            page = "write"              # not in a guest's session (spec 002 FR-018)
         self.close_neat()
         self.page = page
         self.tab = page
@@ -332,11 +573,14 @@ class UI:
     def wizard_to(self, step):
         self.wstep = step
         self.msg = ""
+        self.adult = False              # asked anew each time the step shows (FR-019)
         if step == "w-try" and self.writer and self.writer.shown and self.tried:
             self.wstep = "w-try"
         self.redraw()
 
     def wizard_next(self):
+        if self.guest:
+            return self.guest_next()
         nxt = {"w-welcome": "w-try", "w-try": "w-private", "w-private": "w-learning", "w-learning": "w-share"}
         s = self.wstep
         if s in nxt:
@@ -349,13 +593,60 @@ class UI:
 
     def wizard_decline(self):
         """Not now: donating stays off; no licence, no donor ID"""
+        if self.guest:
+            return self.guest_decline()
         self.licence_pick = None
         if self.state.donating:
             self.donating(False)
         self.wizard_to("w-ready")
 
     def wizard_skip(self):
+        if self.guest:
+            return self.guest_done()
         self.wizard_done()
+
+    # a guest's introduction (FR-019): Hello by name, Try one, then the question asked of the
+    # writer themselves, 18 or older, the licence. From Contribute only the last two
+
+    GUEST_NEXT = {"g-hello": "w-try", "w-try": "w-share", "w-share": "g-age"}
+    GUEST_BACK = {"w-try": "g-hello", "w-share": "w-try", "g-age": "w-share", "w-licence": "g-age"}
+
+    def guest_next(self):
+        s = self.wstep
+        if s in self.GUEST_NEXT:
+            return self.wizard_to(self.GUEST_NEXT[s])
+        if s == "g-age" and self.adult:
+            if self.donation[0]:            # a licence chosen before: on again with it
+                self.donating(True)
+                return self.guest_done()
+            self.licence_pick = None
+            return self.wizard_to("w-licence")
+        if s == "w-licence" and self.licence_pick:
+            self.donating(True, self.licence_pick)
+            return self.guest_done()
+
+    def guest_back(self):
+        if self.gflow == "tab" and self.wstep == "g-age":
+            return self.go("donate")
+        self.wizard_to(self.GUEST_BACK.get(self.wstep, "g-hello"))
+
+    def guest_decline(self):
+        """Not now, at the question or at 18 or older: contributing stays off, the writer goes
+        on writing (or back to Contribute, which asks again)"""
+        self.licence_pick = None
+        self.adult = False
+        if self.state.donating:
+            self.donating(False)
+        self.guest_done()
+
+    def guest_done(self):
+        self.adult = False
+        self.go("donate" if self.gflow == "tab" else "write")
+        self.gflow = None
+
+    def toggle_adult(self):
+        self.adult = not self.adult
+        self.redraw()
 
     def wizard_done(self):
         self.state.introduced = True
@@ -374,9 +665,10 @@ class UI:
         and kept in the background"""
         if self.page == "wizard":
             self.tried = True
+        wr = self.writer                # the session it was written in keeps it (FR-016)
 
         def go():
-            return self.writer.submit(strokes, units, area, prompt)
+            return wr.submit(strokes, units, area, prompt)
 
         def fin(sh):
             log("kept" if sh else "nothing", sh and (sh.status, sh.sample_id, sh.why, sh.fit,
@@ -400,14 +692,14 @@ class UI:
 
     def probe(self, strokes, units, area, done):
         """at a pause: does the ink already fit the whole prompt? (then it is submitted)"""
-        p = self.writer.prompt
+        p, rec = self.writer.prompt, self.rec
 
         def go():
-            self.rec.write("p", p.lang, units, area, strokes)
+            rec.write("p", p.lang, units, area, strokes)
             try:
-                return self.rec.align("p", p.text)
+                return rec.align("p", p.text)
             finally:
-                self.rec.end("p")
+                rec.end("p")
         self.work.do(go, lambda r, err: done(r if not err else None))
 
     def act(self, name):
@@ -429,8 +721,23 @@ class UI:
         self.act("skip")
 
     def choose_set(self, name):
+        """a prompt set; in a guest's session also Write it your best and Which one is nicer?,
+        which are sets there (spec 002 FR-018: no Learn tab)"""
         self.sets_open = False
-        self.run(lambda: self.writer.choose_set(name))
+        if name == "best":
+            return self.start_best()
+        if name == "pick":
+            self.go("write")
+            self.page = "learn"
+            return self.start_pick()
+        wr = self.writer
+
+        def go():
+            if wr.best is not None:
+                wr.stop_best()
+            return wr.choose_set(name)
+        self.run(go)
+        self.redraw()
 
     def practise(self):
         """Coverage's Practise these: the prompts that favour the weak characters"""
@@ -459,19 +766,20 @@ class UI:
                     self.inks.move_to_end(i)
             return
         self.ink_wanted |= set(miss)
+        rec = self.rec
 
         def get():
             out = {}
             for i in miss:
                 try:
-                    out[i] = self.rec.sample(i)
+                    out[i] = rec.sample(i)
                 except client.Error:
                     out[i] = {}
             return out
 
         def got(r, err):
             self.ink_wanted -= set(miss)
-            if r:
+            if r and rec is self.rec:
                 self.inks.update(r)
                 while len(self.inks) > self.INKS:
                     self.inks.popitem(last=False)
@@ -480,7 +788,8 @@ class UI:
 
     def open_sample(self, sid):
         self.asking_delete = False
-        self.run(lambda: self.rec.sample(sid), lambda s: setattr(self, "detail", (sid, s)))
+        rec = self.rec
+        self.run(lambda: rec.sample(sid), lambda s: setattr(self, "detail", (sid, s)))
 
     def close_sample(self):
         self.detail = None
@@ -497,36 +806,47 @@ class UI:
 
     def delete_sample(self, sid):
         """from the samples and from the donation (forget takes both)"""
+        rec, wr = self.rec, self.writer
+
         def go():
-            self.rec.forget(sid)
-            self.writer.forgotten(sid)
+            rec.forget(sid)
+            wr.forgotten(sid)
         self.detail = None
         self.asking_delete = False
         self.inks.pop(sid, None)
         self.run(go, lambda _: self.refresh())
 
     def ask_erase_all(self):
+        """the session's own samples only (spec 002 FR-024): the owner's leaves every other
+        writer's store as it is, a guest's leaves the owner's and everyone else's"""
         n = len(self.samples)
-        self.confirm = ("Erase all %d samples?" % n, "They’re removed from this tablet for good. Your contribution keeps its copies "
-                        "until you erase it in Contribute. What it has already learned stays until it learns again.", "Erase all", self.erase_all)
+        text = ("They’re removed from this tablet for good. Your contribution keeps its copies until you erase it in "
+                "Contribute.")
+        if not self.guest:
+            text += " What it has already learned stays until it learns again. Other writers’ samples are kept."
+        self.confirm = ("Erase all %d samples?" % n, text, "Erase all", self.erase_all)
         self.redraw()
 
     def erase_all(self):
         self.confirm = None
+        cli, wr = self.cli, self.writer
 
         def go():
-            n = self.cli.erase()
-            self.writer.forgotten()
+            n = cli.erase()
+            wr.forgotten()
             return n
         self.inks.clear()
         self.run(go, lambda n: (setattr(self, "msg", "%d samples erased." % n), self.refresh()))
 
     def export(self):
         path = free_name(os.path.join(documents_dir(), "Handwriting"), "handwriting-samples", ".jsonl")
-        self.run(lambda: self.cli.export(path), lambda _: setattr(self, "msg", "Saved in Documents › Handwriting as " +
+        cli = self.cli
+        self.run(lambda: cli.export(path), lambda _: setattr(self, "msg", "Saved in Documents › Handwriting as " +
                                                                   os.path.basename(path)))
 
     def import_latest(self):
+        if self.guest:                  # a guest store takes no import (docs/recognizer.md)
+            return
         folder = os.path.join(documents_dir(), "Handwriting")
         try:
             files = sorted((os.path.join(folder, f) for f in os.listdir(folder)
@@ -537,17 +857,22 @@ class UI:
             self.msg = "No saved samples in Documents › Handwriting."
             self.redraw()
             return
-        self.run(lambda: self.cli.import_(files[-1]),
+        cli = self.cli
+        self.run(lambda: cli.import_(files[-1]),
                  lambda n: (setattr(self, "msg", "%d samples added from %s" % (n, os.path.basename(files[-1]))),
                             self.refresh()))
 
     def donate_one(self, sid):
-        self.run(lambda: self.cli.donation_add(sid),
+        cli = self.cli
+        self.run(lambda: cli.donation_add(sid),
                  lambda _: (setattr(self, "msg", "Added to your contribution."), self.refresh()))
 
     # ---------------------------------------------------------- learning
 
     def adapt(self):
+        if self.guest:
+            return
+
         def got(charging):
             if charging:
                 self.waiting_charge = False
@@ -569,6 +894,7 @@ class UI:
         self.result = None
         self.adapting = True
         self.adapt_plan = self.adapt_round = None
+        cli, lang = self.cli, self.state.lang   # the owner's, also when a guest's session opens meanwhile
 
         def line(kind, f):
             if kind == "plan":
@@ -579,7 +905,7 @@ class UI:
 
         def go():
             try:
-                last = self.cli.adapt(self.state.lang, on_line=line)
+                last = cli.adapt(lang, on_line=line)
             except Exception as e:      # shown on the page, the app keeps running
                 print("glassine-handwriting-samples: error: %s" % e, file=sys.stderr, flush=True)
                 last = ("skip", ["error"])
@@ -601,13 +927,17 @@ class UI:
     def revert(self):
         self.confirm = None
         self.result = None
-        self.run(lambda: self.cli.revert(self.state.lang), lambda _: self.refresh())
+        cli, lang = self.cli, self.state.lang
+        self.run(lambda: cli.revert(lang), lambda _: self.refresh())
 
     # ---------------------------------------------------------- Your handwriting
 
     def open_best(self, mode):
         """Learn's Your handwriting (mode "intro"), or back to Learn (None); either way the
-        careful writing stops"""
+        careful writing stops. In a guest's session: back to the sets"""
+        if self.guest:
+            self.go("write")
+            return self.open_sets()
         self.close_neat()
         if self.sheet:
             self.close_char()
@@ -627,6 +957,8 @@ class UI:
 
     def open_font(self):
         """Your font: the letters it has, a preview, what is missing"""
+        if self.guest:
+            return
         self.best = "font"
         self.msg = ""
         self.sheet = None
@@ -647,12 +979,13 @@ class UI:
     def load_font(self, build=False):
         """the counts and the model as they are now (spec 003 FR-030); build: a missing or
         out-of-date model is built in the background (FR-008)"""
-        if self.demo:
+        if self.demo or self.guest:     # the letter model is the owner's (docs/recognizer.md)
             return
+        cli = self.cli
 
         def get():
-            st = self.cli.letters()
-            text = self.cli.letters_model() if st["state"] != "none" else ""
+            st = cli.letters()
+            text = cli.letters_model() if st["state"] != "none" else ""
             return {"status": st, "model": fontview.parse(text) if text else None}
 
         def got(r, err):
@@ -702,7 +1035,8 @@ class UI:
             for f in then:
                 f(not err)
             self.redraw()
-        self.letters_bg(lambda: self.cli.letters_build(progress), fin)
+        cli = self.cli                  # the owner's: a guest's session may open while it builds
+        self.letters_bg(lambda: cli.letters_build(progress), fin)
         self.redraw()
 
     def letters_progress(self):
@@ -724,7 +1058,7 @@ class UI:
             return
         self.font_busy = "making"
         self.msg = ""
-        name = self.font_name
+        name, cli = self.font_name, self.cli
 
         def fin(r, err):
             self.busy -= 1
@@ -743,7 +1077,7 @@ class UI:
                 self.font_busy = None
                 return
             self.busy += 1
-            self.work.do(lambda: self.cli.font_install(name), fin)
+            self.work.do(lambda: cli.font_install(name), fin)
         self.build_letters(then=built)
         self.redraw()
 
@@ -847,7 +1181,8 @@ class UI:
                 sh["occ"] = r
                 self.want_inks(sorted({o[0] for o in r}))
             self.redraw()
-        self.letters_bg(lambda: self.cli.letters_samples(c), got)
+        cli = self.cli
+        self.letters_bg(lambda: cli.letters_samples(c), got)
 
     def sheet_changed(self):
         if self.sheet:
@@ -899,7 +1234,8 @@ class UI:
             for f in then:
                 f()
             self.redraw()
-        self.letters_bg(lambda: self.cli.letters_build(progress, char=c), fin)
+        cli = self.cli
+        self.letters_bg(lambda: cli.letters_build(progress, char=c), fin)
         self.redraw()
 
     def relearn_progress(self):
@@ -916,7 +1252,8 @@ class UI:
                 then()
             self.redraw()
             return
-        self.run(lambda: self.cli.letters_mark(kind, c, ids), lambda _: then and then())
+        cli = self.cli
+        self.run(lambda: cli.letters_mark(kind, c, ids), lambda _: then and then())
 
     def mark_version(self, v, what):
         """a version's Favourite (again: no favourite), Leave out, Put back"""
@@ -983,8 +1320,10 @@ class UI:
         _, d, _ = self.char_info(c)
         out = {i for v in (d or {}).get("variants", []) if v.get("left_out") for i in v.get("ids") or []}
 
+        cli = self.cli
+
         def get():
-            occ = sh["occ"] if sh["occ"] is not None else self.cli.letters_samples(c)
+            occ = sh["occ"] if sh["occ"] is not None else cli.letters_samples(c)
             use = [o for o in occ if o[2] == "usable" and o[0] not in out]
             random.shuffle(use)
             use.sort(key=lambda o: o[3])
@@ -1016,7 +1355,8 @@ class UI:
         sh["picks"] += 1
         self.sheet_changed()
         self.redraw()
-        self.run(lambda: self.rec.prefer(a[0], b[0], a[2], b[2]), lambda _: (self.refresh(), self.char_pick()))
+        rec = self.rec
+        self.run(lambda: rec.prefer(a[0], b[0], a[2], b[2]), lambda _: (self.refresh(), self.char_pick()))
 
     def char_picks(self):
         """the picks for the sheet's character so far"""
@@ -1033,6 +1373,8 @@ class UI:
     def open_neat(self):
         """Neaten my writing: free writing, shown neatened; nothing becomes a sample. It
         neatens towards the letter model: a missing or out-of-date one is built meanwhile"""
+        if self.guest:
+            return
         self.neat = N.Neat(self.rec, self.state.lang)
         self.neat_shown, self.neat_text, self.neat_orig = {}, "", False
         self.page, self.tab, self.best = "neat", "learn", None
@@ -1112,10 +1454,10 @@ class UI:
         self.redraw()
         if self.demo:
             return
-        rows, prefs = list(self.samples), list(self.prefs)
+        rows, prefs, rec = list(self.samples), list(self.prefs), self.rec
 
         def get():
-            return flow.load_pick(self.rec, rows, prefs)
+            return flow.load_pick(rec, rows, prefs)
 
         def got(r):
             self.pick_loading = False
@@ -1131,9 +1473,10 @@ class UI:
         self.state.picks[flow.today()] = self.picks_today() + 1
         self.state.save()
         self.redraw()
+        rec = self.rec
 
         def go():
-            self.rec.prefer(a[0], b[0], a[2], b[2])
+            rec.prefer(a[0], b[0], a[2], b[2])
         self.run(go, lambda _: (self.refresh(), self.next_pick()))
 
     def picks_today(self):
@@ -1142,7 +1485,12 @@ class UI:
     # ---------------------------------------------------------- donation
 
     def turn_on(self):
-        """the licence is chosen once per donation: asked when none is started"""
+        """the licence is chosen once per donation: asked when none is started. A guest
+        confirms being 18 or older first, every time (FR-019: the answer is kept nowhere)"""
+        if self.guest:
+            self.page, self.wstep, self.gflow, self.adult = "wizard", "g-age", "tab", False
+            self.msg = ""
+            return self.redraw()
         if self.donation[0]:
             self.donating(True)
         else:
@@ -1156,11 +1504,13 @@ class UI:
         self.redraw()
 
     def donating(self, on, licence=None):
+        cli, st = self.cli, self.state
+
         def go():
-            if on and licence and not self.cli.donation()[0]:
-                self.cli.donation_start(licence)
-            self.state.donating = on
-            self.state.save()
+            if on and licence and not cli.donation()[0]:
+                cli.donation_start(licence)
+            st.donating = on
+            st.save()
         self.picking_licence = False
         self.run(go, lambda _: self.refresh())
 
@@ -1189,19 +1539,14 @@ class UI:
         """the earlier samples the person didn't leave out go into the donation"""
         ids = [e[0] for e in self.earlier if e[0] not in self.earlier_out]
         self.reviewing = False
-        self.run(lambda: self.cli.donation_add_all(ids),
+        cli = self.cli
+        self.run(lambda: cli.donation_add_all(ids),
                  lambda n: (setattr(self, "msg", "%d earlier samples added to your contribution." % n), self.refresh()))
 
     def write_donation(self):
-        lic = self.donation[0]
-        path = free_name(os.path.join(documents_dir(), CONTRIB_DIR), "handwriting-contribution", ".jsonl")
-
-        def go():
-            self.cli.donation_write(path)
-            # one file per donation: the next starts empty, with the same licence
-            self.cli.donation_erase()
-            self.cli.donation_start(lic)
-        self.run(go, lambda _: (setattr(self, "saved", path), self.refresh()))
+        lic, s = self.donation[0], self.session
+        self.run(lambda: save_contribution(s.cli, s.state, lic), lambda path: (setattr(self, "saved", path),
+                                                                               self.refresh()))
 
     def ask_new_donor(self):
         self.confirm = ("Get a new contributor number?", "Your next contributions then count as another writer’s. The ones you "
@@ -1219,12 +1564,12 @@ class UI:
 
     def erase_donation(self):
         self.confirm = None
+        lic, cli, st = self.donation[0], self.cli, self.state
 
         def go():
-            lic = self.donation[0]
-            self.cli.donation_erase()
-            if lic and self.state.donating:
-                self.cli.donation_start(lic)
+            cli.donation_erase()
+            if lic and st.donating:
+                cli.donation_start(lic)
         self.run(go, lambda _: self.refresh())
 
 
@@ -1710,6 +2055,17 @@ class Window(Gtk.ApplicationWindow):
         self.entry.connect("activate", lambda e: ui.use_name())
         overlay.add_overlay(self.entry)
         ui.entry_text = self.entry.get_text
+        # a writer's name: a private field (spec 002 FR-014, shell spec 006 FR-007). GTK 3 has no
+        # private hint; the password purpose is one (the keyboard suggests and learns nothing,
+        # and offers no handwriting), with the text shown
+        self.name_entry = Gtk.Entry(has_frame=False, max_length=WR.MAX_NAME + 20, halign=Gtk.Align.START,
+                                    valign=Gtk.Align.START, no_show_all=True, visibility=True,
+                                    input_purpose=Gtk.InputPurpose.PASSWORD,
+                                    input_hints=Gtk.InputHints.NO_SPELLCHECK | Gtk.InputHints.NO_EMOJI)
+        self.name_entry.connect("activate", lambda e: ui.use_writer_name())
+        self.name_entry.connect("changed", lambda e: ui.name_changed(e.get_text()))
+        overlay.add_overlay(self.name_entry)
+        ui.name_text = self.name_entry.get_text
         self.canvas = Canvas(ui, lambda: [self.panels[n].queue_draw() for n in ("bottom", "side")])
         self.fixed = Gtk.Layout()             # unlike Gtk.Fixed, it asks no size of its own: the window can turn
         self.panels = {}
@@ -1723,6 +2079,7 @@ class Window(Gtk.ApplicationWindow):
         self.stack.add_named(self.full, "full")
         self.geom = None
         self.connect("size-allocate", lambda w, a: GLib.idle_add(self.fit))
+        ui.on_switch = self.canvas.clear
 
     def fit(self):
         """the writing page's parts placed for the window; only while the area is empty (or
@@ -1762,6 +2119,7 @@ class Window(Gtk.ApplicationWindow):
         self.place_entry()
 
     def place_entry(self):
+        self.place_name()
         ui = self.ui
         if not ui.renaming:
             self.entry.hide()
@@ -1783,7 +2141,36 @@ class Window(Gtk.ApplicationWindow):
             self.entry.grab_focus()
 
 
+    def place_name(self):
+        """the private field over the name dialog's box; emptied once the dialog closes"""
+        ui = self.ui
+        if not ui.naming:
+            if self.name_entry.get_visible():
+                self.name_entry.hide()
+                self.name_entry.set_text("")
+            return
+        a = self.stack.get_allocation()
+        if a.width <= 1:
+            return
+        ui.name_rect = None
+        pages.paint_full(_probe(), ui, Hits(), a.width, a.height)
+        if not ui.name_rect:
+            return
+        x, y, w, h = (int(v) for v in ui.name_rect)
+        self.name_entry.set_margin_start(x)
+        self.name_entry.set_margin_top(y)
+        self.name_entry.set_size_request(w, h)
+        if not self.name_entry.get_visible():
+            self.name_entry.set_text(ui.naming["text"])
+            self.name_entry.show()
+            self.name_entry.grab_focus()
+
+
 class App(Gtk.Application):
+    """one window (spec 002 FR-015): the application id makes the app single instance, so
+    opening it again while it runs shows the window as it is; a session switch happens inside
+    it, and each start begins in the owner's session"""
+
     def __init__(self):
         super().__init__(application_id=APP_ID)
         self.win = None
@@ -1802,6 +2189,7 @@ class App(Gtk.Application):
             if self.ui.work and not self.ui.work.drain(60):
                 print("glassine-handwriting-samples: exit before the last samples were kept", file=sys.stderr, flush=True)
             self.ui.rec.close()
+            self.ui.owner.rec.close()
         Gtk.Application.do_shutdown(self)
 
     def watch_theme(self):
@@ -1826,7 +2214,18 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
            "best.pick", "font.none", "font.learning", "font.current", "font.installed", "font.outdated",
            "font.rename", "font.relearn", "char.versions", "char.samples", "char.write", "char.pick", "char.missing",
-           "neat.write", "neat.original", "neat.unlearned", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
+           "neat.write", "neat.original", "neat.unlearned", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved",
+           "others.list", "others.empty", "others.add", "others.rename", "others.taken", "others.long", "others.remove",
+           "others.remove-plain", "others.done", "others.done-kept", "guest.hello", "guest.try", "guest.share", "guest.age",
+           "guest.age-ticked", "guest.licence", "guest.write", "guest.best", "guest.sets", "guest.samples", "guest.coverage",
+           "guest.contribute-off", "guest.contribute", "guest.saved")
+# a guest's screens are the owner's pages in that writer's session (made-up names, no one's)
+GUEST_SCREENS = {"hello": "wizard.hello", "try": "wizard.try", "share": "wizard.donate", "age": "wizard.age",
+                 "age-ticked": "wizard.age", "licence": "wizard.licence", "write": "write.prompt", "best": "best.write",
+                 "sets": "write.sets", "samples": "samples.list", "coverage": "coverage", "contribute-off": "donate.off",
+                 "contribute": "donate.on", "saved": "donate.saved"}
+DEMO_WRITERS = (("00000000000000a1", "Guest writer", 48, 12, True), ("00000000000000a2", "Second writer", 9, 0, False),
+                ("00000000000000a3", "Book club guest", 0, 0, False))
 DEMO_WORDS = ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o’clock", "garden", "bright",
               "yellow", "Thursday", "minimum", "fifty"]
 
@@ -1900,6 +2299,11 @@ def demo(screen, voice="white"):
     """the UI object in the state a screen of the design shows (no recognizer, no store)"""
     ui = UI(lambda: None, demo=True)
     ui.theme = Look(voice)
+    sec, _, sub = screen.partition(".")
+    guest = sec == "guest"
+    if guest:
+        ui.session = WR.Session(DEMO_WRITERS[0][0], DEMO_WRITERS[0][1], writer=False, state=flow.State(os.devnull))
+        screen = GUEST_SCREENS[sub]
     st = ui.state
     st.save = lambda: None
     st.set, st.used, st.current = P.AUTO, {}, None
@@ -1930,8 +2334,25 @@ def demo(screen, voice="white"):
     shown = lambda text, status="kept", read=None, **kw: flow.Shown(
         P.Prompt(text, "words", "en"), ink(text), "em", (0, 0, 702, 474, 150, 0), [(read or text, -1.0)], status,
         sample_id="00000000000000aa" if status == "kept" else None, **kw)
+    gsub = sub
     sec, _, sub = screen.partition(".")
-    if sec == "wizard":
+    ui.writers.items = [{"id": i, "name": n} for i, n, *_ in DEMO_WRITERS]
+    ui.wcounts = {i: (n, d, on) for i, _, n, d, on in DEMO_WRITERS}
+    if guest:
+        ui.counts = (6, 48)
+        st.donating = gsub in ("contribute", "saved")
+        if gsub == "age-ticked":
+            ui.adult = True
+    if sec == "others":
+        others_demo(ui, sub)
+    elif sec == "wizard" and guest:
+        ui.page = "wizard"
+        ui.wstep = {"hello": "g-hello", "try": "w-try", "donate": "w-share", "age": "g-age", "licence": "w-licence"}[sub]
+        ui.gflow = "intro"
+        ui.counts, ui.fresh = (0, 0), 0
+        if sub == "licence":
+            ui.licence_pick = "CC0-1.0"
+    elif sec == "wizard":
         ui.page = "wizard"
         ui.wstep = {"welcome": "w-welcome", "try": "w-try", "try-done": "w-try", "samples": "w-private",
                     "learning": "w-learning", "donate": "w-share", "licence": "w-licence", "ready": "w-ready"}[sub]
@@ -2056,7 +2477,31 @@ def demo(screen, voice="white"):
                 ui.earlier_out = {ui.earlier[1][0], ui.earlier[4][0]}
             if sub == "saved":
                 ui.saved = os.path.join(documents_dir(), CONTRIB_DIR, "handwriting-contribution-3.jsonl")
+    if guest and sec == "best":
+        w.best["step"] = "careful"
     return ui
+
+
+def others_demo(ui, sub):
+    """Someone else writes and its questions, and the owner's Write after a guest's Finish"""
+    (a, an, *_), (b, bn, *_), (c, cn, *_) = DEMO_WRITERS
+    ui.page = ui.tab = "others"
+    if sub == "empty":
+        ui.writers.items = []
+    elif sub in ("add", "taken", "long"):
+        ui.writers.items = ui.writers.items[:2]
+        ui.naming = {"kind": "add", "id": None, "text": {"add": cn, "taken": an, "long": "x" * 41}[sub]}
+    elif sub == "rename":
+        ui.naming = {"kind": "rename", "id": b, "text": "Second guest"}
+    elif sub == "remove":
+        ui.removing = {"id": a, "name": an, "samples": 48, "unsaved": 12, "donor": "4c1d", "files": 2, "saved": None}
+    elif sub == "remove-plain":
+        ui.removing = {"id": b, "name": bn, "samples": 9, "unsaved": 0, "donor": None, "files": 0, "saved": None}
+    elif sub in ("done", "done-kept"):
+        ui.page = ui.tab = "write"
+        saved = os.path.join(documents_dir(), CONTRIB_DIR, "handwriting-contribution-6.jsonl") if sub == "done" else None
+        ui.done = {"id": a if saved else b, "name": an if saved else bn, "saved": saved, "samples": 48 if saved else 9,
+                   "donating": bool(saved)}
 
 
 class Drawn:
@@ -2105,7 +2550,7 @@ def render(argv):
     screen = opt("--screen", opt("--page", "write.prompt"))
     ui = demo(screen, opt("--theme", "white"))
     surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try") else
+    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try", "guest.try") else
           demo_ink("Call back about", 5)[0] if screen.startswith("neat.") else None)
     surf.write_to_png(opt("--render"))
 
