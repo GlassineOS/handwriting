@@ -959,18 +959,20 @@ class Window(Case):
                 u.open_best("intro")
                 u.open_font()
                 return True
-            if seen[2:] and not seen[3:] and u.font is not None and not w.geom[0]:
+            sa = w.stack.get_allocation()
+            if seen[2:] and not seen[3:] and u.font is not None and not u.sheet and sa.width < sa.height:
                 # a character's sheet on Write more: the writing area inside the sheet
                 u.open_char("Q")
                 return True
-            if seen[3:] == [] and u.sheet and w.stack.get_visible_child_name() == "write" and a.height > 100:
+            if seen[2:] and not seen[3:] and u.sheet and w.stack.get_visible_child_name() == "write" and \
+                    a.height > 100:
                 seen.append(("sheet", u.writer.prompt.text, a.width > 600))
                 u.close_char()
                 u.rename_font()
                 return True
-            if seen[4:] == [] and w.entry.get_visible():
+            if seen[3:] and not seen[4:] and w.entry.get_visible():
                 ea = w.entry.get_allocation()
-                seen.append(("rename", w.stack.get_visible_child_name(), ea.y < 936 / 2, w.entry.get_text()))
+                seen.append(("rename", w.stack.get_visible_child_name(), ea.y < sa.height / 2, w.entry.get_text()))
                 w.entry.set_text("Garden letters")
                 u.use_name()
                 seen.append(("named", u.font_name, w.entry.get_visible()))
