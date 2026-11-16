@@ -279,15 +279,16 @@ def fit_pauses(f: Fit, samples_xh, delayed_flags) -> Fit:
     return f
 
 
-# The fit of one writer's prompted samples (the training sessions, 4107 strokes, 11045
-# pulses, median fit 23.7 dB; glassine-train dynfit): what the generator draws writers
+# The fit of one writer's prompted samples (the training sessions, 3882 strokes, 10470
+# pulses, median fit 23.8 dB; glassine-train dynfit): what the generator draws writers
 # around. Aggregate numbers only; one writer, so BROADEN's spread is an assumption.
 FIT_ONE_WRITER = {
-    "dur_a": -1.914, "dur_b": 0.636, "dur_sd": 0.414, "lsig_mean": -2.292, "lsig_sd": 1.044,
-    "dur_lsig_corr": 0.619, "rate_mean": -0.23, "rate_sd": 0.528, "ovl_mean": -0.427, "ovl_sd": 0.515,
-    "st_a": -2.183, "st_b": 0.645, "st_sd": 0.277, "start_speed": 0.1, "end_speed": 0.401,
-    "pause": {"between": [-2.594, 0.456, 0.435], "inside": [-2.575, 0.503, 0.457]},
-    "delayed_pause": [-1.623, 0.477], "strokes": 4107, "pulses": 11045, "snr_db_median": 23.709}
+    "dur_a": -1.912, "dur_b": 0.638, "dur_sd": 0.412, "lsig_mean": -2.283, "lsig_sd": 1.057,
+    "dur_lsig_corr": 0.618, "rate_mean": -0.228, "rate_sd": 0.522, "ovl_mean": -0.426,
+    "ovl_sd": 0.512, "st_a": -2.189, "st_b": 0.65, "st_sd": 0.277, "start_speed": 0.102,
+    "end_speed": 0.399,
+    "pause": {"between": [-2.617, 0.454, 0.406], "inside": [-2.634, 0.538, 0.427]},
+    "delayed_pause": [-1.657, 0.451], "strokes": 3882, "pulses": 10470, "snr_db_median": 23.789}
 
 
 # ---------------------------------------------------------------------------- drawing
