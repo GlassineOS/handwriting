@@ -111,7 +111,9 @@ size, spacing) and keep their shape.
   preferences, careful marking, readability (how well the recognizer read it when it was
   written) and consistency (closeness to the group's typical shape) as weights. Jitter is
   removed; shape, proportions, stroke count and stroke order stay the person's. A variant
-  is never made by mixing versions written with different strokes.
+  is never made by mixing versions written with different strokes. Each variant carries
+  its left and right ink profiles: how far its ink reaches to each side in each height band
+  from the descender to the cap height.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
   prompt with its fit check passed (spans exact) or, for a prompt of one character alone,
   kept on the person's confirmation after a failed check (its strokes can only be that
@@ -122,8 +124,16 @@ size, spacing) and keep their shape.
   an x) is part of the character it lies across or stands over, in words as well as alone,
   and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
   stays the neighbour's, so both count. Line metrics (baseline,
-  x-height, cap height, ascender, descender, slant, letter spacing, word spacing) come from
-  the person's word and sentence samples. The same samples, markings and preferences
+  x-height, cap height, ascender, descender, slant) and spacing come from the person's word
+  and sentence samples. One spacing serves the font and neatening alike. The gap between two
+  letters is the narrowest distance between the right profile of the first and the left
+  profile of the second (between the pen's centre lines; their boxes when they share no
+  height band). A pair of characters the person wrote next to each other at least 3 times
+  gets their median gap. A rarer pair gets the value of its side shapes: the variants'
+  sides grouped by profile (round, straight, diagonal, overhanging as in T, f, r, y). A pair
+  of side shapes seen too rarely as well gets spacing from the profiles alone: the person's
+  typical gap, closer where the profiles leave more open space between them. Word spacing
+  is the person's median gap between words. The same samples, markings and preferences
   always give the same letter model.
 - **FR-008**: The letter model is rebuilt when samples, markings or preferences changed,
   under the same conditions as adaptation (spec 001 FR-009: charging and idle, or when the
@@ -147,11 +157,15 @@ size, spacing) and keep their shape.
   characters and the space (the person's word spacing), drawn in the person's ink width
   (the pen's width on the writing paper they wrote their samples on, relative to their
   x-height); a character's other variants are in the font without a character of their own.
+  Letters are set at the letter model's spacing: side bearings from the profiles and pair
+  kerning that text shaping applies by default, for every pair of variants, so each pair
+  comes out at its gap and words at the word spacing.
   Every other character falls back to the system's default font.
 - **FR-010**: Repeated letters don't look stamped: the font switches between a character's
   variants along the text, each about as often as the person writes it that way, the same
   way every time for the same text, by contextual
-  alternates that text shaping applies by default (no setting in the app). The preview
+  alternates that text shaping applies by default (no setting in the app). The preview,
+  spaced as the font spaces it,
   (Scenario 3) shows the same variants as the installed font for the same text.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
@@ -165,7 +179,10 @@ size, spacing) and keep their shape.
   point moved, with timing, pressure and tilt kept. The text it is read as comes from the
   recognizer (spec 001), which also tells which strokes form which character.
 - **FR-014**: Neatening applies line-level corrections (straight baseline, steady slant,
-  even letter size and spacing) and moves each covered character towards its nearest
+  even letter size, and spacing: each pair of neighbouring letters moved so their gap goes
+  towards the letter model's spacing for that pair, without a letter model towards the
+  line's own median gap, and the gaps between words towards the word spacing, by a limited
+  step) and moves each covered character towards its nearest
   variant in the letter model with the same strokes (a t written in one stroke towards a
   one-stroke variant); a character none of whose variants has its strokes is not moved. A strength from 0 to 1 scales both; 0 returns the ink
   unchanged, 1 the neatest version.
@@ -240,7 +257,8 @@ size, spacing) and keep their shape.
 
 - **Careful / quick marking**: how a sample was written (FR-001), and the pair it belongs to.
 - **Preference**: two versions and the one chosen (FR-003).
-- **Letter model**: per character, the person's best variants and the line metrics; derived
+- **Letter model**: per character, the person's best variants with their profiles, the line
+  metrics and the spacing; derived
   data, rebuilt from samples, markings and preferences.
 - **Handwriting font**: the letter model as an installed font, named and versioned.
 - **Neat ink layer**: what an app draws pen ink through: pen strokes and field context in;
@@ -284,14 +302,18 @@ Host level:
 - without a letter model, and with one that is out of date, the usable samples per character
   are reported as a built model would count them; the font page and neatening show them, say
   the model isn't built or is out of date, and build it without installing the font;
+- word samples with a fixed gap for a pair give that pair that gap, a rare pair its side
+  shapes' value and an unseen pair spacing from the profiles;
 - the font built from it passes a standard font validator, maps exactly the covered
   characters and the space, alternates variants deterministically when shaped with no
-  feature requested, and installs and is found by the system font cache in a test user;
+  feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
+  the word spacing, and the preview places letters where shaping does, and installs and is found by the system font cache in a test user;
   erasing the samples removes it;
 - neatening at strength 0 returns the input byte for byte; at strength 1 every covered
   character is closer to its variant than before, unless the reading check gives its line
-  back; a character is pulled towards a variant with its own strokes; stroke count, order,
-  timing and pressure are kept;
+  back; a character is pulled towards a variant with its own strokes; uneven gaps between
+  letters come out closer to the letter model's spacing; stroke count, order, timing and
+  pressure are kept;
 - the recognizer reads neatened ink at least as well as the original on a held-back set;
 - through the neat ink layer, with a stand-in pen and recognizer: raw strokes pass on at
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
