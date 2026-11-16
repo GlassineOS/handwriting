@@ -136,15 +136,26 @@ size, spacing) and keep their shape.
   and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
   stays the neighbour's, so both count. Line metrics (baseline,
   x-height, cap height, ascender, descender, slant) and spacing come from the person's word
-  and sentence samples. One spacing serves the font and neatening alike. The gap between two
-  letters is the narrowest distance between the right profile of the first and the left
+  and sentence samples. One spacing serves the font and neatening alike, and places
+  each pair by what the variants actually used look like. A letter's middle is the mean
+  position of its ink between the baseline and the x-height, each part weighted by how far
+  it runs up or down: stems and bowls count, bars, hooks and connecting strokes hardly do,
+  so an overhang (T, f, r, y) or a bar set differently in a word than in a variant doesn't
+  move the letters. A pair's distance is from the middle of the first to the middle of the
+  second. A pair of characters the person wrote next to each other at least 3 times is set
+  at their median distance; a rarer pair at how far the person sets letters after its first
+  character plus how far before its second, each learned from all the pairs that character
+  was written in, when both were written next to others at least 3 times. The gap between
+  two letters is the narrowest distance between the right profile of the first and the left
   profile of the second (between the pen's centre lines; their boxes when they share no
-  height band). A pair of characters the person wrote next to each other at least 3 times
-  gets their median gap. A rarer pair gets the value of its side shapes: the variants'
-  sides grouped by profile (round, straight, diagonal, overhanging as in T, f, r, y). A pair
-  of side shapes seen too rarely as well gets spacing from the profiles alone: the person's
-  typical gap, closer where the profiles leave more open space between them. Word spacing
-  is the person's median gap between words. The same samples, markings and preferences
+  height band). It guards the distance: a pair never comes closer than its gap, or half the
+  person's typical gap where that is smaller. The gap is the pair's median gap when written
+  at least 3 times; else the value of its side shapes (the variants' sides grouped by
+  profile: round, straight, diagonal, overhanging as in T, f, r, y); for a pair of side
+  shapes seen too rarely as well, the person's typical gap, closer where the profiles leave
+  more open space between them. A pair without a distance (too rarely written, or a
+  character without ink between the baseline and the x-height) is set at its gap. Word
+  spacing is the person's median gap between words. The same samples, markings and preferences
   always give the same letter model.
 - **FR-008**: The letter model is rebuilt when samples, markings or preferences changed,
   under the same conditions as adaptation (spec 001 FR-009: charging and idle, or when the
@@ -190,7 +201,7 @@ size, spacing) and keep their shape.
   x-height); a character's other variants are in the font without a character of their own.
   Letters are set at the letter model's spacing: side bearings from the profiles and pair
   kerning that text shaping applies by default, for every pair of variants, so each pair
-  comes out at its gap and words at the word spacing.
+  of variants comes out where the spacing places it (FR-007) and words at the word spacing.
   Every other character falls back to the system's default font.
 - **FR-010**: Repeated letters don't look stamped: the font switches between a character's
   variants along the text, each about as often as the person writes it that way, the same
