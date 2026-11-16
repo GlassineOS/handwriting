@@ -383,6 +383,39 @@ class Writer:
             self._advance(self.prompt)
         return self.prompt
 
+    # ------------------------------------------------------------ a kept sample, later
+
+    def delete(self, sid):
+        """a deletion (spec 002 FR-009, the same wherever it is asked): the whole sample, from
+        the samples and from the contribution (forget takes both), its preferences and marks
+        with it; not counted from here on"""
+        self.rec.forget(sid)
+        self.forgotten(sid)
+
+    def rewrite(self, old_id, old, strokes, units, area, donated=False):
+        """Write it again (spec 003 FR-033): the new ink to the old sample's text, marked as the
+        old one was written (written, pair), read and checked as any prompted sample is. Only
+        once it is kept is the old one deleted, as delete() does; a failed check or nothing
+        kept leaves it as it was. The prompt on screen and the waiting checks stay as they are.
+        donated: the old one was in the contribution, so the new one goes there while
+        contributing is on (a shipped set), else nowhere (the own set) -> the Shown"""
+        p = P.Prompt(old.get("text") or "", "words" if donated else P.OWN, old.get("lang") or self.state.lang,
+                     written=old.get("written") or "", pair=old.get("pair") or "")
+        if not p.text or not strokes:
+            return None
+        self.rec.write(SESSION, p.lang, units, area, strokes)
+        try:
+            sh = Shown(p, strokes, units, area, self.rec.read(SESSION), "kept")
+            self._store(sh, keep=False)
+        finally:
+            self.rec.end(SESSION)
+        if sh.status == "kept" and not sh.sample_id:
+            self._take_back(sh)         # in the contribution alone (learning off): the old one stays
+            sh.status = "not-kept"
+        if sh.sample_id and sh.sample_id != old_id:
+            self.delete(old_id)
+        return sh
+
     # ------------------------------------------------------------ counts and coverage
 
     def load_coverage(self, rows=None):

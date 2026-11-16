@@ -227,6 +227,39 @@ class Writing(Case):
         self.assertEqual(self.e.rec.sample(sh.sample_id)["spans_source"], "inferred")
         self.assertNotEqual(w.prompt, first)
 
+    def test_written_again_replaces_only_once_kept(self):
+        """spec 003 FR-033 in the session: the new ink to the old sample's text, marked as the old
+        one was written; a failed check keeps nothing and the old one stays; once kept the old one
+        is deleted. The prompt on screen stays"""
+        w = self.e.writer()
+        w.best = {"step": "quick", "pair": "00112233aabbccdd", "n": 0, "chars": []}
+        w.prompt = P.Prompt("garden", "words", "en", written="quick", pair="00112233aabbccdd")
+        sh, _ = self.write(w, fit_ok=0)
+        old_id = sh.sample_id
+        old = self.e.rec.sample(old_id)
+        w.best, w.prompt = None, w.next_prompt()
+        shown, before = w.prompt, w.shown
+        area = (0, 0, 702, 300, 96, 0)
+        self.e.rec.close()
+        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = "0.99"
+        new = w.rewrite(old_id, old, ink(self.rng, n=6), "device:6.2", area)
+        self.assertEqual(new.status, "check")
+        self.assertIsNone(new.sample_id)
+        self.assertEqual([r[0] for r in self.e.cli.samples()], [old_id])
+        self.assertEqual(self.e.rec.sample(old_id), old)            # as it was
+        self.e.rec.close()
+        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
+        new = w.rewrite(old_id, old, ink(self.rng, n=6), "device:6.2", area)
+        self.assertEqual(new.status, "kept")
+        self.assertEqual([r[0] for r in self.e.cli.samples()], [new.sample_id])
+        got = self.e.rec.sample(new.sample_id)
+        for f in ("text", "lang", "source", "written", "pair"):
+            self.assertEqual(got[f], old[f], f)
+        self.assertNotEqual(got["strokes"], old["strokes"])
+        self.assertEqual(self.e.rec.marked(), {new.sample_id: ("quick", "00112233aabbccdd")})
+        self.assertIs(w.prompt, shown)
+        self.assertIs(w.shown, before)
+
     def test_redo_skip_discard_delete(self):
         w = self.e.writer()
         p1 = w.prompt
@@ -877,6 +910,147 @@ class Pages(Case):
         self.assertTrue(u.font["status"]["font_same"])
         self.assertEqual(self.U.pages.font_mode(u), "installed")
 
+    def test_character_samples_opened(self):
+        """spec 003 FR-033 in the app: a sample opened from the sheet shows the tablet's reading
+        only when it has one; Write it again replaces it only once the new one is kept (its
+        text, source, how it was written and its pair carried; its preferences and its marks
+        gone, the other samples' version marks kept), a failed check or Cancel keeps it; Delete
+        there is the Samples view's deletion; a version lists exactly its ids"""
+        from glassine_hwsamples import pages
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
+        rnd = random.Random(5)
+        ss = [TL.sample(t, rnd) for t in ["abcde", "fghij", "klmno"] * 3]
+        ss += [TL.sample("l", rnd, styles={"l": k % 3}, written="careful") for k in range(12)]
+        ss[-1]["written"], ss[-1]["pair"] = "quick", "00112233aabbccdd"
+        ss[-4]["pair"] = "00112233aabbccdd"          # its careful half
+        del ss[-2]["reading"]
+        f = self.e.dir / "in.jsonl"
+        f.write_text("\n".join([json.dumps({"format": "glassine-handwriting-export", "version": 1})] +
+                               [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
+                                            "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
+        self.e.cli.run("samples", "import", str(f))
+        ids = self.e.cli.samples()
+        got = {r[0]: self.e.rec.sample(r[0]) for r in ids}
+        old = next(i for i, g in got.items() if g.get("written") == "quick")
+        noread = next(i for i, g in got.items() if "reading" not in g)
+        u = self.make()
+        u.wizard_done()
+        u.open_best("intro")
+        u.open_font()
+        self.settle(u, lambda: u.font is not None and not u.letters_loading)
+        u.build_letters()
+        self.settle(u, lambda: not u.letters_job and not u.letters_loading and u.font["model"])
+        u.open_char("l")
+        vs = u.font["model"]["chars"]["l"]["variants"]
+        self.assertGreaterEqual(len(vs), 2)
+        vi = next(i for i, v in enumerate(vs) if old in v["ids"])
+        others = [i for i in range(len(vs)) if i != vi]
+        u.mark_version(vi, "favourite")             # a version mark on the old sample and its company
+        u.mark_version(others[0], "out")
+        partner = next(i for i in vs[vi]["ids"] if i != old) if len(vs[vi]["ids"]) > 1 else None
+        self.settle(u)
+        u.rec.prefer(old, vs[others[0]]["ids"][0], 0, 0)
+        marks = lambda: {tuple(ln.split("\t")[1:4]) for ln in self.e.cli.run("letters", "marks").splitlines()}
+        kept_marks = {m for m in marks() if m[0] != old}
+        self.assertIn((old, "l", "favourite"), marks())
+        # a version's samples: exactly its ids
+        u.version_samples(others[0])
+        self.settle(u, lambda: u.sheet["occ"] is not None)
+        self.assertEqual([o[0] for o in pages.vlist_occ(u)], vs[others[0]]["ids"])
+        self.assertLess(len(pages.vlist_occ(u)), len({o[0] for o in u.sheet["occ"]}))
+        u.sheet_back()
+        self.assertIsNone(u.sheet["vlist"])
+        # the reading only when the sample has one
+        u.sheet_seg("samples")
+        u.sheet_sample(noread, 0)
+        self.settle(u, lambda: u.inks.get(noread))
+        self.assertNotIn("The tablet read", [r[0] for r in pages.opened_rows(u)])
+        u.sheet_back()
+        u.sheet_sample(old, 0)
+        self.settle(u, lambda: u.inks.get(old))
+        self.assertIn(("The tablet read", "“l”"), pages.opened_rows(u))
+        before = self.e.rec.sample(old)
+
+        rng = self.rng
+
+        class Area:
+            def __init__(self):
+                self.strokes = ink(rng, n=2)
+
+            def payload(self):
+                return self.strokes, "device:6.2", (0, 0, 702, 300, 96, 0)
+
+            def clear(self):
+                self.strokes = []
+        # a failed check, then Cancel: the old one as it was
+        self.e.rec.close()
+        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = "0.99"
+        u.redo_start()
+        self.assertTrue(self.U.redoing(u) and self.U.writing(u))
+        u.redo_done(Area())
+        self.settle(u)
+        self.assertEqual(u.sheet["redo"]["shown"].status, "check")
+        u.redo_cancel()
+        self.assertFalse(self.U.redoing(u))
+        self.assertEqual(self.e.rec.sample(old), before)
+        self.assertEqual(len(self.e.cli.samples()), len(ids))
+        # kept: in its place
+        self.e.rec.close()
+        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
+        u.redo_start()
+        u.redo_done(Area())
+        self.settle(u, lambda: not u.sheet["redo"] and u.sheet["occ"] is not None and not u.letters_loading)
+        new = u.sheet["open"][0]
+        self.assertNotEqual(new, old)
+        self.assertTrue(u.sheet["redone"] and u.sheet["changed"])
+        now = {r[0] for r in self.e.cli.samples()}
+        self.assertEqual(now, {r[0] for r in ids} - {old} | {new})
+        got = self.e.rec.sample(new)
+        for k in ("text", "lang", "source", "written", "pair"):
+            self.assertEqual(got[k], before[k], k)
+        self.assertNotIn(old, json.dumps(self.e.rec.preferences()))
+        self.assertEqual({m for m in marks() if m[0] != new}, kept_marks)    # the version marks stay
+        self.assertFalse([m for m in marks() if m[0] in (old, new)])
+        if partner:
+            self.assertIn((partner, "l", "favourite"), marks())
+        # Delete in the sheet = Delete in Samples: the sample, its marks, its preferences
+        a, b = [o[0] for o in u.sheet["occ"] if o[0] not in (new, noread) and o[2] == "usable"][:2]
+        for x in (a, b):
+            u.rec.prefer(x, new, 0, 0)
+        self.e.cli.letters_mark("out", "l", [a, b])
+        u.sheet_back()
+        u.sheet_sample(a, 0)
+        u.ask_sheet_delete()
+        self.assertTrue(u.sheet["asking"])
+        u.sheet_delete()
+        self.settle(u, lambda: not u.letters_loading)
+        self.assertIsNone(u.sheet["open"])
+        u.delete_sample(b)
+        self.settle(u)
+        now = {r[0] for r in self.e.cli.samples()}
+        for x in (a, b):
+            self.assertNotIn(x, now)
+            self.assertFalse([m for m in marks() if m[0] == x])
+            self.assertNotIn(x, json.dumps(self.e.rec.preferences()))
+        self.assertNotIn(a, [o[0] for o in u.sheet["occ"]])        # the sheet's list read again
+        # the sheet closed while the new one is checked: it still takes the old one's place, and
+        # the character is learned again
+        relearned = []
+        learn = u.relearn_char
+        u.relearn_char = lambda c: (relearned.append(c), learn(c))
+        u.sheet_sample(new, 0)
+        self.settle(u, lambda: u.inks.get(new))
+        u.redo_start()
+        u.redo_done(Area())
+        u.sheet["changed"] = False                  # nothing else to learn on close
+        u.close_char()
+        self.settle(u, lambda: not u.relearn and not u.letters_loading and relearned)
+        now = {r[0] for r in self.e.cli.samples()}
+        self.assertNotIn(new, now)
+        self.assertEqual(len(now), len(ids) - 2)
+        self.assertEqual(relearned, ["l"])
+
     def test_neaten_page(self):
         """spec 003 Scenario 4 in the app: what is written comes back with the same strokes,
         the original stays, a strength change neatens again, nothing becomes a sample"""
@@ -1415,6 +1589,51 @@ class Drawn(unittest.TestCase):
                         if (w, h) != size:                    # a dialog's backdrop
                             self.assertTrue(0 <= x and x + w <= size[0] + 1 and 0 <= y and y + h <= size[1] + 1,
                                             (voice, size, s, x, y, w, h))
+
+    def test_opened_sample_states(self):
+        """a sample opened in the sheet, drawn in each state, upright and turned: a failed check
+        while it is written again (the writing area keeps its room, Cancel waits while it is
+        checked), written again, one that can't be used (no Leave out, its reason), one left
+        out (Put back)"""
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from glassine_hwsamples import pages, ui
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        import cairo
+
+        def drawn(u, size):
+            hits = ui.paint(cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, *size)), u, *size)
+            for x, y, w, h, _ in hits.boxes:
+                if (w, h) != size:
+                    self.assertTrue(0 <= x and x + w <= size[0] + 1 and 0 <= y and y + h <= size[1] + 1, (size, x, y))
+            return len(hits.boxes)
+        for size in ((702, 936), (1248, 702)):
+            u = ui.demo("char.redo")
+            p = P.Prompt("water", "own", "en")
+            u.sheet["redo"]["shown"] = flow.Shown(p, ui.demo_ink("water", 2)[0], "em", (0, 0, 1, 1, 96, 0),
+                                                  [("wader", -1.0)], "check", fit=0.2)
+            drawn(u, size)
+            lay = ui.layout(u, *size)
+            self.assertGreater(lay["area"][3], 200, size)
+            n = drawn(u, size)
+            u.sheet["redo"]["busy"] = True
+            u.sheet["redo"]["shown"] = None
+            self.assertEqual(drawn(u, size), n - 1 - 1)  # no Write it again, Cancel waits
+            u = ui.demo("char.sample")
+            usable = drawn(u, size)
+            u.sheet["redone"] = True
+            self.assertEqual(drawn(u, size), usable)
+            occ = u.sheet["occ"]
+            u.sheet["open"] = (occ[3][0], occ[3][1])            # "little": joined to the next t
+            self.assertEqual(drawn(u, size), usable - 1)        # no Leave out
+            self.assertIn(("In your font", "Can’t be used: joined to the next t"), pages.opened_rows(u))
+            u.sheet["occ"] = [o if i != 2 else (o[0], o[1], "out", -1, o[4]) for i, o in enumerate(occ)]
+            u.sheet["open"] = (occ[2][0], occ[2][1])
+            self.assertEqual(drawn(u, size), usable)            # Put back
+            self.assertIn(("In your font", "Left out"), pages.opened_rows(u))
+            self.assertTrue(pages.opened_note(u.opened()[2]).startswith("Left out"))
 
     def test_font_preview_fits_its_box(self):
         """the font page's preview, in a hand with wide letters, stays inside its box"""
