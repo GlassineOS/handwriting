@@ -3,8 +3,12 @@
 the person writes it, the sample is checked and kept (or shown as failing the check), and
 Redo, Skip and Discard act on the shown sample until the next one is kept."""
 
+import collections
+import dataclasses
 import json
+import random
 import os
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +35,9 @@ class State:
         self.current = None          # (set, text) of the prompt on screen
         self.donating = False
         self.lang = "en"
+        self.introduced = False      # the first-start introduction was shown (or not needed)
+        self.best_used = {}          # Your handwriting's prompts shown in this round
+        self.picks = {}              # {day: picks made}, for "N picks today"
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
@@ -40,6 +47,9 @@ class State:
             self.current = tuple(cur) if cur else None
             self.donating = bool(d.get("donating", False))
             self.lang = d.get("lang", "en")
+            self.introduced = bool(d.get("introduced", False))
+            self.best_used = {k: list(v) for k, v in d.get("best_used", {}).items()}
+            self.picks = {k: int(v) for k, v in d.get("picks", {}).items()}
         except (OSError, ValueError, AttributeError, TypeError):
             pass
 
@@ -49,7 +59,8 @@ class State:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"set": self.set, "used": self.used, "current": list(self.current) if self.current else None,
-                       "donating": self.donating, "lang": self.lang}, f)
+                       "donating": self.donating, "lang": self.lang, "introduced": self.introduced,
+                       "best_used": self.best_used, "picks": dict(list(self.picks.items())[-7:])}, f)
         os.replace(tmp, self.path)
 
 
@@ -88,6 +99,10 @@ class Writer:
         # one after the other, oldest first, before any sample read after them, so none
         # goes unseen while the person writes on
         self.checks = []
+        # Your handwriting (spec 003): None, or the careful writing's place: its step
+        # ("careful", "quick", then "pair" for the careful half of a pair), the pair's link,
+        # how many were written
+        self.best = None
         self.prompt = self._restore() or self.next_prompt()
 
     # ------------------------------------------------------------ prompts
@@ -102,6 +117,8 @@ class Writer:
         return None
 
     def next_prompt(self):
+        if self.best is not None:
+            return self._best_next()
         with self.lock:
             p = P.choose(self.sets, self.state.set, self.cov, self.state.used)
             self.prompt = p
@@ -113,6 +130,68 @@ class Writer:
         self.state.set = name
         self.shown = self.checks[0] if self.checks else None
         return self.next_prompt()
+
+    # ------------------------------------------------------------ Your handwriting
+
+    QUICK_EVERY = 3                     # every third careful word is written quickly first
+
+    def start_best(self):
+        """Write it your best: words written with care, now and then once quickly first"""
+        with self.lock:
+            self.best = {"step": "careful", "pair": "", "n": 0}
+            self.shown = None
+            return self._best_next()
+
+    def stop_best(self):
+        with self.lock:
+            self.best = None
+            self.shown = self.checks[0] if self.checks else None
+            return self.next_prompt()
+
+    def _best_next(self, same=None):
+        with self.lock:
+            b = self.best
+            if same is not None:
+                base = same
+            else:
+                base = P.choose(self.sets, "words", self.cov, self.state.best_used)
+                b["step"] = "quick" if b["n"] % self.QUICK_EVERY == self.QUICK_EVERY - 1 else "careful"
+                b["pair"] = secrets.token_hex(8) if b["step"] == "quick" else ""
+            if base is None:
+                self.prompt = None
+                return None
+            written = "quick" if b["step"] == "quick" else "careful"
+            self.prompt = dataclasses.replace(base, written=written, pair=b["pair"])
+            return self.prompt
+
+    def _best_advance(self, p):
+        with self.lock:
+            b = self.best
+            if b["step"] == "quick":
+                b["step"] = "pair"              # the same word again, slowly
+                self._best_next(same=dataclasses.replace(p, written="", pair=""))
+                return
+            P.mark_used(self.state.best_used, p)
+            b["n"] += 1
+            self.state.save()
+            self._best_next()
+
+    def redo_quick(self):
+        """the careful half's Redo: the quick one goes, the pair starts again"""
+        sh = self.shown
+        with self.lock:
+            b = self.best
+            if not b or b["step"] != "pair":
+                return self.prompt
+        if sh and sh.prompt.written == "quick":
+            self._take_back(sh)
+        with self.lock:
+            self._resolved(sh) if sh else None
+            b["step"] = "quick"
+            b["pair"] = secrets.token_hex(8)
+            base = dataclasses.replace(self.prompt, written="", pair="")
+            self.prompt = dataclasses.replace(base, written="quick", pair=b["pair"])
+            return self.prompt
 
     def reload_sets(self):
         self.sets = P.load(self.state.lang)
@@ -174,6 +253,8 @@ class Writer:
 
     def _store(self, sh, keep):
         p = sh.prompt
+        if p.written or p.pair:
+            self.rec.mark(SESSION, p.written, p.pair)
         r = self.rec.confirm_prompted(SESSION, p.text, keep=keep)
         if r[0] == "ok":
             sh.sample_id, sh.exact = r[1], r[2] == "exact"
@@ -205,6 +286,8 @@ class Writer:
                 self.kept_now += 1
 
     def _advance(self, p):
+        if self.best is not None and p.written:
+            return self._best_advance(p)
         with self.lock:
             P.mark_used(self.state.used, p)
             self.next_prompt()
@@ -308,3 +391,93 @@ class Writer:
         day0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
         rows = self.cli.samples() if rows is None else rows
         return sum(1 for r in rows if r[1] >= day0), len(rows)
+
+
+def needs_intro(state, total):
+    """the introduction comes once, on the first start (spec 002 FR-012). A store that
+    already has samples (written before, or imported) has had its first start: it is
+    marked so, and the introduction never comes"""
+    if state.introduced:
+        return False
+    if total > 0:
+        state.introduced = True
+        state.save()
+        return False
+    return True
+
+
+def day_start(now=None):
+    lt = time.localtime(time.time() if now is None else now)
+    return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def today(now=None):
+    return time.strftime("%Y-%m-%d", time.localtime(time.time() if now is None else now))
+
+
+# ---------------------------------------------------------------- Which one is nicer?
+
+PICK_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+
+def pick_candidates(rows, prefs, rng=None):
+    """the characters to compare, best first (spec 003 FR-004: those with the fewest
+    preferences, among characters at least two samples have), each with the samples that
+    have it: [(char, [(id, k)])], k the character's place in the sample's text. From the
+    listing alone: no strokes are read. rows: [(id, time, text)]; prefs: [(chosen, other,
+    cchar, ochar)]"""
+    rng = rng or random.Random()
+    text = {r[0]: r[2] for r in rows}
+    done = collections.Counter()
+    for c, o, cc, oc in prefs:
+        if cc is not None and c in text and cc < len(text[c]):
+            done[text[c][cc]] += 1
+    have = collections.defaultdict(list)
+    for sid, _, t in rows:
+        for k, ch in enumerate(t):
+            if ch in PICK_CHARS:
+                have[ch].append((sid, k))
+    out = []
+    for ch, places in have.items():
+        ids = {s for s, _ in places}
+        if len(ids) < 2:
+            continue
+        first = {}
+        for s, k in places:
+            first.setdefault(s, k)
+        out.append((done[ch], rng.random(), ch, list(first.items())))
+    out.sort()
+    return [(ch, places) for _, _, ch, places in out]
+
+
+def crop(sample, k):
+    """the strokes of the character at k (by its span), or [] when it isn't known"""
+    spans = sample.get("spans") or []
+    st = sample.get("strokes") or []
+    if k >= len(spans) or not spans[k]:
+        return []
+    return [st[i] for i in spans[k] if i < len(st)]
+
+
+def load_pick(rec, rows, prefs, rng=None, tries=6):
+    """two of the person's versions of one character: {"a": (id, strokes, k), "b": ...,
+    "char": c, "chosen": None}, or None when there is nothing to choose from. Fetches only
+    the samples it shows (and a few more when a span isn't known)"""
+    rng = rng or random.Random()
+    fetched = 0
+    for ch, places in pick_candidates(rows, prefs, rng)[:8]:
+        rng.shuffle(places)
+        got = []
+        for sid, k in places:
+            if fetched >= tries:
+                return None
+            fetched += 1
+            try:
+                st = crop(rec.sample(sid), k)
+            except Exception:
+                st = []
+            if st:
+                got.append((sid, st, k))
+            if len(got) == 2:
+                return {"a": got[0], "b": got[1], "char": ch, "chosen": None}
+    return None
