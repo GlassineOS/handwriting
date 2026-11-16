@@ -93,6 +93,19 @@ static int str(json_object *obj, const char *key, char *out, size_t len, int req
 	return 0;
 }
 
+int hw_written_ok(const char *w)
+{
+	return !*w || !strcmp(w, "careful") || !strcmp(w, "quick");
+}
+
+int hw_pair_ok(const char *p)
+{
+	if (!*p) return 1;
+	size_t n = 0;
+	for (; p[n]; n++) if (!((p[n] >= '0' && p[n] <= '9') || (p[n] >= 'a' && p[n] <= 'f'))) return 0;
+	return n == 16;
+}
+
 #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); goto bad; } while (0)
 
 int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t errlen)
@@ -111,6 +124,8 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 	if (str(o, "spans_source", s->spans_source, sizeof s->spans_source, 1)) FAIL("bad spans_source");
 	if (str(o, "licence", s->licence, sizeof s->licence, 0)) FAIL("bad licence");
 	if (str(o, "donor", s->donor, sizeof s->donor, 0)) FAIL("bad donor");
+	if (str(o, "written", s->written, sizeof s->written, 0) || !hw_written_ok(s->written)) FAIL("bad written");
+	if (str(o, "pair", s->pair, sizeof s->pair, 0) || !hw_pair_ok(s->pair)) FAIL("bad pair");
 	if (!json_object_object_get_ex(o, "units", &v) || !json_object_is_type(v, json_type_object)) FAIL("no units");
 	if (str(v, "xy", s->units.xy, sizeof s->units.xy, 1)) FAIL("bad units");
 	json_object *u;
@@ -231,6 +246,8 @@ char *hw_sample_format(const struct hw_sample *s)
 	json_object_object_add(o, "spans_source", json_object_new_string(s->spans_source));
 	if (s->licence[0]) json_object_object_add(o, "licence", json_object_new_string(s->licence));
 	if (s->donor[0]) json_object_object_add(o, "donor", json_object_new_string(s->donor));
+	if (s->written[0]) json_object_object_add(o, "written", json_object_new_string(s->written));
+	if (s->pair[0]) json_object_object_add(o, "pair", json_object_new_string(s->pair));
 	json_object *u = json_object_new_object();
 	json_object_object_add(u, "xy", json_object_new_string(s->units.xy));
 	if (s->units.per_mm > 0) json_object_object_add(u, "per_mm", jnum(s->units.per_mm));
