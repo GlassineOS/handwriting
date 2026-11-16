@@ -504,7 +504,7 @@ def char_prompts(c, sets, lang, n):
     """the character sheet's Write more for c: n prompts, the character on its own and in a
     word in turn (a word of the shipped ones that has it; a capital: one that starts with
     it), each written with care"""
-    words = [p.text for name in ("words", "digits") for p in sets.get(name, []) if c in p.text and " " not in p.text]
+    words = [p.text for name in ("words", "digits", "symbols") for p in sets.get(name, []) if c in p.text and " " not in p.text]
     if not words and c.isalpha():
         low = c.lower()
         words = [p.text[0].upper() + p.text[1:] for p in sets.get("words", []) if p.text.startswith(low)]
