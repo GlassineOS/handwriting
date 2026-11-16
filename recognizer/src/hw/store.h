@@ -87,6 +87,8 @@ int hw_donor_new(char *out, size_t n);
 int hw_donation_remove(const char *id);         /* 1 removed, 0 not there, -1 error */
 int hw_donation_has(const char *id);            /* 1 there, 0 not, -1 error */
 char *hw_donation_line(const char *id);
+/* the ids of the samples in the donation, each once, in the order added (malloc'd) */
+int hw_donation_ids(char (**out)[17], size_t *n);
 
 /* Preferences (spec 003 FR-003): of two samples (or one character of each, by its index in
  * the text; -1 the whole sample) the one the person chose. Kept in the store's

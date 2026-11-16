@@ -851,6 +851,9 @@ class Samples(unittest.TestCase):
         c.close()
         self.assertEqual(self.env.run("samples", "list").stdout.count("\n"), 1)   # donations aren't samples
         self.env.run("donation", "add", r[3])            # one of the person's own, picked
+        self.env.run("donation", "add", r[3])            # once
+        self.assertEqual(len(self.env.run("donation", "samples").stdout.split()), 2)
+        self.assertEqual(self.env.run("donation", "samples").stdout.split()[1], r[3])
         out = self.env.dir / "donation.jsonl"
         self.env.run("donation", "write", str(out))
         rows = [json.loads(x) for x in out.read_text().splitlines()]

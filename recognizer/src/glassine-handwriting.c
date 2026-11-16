@@ -8,7 +8,7 @@
 //   glassine-handwriting learning [on|off]
 //   glassine-handwriting adapt [-f] [-l LANG] ...    one adaptation (idle and charging)
 //   glassine-handwriting adaptation [show|revert] [-l LANG]
-//   glassine-handwriting donation start LICENCE|add ID|list|earlier|donor [new]|write FILE|erase|prompts
+//   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -1335,7 +1335,7 @@ static void usage(void)
 	      "       glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]\n"
 	      "       glassine-handwriting adaptation [show|revert] [-l LANG]\n"
 	      "       glassine-handwriting charging\n"
-	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
+	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
 }
@@ -1484,6 +1484,14 @@ static int cmd_donation(int argc, char **argv)
 		if (!line) fprintf(stderr, err ? "glassine-handwriting: can't read the samples\n" : "glassine-handwriting: no sample %s\n", argv[1]);
 		free(line);
 		return r;
+	}
+	if (!strcmp(argv[0], "samples") && argc == 1) {
+		char (*ids)[17];
+		size_t n;
+		if (hw_donation_ids(&ids, &n)) return 1;
+		for (size_t i = 0; i < n; i++) puts(ids[i]);
+		free(ids);
+		return 0;
 	}
 	if (!strcmp(argv[0], "earlier") && (argc == 1 || (argc == 3 && !strcmp(argv[1], "-c")))) {
 		/* the prompted samples written to shipped prompts that the donation hasn't got:
