@@ -161,6 +161,29 @@ class Recognizer:
             return ("ok", int(r[1]), r[2])
         return ("skip", r[1], float(r[2]) if len(r) > 2 else None)
 
+    def mark(self, session, written, pair):
+        """the session's kept samples are careful or quick, and share a pair link"""
+        self.ask("mark", session, written or "-", pair or "-")
+
+    def marked(self):
+        """this app's marked samples: {id: (written, pair)}"""
+        r = self.ask("marked")
+        n = int(r[0])
+        return {r[1 + 3 * i]: (r[2 + 3 * i] if r[2 + 3 * i] != "-" else "", r[3 + 3 * i] if r[3 + 3 * i] != "-" else "")
+                for i in range(n)}
+
+    def prefer(self, chosen, other, cchar=None, ochar=None):
+        """the person found chosen nicer than other (with cchar, ochar: one character of each)"""
+        extra = [str(cchar), str(ochar)] if cchar is not None else []
+        self.ask("prefer", chosen, other, *extra)
+
+    def preferences(self):
+        """[(chosen, other, cchar or None, ochar or None)]"""
+        r = self.ask("preferences")
+        n = int(r[0])
+        f = lambda v: None if v == "-" else int(v)
+        return [(r[1 + 4 * i], r[2 + 4 * i], f(r[3 + 4 * i]), f(r[4 + 4 * i])) for i in range(n)]
+
     def end(self, session):
         try:
             self.ask("end", session)
@@ -301,6 +324,10 @@ class Cli:
 
     def donation_add(self, sample_id):
         self.run("donation", "add", sample_id)
+
+    def donation_ids(self):
+        """the ids of the samples in the donation"""
+        return set(self.run("donation", "samples").split())
 
     def donation_earlier(self):
         """this app's prompted samples written to shipped prompts that the donation hasn't

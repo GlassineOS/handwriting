@@ -10,11 +10,21 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: build and test on Alpine
         run: |
           docker run --rm -v "$PWD":/src -w /src alpine:3.24 sh -euc '
-            apk add -q build-base pkgconf json-c-dev python3 py3-numpy
+            apk add -q build-base pkgconf json-c-dev python3 py3-numpy \
+              py3-gobject3 py3-cairo gtk+3.0 font-dejavu xvfb git
+            # the samples app draws with glassine_ui: the commit the packages build
+            git clone -q https://github.com/GlassineOS/ui /tmp/ui
+            git -C /tmp/ui checkout -q 77ed45f37ff8fbc1ce2acf8321a17b87a64cbbc5
             make -C recognizer OUT=/tmp check
-            make -C samples check HW_BIN=/tmp/glassine-handwriting'
+            # the window test on its own X server; a hang ends in tracebacks (faulthandler
+            # on SIGABRT), not in a stuck job
+            Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+            for i in $(seq 50); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+            DISPLAY=:99 PYTHONPATH=/tmp/ui/python GLASSINE_HWSAMPLES_WINDOW_TEST=1 PYTHONUNBUFFERED=1 \
+              PYTHONFAULTHANDLER=1 timeout -s ABRT -k 10 600 make -C samples check HW_BIN=/tmp/glassine-handwriting'

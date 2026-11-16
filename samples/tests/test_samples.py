@@ -100,6 +100,11 @@ class Case(unittest.TestCase):
         strokes = ink(self.rng, n=max(3, len(w.prompt.text)))      # enough ink for the prompt
         return w.submit(strokes, "device:6.2", (0, 0, 702, 300, 96, 0)), strokes
 
+    def write_to(self, w, p, fit_ok):
+        self.e.rec.close()
+        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = str(fit_ok)
+        return w.submit(ink(self.rng, n=max(3, len(p.text))), "device:6.2", (0, 0, 702, 300, 96, 0), p)
+
 
 class Prompts(Case):
     def test_shipped_sets(self):
@@ -277,11 +282,6 @@ class Writing(Case):
         self.assertIs(w.shown, sh3)
         self.assertEqual(w.checks, [])
         self.assertEqual(len(self.e.cli.samples()), 2)
-
-    def write_to(self, w, p, fit_ok):
-        self.e.rec.close()
-        self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = str(fit_ok)
-        return w.submit(ink(self.rng, n=max(3, len(p.text))), "device:6.2", (0, 0, 702, 300, 96, 0), p)
 
     def test_resumes_its_place(self):
         st = flow.State()
@@ -469,6 +469,265 @@ class Files(Case):
         self.assertEqual(last[1][0], "too-few")
         self.assertEqual(lines[0], "plan")
         self.assertEqual(self.e.cli.adaptations(), {"current": None, "previous": None})
+
+
+class YourHandwriting(Case):
+    """spec 003 FR-001 to FR-005: careful and quick samples, pairs, Which one is nicer?"""
+
+    def best_write(self, w):
+        p = w.take()
+        sh = self.write_to(w, p, fit_ok=0)
+        self.assertEqual(sh.status, "kept")
+        return p, sh
+
+    def test_careful_quick_and_pairs(self):
+        w = self.e.writer()
+        w.start_best()
+        written = [self.best_write(w) for _ in range(4)]      # careful, careful, quick, its careful half
+        steps = [p.written for p, _ in written]
+        self.assertEqual(steps, ["careful", "careful", "quick", "careful"])
+        quick, half = written[2], written[3]
+        self.assertEqual(quick[0].text, half[0].text)          # the same word again, slowly
+        self.assertTrue(quick[0].pair and quick[0].pair == half[0].pair)
+        self.assertFalse(written[0][0].pair)
+        marked = self.e.rec.marked()
+        self.assertEqual({sh.sample_id: (p.written, p.pair) for p, sh in written}, marked)
+        smp = self.e.rec.sample(quick[1].sample_id)
+        self.assertEqual((smp["written"], smp["pair"]), ("quick", quick[0].pair))
+        self.assertEqual(len(self.e.cli.samples()), 4)          # also ordinary samples (FR-005)
+        w.stop_best()
+        p, sh = self.best_write(w)
+        self.assertFalse(p.written or p.pair)
+        self.assertNotIn(sh.sample_id, self.e.rec.marked())
+
+    def test_redo_of_the_quick_one(self):
+        w = self.e.writer()
+        w.start_best()
+        for _ in range(2):
+            self.best_write(w)
+        quick_p, quick = self.best_write(w)
+        self.assertEqual(w.best["step"], "pair")
+        again = w.redo_quick()
+        self.assertEqual((again.text, again.written), (quick_p.text, "quick"))
+        self.assertNotEqual(again.pair, quick_p.pair)          # a new pair
+        self.assertNotIn(quick.sample_id, [r[0] for r in self.e.cli.samples()])
+
+    def test_which_one_is_nicer(self):
+        st = flow.State()
+        st.set = "words"
+        w = self.e.writer(st)
+        for _ in range(6):
+            self.write(w, fit_ok=0)
+        rows = [(r[0], r[1], r[4]) for r in self.e.rec.list()]
+        cands = flow.pick_candidates(rows, [], random.Random(1))
+        self.assertTrue(cands)
+        for ch, places in cands:
+            self.assertGreaterEqual(len({sid for sid, _ in places}), 2)
+            for sid, k in places:
+                self.assertEqual(next(r[2] for r in rows if r[0] == sid)[k], ch)
+        pk = flow.load_pick(self.e.rec, rows, [], random.Random(1))
+        self.assertIsNotNone(pk)
+        (a, sa, ka), (b, sb, kb) = pk["a"], pk["b"]
+        self.assertNotEqual(a, b)
+        smp = self.e.rec.sample(a)
+        self.assertEqual(sa, [smp["strokes"][i] for i in smp["spans"][ka]])
+        self.e.rec.prefer(a, b, ka, kb)
+        prefs = self.e.rec.preferences()
+        self.assertEqual(prefs, [(a, b, ka, kb)])
+        # a character already picked comes after the ones not picked yet
+        again = flow.pick_candidates(rows, prefs * 3, random.Random(1))
+        self.assertEqual(again[-1][0], pk["char"])
+        # deleting either sample takes the preference with it
+        self.e.rec.forget(b)
+        self.assertEqual(self.e.rec.preferences(), [])
+        self.assertIsNone(flow.load_pick(self.e.rec, rows[:1], []))
+
+    def test_introduction_once(self):
+        st = flow.State()
+        self.assertTrue(flow.needs_intro(st, 0))
+        st.introduced = True
+        self.assertFalse(flow.needs_intro(st, 0))
+        old = flow.State()                                     # a store with samples from before
+        old.introduced = False
+        self.assertFalse(flow.needs_intro(old, 12))
+        self.assertTrue(flow.State().introduced)               # saved: never asked again
+
+
+class Pages(Case):
+    """the UI object on a real recognizer (no window): the first start, Your best, Which one
+    is nicer?, deleting from the samples and the donation (needs GTK and glassine_ui)"""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from gi.repository import GLib
+            from glassine_hwsamples import ui
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        self.GLib, self.U = GLib, ui
+        os.environ["GLASSINE_HANDWRITING_BIN"] = BIN
+        client.BIN = BIN
+
+    def settle(self, u, cond=lambda: True, limit=60):
+        """runs the main loop until the worker is idle and cond() holds"""
+        loop = self.GLib.MainLoop()
+        t0 = [0]
+
+        def check():
+            t0[0] += 1
+            if (not u.busy and not u.refreshing and cond()) or t0[0] > limit * 100:
+                loop.quit()
+                return False
+            return True
+        self.GLib.timeout_add(10, check)
+        loop.run()
+        self.assertTrue(cond())
+
+    def make(self):
+        u = self.U.UI(lambda: None)
+        u.rec.close()
+        u.rec, u.cli = self.e.rec, self.e.cli
+        u.writer = flow.Writer(u.rec, u.cli, u.state)
+        u.refresh()
+        self.settle(u, lambda: u.loaded)
+        return u
+
+    def submit(self, u):
+        p = u.writer.take()
+        u.submit(ink(self.rng, n=max(3, len(p.text))), "device:6.2", (0, 0, 702, 300, 96, 0), p)
+        self.settle(u)
+        return u.writer.shown
+
+    def test_first_start_and_decline(self):
+        u = self.make()
+        self.assertEqual((u.page, u.wstep), ("wizard", "w-welcome"))
+        u.wizard_next()
+        self.assertEqual(u.wstep, "w-try")
+        sh = self.submit(u)                                   # Try one: an ordinary prompted sample
+        self.assertTrue(u.tried and sh.status == "kept")
+        self.assertEqual(self.e.rec.sample(sh.sample_id)["source"], "prompted")
+        for step in ("w-private", "w-learning", "w-share"):
+            u.wizard_next()
+            self.assertEqual(u.wstep, step)
+        u.wizard_decline()                                    # Not now: no licence, no donor ID
+        self.settle(u)
+        self.assertEqual(u.wstep, "w-ready")
+        self.assertEqual(self.e.cli.donation()[0], None)
+        self.assertEqual(self.e.cli.run("donation", "donor").strip(), "-")
+        u.wizard_next()
+        self.assertEqual(u.page, "write")
+        self.assertTrue(flow.State().introduced)
+        self.assertFalse(flow.needs_intro(flow.State(), 1))
+
+    def test_accept_then_delete_takes_both(self):
+        u = self.make()
+        u.wizard_to("w-licence")
+        u.pick_licence("CC0-1.0")
+        u.wizard_next()
+        self.settle(u, lambda: u.donation[0] == "CC0-1.0")
+        self.assertEqual(u.wstep, "w-ready")
+        u.wizard_done()
+        sh = self.submit(u)
+        self.assertTrue(sh.sample_id and sh.donated_id)
+        u.refresh()
+        self.settle(u, lambda: sh.sample_id in u.donated)    # the grid marks it as donated
+        u.delete_sample(sh.sample_id)
+        self.settle(u, lambda: not u.samples)
+        self.assertEqual(u.donation[1], 0)                    # gone from the donation too
+        self.assertEqual(self.e.cli.donation_ids(), set())
+
+    def test_best_and_pick(self):
+        u = self.make()
+        u.wizard_done()
+        u.start_best()
+        self.settle(u)
+        kinds = []
+        for _ in range(4):
+            sh = self.submit(u)
+            kinds.append(sh.prompt.written)
+        self.assertEqual(kinds, ["careful", "careful", "quick", "careful"])
+        self.assertEqual(u.careful_today(), 3)
+        u.open_best("intro")
+        self.settle(u)
+        self.assertIsNone(u.writer.best)
+        u.refresh()
+        self.settle(u)
+        u.start_pick()
+        self.settle(u, lambda: u.pick is not None)
+        u.choose_pick(0)
+        self.settle(u, lambda: u.prefs)
+        self.assertEqual(len(self.e.rec.preferences()), 1)
+        self.assertEqual(u.picks_today(), 1)
+
+
+@unittest.skipUnless(os.environ.get("GLASSINE_HWSAMPLES_WINDOW_TEST") == "1", "opens a window (CI runs it on Xvfb)")
+class Window(Case):
+    """the real window: the introduction opens on an empty store, Try one places the
+    writing area, and the window turns without the parts holding its size"""
+
+    def test_window(self):
+        import gi
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import GLib
+        import functools
+        from glassine_hwsamples import ui
+        rec, cli = client.Recognizer, client.Cli
+        client.Recognizer = functools.partial(rec, BIN, env=self.e.env)
+        client.Cli = functools.partial(cli, BIN, env=self.e.env)
+        self.addCleanup(setattr, client, "Recognizer", rec)
+        self.addCleanup(setattr, client, "Cli", cli)
+        app = ui.App()
+        seen = []
+
+        def step():
+            w = app.win
+            if not w or not app.ui.loaded:
+                return True
+            u = app.ui
+            if u.page == "wizard" and u.wstep == "w-welcome":
+                seen.append(w.stack.get_visible_child_name())
+                u.wizard_next()
+                return True
+            a = w.canvas.get_allocation()
+            if u.wstep == "w-try" and not seen[1:] and a.height > 100:
+                seen.append(("try", w.stack.get_visible_child_name(), a.width > 600))
+                w.resize(936, 702)
+                return True
+            if seen[1:] and not seen[2:] and w.geom and w.geom[0]:
+                seen.append(("turned", a.width < 936 and a.height < 702))
+                app.quit()
+                return False
+            return True
+        GLib.timeout_add(200, step)
+        GLib.timeout_add(30000, app.quit)
+        app.run(["glassine-handwriting-samples"])
+        self.assertEqual(seen, ["full", ("try", "write", True), ("turned", True)])
+
+
+class Drawn(unittest.TestCase):
+    """every screen of the design draws, in each voice and turned (needs GTK and glassine_ui)"""
+
+    def test_screens(self):
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from glassine_hwsamples import ui
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        import cairo
+        for voice in ("white", "editorial", "stationery"):
+            for size in ((702, 936), (1248, 702)):
+                for s in ui.SCREENS:
+                    u = ui.demo(s, voice)
+                    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, *size)
+                    hits = ui.paint(cairo.Context(surf), u, *size)
+                    self.assertTrue(hits.boxes, (voice, size, s))
+                    for x, y, w, h, _ in hits.boxes:
+                        if (w, h) != size:                    # a dialog's backdrop
+                            self.assertTrue(0 <= x and x + w <= size[0] + 1 and 0 <= y and y + h <= size[1] + 1,
+                                            (voice, size, s, x, y, w, h))
 
 
 if __name__ == "__main__":
