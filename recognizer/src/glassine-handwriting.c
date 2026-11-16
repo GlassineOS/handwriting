@@ -9,6 +9,8 @@
 //   glassine-handwriting adapt [-f] [-l LANG] ...    one adaptation (idle and charging)
 //   glassine-handwriting adaptation [show|revert] [-l LANG]
 //   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
+//   glassine-handwriting letters build [-f] [-r]|status|show   the letter model (spec 003)
+//   glassine-handwriting font build [-n NAME] FILE|install [-n NAME]|remove|status
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -33,6 +35,7 @@
 #include <unistd.h>
 #include "hw/adapt.h"
 #include "hw/gesture.h"
+#include "hw/letters.h"
 #include "hw/recog.h"
 #include "hw/sample.h"
 #include "hw/store.h"
@@ -1246,6 +1249,9 @@ static void background_adapt(void)
 		struct hw_adapt_opts o = { langs[k], 0, 40, 10, 5, 32, 8, 1e-3f, 0, 0, 0 };
 		hw_adapt_run(&o);
 	}
+	/* the letter model, when its samples, markings or preferences changed */
+	struct hw_letters_opts lo = { 0, 0, 0 };
+	hw_letters_run(&lo);
 	_exit(0);
 }
 
@@ -1336,6 +1342,8 @@ static void usage(void)
 	      "       glassine-handwriting adaptation [show|revert] [-l LANG]\n"
 	      "       glassine-handwriting charging\n"
 	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
+	      "       glassine-handwriting letters build [-f] [-r] | status | show\n"
+	      "       glassine-handwriting font build [-n NAME] FILE | install [-n NAME] | remove | status\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
 }
@@ -1542,6 +1550,127 @@ static int cmp_double(const void *a, const void *b)
 }
 
 /* read / bench: sample-format lines from FILE */
+static int cmd_letters(int argc, char **argv)
+{
+	const char *sub = argc > 0 ? argv[0] : "status";
+	if (!strcmp(sub, "build")) {
+		struct hw_letters_opts o = { 0, 0, 1 };
+		for (int i = 1; i < argc; i++) {
+			if (!strcmp(argv[i], "-f")) o.force = 1;
+			else if (!strcmp(argv[i], "-r")) o.requested = 1;
+			else { usage(); return 2; }
+		}
+		/* asked for or not, it runs at the lowest priority: the device stays usable */
+		if (nice(19) == -1) {}
+		return hw_letters_run(&o) < 0 ? 1 : 0;
+	}
+	if (argc != 1) { usage(); return 2; }
+	if (!strcmp(sub, "show")) {
+		struct hw_letters L;
+		int r = hw_letters_load(&L);
+		if (r < 0) return 1;
+		if (!r) return 0;
+		size_t len;
+		char *t = hw_letters_format(&L, &len);
+		hw_letters_free(&L);
+		if (!t) return 1;
+		fwrite(t, 1, len, stdout);
+		free(t);
+		return 0;
+	}
+	if (!strcmp(sub, "status")) {
+		struct hw_letters L;
+		int r = hw_letters_load(&L);
+		if (r < 0) return 1;
+		char now[17];
+		if (hw_letters_inputs(now)) { if (r == 1) hw_letters_free(&L); return 1; }
+		printf("state\t%s\n", r == 0 ? "none" : strcmp(L.inputs, now) ? "outdated" : "current");
+		int covered = 0;
+		for (size_t i = 0; r == 1 && i < L.n; i++) covered += L.l[i].covered;
+		printf("samples\t%ld\ncovered\t%d\n", r == 1 ? L.samples : 0L, covered);
+		for (size_t i = 0; r == 1 && i < L.n; i++) {
+			char u[8];
+			u[hw_utf8_encode(L.l[i].cp, u)] = 0;
+			struct buf b = { 0 };
+			bstr(&b, "char\t");
+			besc(&b, u);
+			bfmt(&b, "\t%d\t%d", L.l[i].samples, L.l[i].covered ? L.l[i].nvar : 0);
+			puts(b.s);
+			free(b.s);
+		}
+		if (r == 1) hw_letters_free(&L);
+		char name[256], path[4096];
+		unsigned v;
+		int f = hw_font_record(name, sizeof name, &v, path, sizeof path);
+		if (f < 0) return 1;
+		if (f) {
+			struct buf b = { 0 };
+			bstr(&b, "font\t");
+			besc(&b, name);
+			bfmt(&b, "\t%u\t", v);
+			besc(&b, path);
+			puts(b.s);
+			free(b.s);
+		} else {
+			puts("font\t-");
+		}
+		return 0;
+	}
+	usage();
+	return 2;
+}
+
+static int cmd_font(int argc, char **argv)
+{
+	const char *sub = argc > 0 ? argv[0] : "status", *name = NULL, *file = NULL;
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "-n") && i + 1 < argc) name = argv[++i];
+		else if (!file && !strcmp(sub, "build")) file = argv[i];
+		else { usage(); return 2; }
+	}
+	if (!strcmp(sub, "install")) {
+		int r = hw_font_install(name, 1);
+		if (r == -2) { fputs("glassine-handwriting: a font name is 1 to 63 bytes of UTF-8 without control characters\n", stderr); return 2; }
+		return r < 0 ? 1 : 0;
+	}
+	if (name && strcmp(sub, "build")) { usage(); return 2; }
+	if (!strcmp(sub, "remove")) return hw_font_remove() < 0 ? 1 : 0;
+	if (!strcmp(sub, "status")) {
+		char nm[256], path[4096];
+		unsigned v;
+		int f = hw_font_record(nm, sizeof nm, &v, path, sizeof path);
+		if (f < 0) return 1;
+		if (!f) { puts("none"); return 0; }
+		struct buf b = { 0 };
+		besc(&b, nm);
+		bfmt(&b, "\t%u\t", v);
+		besc(&b, path);
+		puts(b.s);
+		free(b.s);
+		return 0;
+	}
+	if (!strcmp(sub, "build") && file) {
+		struct hw_letters L;
+		int r = hw_letters_load(&L);
+		if (r < 0) return 1;
+		if (!r) { fputs("glassine-handwriting: no letter model (letters build)\n", stderr); return 1; }
+		unsigned v = 0;
+		if (hw_font_record(NULL, 0, &v, NULL, 0) != 1) v = 0;
+		size_t len;
+		unsigned char *t = hw_font_build(&L, name ? name : HW_FONT_NAME_DEFAULT, v + 1, &len);
+		hw_letters_free(&L);
+		if (!t) return 1;
+		FILE *f = fopen(file, "we");
+		if (!f) { free(t); fprintf(stderr, "glassine-handwriting: %s: %s\n", file, strerror(errno)); return 1; }
+		int bad = fwrite(t, 1, len, f) != len;
+		free(t);
+		if (fclose(f) || bad) return 1;
+		return 0;
+	}
+	usage();
+	return 2;
+}
+
 static int cmd_read(int argc, char **argv, int bench)
 {
 	const char *lang = "en", *file = NULL;
@@ -1665,6 +1794,8 @@ int main(int argc, char **argv)
 		if (!strcmp(c, "adaptation")) return cmd_adaptation(argc - 2, argv + 2);
 		if (!strcmp(c, "charging") && argc == 2) { puts(hw_charging() ? "charging" : "battery"); return 0; }
 		if (!strcmp(c, "donation")) return cmd_donation(argc - 2, argv + 2);
+		if (!strcmp(c, "letters")) return cmd_letters(argc - 2, argv + 2);
+		if (!strcmp(c, "font")) return cmd_font(argc - 2, argv + 2);
 		if (!strcmp(c, "read")) return cmd_read(argc - 2, argv + 2, 0);
 		if (!strcmp(c, "bench")) return cmd_read(argc - 2, argv + 2, 1);
 		usage();

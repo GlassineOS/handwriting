@@ -35,7 +35,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from glassine_ui import paint as PT  # noqa: E402
 
-from . import APP_ID, client, flow, pages, prompts as P  # noqa: E402
+from . import APP_ID, client, flow, fontview, pages, prompts as P  # noqa: E402
 from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
 W0, H0 = 702, 884
@@ -168,7 +168,10 @@ class UI:
         self.ep = 0                     # its page
         self.confirm = None             # (title, text, yes-label, fn) for a destructive action
         self.sets_open = False
-        self.best = None                # Learn's Your handwriting: None, "intro", "pick"
+        self.best = None                # Learn's Your handwriting: None, "intro", "pick", "font"
+        self.font = None                # the font page: {"status": cli.letters(), "model": fontview.parse()}
+        self.font_busy = None           # "making" while the letter model and the font are built
+        self.font_name = None           # a name chosen before the font is installed
         self.pick = None                # {"a": (id, strokes, k), "b": ..., "chosen": i}
         self.pick_loading = False
         self.wstep = "w-welcome"        # the introduction's step
@@ -582,6 +585,98 @@ class UI:
     def start_best(self):
         self.best = None
         self.run(self.writer.start_best)
+        self.go("write")
+
+    def open_font(self):
+        """Your font: the letters it has, a preview, what is missing"""
+        self.best = "font"
+        self.msg = ""
+        self.redraw()
+        self.load_font()
+
+    def load_font(self):
+        def get():
+            st = self.cli.letters()
+            text = self.cli.letters_model() if st["state"] != "none" else ""
+            return {"status": st, "model": fontview.parse(text) if text else None}
+
+        def got(r):
+            self.font = r
+        self.run(get, got)
+
+    def make_font(self):
+        """the letter model brought up to date, then the font built and installed (under its
+        name; the first time, the name chosen here or the default)"""
+        if self.font_busy:
+            return
+        self.font_busy = "making"
+        self.msg = ""
+        name = self.font_name
+
+        def go():
+            self.cli.letters_build()
+            return self.cli.font_install(name)
+
+        def fin(r, err):
+            self.busy -= 1
+            self.font_busy = None
+            if err:
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
+                self.msg = "The font couldn’t be made: %s" % err
+            else:
+                self.font_name = None
+                self.msg = "Installed as %s. It is in the font lists of your apps." % r[0]
+                self.load_font()
+            self.redraw()
+        if self.demo:
+            return
+        self.busy += 1
+        self.work.do(go, fin)
+        self.redraw()
+
+    def ask_remove_font(self):
+        self.confirm = ("Remove your font?", "Apps go back to their usual font where you used it. Your samples stay, "
+                        "and you can make the font again any time.", "Remove", self.remove_font)
+        self.redraw()
+
+    def remove_font(self):
+        self.confirm = None
+        self.run(self.cli.font_remove, lambda _: (setattr(self, "msg", "Your font was removed."), self.load_font()))
+
+    def font_shown_name(self):
+        st = (self.font or {}).get("status") or {}
+        return self.font_name or (st.get("font") or (fontview.DEFAULT_NAME,))[0]
+
+    def rename_font(self):
+        """the name, typed in a small dialog (the keyboard comes up for it)"""
+        if self.demo:
+            return
+        dlg = Gtk.Dialog(title="Name of your font", modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use this name", Gtk.ResponseType.OK)
+        entry = Gtk.Entry(text=self.font_shown_name(), max_length=40, activates_default=True)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        dlg.get_content_area().add(entry)
+        dlg.show_all()
+        r = dlg.run()
+        name = entry.get_text().strip()
+        dlg.destroy()
+        if r != Gtk.ResponseType.OK or not name or name == self.font_shown_name():
+            return
+        st = (self.font or {}).get("status") or {}
+        if st.get("font"):
+            self.font_name = name
+            self.make_font()
+        else:
+            self.font_name = name
+            self.redraw()
+
+    def write_missing(self):
+        """the characters the font lacks, one at a time, written with care"""
+        miss = fontview.missing((self.font or {}).get("model"))
+        if not miss:
+            return
+        self.best = None
+        self.run(lambda: self.writer.start_best(chars=miss))
         self.go("write")
 
     def start_pick(self):
@@ -1149,7 +1244,7 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "wizard.licence", "wizard.ready", "write.prompt", "write.ink", "write.kept", "write.check", "write.sentence",
            "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
-           "best.pick", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
+           "best.pick", "best.font", "best.font-new", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
 DEMO_WORDS = ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o’clock", "garden", "bright",
               "yellow", "Thursday", "minimum", "fifty"]
 
@@ -1174,6 +1269,28 @@ def demo_ink(text, seed=1, x0=0.0):
         strokes.append(pts)
         x += 20 + rnd.uniform(-2, 2)
     return strokes, spans
+
+
+def demo_font(installed):
+    """a made-up letter model (loops, as demo_ink draws them; no one's real writing) with the
+    letters a person who wrote a few words with care has, and its status"""
+    rnd = random.Random(4)
+    chars = {}
+    for c in fontview.TARGET:
+        n = 0 if c in "QXZqxz" else 2 if c in "jkvJKV7" else 5
+        tall = c.isupper() or c in "bdfhklt0123456789"
+        vs = []
+        for v in range(3 if n >= 3 else 0):
+            pts = [[0.3 + 0.28 * math.sin(i / 18 * 2 * math.pi) + rnd.uniform(-.01, .01),
+                    (1.5 if tall else 1.0) * (0.5 - 0.5 * math.cos(i / 18 * 2 * math.pi)) + rnd.uniform(-.01, .01)]
+                   for i in range(19)]
+            vs.append({"width": 0.6, "weight": 1, "members": 2, "strokes": [pts]})
+        chars[c] = {"char": c, "samples": n, "covered": n >= 3, "variants": vs}
+    model = {"head": {}, "metrics": {"cap_height": 1.5, "ascender": 1.6, "descender": -0.5, "slant": 0.1,
+                                     "letter_spacing": 0.2, "word_spacing": 0.9, "ink_width": 0.08}, "chars": chars}
+    status = {"state": "outdated" if installed else "current", "covered": sum(1 for d in chars.values() if d["covered"]),
+              "font": ("My handwriting", 3) if installed else None}
+    return {"status": status, "model": model}
 
 
 def demo(screen, voice="white"):
@@ -1260,6 +1377,10 @@ def demo(screen, voice="white"):
         if sub == "intro":
             ui.page = ui.tab = "learn"
             ui.best = "intro"
+        elif sub in ("font", "font-new"):
+            ui.page = ui.tab = "learn"
+            ui.best = "font"
+            ui.font = demo_font(sub == "font")
         elif sub == "pick":
             ui.page = ui.tab = "learn"
             ui.best = "pick"

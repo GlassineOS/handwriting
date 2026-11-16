@@ -1,6 +1,7 @@
 # glassine-handwriting: the handwriting recognizer (docs/recognizer.md)
 # Build: a C11 compiler, pkg-config, json-c (json-c-dev). make check also needs python3
-# and numpy (py3-numpy); it reads the trainer in ../train.
+# and numpy (py3-numpy), and for the font fontTools (py3-fonttools), hb-shape
+# (harfbuzz-utils) and fontconfig; it reads the trainer in ../train.
 OUT ?= .
 CC ?= cc
 CFLAGS ?= -O2 -g
@@ -8,7 +9,7 @@ PREFIX ?= /usr
 # -ffp-contract=fast: fused multiply-add in the engine (-std=c11 would turn it off)
 XCFLAGS = -std=c11 -ffp-contract=fast -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE $(shell pkg-config --cflags json-c)
 LIBS = $(shell pkg-config --libs json-c) -lm
-HW = model ctc sample recog store adapt gesture words
+HW = model ctc sample recog store adapt gesture words letters ttf
 OBJ = $(OUT)/featurize.o $(HW:%=$(OUT)/%.o)
 HDR = $(wildcard src/hw/*.h)
 PY ?= python3
@@ -33,6 +34,7 @@ check: $(OUT)/test-engine $(OUT)/glassine-handwriting
 	$(OUT)/test-engine tests/data
 	$(PY) tests/test_train_sync.py $(OUT)/test-engine
 	HW_BIN=$(OUT)/glassine-handwriting $(PY) tests/test_recognizer.py
+	HW_BIN=$(OUT)/glassine-handwriting $(PY) tests/test_letters.py
 
 # with a trained model: MODEL_DIR holds en/recognizer.ghm (tools/onnx2ghm.py)
 check-model: $(OUT)/glassine-handwriting

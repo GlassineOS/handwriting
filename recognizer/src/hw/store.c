@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "letters.h"
 #include "model.h"
 #include "sample.h"
 #include "store.h"
@@ -1252,6 +1253,8 @@ long hw_samples_erase(const char *client)
 			erased = -1;
 		char a[4096];
 		if (!hw_store_path(a, sizeof a, "adaptation")) rm_tree(a);
+		/* the letter model and the font made from them (spec 003 FR-008) */
+		hw_letters_erase_locked();
 	}
 	free(data); free(meta);
 	SIX.have = 0;
