@@ -518,10 +518,24 @@ training sessions, the person's letters from them; CER / WER, top 3):
 | character model | 5.0 % / 23 %, 79 % | 3.2 % / 17 %, 85 % | −3.9 to +0.1 |
 | words + character model | 5.2 % / 22 %, 80 % | 2.4 % / 13 %, 87 % | −5.1 to −0.8 |
 | without a head, words + character model | 32.9 % | 29.7 % | −7.6 to +1.3 |
+| a new person (no head, no letters), words + character model | 32.9 % | 21.1 % | −16.4 to −7.1 |
+| … words | 37.0 % | 28.2 % | −13.2 to −4.3 |
 
-(paired bootstrap over the samples.) The choices (32 k steps, no weighing, no letter-model
+(paired bootstrap over the samples.) All choices (32 k steps, no weighing, no letter-model
 lines in the head) were made on the synthetic dev sets and the real dev session (65); the
-test session was read once.
+numbers above are the final configuration's reading of the test session.
+
+Without a head, the person's letters as the reference make model 4 read worse, not better: 29.7 %
+with them against 21.1 % without on the test session, 30.1 % against 22.0 % on dev (model 2 does
+not use them for its features). On synthetic ink the letter height helps (tables below), so the
+measured height of a real person's small letters and the generator's x-height probably do not
+mean the same length; with a head the difference is learned away. Not resolved.
+
+The `s20` fine-tune (Fine-tuning, above; trained on this writer's ink) reads the same session
+at 4.0 % without a head and 2.1 % with a fresh one (model 4: 2.4 %, difference −1.1 to +1.8):
+on this writer a head on model 4 reaches what fine-tuning on the writer did, without the loss
+on other hands. The writer is also the one the generator's timing and spacing were fitted to,
+so every real number here is one hand.
 
 **Synthetic held-out ink** (the three held-out groups pooled: model 2's two held-out fonts and
 its twelve new ones, model 2's test texts and `test_kinds`; CER, words + character model):
@@ -557,9 +571,9 @@ guide rule above, a lone comma read right 40 % of the time (as `'`, a line too h
 67 %.
 
 **Size weighing.** Weighing model 4's reading by the size as well (FR-017) helps only the lone
-dot and comma: lone characters 9 to 16 points worse weighed (95 %), every other set equal or 0.1
-to 0.7 better unweighed; on the real dev session 2.3 % weighed, 2.1 % unweighed (measured on the
-16 k-step run). The recognizer weighs only version 1 models.
+dot (100 % against 82 % right): lone characters 13 to 19 points worse weighed (95 %), the line
+kinds 0.1 to 0.2 worse; on the real dev session 2.3 % weighed, 2.1 % unweighed (the 16 k-step
+run). The recognizer weighs only version 1 models.
 
 **Regressions.**
 
