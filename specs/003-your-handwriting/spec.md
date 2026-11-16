@@ -119,7 +119,8 @@ size, spacing) and keep their shape.
   that way. Each variant is built from the samples of its group with the person's
   preferences, careful marking, readability (how well the recognizer read it when it was
   written) and consistency (closeness to the group's typical shape) as weights. Jitter is
-  removed; shape, proportions, stroke count and stroke order stay the person's. A variant
+  removed; shape, proportions, stroke count and stroke order stay the person's, and a
+  variant sits on the line where the samples it is made from sit on average. A variant
   is never made by mixing versions written with different strokes. How often the font
   shows each variant follows from how often the person writes it that way and from their
   marks (FR-031). Each variant carries
@@ -148,9 +149,10 @@ size, spacing) and keep their shape.
   was written in, when both were written next to others at least 3 times. The gap between
   two letters is the narrowest distance between the right profile of the first and the left
   profile of the second (between the pen's centre lines; their boxes when they share no
-  height band). It guards the distance: a pair never comes closer than its gap, or half the
-  person's typical gap where that is smaller. The gap is the pair's median gap when written
-  at least 3 times; else the value of its side shapes (the variants' sides grouped by
+  height band). It guards the distance: between the baseline and the x-height a pair never
+  comes closer than its gap, or half the person's typical gap where that is smaller (a bar or
+  a hook may reach over the next letter, as the person writes it). The gap is the pair's
+  median gap when written at least 3 times; else the value of its side shapes (the variants' sides grouped by
   profile: round, straight, diagonal, overhanging as in T, f, r, y); for a pair of side
   shapes seen too rarely as well, the person's typical gap, closer where the profiles leave
   more open space between them. A pair without a distance (too rarely written, or a
