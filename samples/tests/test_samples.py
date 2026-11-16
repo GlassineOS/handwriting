@@ -125,7 +125,10 @@ class Prompts(Case):
     def test_every_set_choosable_and_its_characters_shown(self):
         """each shipped set is on the sets page (owner and guest), and every character the
         single-character prompts teach has a cell on the coverage page"""
-        from glassine_hwsamples import pages
+        try:
+            from glassine_hwsamples import pages
+        except ImportError as e:                # the pages draw with cairo and glassine_ui
+            self.skipTest("no cairo or glassine_ui: %s" % e)
         for rows in (pages.SETS, pages.GSETS):
             self.assertLessEqual(set(P.SETS), {r[0] for r in rows})
         for r in pages.SETS + pages.GSETS:
