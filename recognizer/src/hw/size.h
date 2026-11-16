@@ -23,6 +23,7 @@ struct hw_size_ref {
 	double xs, cs;                  /* the same written alone */
 	int has_base;                   /* the guide lines are at base + k * line */
 	double base, line;
+	int area_line;                  /* line is the area's (else 1 for em) */
 	int pending;                    /* the person's letters not looked up yet */
 	char lang[36];
 	double per_mm;                  /* the session's points per mm (0: not known) */
@@ -36,7 +37,11 @@ struct hw_size_ref {
 void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw_area *a, double base,
 		     struct hw_size_ref *out);
 
-/* What hw_size_apply found, kept in the run for the reading. */
+/* a sample taken back: its measurement out of the store's `size` (the caller holds the
+ * store's lock); 0 or -1 */
+int hw_size_drop(const char *id);
+
+/* What hw_size_weigh found, kept in the run for the reading. */
 struct hw_size_info {
 	int glyphs;                     /* glyphs (strokes grouped by their horizontal overlap) */
 	int lone_mark;                  /* the ink is one mark: its kind (HW_GLYPH_*), else 0 */

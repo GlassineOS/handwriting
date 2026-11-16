@@ -16,6 +16,7 @@
 #include "model.h"
 #include "sample.h"
 #include "store.h"
+#include "size.h"
 
 #define META_HEAD "glassine-handwriting-meta"
 #define EXPORT_FORMAT "glassine-handwriting-export"
@@ -1278,6 +1279,7 @@ int hw_samples_delete(const char *id, const char *owner)
 	if (k < 0) { r = 0; goto out; }
 	if (owner && strcmp(SIX.e[k].pub.meta.client, owner)) { r = -2; goto out; }
 	if (prefs_drop(gone_id, (void *)id)) goto out;      /* its preferences before the sample */
+	if (hw_size_drop(id)) goto out;                     /* and its measured letters */
 	/* counts as a change: a running adaptation drops its result */
 	struct meta_out mo = { id, SIX.gen + 1 };
 	long n = ix_remove(&SIX, id, mo.gen, rewrite_meta, &mo);

@@ -47,7 +47,8 @@ struct meas {
 	char id[17];
 	int kind;                       /* 0 nothing, 1 word, 2 lone small, 3 lone tall */
 	double v[2];                    /* word: x, c (0: none); lone: height */
-	double per_mm, line;            /* the sample's units: points per mm, line height (0: unknown) */
+	double per_mm, line;            /* the sample's units: points per mm, area line (0: unknown) */
+	int em;                         /* written in em */
 };
 
 #define PERSON_WORDS 48
@@ -60,7 +61,7 @@ static struct {
 	unsigned long gen;
 	struct meas *m;
 	size_t n;
-	double mm[4], ln[4];            /* x, c, xs, cs (0: not known) */
+	double mm[4], ln[4], em[4];     /* x, c, xs, cs per mm, per area line, in em (0: not known) */
 	int nwords, nlone;
 } P;
 
@@ -100,7 +101,8 @@ static void measure(const char *line, struct meas *m)
 	unsigned cp[HW_MAX_LABELS];
 	size_t n = hw_utf8_decode(s.text, cp, HW_MAX_LABELS);
 	m->per_mm = s.units.per_mm > 0 && !strcmp(s.units.xy, "device") ? s.units.per_mm : 0;
-	m->line = s.area.set && s.area.line > 0 ? s.area.line : !strcmp(s.units.xy, "em") ? 1 : 0;
+	m->line = s.area.set && s.area.line > 0 ? s.area.line : 0;
+	m->em = !strcmp(s.units.xy, "em");
 	if (n == 1 && s.nstrokes && (is_small(cp[0]) || is_tall(cp[0]))) {
 		double b[4];
 		bbox_of(s.strokes, NULL, s.nstrokes, b);
@@ -152,7 +154,7 @@ static struct meas *size_load(size_t *n)
 	if (!fgets(line, sizeof line, f) || strncmp(line, SIZE_HEAD "\n", sizeof SIZE_HEAD)) { fclose(f); return NULL; }
 	while (fgets(line, sizeof line, f)) {
 		struct meas x = { 0 };
-		if (sscanf(line, "%16s %d %lf %lf %lf %lf", x.id, &x.kind, &x.v[0], &x.v[1], &x.per_mm, &x.line) != 6 ||
+		if (sscanf(line, "%16s %d %lf %lf %lf %lf %d", x.id, &x.kind, &x.v[0], &x.v[1], &x.per_mm, &x.line, &x.em) != 7 ||
 		    strlen(x.id) != 16 || x.kind < 0 || x.kind > 3)
 			continue;
 		if (*n == cap) {
@@ -181,12 +183,39 @@ static void size_save(const struct meas *m, size_t n)
 	if (b) {
 		len = (size_t)snprintf(b, cap, "%s\n", SIZE_HEAD);
 		for (size_t i = 0; i < n; i++)
-			len += (size_t)snprintf(b + len, cap - len, "%s %d %.9g %.9g %.9g %.9g\n", m[i].id, m[i].kind, m[i].v[0],
-						m[i].v[1], m[i].per_mm, m[i].line);
+			len += (size_t)snprintf(b + len, cap - len, "%s %d %.9g %.9g %.9g %.9g %d\n", m[i].id, m[i].kind, m[i].v[0],
+						m[i].v[1], m[i].per_mm, m[i].line, m[i].em);
 		hw_store_replace("size", b, len);
 	}
 	free(b);
 	close(fd);
+}
+
+int hw_size_drop(const char *id)
+{
+	size_t n;
+	struct meas *m = size_load(&n);
+	if (!m) return 0;
+	size_t k = 0;
+	for (size_t i = 0; i < n; i++) if (strcmp(m[i].id, id)) m[k++] = m[i];
+	int r = 0;
+	if (k != n) {
+		size_t cap = 64 + k * 128, len = 0;
+		char *b = malloc(cap);
+		if (!b) r = -1;
+		else {
+			len = (size_t)snprintf(b, cap, "%s\n", SIZE_HEAD);
+			for (size_t i = 0; i < k; i++)
+				len += (size_t)snprintf(b + len, cap - len, "%s %d %.9g %.9g %.9g %.9g %d\n", m[i].id, m[i].kind,
+							m[i].v[0], m[i].v[1], m[i].per_mm, m[i].line, m[i].em);
+			r = hw_store_replace("size", b, len);
+		}
+		free(b);
+	}
+	free(m);
+	/* this process measures again from what is left */
+	for (size_t i = 0; i < P.n; i++) if (!strcmp(P.m[i].id, id)) { P.have = 0; break; }
+	return r;
 }
 
 /* the person's letters for lang, again only when samples.jsonl changed; a sample measured
@@ -198,7 +227,7 @@ static void person(const char *lang)
 	if (hw_store_path(p, sizeof p, "samples.jsonl") || stat(p, &st)) {
 		P.have = 0;
 		P.nwords = P.nlone = 0;
-		memset(P.mm, 0, sizeof P.mm); memset(P.ln, 0, sizeof P.ln);
+		memset(P.mm, 0, sizeof P.mm); memset(P.ln, 0, sizeof P.ln); memset(P.em, 0, sizeof P.em);
 		return;
 	}
 	if (P.have && !strcmp(P.lang, lang) && st.st_ino == P.st.st_ino && st.st_size == P.st.st_size &&
@@ -225,6 +254,9 @@ static void person(const char *lang)
 	}
 	size_t nfile = 0;
 	struct meas *file = P.m ? NULL : size_load(&nfile);
+	/* what the file holds now: as loaded, or as this process last wrote or found it */
+	const struct meas *had = file ? file : P.m;
+	size_t nhad = file ? nfile : P.n;
 	int measured = 0;
 	for (size_t i = 0; i < nwant; i++) {
 		const struct meas *old = NULL;
@@ -238,7 +270,9 @@ static void person(const char *lang)
 		free(line);
 		measured = 1;
 	}
-	if (measured || (file && nfile != nwant)) size_save(want, nwant);
+	int differs = measured || nhad != nwant;
+	for (size_t i = 0; !differs && i < nwant; i++) differs = strcmp(had[i].id, want[i].id) != 0;
+	if (differs) size_save(want, nwant);
 	free(file);
 	free(P.m);
 	P.m = want;
@@ -249,13 +283,13 @@ static void person(const char *lang)
 	P.have = 1;
 	/* per unit: in mm and in line heights; each needs enough samples of its own */
 	double *v = malloc((nwant + 1) * sizeof *v);
-	for (int u = 0; u < 2; u++) {
-		double *out = u ? P.ln : P.mm;
+	for (int u = 0; u < 3; u++) {
+		double *out = u == 2 ? P.em : u ? P.ln : P.mm;
 		for (int q = 0; q < 4; q++) {
 			size_t k = 0;
 			for (size_t i = 0; v && i < nwant; i++) {
 				const struct meas *m = &want[i];
-				double scale = u ? m->line : m->per_mm;
+				double scale = u == 2 ? (m->em && !m->line ? 1 : 0) : u ? m->line : m->per_mm;
 				if (scale <= 0) continue;
 				if (q < 2 && m->kind == 1 && m->v[q] > 0) v[k++] = m->v[q] / scale;
 				if (q == 2 && m->kind == 2) v[k++] = m->v[0] / scale;
@@ -284,6 +318,7 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	int em = !strcmp(u->xy, "em");
 	double line = a && a->set && a->line > 0 ? a->line : em ? 1 : 0;
 	out->line = line;
+	out->area_line = a && a->set && a->line > 0;
 	out->has_base = line > 0 && isfinite(base);
 	out->base = out->has_base ? base : 0;
 	const char *e = getenv("GLASSINE_HANDWRITING_SIZE");
@@ -312,8 +347,11 @@ static void resolve(struct hw_size_ref *out)
 	person(out->lang);
 	double s = 0, line = out->line;
 	const double *src = NULL;
+	/* the same kind of units only: millimetres, the area's line, or em without an area (an
+	 * em is the client's own scale, not a line of the samples' areas) */
 	if (out->per_mm > 0 && P.mm[0] > 0) { src = P.mm; s = out->per_mm; }
-	else if (line > 0 && P.ln[0] > 0) { src = P.ln; s = line; }
+	else if (out->area_line && P.ln[0] > 0) { src = P.ln; s = line; }
+	else if (!out->area_line && line > 0 && P.em[0] > 0) { src = P.em; s = 1; }
 	if (src) {
 		out->kind = HW_SIZE_PERSON;
 		out->x = src[0] * s; out->c = src[1] * s; out->xs = src[2] * s; out->cs = src[3] * s;
@@ -414,8 +452,9 @@ static double weight(unsigned cp, const struct glyph *g, const struct hw_size_re
 		return cp == ',' || cp == '\'' || cp == 0x2019 ? 0 : in(cp, THINS) ? -1 : cp == '.' ? -3 : -6;
 	}
 	(void)top; (void)bot; (void)has; (void)h; (void)w;
-	/* a lone letter is no mark */
-	return lone && is_mark(cp) ? -8 : 0;
+	/* a lone letter is no mark (with the person's letters: on the line alone a tick may
+	 * count as letter-sized) */
+	return lone && ref->kind == HW_SIZE_PERSON && is_mark(cp) ? -8 : 0;
 }
 
 /* how much a lone glyph's size favours the capital of a case pair (natural log, + capital,

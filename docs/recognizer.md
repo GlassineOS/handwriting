@@ -194,11 +194,12 @@ reference and weighs the model's reading by it.
   (`a c e m n o r s u v w x z`) and each capital (not `J`, `Q`), digit or tall letter (`b d h k l`)
   written with strokes of its own, and the height of the lone ones; their medians, each needing 5 words (or 3
   lone samples; otherwise lone ones count as 1.4 times the word heights, capitals 2.5 times the
-  small letters). They are kept in millimetres (samples with `device:PER_MM`) and in line heights
-  (samples with an `area` line, or `em`: 1) and used in the same kind of units only: `device`
-  with `PER_MM` in millimetres, else by the session's line (`area` LINE, or 1 for `em`). Without
-  enough samples in those units, the line alone (small letters 0.2 lines high, capitals 0.5),
-  which only tells marks apart. Without either, nothing below applies.
+  small letters). They are kept in millimetres (samples with `device:PER_MM`), in line heights
+  (samples with an `area` line) and in em (`em` samples without an area), and used in the same
+  kind of units only: a session with `device:PER_MM` in millimetres, else one with an `area` by
+  its LINE, else an `em` one in em. Without enough samples in those units, the line alone (the
+  area's LINE, or 1 for `em`; small letters 0.2 lines high, capitals 0.5), which only tells
+  dots and dashes apart. Without either, nothing below applies.
 - **Glyphs.** Strokes that overlap horizontally (within 0.2 small-letter heights, also through
   other strokes) make one glyph. A glyph no bigger than half a small letter is a dot; one at most
   half a small letter high and at least 2.5 times as wide as high a dash; with the person's
@@ -211,7 +212,7 @@ reference and weighs the model's reading by it.
   chance; the chance of a character is shared among the characters by weights: on a dot `.`
   first, then `,` and `·`; on a dash `-` (`—` when long, `_` on the line); on a tick `,` and `'`
   (`’`) alike, other quotes after them; letters and digits all but ruled out (−30). On a lone
-  letter-sized glyph a mark counts −8, and within each case pair whose forms differ mostly in
+  letter-sized glyph, with the person's letters, a mark counts −8, and within each case pair whose forms differ mostly in
   size (`c o s u v w x z`, with `0` beside `O`) the pair's chance moves to the form its height
   says: 6 × ln(height / √(lone small × lone capital)), nothing within 1 of the middle, at most
   6 either way (only with the person's letters, and only when each glyph reads as one
@@ -341,11 +342,12 @@ Nothing in it leaves the device except by export or a donation the person writes
   then `samples.meta`, so a crash on the way leaves the sample with its client and time or takes
   it out. A store without an index gets one at its first open.
 - `size`: the person's letters as measured for the size (above): first line
-  `glassine-handwriting-size 1`, then `ID KIND V0 V1 PER_MM LINE` per sample in use (`KIND` 0
+  `glassine-handwriting-size 1`, then `ID KIND V0 V1 PER_MM LINE EM` per sample in use (`KIND` 0
   nothing to measure, 1 a word: its small-letter and capital heights, 2 a lone small letter, 3 a
   lone capital, digit or tall letter: its height in `V0`; the sample's units per millimetre and
-  line height, 0 when unknown). Derived like the index: made again from the samples when it is
-  missing, rewritten without a deleted sample's line when the samples change, removed by an erase.
+  area line, 0 when unknown, and `EM` 1 for `em`). Derived like the index: made again from the
+  samples when it is missing (written by a reading that needs it, skipped while another process
+  holds the lock); a deletion takes the sample's line out with it, an erase removes the file.
 - `preferences`: one line per preference, `CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR` (sample ids;
   `-1` for a whole sample). A deletion takes a sample's preferences out before the sample.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
