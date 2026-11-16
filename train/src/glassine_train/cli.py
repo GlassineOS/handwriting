@@ -10,7 +10,7 @@ from glassine_synth import fetch as font_fetch
 from glassine_synth.ink import Params
 
 from . import text
-from .data import build
+from .data import build, dataset_alphabet
 
 FONTS = Path("../synth/build/fonts")
 # The 7-font baseline's fonts: seven to train, two held out. Their datasets keep their names
@@ -104,7 +104,47 @@ def cmd_train(a):
     (out / "args.json").write_text(json.dumps(vars(a), default=str, indent=1))
     train(Path("build/data") / a.data, Path("build/data") / a.val, out, a.minutes, cfg,
           a.batch, a.lr, a.threads, a.eval_every, a.seed, steps_per_s=a.steps_per_s,
-          augment=a.augment, select=[Path("build/data") / x for x in a.select.split(",") if x])
+          augment=a.augment, select=[Path("build/data") / x for x in a.select.split(",") if x],
+          init=Path(a.init) if a.init else None)
+
+
+def cmd_mergeset(a):
+    """A dataset (featurize's format) from --base without its lines of --drop-kinds (the
+    kinds of the ink set it was made from) and with the lines of --add appended: to replace
+    some kinds of a large set without featurizing it again."""
+    from .inkstore import InkStore
+    base, out = Path("build/data") / a.base, Path("build/data") / a.out
+    bm = json.loads((base / "meta.json").read_text())
+    kinds = [r["kind"] for r in InkStore(Path(bm["from"])).rows]
+    boff = np.load(base / "offsets.npy")
+    btx = json.loads((base / "texts.json").read_text())
+    assert len(kinds) == len(btx) == len(boff) - 1, "the base set and its ink set differ"
+    nf = bm["nfeat"]
+    keep = [i for i, k in enumerate(kinds) if k not in set(a.drop_kinds)]
+    parts = [(base, keep, boff, btx)]
+    for d in a.add:
+        p = Path("build/data") / d
+        m = json.loads((p / "meta.json").read_text())
+        if m["nfeat"] != nf or dataset_alphabet(p) != dataset_alphabet(base):
+            raise SystemExit(f"{p}: inputs or characters differ from the base set's")
+        tx = json.loads((p / "texts.json").read_text())
+        parts.append((p, list(range(len(tx))), np.load(p / "offsets.npy"), tx))
+    out.mkdir(parents=True, exist_ok=True)
+    offs, texts, pos = [0], [], 0
+    with open(out / "feat.f16", "wb") as fh:
+        for p, idx, off, tx in parts:
+            feat = np.memmap(p / "feat.f16", np.float16, "r").reshape(-1, nf)
+            for i in idx:
+                fh.write(np.ascontiguousarray(feat[off[i]:off[i + 1]]).tobytes())
+                pos += int(off[i + 1] - off[i])
+                offs.append(pos)
+                texts.append(tx[i])
+    np.save(out / "offsets.npy", np.asarray(offs, np.int64))
+    (out / "texts.json").write_text(json.dumps(texts))
+    meta = dict(bm, n=len(texts), points=pos, merged={"base": a.base, "dropped_kinds": a.drop_kinds, "added": a.add,
+                                                       "kept": len(keep)})
+    (out / "meta.json").write_text(json.dumps(meta, indent=1))
+    print(f"{out}: {len(texts)} lines ({len(keep)} of {a.base}, dropped {len(btx) - len(keep)} of {a.drop_kinds})")
 
 
 def _model(a):
@@ -482,6 +522,44 @@ def cmd_realeval(a):
     (out / "per-sample.json").write_text(json.dumps(keep))
 
 
+WRITER_MODES = [("ink", "raw"), ("chars", "chars"), ("words", "words"), ("words+chars", "words")]
+
+
+def cmd_writereval(a):
+    """Another writer's samples read as a new person would be: no head, no letters, every
+    decoder mode, each model against the first (paired bootstrap over the samples). An
+    evaluation set only: nothing here learns from it. Only aggregates are written."""
+    from . import realeval as R
+    smp = Path(a.samples)
+    smp = (smp / "samples.jsonl" if smp.is_dir() else smp).resolve()
+    predict = Path(a.predict).resolve()
+    models = []
+    for spec in a.models:  # NAME=NOCHARS_DIR,CHARS_DIR
+        name, dirs = spec.split("=", 1)
+        nc, ch = (Path(d).resolve() for d in dirs.split(","))
+        models.append((name, nc, ch))
+    extra = ("--base", a.base) if a.base is not None else ()
+    per, res = {}, {"samples": sum(1 for ln in smp.read_text().splitlines() if ln.strip()), "modes": {}}
+    for name, nc, ch in models:
+        for mode, how in WRITER_MODES:
+            d = ch if mode in ("chars", "words+chars") else nc
+            rs = R.read_samples(d, smp, predict, how == "raw", None, extra + (("--chars",) if how == "chars" else ()))
+            per[name, mode] = R.per_sample(rs)
+            s = R.summary(per[name, mode])
+            res["modes"].setdefault(mode, {})[name] = s
+            print(f"{name:12s} {mode:12s} n {s['n']} cer {100 * s['cer']:.1f} wer {100 * s['wer']:.0f} "
+                  f"top1 {100 * s['top1']:.0f} top3 {100 * s['top3']:.0f}", flush=True)
+    first = models[0][0]
+    for name, *_ in models[1:]:
+        for mode, _ in WRITER_MODES:
+            b = R.paired_bootstrap(per[name, mode], per[first, mode])
+            res["modes"][mode][f"{name}-{first}"] = b
+            print(f"{name} − {first} {mode:12s} CER {100 * b['diff_lo']:+.1f} to {100 * b['diff_hi']:+.1f} "
+                  f"P({name} better) {b['p_a_better']:.2f}", flush=True)
+    if a.out:
+        Path(a.out).write_text(json.dumps(res, indent=1))
+
+
 def cmd_inkread(a):
     """Synthetic ink sets through the recognizer program (realeval.py ink_samples): the
     readings of one model directory in one mode, with the letter height known or the line
@@ -626,9 +704,11 @@ def cmd_gen4(a):
                  "sources": build4.source_pins(Path(a.fit) if a.fit else None, a.given), "style_pool": len(pool), "open0": open0,
                  "fonts": {"train": sp["train"]}, "provenance": {"fonts": _provenance()}}
     jobs = []
-    if not a.only or "train" in a.only:
-        tr = lg.lines(a.lines, a.seed)
-        jobs.append(("train", tr, sp["train"], a.seed + 1))
+    if not a.only or "train" in a.only or a.train_name in a.only:
+        # --kinds: lines of these kinds only, in their shares (to replace them in a set)
+        shares = {k: L.SHARES[k] / sum(L.SHARES[j] for j in a.kinds) for k in a.kinds} if a.kinds else L.SHARES
+        tr = lg.lines(a.lines, a.seed, shares)
+        jobs.append((a.train_name, tr, sp["train"], a.seed + 1))
     if contrib and (not a.only or "train_contributors" in a.only):
         # contributors as writers: each writes --contrib-lines lines of the text it covers
         rng = np.random.default_rng(a.seed + 7)
@@ -817,6 +897,7 @@ def main(argv=None):
     t.add_argument("--run", required=True)
     t.add_argument("--minutes", type=float, default=60)
     t.add_argument("--steps-per-s", type=float, help="measured rate, sets the LR schedule length")
+    t.add_argument("--init", help="a checkpoint to go on from (its architecture; --conv, --hidden etc. are ignored)")
     t.add_argument("--conv", type=int, default=128)
     t.add_argument("--hidden", type=int, default=176)
     t.add_argument("--layers", type=int, default=2)
@@ -901,6 +982,12 @@ def main(argv=None):
     ft.add_argument("--threads", type=int, default=6)
     ft.add_argument("--workers", type=int, default=3)
     ft.add_argument("--seed", type=int, default=0)
+    we = sub.add_parser("writereval", help="another writer's samples, read as a new person (evaluation only)")
+    we.add_argument("samples", help="a store directory or a samples file")
+    we.add_argument("--models", nargs="+", required=True, help="NAME=NOCHARS_DIR,CHARS_DIR; the first is the baseline")
+    we.add_argument("--predict", default="build/predict")
+    we.add_argument("--base", default="0.6666667", help="the guides' place in each line of the area")
+    we.add_argument("--out", help="aggregates as JSON")
     re_ = sub.add_parser("realeval", help="real held-back ink through the recognizer program")
     re_.add_argument("--run", default="")
     re_.add_argument("--ckpt", default="best.pt")
@@ -953,12 +1040,19 @@ def main(argv=None):
     ist.add_argument("--presets", nargs="*", default=["real1"])
     ist.add_argument("--fonts", type=int, default=40, help="random training fonts to render with")
     ist.add_argument("--workers", type=int, default=8)
+    ms = sub.add_parser("mergeset", help="a dataset with some kinds of lines replaced")
+    ms.add_argument("--base", required=True)
+    ms.add_argument("--drop-kinds", nargs="*", default=[])
+    ms.add_argument("--add", nargs="*", default=[])
+    ms.add_argument("--out", required=True)
     g4 = sub.add_parser("gen4", help="the next base model's ink sets (build4.py)")
     g4.add_argument("--out", default="build/ink4")
     g4.add_argument("--lines", type=int, default=600_000)
     g4.add_argument("--seed", type=int, default=41)
     g4.add_argument("--workers", type=int, default=8)
     g4.add_argument("--only", nargs="*", help="set name prefixes")
+    g4.add_argument("--kinds", nargs="*", help="the training set's lines of these kinds only (lines.SHARES)")
+    g4.add_argument("--train-name", default="train", help="the training set's name")
     g4.add_argument("--fit", help="timing fit (glassine-train dynfit); default timing.FIT_ONE_WRITER")
     g4.add_argument("--gclm", default="build/release/glassine-handwriting-chars-en-1/chars.gclm")
     g4.add_argument("--names", default="build/names")
@@ -1002,7 +1096,7 @@ def main(argv=None):
     ic.add_argument("--sheet", help="a PNG of some lines")
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
-    {"inkcheck": cmd_inkcheck, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
+    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
      "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 

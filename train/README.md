@@ -238,7 +238,16 @@ uv run glassine-train gen4 --out build/ink4 --workers 16                       #
 uv run glassine-train inkcheck build/ink4/train --real build/real/fit.json --sheet build/ink4/train.png
 uv run glassine-train featurize build/ink4/train --out build/data/train4-ref --ref mix
 uv run glassine-train gen4-letters LETTERS/model --out PRIVATE/letters4 --fit build/real/fit.json
+# some kinds again (here after a change to them), into the existing set without featurizing it all:
+uv run glassine-train gen4 --only train-fix --train-name train-fix --kinds uniform lone --lines 54000 --seed 43
+uv run glassine-train featurize build/ink4/train-fix --out build/data/train-fix-ref --ref mix
+uv run glassine-train mergeset --base train4-ref --drop-kinds uniform lone --add train-fix-ref --out train4-fix
 ```
+
+`train --init CKPT` goes on from a checkpoint (its architecture, inputs and characters) with
+a new schedule. `writereval STORE --models NAME=NOCHARS,CHARS ...` reads another writer's
+samples as a new person (no head, no letters), every decoder mode, each model against the
+first; it is an evaluation set only and writes only aggregates.
 
 **Ink sets, not features** (`inkstore.py`): the pen's points (x, y in 1/512 em, t in
 seconds) and per line its text, kind, writer, spans and its references: `xh`, the
