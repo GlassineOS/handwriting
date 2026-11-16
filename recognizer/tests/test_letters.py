@@ -775,6 +775,29 @@ class Marks(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(self.e.model().splitlines()[0], head)
 
+    def test_relearn_as_a_whole_build(self):
+        """one character learned again with nothing changed: its line as the whole build made it"""
+        rnd = random.Random(3)
+        self.e.put([sample("hello", rnd) for _ in range(3)] + [sample("l", rnd) for _ in range(2)])
+        self.e.run("letters", "build", "-r")
+        for c in "lhoa":
+            before = [ln for ln in self.e.model().splitlines() if ln.startswith('{"char":"%s"' % c)]
+            self.e.run("letters", "build", "-c", c)
+            after = [ln for ln in self.e.model().splitlines() if ln.startswith('{"char":"%s"' % c)]
+            self.assertEqual(before, after, c)
+
+    def test_model_without_ids_outdated(self):
+        """a model built before the marks (no sample ids per version) is out of date"""
+        lines = []
+        for ln in self.e.model().splitlines():
+            d = json.loads(ln)
+            for v in d.get("variants", []):
+                v.pop("ids", None)
+            lines.append(json.dumps(d))
+        (self.e.store / "letters" / "model").write_text("\n".join(lines) + "\n")
+        self.assertEqual(self.e.status()["state"], ["outdated"])
+        self.assertTrue(self.e.run("letters", "build").stdout.startswith("built"))
+
     def test_relearn_is_fast(self):
         import time
         t = time.monotonic()

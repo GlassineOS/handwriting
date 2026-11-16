@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 6      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 7      /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -78,6 +78,10 @@ struct hw_metrics {
 	double slant;                   /* tan of the lean, > 0 leaning right */
 	double letter_gap, word_gap;    /* between the ink of two letters, of two words */
 	double ink;                     /* the pen's width */
+	/* what a sample without letters of its own to measure takes (one character's build
+	 * takes them from the model): x-height per area line, baseline below the area's guide
+	 * (x-heights), x-height in mm; 0 none */
+	double xh_line, base_guide, xh_mm;
 };
 
 /* The spacing (FR-007): a pair's median gap, a pair of side shapes' gap, and for the rest

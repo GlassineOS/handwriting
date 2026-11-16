@@ -120,10 +120,12 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 	sput(&b, "{\"format\":\"%s\",\"version\":%d,\"inputs\":\"%s\",\"samples\":%ld,\"built\":%lld}\n",
 	     HW_LETTERS_FORMAT, HW_LETTERS_VERSION, L->inputs, L->samples, L->built);
 	const struct hw_metrics *m = &L->m;
-	const char *names[] = { "cap_height", "ascender", "descender", "slant", "letter_spacing", "word_spacing", "ink_width" };
-	double vals[] = { m->cap, m->asc, m->desc, m->slant, m->letter_gap, m->word_gap, m->ink };
+	const char *names[] = { "cap_height", "ascender", "descender", "slant", "letter_spacing", "word_spacing", "ink_width",
+				"x_height_per_line", "base_below_guide", "x_height_mm" };
+	double vals[] = { m->cap, m->asc, m->desc, m->slant, m->letter_gap, m->word_gap, m->ink, m->xh_line, m->base_guide,
+			  m->xh_mm };
 	sput(&b, "{\"metrics\":{\"x_height\":1");
-	for (int i = 0; i < 7; i++) { sput(&b, ",\"%s\":", names[i]); num(&b, vals[i]); }
+	for (int i = 0; i < 10; i++) { sput(&b, ",\"%s\":", names[i]); num(&b, vals[i]); }
 	sput(&b, "}}\n");
 	/* the spacing */
 	{
@@ -257,7 +259,8 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 		} else if (json_object_object_get_ex(o, "metrics", &v)) {
 			L->m = (struct hw_metrics){ jnum(v, "cap_height", 1.4), jnum(v, "ascender", 1.5), jnum(v, "descender", -0.5),
 						    jnum(v, "slant", 0), jnum(v, "letter_spacing", 0.15), jnum(v, "word_spacing", 0.7),
-						    jnum(v, "ink_width", 0.07) };
+						    jnum(v, "ink_width", 0.07), jnum(v, "x_height_per_line", 0),
+						    jnum(v, "base_below_guide", 0), jnum(v, "x_height_mm", 0) };
 		} else if (json_object_object_get_ex(o, "spacing", &v)) {
 			struct hw_spacing *sp = &L->sp;
 			sp->letter = jnum(v, "letter", L->m.letter_gap);
@@ -1093,6 +1096,7 @@ static int build_progress;      /* letters build --progress */
 /* one character's build (relearn, its occurrences): only that character's variants, only
  * the samples with it; its occurrences recorded */
 static unsigned build_only;
+static struct hw_metrics build_m;      /* the model's, for one character's build */
 struct occrec { char id[17]; int pos, state, inst; char *text; };
 static struct occrec *build_occ;
 static size_t build_nocc, build_cocc;
@@ -1156,6 +1160,9 @@ int hw_letters_marks_changed(const struct hw_letters *L)
 	if (hw_marks(&m, &n)) return 1;
 	int changed = 0;
 	char h[17];
+	/* a model from before the marks: its versions don't name their samples */
+	for (size_t i = 0; i < L->n && !changed; i++)
+		for (int v = 0; v < L->l[i].nvar && !changed; v++) changed = L->l[i].var[v].nids == 0;
 	/* a character in the model whose marks are not those it was built with */
 	for (size_t i = 0; i < L->n && !changed; i++) { marks_hash_of(m, n, L->l[i].cp, h); changed = strcmp(h, L->l[i].marks) != 0; }
 	/* or a mark of a character the model has none of but whose samples it saw */
@@ -1339,6 +1346,12 @@ int hw_letters_build(struct hw_letters *L)
 	}
 	double xl = median(r_xl.v, r_xl.n, 0), go = median(r_go.v, r_go.n, 0), xmm = median(r_mm.v, r_mm.n, 0);
 	free(r_xl.v); free(r_go.v); free(r_mm.v);
+	/* one character's build sees only some samples: the whole model's, so its versions come
+	 * out as a whole build makes them */
+	if (build_only) { xl = build_m.xh_line; go = build_m.base_guide; xmm = build_m.xh_mm; }
+	/* as the model file keeps them, so either build uses the same */
+	xl = round(xl * 1e4) / 1e4; go = round(go * 1e4) / 1e4; xmm = round(xmm * 1e4) / 1e4;
+	L->m.xh_line = xl; L->m.base_guide = go; L->m.xh_mm = xmm;
 	for (size_t si = 0; si < ns; si++) {
 		struct smp *m = &S[si];
 		if (m->xh <= 0) {
@@ -1804,6 +1817,7 @@ int hw_letters_relearn(unsigned cp, int verbose)
 	struct hw_letters old;
 	int r = hw_letters_load(&old);
 	if (r <= 0) return r;
+	build_m = old.m;
 	hw_letters_free(&old);
 	unsigned long gen = hw_store_generation();
 	struct hw_letters one;
@@ -1867,6 +1881,8 @@ static int cmp_occ(const void *a, const void *b)
 int hw_letters_occurrences(unsigned cp, void (*emit)(const struct hw_occ *, void *), void *arg)
 {
 	struct hw_letters one;
+	memset(&build_m, 0, sizeof build_m);
+	if (hw_letters_load(&one) == 1) { build_m = one.m; hw_letters_free(&one); }
 	build_only = cp;
 	int b = hw_letters_build(&one);
 	build_only = 0;
