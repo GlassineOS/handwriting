@@ -323,9 +323,10 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	out->base = out->has_base ? base : 0;
 	const char *e = getenv("GLASSINE_HANDWRITING_SIZE");
 	if (e && *e) {
-		/* "noweigh", alone or after the letters: the reference for the model only */
-		const char *nw = strstr(e, "noweigh");
-		out->noweigh = nw && (nw == e || nw[-1] == ',') && !nw[7];
+		/* "noweigh" or "weigh", alone or after the letters */
+		const char *w = strrchr(e, ',');
+		w = w ? w + 1 : e;
+		out->weigh = !strcmp(w, "noweigh") ? -1 : !strcmp(w, "weigh") ? 1 : 0;
 		double v[4] = { 0 };
 		int k = sscanf(e, "%lf,%lf,%lf,%lf", &v[0], &v[1], &v[2], &v[3]);
 		if (k >= 2 && v[0] > 0 && v[1] > 0) {
@@ -592,14 +593,17 @@ int hw_run_sized(struct hw_lang *l, const struct hw_stroke *s, size_t ns, const 
 {
 	double base = NAN, h = l->model.version == HW_GHM_VERSION_REF ? hw_size_ref_height(ref, s, ns, &base) : 0;
 	int ret = hw_run_at(l, s, ns, h, base, r);
-	if (!ret && r->rows > 0) hw_size_weigh(l, r, s, ns, ref);
+	/* a model that reads the size (version 2) is not weighed again: measured on synthetic
+	 * lone characters, weighing it loses more than it gains */
+	int weigh = ref && ref->weigh ? ref->weigh > 0 : l->model.version != HW_GHM_VERSION_REF;
+	if (!ret && r->rows > 0 && weigh) hw_size_weigh(l, r, s, ns, ref);
 	return ret;
 }
 
 void hw_size_weigh(const struct hw_lang *l, struct hw_run *r, const struct hw_stroke *s, size_t ns,
 		   const struct hw_size_ref *ref0)
 {
-	if (r->rows <= 0 || r->T <= 0 || !ref0 || ref0->noweigh || (!ref0->pending && ref0->kind == HW_SIZE_NONE) ||
+	if (r->rows <= 0 || r->T <= 0 || !ref0 || ref0->weigh < 0 || (!ref0->pending && ref0->kind == HW_SIZE_NONE) ||
 	    !may_need(r, s, ns))
 		return;
 	struct hw_size_ref rf = *ref0, *ref = &rf;

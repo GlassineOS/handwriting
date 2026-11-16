@@ -232,7 +232,9 @@ without it.
 A version 1 model reads every piece of ink scaled to its own height, so on its own it can't tell a lone
 `.` from an `O` or a lone `o` from an `O`. The recognizer compares the ink's real size with a
 reference and weighs the model's reading by it. A version 2 model reads the ink at this
-reference itself (Base models); the weighing below applies to both.
+reference itself (Base models) and is not weighed: on synthetic lone characters at their size,
+weighing it as well lost more than it gained (lone `o` read right 49 % of the time against 92 %
+unweighed). The reference below serves both; the weighing only a version 1 model.
 
 - **Reference.** The person's letters: from their newest samples of the language (up to 48 of
   three characters or more and 48 of one letter or digit), the height of each small letter
@@ -874,7 +876,7 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
-| `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` (alone or after the letters) the reference for a version 2 model only, no weighing |
+| `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` or `weigh` (alone or after the letters) the weighing off or on whatever the model (by default a version 1 model is weighed, a version 2 model not) |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check (comma-separated) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
