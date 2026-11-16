@@ -39,6 +39,9 @@ struct hw_sample {
 	char source[16];                /* synthetic, confirmed, corrected, prompted */
 	char spans_source[16];          /* exact, inferred */
 	char licence[16];               /* donated samples only ("" otherwise) */
+	char donor[40];                 /* donated samples only: the donor ID ("" otherwise) */
+	char written[8];                /* how it was written: careful, quick, or "" */
+	char pair[17];                  /* the pair's link (16 hex digits) both samples carry, or "" */
 	struct hw_units units;
 	struct hw_ink *strokes;
 	size_t nstrokes;
@@ -64,6 +67,10 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 /* The line (no newline), malloc'd. With `donation`, the licence is written; never a client
  * or time (they aren't part of a sample). */
 char *hw_sample_format(const struct hw_sample *s);
+
+/* a valid marking: "careful", "quick" or ""; a valid pair link: 16 hex digits or "" */
+int hw_written_ok(const char *w);
+int hw_pair_ok(const char *p);
 
 /* The strokes as the engine takes them (pointers into s). */
 void hw_sample_strokes(const struct hw_sample *s, struct hw_stroke *out);

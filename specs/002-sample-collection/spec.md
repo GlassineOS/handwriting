@@ -68,6 +68,11 @@ one file into a folder among the person's own files, for them to send themselves
 FR-014). Turning donating off or erasing the donation never touches
 the samples used for their own adaptation.
 
+**Given** the person already kept prompted samples before turning donating on, **When**
+they turn it on, **Then** the app offers to add those earlier samples too, shows how many
+there are, and lets the person review the list and leave any out before they are added;
+declining adds none of them, and the offer can be taken up later from the donation page.
+
 ### Scenario 6 – The person stays in charge (Priority: P1)
 
 **Given** stored samples, **When** the person opens the app's sample view, **Then** they see
@@ -111,15 +116,19 @@ export them as one file in the sample format; nothing leaves the device otherwis
   kept to go back to). The app shows progress and the before and after error rates, and
   the device stays usable while it runs.
 - **FR-011**: Donating (Scenario 5) is off until the person turns it on; the licence
-  (CC0 or CC BY 4.0) is chosen once per donation; only samples written to shipped prompts
-  while donating is on are added, never samples written to the person's own word list or
-  from normal use, unless the person adds such a sample one by one (spec 001 FR-014). The
+  (CC0 or CC BY 4.0) is chosen once per donation; samples written to shipped prompts are
+  added while donating is on, and earlier ones only when the person accepts the offer to
+  add them after reviewing the list (Scenario 5), under the licence of this donation;
+  samples written to the person's own word list or from normal use are never added in
+  bulk, only when the person adds such a sample one by one (spec 001 FR-014). The
   donation file follows spec 001 FR-014 (no client, wall-clock time, device or person in
   it), states its licence, and is written into a folder among the person's own files; how
   it reaches the project is up to the person.
 - **FR-012**: Sessions are short and resumable: the app keeps its place in the prompt set,
   shows counts (today, total, since the last adaptation), and asks nothing before the
-  first prompt.
+  first prompt except once, on the first start: a short introduction that lets the person
+  try one prompt (kept as an ordinary prompted sample) and asks whether to donate
+  (Scenario 5), where declining is as easy as accepting.
 - **FR-013**: No device names in the app; the pen's properties come with its stroke data.
 
 ## Key entities
@@ -143,6 +152,10 @@ export them as one file in the sample format; nothing leaves the device otherwis
 ## Success criteria
 
 - A person writes 100 prompted words in under ten minutes, including review.
+- With 10,000 samples kept, on the reference device: the next prompt shows within 150 ms
+  of the last one being taken, what became of a written sample shows within 100 ms of
+  the recognizer's reading, and every page shows within 300 ms of being opened, with its
+  figures up to date; a page is drawn again only when something on it changed.
 - Every kept prompted sample that passed the alignment check has exact spans, every kept
   sample its raw points as the pen reported them;
   a round trip through export and import gives the same samples.

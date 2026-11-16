@@ -247,8 +247,8 @@ class UI:
         self.busy = 0                   # calls queued or running in the worker
         self.loaded = demo              # counts, plan, donation, learning, adaptations are in
         self.cov_loaded = demo          # the coverage is read
-        self.cov_ids = None             # the samples to read the coverage of (None: no run)
-        self.cache = {}
+        self.refreshing = False         # a refresh is queued or running
+        self.again = False              # and another one is wanted after it
         self.counts = (0, 0)
         self.fresh = 0
         self.samples = []               # [(id, time, text)]
@@ -259,9 +259,13 @@ class UI:
         self.adapting = None            # progress text while a run goes
         self.waiting_charge = False
         self.result = None
-        self.donation = (None, 0)
+        self.donation = (None, 0, None)
         self.learning = True
         self.picking_licence = False
+        self.earlier = []               # [(id, time, text)] kept before donating was on, to offer
+        self.earlier_out = set()        # ids the person leaves out
+        self.reviewing = False          # the list of the earlier samples is open
+        self.ep = 0                     # its page
         self.confirm = None             # (question, yes-label, fn) for a destructive action
         self.sets_open = False
         self.demo = demo
@@ -288,48 +292,54 @@ class UI:
             self.redraw()
         self.work.do(fn, fin)
 
+    def shown_state(self):
+        """what the pages show from a refresh: a refresh that changes none of it repaints
+        nothing (each repaint is a refresh of the e-ink panel)"""
+        return (self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier,
+                self.fresh, self.loaded, self.cov_loaded, self.reviewing, len(self.writer.counted) if self.writer else 0)
+
     def refresh(self):
-        """counts, the donation, the adaptation (in the background); then the coverage, in
-        small low steps that never hold up the person's writing"""
-        def get():
-            rows = self.cli.samples()
-            return (self.writer.counts(rows=rows), self.cli.plan(self.state.lang), self.cli.donation(),
-                    self.cli.learning(), self.cli.adaptations(self.state.lang), rows, self.rec.sample_ids())
-
-        def got(r):
-            self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, ids = r
-            self.fresh = self.plan["new"]
-            self.loaded = True
-            self.read_coverage(ids)
-        self.run(get, got)
-
-    def read_coverage(self, ids):
-        running = self.cov_ids is not None
-        self.cov_ids = ids              # a run going on reads the newest list
-        if running:
+        """counts, samples, coverage, the donation, the adaptation: in the background, after
+        anything the person's writing waits for (low), one at a time, and repainted only when
+        something shown changed"""
+        if self.demo:
             return
+        if self.refreshing:
+            self.again = True
+            return
+        self.refreshing = True
+        self.again = False
 
-        def step():
-            ids = self.cov_ids
-            left = self.writer.read_coverage(ids, self.cache, 16)
-            if not left:
-                self.writer.set_coverage(ids, self.cache)
-            return ids, left
+        def get():
+            t = time.monotonic()
+            rows = self.rec.list()
+            self.writer.set_coverage(rows)
+            don = self.cli.donation()
+            earlier = self.cli.donation_earlier() if self.state.donating and don[0] else []
+            r = (self.writer.counts(rows=[(x[0], x[1], x[4]) for x in rows]), self.cli.plan(self.state.lang), don,
+                 self.cli.learning(), self.cli.adaptations(self.state.lang), [(x[0], x[1], x[4]) for x in rows],
+                 earlier)
+            log("refresh %.0f ms, %d samples" % ((time.monotonic() - t) * 1000, len(rows)))
+            return r
 
-        def stepped(r, err):
+        def got(r, err):
+            self.refreshing = False
+            before = self.shown_state()
             if err:
-                log("coverage", err)
-                self.cov_ids = None
-                return
-            ids, left = r
-            if left or ids is not self.cov_ids:
-                self.work.do(step, stepped, low=True)
-                return
-            self.cov_ids = None
-            self.cov_loaded = True
-            log("coverage read", len(ids))
-            self.redraw()
-        self.work.do(step, stepped, low=True)
+                print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
+                self.msg = "Something went wrong: %s" % err
+            else:
+                self.counts, self.plan, self.donation, self.learning, self.adapts, self.samples, self.earlier = r
+                self.earlier_out &= {e[0] for e in self.earlier}
+                if not self.earlier:
+                    self.reviewing = False
+                self.fresh = self.plan["new"]
+                self.loaded = self.cov_loaded = True
+            if err or self.shown_state() != before:
+                self.redraw()
+            if self.again:
+                self.refresh()
+        self.work.do(get, got, low=True)
 
     # ---------------------------------------------------------- writing
 
@@ -348,7 +358,7 @@ class UI:
                 self.counts = (self.counts[0] + bool(sh.sample_id), self.counts[1] + bool(sh.sample_id))
                 self.fresh += bool(sh.sample_id)
                 if sh.donated_id:
-                    self.donation = (self.donation[0], self.donation[1] + 1)
+                    self.donation = (self.donation[0], self.donation[1] + 1, self.donation[2])
         self.run(go, fin)
 
     def probe(self, strokes, units, area, done):
@@ -458,13 +468,22 @@ class UI:
             GLib.idle_add(lambda: (self.redraw(), False)[1])
 
         def go():
-            return self.cli.adapt(self.state.lang, on_line=line)
+            # its own thread: a run takes minutes, and the writing's requests (the worker's)
+            # must not wait for it
+            try:
+                last = self.cli.adapt(self.state.lang, on_line=line)
+            except Exception as e:      # shown on the page, the app keeps running
+                print("glassine-handwriting-samples: error: %s" % e, file=sys.stderr, flush=True)
+                last = ("skip", ["error"])
+            GLib.idle_add(lambda: (fin(last), False)[1])
 
         def fin(last):
             self.adapting = None
             self.result = last
+            self.redraw()
             self.refresh()
-        self.run(go, fin)
+        self.redraw()
+        threading.Thread(target=go, daemon=True).start()
 
     def revert(self):
         self.confirm = None
@@ -481,6 +500,13 @@ class UI:
         self.picking_licence = False
         self.run(go, lambda _: self.refresh())
 
+    def add_earlier(self):
+        """the earlier samples the person didn't leave out go into the donation"""
+        ids = [e[0] for e in self.earlier if e[0] not in self.earlier_out]
+        self.reviewing = False
+        self.run(lambda: self.cli.donation_add_all(ids),
+                 lambda n: (setattr(self, "msg", "%d earlier samples added to the donation." % n), self.refresh()))
+
     def write_donation(self):
         lic = self.donation[0]
         path = free_name(os.path.join(documents_dir(), "Handwriting donations"), "handwriting-donation", ".jsonl")
@@ -491,6 +517,10 @@ class UI:
             self.cli.donation_erase()
             self.cli.donation_start(lic)
         self.run(go, lambda _: (setattr(self, "msg", "Written to " + path), self.refresh()))
+
+    def new_donor(self):
+        self.confirm = None
+        self.run(self.cli.donor_new, lambda _: self.refresh())
 
     def erase_donation(self):
         self.confirm = None
@@ -771,10 +801,10 @@ def donate_page(cr, ui, hits, w, h):
     y = 124
     _, th = PT.text(cr, "When donating is on, every sample you keep for a shipped prompt also goes into a donation. "
                     "You write the donation into a file and send it to the project yourself; nothing is sent from "
-                    "here. It holds only your strokes and the prompt, under the licence you choose: no name, "
-                    "device, app or time.", t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
+                    "here. It holds only your strokes and the prompt, under the licence you choose, and a random "
+                    "donor number, the same in all your donations: no name, device, app or time.", t.row, 20, y, t.ink, maxw=w - 40, wrap=True)
     y += th + 18
-    lic, n = ui.donation
+    lic, n, donor = ui.donation
     if ui.picking_licence:
         PT.text(cr, "Choose the licence for this donation:", t.row, 20, y, t.ink)
         y += 36
@@ -786,16 +816,77 @@ def donate_page(cr, ui, hits, w, h):
         pill(cr, t, hits, 20, h - 72, "Cancel", lambda: (setattr(ui, "picking_licence", False), ui.redraw()))
         return
     on = ui.state.donating and lic
+    if on and ui.reviewing and ui.earlier:
+        earlier_review(cr, ui, hits, w, h, y)
+        return
     PT.text(cr, "Donating: %s" % ("on, " + lic if on else "off"), t.row, 20, y, t.ink, weight=600)
     y += 34
     PT.text(cr, "%d samples in this donation." % n, t.row, 20, y, t.ink)
+    y += 34
+    if on and ui.earlier:
+        # the prompted samples kept before donating was on: offered, never added unasked
+        k = len(ui.earlier)
+        PT.box(cr, 20, y, w - 40, 112, "8px", bg=t.paper, shadow="inset 0 0 0 1.5px " + t.rule)
+        PT.text(cr, "%d sample%s you kept before for shipped prompts can go into this donation too. "
+                "Review them and leave out any you like; nothing is added unless you add them."
+                % (k, "" if k == 1 else "s"), t.row, 36, y + 14, t.ink, maxw=w - 200, wrap=True)
+        pill(cr, t, hits, w - 150, y + 34, "Review", lambda: (setattr(ui, "reviewing", True), setattr(ui, "ep", 0),
+                                                            ui.redraw()),
+             primary=True)
+        y += 124
+    if donor:
+        # quiet: what the donor ID is, and a way to start over as a new writer
+        _, th = PT.text(cr, "Donor ID: %s… — a random number, the same in all your donations, so they count as one "
+                        "writer's. It says nothing about you." % donor[:4], t.sub, 20, y, t.soft, maxw=w - 200,
+                        wrap=True)
+        PT.text(cr, "Get a new one", t.sub, w - 20, y, t.ink, align=2)
+        tw, _ = PT.measure(cr, "Get a new one", t.sub)
+        hits.add(w - 28 - tw, y - 8, tw + 16, 40, lambda: ask(
+            ui, "Get a new donor ID? Your next donations then count as another writer's.", "Get a new one",
+            ui.new_donor))
+        y += max(th, 30) + 14
     if ui.msg:
-        PT.text(cr, ui.msg, t.sub, 20, y + 34, t.ink, maxw=w - 40, wrap=True)
+        PT.text(cr, ui.msg, t.sub, 20, y, t.ink, maxw=w - 40, wrap=True)
     pills_right(cr, t, hits, w - 20, h - 72, [
         ("Erase", (lambda: ask(ui, "Erase the donation? Your own samples stay.", "Erase", ui.erase_donation))
          if n else None, False),
         ("Write file", ui.write_donation if n and lic else None, False),
         ("Turn off", lambda: ui.donating(False), False) if on else ("Turn on", lambda: turn_on(ui), True)])
+
+
+def earlier_review(cr, ui, hits, w, h, y):
+    """the earlier samples, each in or left out by a tap; Add adds those in, Cancel none"""
+    t = ui.theme
+    keep = [e for e in ui.earlier if e[0] not in ui.earlier_out]
+    PT.text(cr, "Samples kept before: tap one to leave it out.", t.row, 20, y, t.ink, weight=600)
+    y += 40
+    rows = max(1, int(h - 100 - y) // 56)
+    pages = (len(ui.earlier) + rows - 1) // rows
+    ui.ep = min(ui.ep, pages - 1)
+    for sid, when, text in ui.earlier[ui.ep * rows:(ui.ep + 1) * rows]:
+        inside = sid not in ui.earlier_out
+        PT.box(cr, 20, y, w - 40, 48, "8px", bg=t.sheet if inside else t.paper,
+               shadow="inset 0 0 0 1.5px " + (t.ink if inside else t.rule))
+        PT.text(cr, ("✓  " if inside else "—  ") + text, t.row, 36, y + 12, t.ink if inside else t.soft,
+                maxw=w - 220)
+        PT.text(cr, time.strftime("%d %b", time.localtime(when)), t.sub, w - 36, y + 15, t.soft, align=2)
+
+        def flip(i=sid):
+            ui.earlier_out ^= {i}
+            ui.redraw()
+        hits.add(20, y, w - 40, 48, flip)
+        y += 56
+    def page(d):
+        ui.ep += d
+        ui.redraw()
+    more = []
+    if pages > 1:
+        PT.text(cr, "Page %d of %d" % (ui.ep + 1, pages), t.sub, 20, y, t.soft)
+        more = [("Back", (lambda: page(-1)) if ui.ep else None, False),
+                ("More", (lambda: page(1)) if ui.ep < pages - 1 else None, False)]
+    pills_right(cr, t, hits, w - 20, h - 72, more + [
+        ("Cancel", lambda: (setattr(ui, "reviewing", False), ui.redraw()), False),
+        ("Add %d" % len(keep), ui.add_earlier if keep else None, True)])
 
 
 def turn_on(ui):
@@ -1131,12 +1222,17 @@ def render(argv):
     ui.plan = {"train": 250, "held": 62, "new": 41, "min_train": 40, "min_held": 10, "charging": True}
     ui.adapts = {"current": {"time": 1763200000, "train": 210, "held": 52, "before": 0.182, "after": 0.121},
                  "previous": None}
-    ui.donation = ("CC0-1.0", 57)
+    ui.donation = ("CC0-1.0", 57, "3f2a9c1e-5b7d-4e2a-9f10-6c8d2b4a7e31")
     ui.state.donating = True
     ui.samples = [("%016x" % i, 1763200000 + 60 * i, w) for i, w in enumerate(
         ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o'clock"] * 3)]
     if page == "sets":
         ui.sets_open, page = True, "write"
+    if page in ("donate-earlier", "donate-review"):
+        ui.earlier = [("%016x" % (99 + i), 1762900000 + 3600 * i, w) for i, w in enumerate(
+            ["The quick brown fox jumps over the lazy dog", "zebra", "minimum", "fifty", "1984"] * 3)]
+        ui.earlier_out = {ui.earlier[1][0]}
+        ui.reviewing, page = page == "donate-review", "donate"
     if page == "result":
         page, ui.result = "learn", ("result", ["kept", "0.121", "0.094", "250", "62"])
     ui.page = page

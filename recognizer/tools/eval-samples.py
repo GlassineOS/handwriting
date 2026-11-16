@@ -126,7 +126,7 @@ def main():
         import re
         ws = set()
         for ln in open(a.samples, "rb").read().decode("utf-8").replace("\0", "\n").split("\n"):
-            if ln.startswith("{") and ln.endswith("}"):
+            if ln.startswith("{") and ln.endswith("}") and '"strokes"' in ln:
                 ws |= {w.lower().replace("\u2019", "'") for w in re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)*", json.loads(ln)["text"])}
         d = tmp / "data" / "glassine" / "predict"
         d.mkdir(parents=True)
@@ -143,6 +143,12 @@ def main():
     # one sample per line; zero bytes (a lost append) end a line, as in the store
     raw_lines = open(a.samples, "rb").read().decode("utf-8").replace("\0", "\n").split("\n")
     raw_lines = [ln for ln in raw_lines if ln.startswith("{") and ln.endswith("}")]
+    # records beside the samples (a donation's preferences) are no samples
+    raw_lines = [ln for ln in raw_lines if "strokes" in json.loads(ln)]
+    # writers: the distinct donor IDs of a donation (none in a store of one's own)
+    donors = {json.loads(ln).get("donor") for ln in raw_lines} - {None}
+    if donors:
+        print("writers: %d donor IDs" % len(donors))
     out = []
     try:
         for ln in raw_lines:
