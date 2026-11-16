@@ -122,6 +122,21 @@ class Prompts(Case):
             self.assertFalse(set("abcdefghijklmnopqrstuvwxyz") - set(p.text.lower()), p.text)
         self.assertEqual(sets[P.OWN], [])
 
+    def test_every_set_choosable_and_its_characters_shown(self):
+        """each shipped set is on the sets page (owner and guest), and every character the
+        single-character prompts teach has a cell on the coverage page"""
+        from glassine_hwsamples import pages
+        for rows in (pages.SETS, pages.GSETS):
+            self.assertLessEqual(set(P.SETS), {r[0] for r in rows})
+        for r in pages.SETS + pages.GSETS:
+            self.assertIn(r[0], pages.SET_NAMES)
+        shown = "".join(c for _, cs in pages.GROUPS for c in cs).replace("’", "'")
+        sets = P.load("en")
+        for name in ("letters", "digits", "symbols"):
+            for p in sets[name]:
+                if len(p.text) == 1:
+                    self.assertIn(p.text, shown, name)
+
     def test_marks_prompted_alone_and_in_context(self):
         sets = P.load("en")
         sym = sets["symbols"]
