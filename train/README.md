@@ -256,16 +256,21 @@ the dataset.
 variation, laid out by writers drawn per line:
 
 - *spacing* by ink profiles as the recognizer's `spacing.c` (`spacing.py`; on the letter
-  model's versions it gives the stored profiles to 5e-5 x-heights): each pair at the
-  writer's typical gap, closer where the profiles leave open space, plus a spread per pair,
-  never more than 0.12 x-heights into a letter; word gaps box to box. Typical gaps and word
-  gaps come from a pool of styles: each training font laid out at its own advances, moved
-  by rank onto the spread of written spacing (`gen.CALIB`: letter gaps median 0.45, sd 0.09
-  between writers; word gaps median 1.35 lognormal 0.2), so a tight font stays a tight
-  writer but no font keeps its typeset spacing; and a letter model's spacing as one style
-  more. On 1500 lines the generated letter gaps come out at median 0.42 x-heights, sd 0.31,
-  12 % touching, word gaps median 1.36, against one writer's real ink 0.42, 0.29, 7 % and
-  about 1.4;
+  model's versions it gives the stored profiles and middles to 5e-5 x-heights). A font
+  writer sets each pair at the writer's typical gap measured in the x-height band (the
+  bands between the baseline and the x-height, the recognizer's guard: a t's bar or an f's
+  hook may reach over the next letter, at most 0.5 x-heights), closer where the profiles
+  leave open space, plus a spread per pair, never more than 0.12 x-heights into a letter
+  before it; word gaps box to box. Typical gaps and word gaps come from a pool of styles:
+  each training font laid out at its own advances, moved by rank onto the spread of
+  written spacing (`gen.CALIB`: x-height-band gaps median 0.46, sd 0.09 between writers;
+  word gaps median 1.35, lognormal 0.2), so a tight font stays a tight writer but no font
+  keeps its typeset spacing; and a letter model's spacing as one style more. A letter
+  model writer places pairs as the recognizer does (`spacing.place`, `hw_spacing_place`):
+  by its letters' middles at the pair's distance or the characters' reaches, guarded by
+  the gap. On 1500 lines the generated x-height-band gaps come out at median 0.46,
+  sd 0.30, 10 % touching (all bands: 0.43, 13 %), word gaps median 1.35, against one
+  writer's real ink 0.44, 0.29, 6 % (0.42, 7 %) and about 1.4;
 - *timing* (`timing.py`): a sigma-lognormal speed model fitted to real ink (`dynfit`):
   pulses found by least squares on each stroke's speed, described by duration, skew and
   overlap, with the stroke's duration from its path; pen-up pauses from the jump. Each

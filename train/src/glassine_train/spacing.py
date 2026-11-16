@@ -16,6 +16,7 @@ BANDS = 8
 Y0, Y1 = -0.6, 1.6
 BAND = (Y1 - Y0) / BANDS
 SIDE_FAR = 1.0
+MID_Y0, MID_Y1 = 0.0, 1.0  # the x-height band: middles and the placement guard (HW_MID_Y0/1)
 
 
 def _clampy(y):
@@ -73,6 +74,61 @@ def gap(a: Profile, b: Profile, shift: float = 0.0) -> float:
     if a.empty() or b.empty():
         return 0.0
     return float(np.nanmin(b.l) + shift - np.nanmax(a.r))
+
+
+def guard_gap(a: Profile, b: Profile, shift: float = 0.0) -> float:
+    """The gap over the bands between the baseline and the x-height only (the guard of
+    hw_spacing_place): a bar or hook above or below may reach over the next letter. NaN
+    when the two share no such band."""
+    y0 = Y0 + np.arange(BANDS) * BAND
+    keep = (y0 + BAND > MID_Y0) & (y0 < MID_Y1) & ~np.isnan(a.r) & ~np.isnan(b.l)
+    return float(np.min(b.l[keep] + shift - a.r[keep])) if keep.any() else float("nan")
+
+
+def middle(strokes_xy) -> float:
+    """hw_mid_of: the mean x of the ink between the baseline and the x-height, each segment
+    weighted by how far it runs up or down (x, y up, in x-heights). NaN without such ink."""
+    sx = sw = 0.0
+    for q in strokes_xy:
+        q = np.asarray(q, float)
+        if len(q) < 2:
+            continue
+        x0, y0, x1, y1 = q[:-1, 0], q[:-1, 1], q[1:, 0], q[1:, 1]
+        dy = y1 - y0
+        ok = dy != 0
+        x0, y0, x1, y1, dy = x0[ok], y0[ok], x1[ok], y1[ok], dy[ok]
+        t0, t1 = (MID_Y0 - y0) / dy, (MID_Y1 - y0) / dy
+        lo, hi = np.clip(np.minimum(t0, t1), 0, 1), np.clip(np.maximum(t0, t1), 0, 1)
+        w = np.abs(dy) * np.maximum(hi - lo, 0)
+        sx += float(np.sum(w * (x0 + (x1 - x0) * (lo + hi) / 2)))
+        sw += float(np.sum(w))
+    return sx / sw if sw > 1e-9 else float("nan")
+
+
+def place(spacing: dict, a: str, b: str, pa: Profile, pb: Profile, ma: float, mb: float) -> float:
+    """hw_spacing_place without side shapes: how far to move b right so the pair stands
+    where a letter model's spacing puts it. By the middles' distance (the pair's own, else
+    the characters' reaches), guarded in the x-height band by the gap, or half the typical
+    gap when that is smaller; else at the gap."""
+    g = pair_gap(spacing, a, b, pa, pb)
+    s = g - gap(pa, pb)
+    if not (math.isfinite(ma) and math.isfinite(mb)):
+        return s
+    d = float("nan")
+    for p in spacing.get("pairs", []):
+        if p[0] == a and p[1] == b and len(p) > 4 and p[4] is not None:
+            d = float(p[4])
+    if not math.isfinite(d):
+        reach = {r[0]: r for r in spacing.get("reach", [])}
+        ra, rb = reach.get(a), reach.get(b)
+        if ra and rb and ra[1] is not None and rb[2] is not None:
+            d = float(ra[1]) + float(rb[2])
+    if not math.isfinite(d):
+        return s
+    at = d + ma - mb
+    floor = min(g, spacing["letter"] / 2)
+    gg = guard_gap(pa, pb, at)
+    return at + floor - gg if math.isfinite(gg) and gg < floor else at
 
 
 def open_space(a: Profile, b: Profile) -> float:

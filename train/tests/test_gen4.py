@@ -261,3 +261,23 @@ def test_ssa_given_names(tmp_path):
         z.writestr("yob1900.txt", "Old,M,999\n")
     c = L._ssa_counts(buf.getvalue())
     assert c == {"Ada": 70, "Bo": 40, "Cy": 10}
+
+
+def test_middle_and_place_by_middles():
+    from glassine_train import spacing as S
+    stem = [np.array([[0.5, 0.0], [0.5, 1.0]])]
+    assert abs(S.middle(stem) - 0.5) < 1e-9
+    bar = [np.array([[0.0, 1.5], [1.0, 1.5]])]
+    assert not np.isfinite(S.middle(bar))  # a bar above the x-height has no middle
+    t = stem + [np.array([[0.0, 1.4], [1.2, 1.4]])]  # a stem with a bar reaching right
+    tall = [np.array([[0.5, 0.0], [0.5, 1.5]])]  # an h's ascender, up to the bar
+    pa, pb = S.of_strokes([np.c_[q[:, 0], -q[:, 1]] for q in t], 1.0), S.of_strokes([np.c_[q[:, 0], -q[:, 1]] for q in tall], 1.0)
+    assert np.isfinite(S.guard_gap(pa, pb)) and S.guard_gap(pa, pb) > S.gap(pa, pb)
+    sp = {"letter": 0.4, "pairs": [["T", "h", 0.3, 5, 0.6]]}
+    dx = S.place(sp, "T", "h", pa, pb, 0.5, 0.5)
+    assert abs(dx - 0.6) < 1e-9  # middles 0.6 apart; the bar may reach over
+    sp = {"letter": 0.4, "pairs": [["T", "h", 0.3, 5, 0.05]]}
+    dx = S.place(sp, "T", "h", pa, pb, 0.5, 0.5)
+    assert abs(S.guard_gap(pa, pb, dx) - 0.2) < 1e-9  # guarded: half the typical gap
+    sp = {"letter": 0.4, "pairs": [], "reach": [["T", 0.3, None, 3, 0], ["h", None, 0.35, 0, 3]]}
+    assert abs(S.place(sp, "T", "h", pa, pb, 0.5, 0.5) - 0.65) < 1e-9
