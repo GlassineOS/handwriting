@@ -91,7 +91,8 @@ if pen:
 
 The samples app's **Neaten my writing** page uses it (`samples/glassine_hwsamples/neat.py`,
 `PenInk`). It keeps the direct recognizer path as the fallback on a system without the
-interface.
+interface or without the service (capabilities without `neaten`, also when the service
+leaves while the page is open).
 
 ## Reports
 
