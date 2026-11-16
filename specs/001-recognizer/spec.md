@@ -207,6 +207,55 @@ included unless they pick them one by one.
   single characters and punctuation at their true size relative to the line. A model that
   reads size this way says so in its file's format version, and the recognizer reads both
   kinds.
+- **FR-019**: Characters: the model reads each moment of the ink on its own, so it has no
+  sense of which character is likely after the ones before it ("lig4t" for "light"). Every
+  reading therefore also weighs how likely each character is after the characters before
+  it, by a character model of the language shipped with the base model:
+  - In prose fields (as FR-015) the readings use the character model and the words; in a
+    field for names or plain letters, the character model alone; in every other field
+    (addresses, numbers, phone numbers, dates, times, a terminal, a purpose the recognizer
+    doesn't know) neither, and nothing at all in a private field.
+  - The text before the cursor is the character model's context; without it, a reading
+    starts as a new word does. A reading still being written pays nothing for not being
+    finished.
+  - Its weight is bounded per character, so a code, a name, a number or a mix such as
+    "4th" or "R2D2" written clearly still reads as written; the ink, not the character
+    model, decides between readings the ink tells apart.
+  - A client can ask for the ink's reading alone (prompted writing's checks: how readable
+    the ink itself is) or for the reading without words but with the character model
+    (free writing that should not be bent towards the word list); the person can turn
+    the character model off as they can the words.
+  - A candidate the character model put before the ink's own best reading counts, for a
+    pick (FR-009), as one the words put there: it is stored only when its strokes fit it as
+    prompted writing must. Prompted writing's fit and the reading stored with a prompted
+    sample stay the ink's alone.
+  - The character model is built only from the public-domain texts the base model's
+    training text comes from (never from the test texts), by a reproducible step whose
+    sources, checksums and licences ship with it; the same sources give the same file.
+    Without it, readings are as without it, and it costs little: reading with it takes at
+    most a tenth longer than without.
+- **FR-020**: The next base model (requirements on its training, beside FR-018):
+  - Training text with the language's real character statistics: no uniformly random
+    letter strings, except as a small remainder; instead pseudo-words sampled from a
+    character model of the language (not words of the word list, so no word can be
+    learned by heart, but with real letter sequences); names from public name lists; and
+    codes and numbers as line kinds of their own, as they are really written (ordinals and
+    units such as 4th, 10:30 or 5 km, dates, phone numbers, postcodes, number plates and
+    part numbers such as B-XY 123 or R2D2, email and web addresses), so a digit stands
+    next to letters only where it really does.
+  - Optionally, a decoder whose output depends on its earlier output (attention, or CTC
+    with attention) measured against the CTC model with the character model (FR-019); not
+    required.
+  - Nice to have: synthetic ink with delayed strokes as people write them (dots of i and
+    j, bars of t and f and others added after the word, often right to left, sometimes
+    mid-word, after a longer pause than between letters), in every set that renders
+    real-looking ink.
+  - The generator's timing and dynamics drawn from real ink broadly, with a timing model
+    fitted to the real ink of many writers, while the shapes stay broad (no one writer's
+    geometry).
+  - A test set of other real writers' ink, from donations with their donor IDs, as soon as
+    there is one; the held-out synthetic fonts only stand in for other hands. The base
+    model's real-ink error is then reported per writer.
 
 ## Key entities
 
@@ -221,12 +270,13 @@ included unless they pick them one by one.
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import) | owned (this program) | 1 | FR-001–FR-011; defined with the plan |
+| Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import) | owned (this program) | 1.1 | FR-001–FR-011; defined with the plan |
 | Sample format (export/import, donation, training data) | owned (this program) | 1 | FR-010, FR-014; `docs/samples.md` |
 | Base model package (model, language, recipe, data sources and licences) | owned (this program) | 1 | FR-005, FR-012 |
 | Writing paper and corrections | consumer (`GlassineOS/shell` spec 006) | — | shell spec 006 FR-011–FR-013a |
 | Settings: learning, erase, counts, export/import | consumer (the shell's settings app) | — | shell spec 006 FR-008 |
 | Word predictor model and learned words | consumer (`GlassineOS/shell` docs/predictor.md) | 1 | FR-015 |
+| Character model (per language, beside the base model) | owned (this program) | 1 | FR-019 |
 
 ## Success criteria
 
@@ -240,6 +290,10 @@ included unless they pick them one by one.
 - With words (FR-015), the character and word error rates on a person's held-back
   samples are lower than the ink's alone, within the same time budget; readings the words
   make wrong are far fewer than those they make right, also for text the list lacks.
+- With the character model (FR-019), the character and word error rates on a person's
+  held-back samples are lower than without it, in the ink-only and the words reading;
+  letters read as digits inside words (and the reverse) are fewer; numbers and codes read
+  no worse; and a reading takes at most a tenth longer on the reference device.
 - Scenario 4's prompted mode returns one stroke group per prompted character for a
   pangram written in one go.
 - With 10,000 samples stored, on the reference device: a prompted sample is kept within
@@ -264,7 +318,9 @@ alignment, gestures); the sample rules (no sample without confirmation, none fro
 private field, erase and export/import round trip); an adaptation that does worse is
 rejected; a donation file holds only reviewed samples and no client, time or device;
 words (FR-015) off in every non-prose field, a list word never first, a proposed pick
-that doesn't fit makes no sample; error rates with and without words on held-back
+that doesn't fit makes no sample; the character model (FR-019) on and off per field and
+per request, a pick it put first that doesn't fit makes no sample, and the error rates
+with and without it on held-back samples; error rates with and without words on held-back
 samples; size (FR-017): a dot, comma, apostrophe and hyphen and the case
 pairs at their true size next to a known reference read as written, and words and
 sentences of a person's samples read no worse than without it.
