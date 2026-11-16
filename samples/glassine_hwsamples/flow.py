@@ -383,6 +383,55 @@ class Writer:
             self._advance(self.prompt)
         return self.prompt
 
+    # ------------------------------------------------------------ a kept sample, later
+
+    def delete(self, sid):
+        """a deletion (spec 002 FR-009, the same wherever it is asked): the whole sample, from
+        the samples and from the contribution (forget takes both), its preferences and marks
+        with it; not counted from here on"""
+        self.rec.forget(sid)
+        self.forgotten(sid)
+
+    def rewrite(self, old_id, old, strokes, units, area, donated=False):
+        """Write it again (spec 003 FR-033): the new ink to the old sample's text, marked as the
+        old one was written (written, pair), read and checked as any prompted sample is. Only
+        once it is kept is the old one deleted, as delete() does; a failed check or nothing
+        kept leaves it as it was. The prompt on screen and the waiting checks stay as they are.
+        donated: the old one was in the contribution, so the new one goes there while
+        contributing is on (a shipped set), else nowhere (the own set) -> the Shown"""
+        p = P.Prompt(old.get("text") or "", "words" if donated else P.OWN, old.get("lang") or self.state.lang,
+                     written=old.get("written") or "", pair=old.get("pair") or "")
+        if not p.text or not strokes:
+            return None
+        self.rec.write(SESSION, p.lang, units, area, strokes)
+        try:
+            sh = Shown(p, strokes, units, area, self.rec.read(SESSION), "kept")
+            self._store(sh, keep=False)
+        finally:
+            self.rec.end(SESSION)
+        if sh.status == "kept" and not sh.sample_id:
+            self._take_back(sh)         # in the contribution alone (learning off): the old one stays
+            sh.status = "not-kept"
+        if sh.sample_id and sh.sample_id != old_id:
+            self._carry_version_marks(old_id, sh.sample_id)
+            self.delete(old_id)
+        return sh
+
+    def _carry_version_marks(self, old_id, new_id):
+        """the marks on a character's ways stay (FR-033): the old sample's way-out and
+        favourite marks go to the new one; its own out marks go with it"""
+        try:
+            marks = self.cli.letters_marks()
+        except Error:
+            return
+        for char, kind in {(c, k) for sid, c, k in marks if sid == old_id and k in ("way-out", "favourite")}:
+            # a favourite mark replaces the character's favourite: all of its samples, with the new one
+            ids = [sid for sid, c, k in marks if c == char and k == kind and sid != old_id] + [new_id]
+            try:
+                self.cli.letters_mark(kind, char, ids)
+            except Error:
+                pass
+
     # ------------------------------------------------------------ counts and coverage
 
     def load_coverage(self, rows=None):
