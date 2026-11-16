@@ -56,6 +56,15 @@ are chosen (the settings app, text editors, notes apps).
 **Given** the font is installed, **When** the person writes more samples and asks again,
 **Then** the font is rebuilt under the same name and apps that use it show the new version.
 
+**Given** the font page, **When** the person opens a character, **Then** they see each way
+they write it, drawn large, with how often the font shows it ("6 in 10"), and its samples,
+each marked as counting or not with the reason in plain words. **When** they make one way
+their favourite, leave a way or a sample out (and put it back, or undo), write more of it
+(careful prompts of the character alone and inside words) or say which of its ways is nicer
+and close the character, **Then** just that character is learned again in the background
+and the preview shows it; the installed font changes only when they update it. A character
+that isn't covered yet opens on writing more of it.
+
 ### Scenario 4 – Neaten my ink (Priority: P2)
 
 **Given** an app that draws pen ink through the neat ink layer (the handwriting app's own
@@ -111,7 +120,9 @@ size, spacing) and keep their shape.
   preferences, careful marking, readability (how well the recognizer read it when it was
   written) and consistency (closeness to the group's typical shape) as weights. Jitter is
   removed; shape, proportions, stroke count and stroke order stay the person's. A variant
-  is never made by mixing versions written with different strokes. Each variant carries
+  is never made by mixing versions written with different strokes. How often the font
+  shows each variant follows from how often the person writes it that way and from their
+  marks (FR-031). Each variant carries
   its left and right ink profiles: how far its ink reaches to each side in each height band
   from the descender to the cap height.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
@@ -145,6 +156,25 @@ size, spacing) and keep their shape.
   (FR-011). Erasing samples (all, or one client's) erases the
   letter model, the preferences and the font with them; deleting one sample leaves the
   letter model out of date until its next rebuild.
+- **FR-031**: The person can mark the letter model, per character:
+  - a **favourite** variant (at most one per character): the font shows it a fixed amount
+    more often than the person writes it that way;
+  - a variant **left out**: it stays in the letter model, shown as left out, but is neither
+    in the font nor a neatening target; its samples still form it, so putting it back
+    restores it as it was;
+  - a sample **left out** for that character: it doesn't count as usable for it and shapes
+    no variant of it. It is not deleted: it stays a sample, and adaptation, base training
+    and contributions use it as before. Deleting it (spec 002) removes it everywhere, its
+    marks with it.
+
+  Each mark can be undone (put back). Marks are the person's data: kept with the samples
+  on the device, erased with them, never exported or contributed. A mark changes the letter
+  model at its next build and the installed font only when the person updates it (FR-011).
+- **FR-032**: A single character can be learned again on its own: after a change to it
+  (marks, new samples of it, preferences between its samples), its variants are rebuilt
+  from its samples while the rest of the letter model stays as it was, in seconds, at the
+  lowest priority; the font page's preview shows the result. The letter model then counts
+  as up to date for that character; it is still out of date if other samples changed.
 - **FR-030**: How many usable samples each character has is known from the samples
   themselves, whether a letter model is built or not: a page about the person's letters shows
   these counts as soon as it opens, says whether the letter model is built, out of date or
@@ -170,6 +200,9 @@ size, spacing) and keep their shape.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
   the session. A rebuild keeps the name; the font is rebuilt only when the person asks.
+  Updating the font learns the letters first when the letter model is out of date, then
+  makes the font from it; learning the letters alone (to see the preview first) leaves the
+  installed font as it was.
 - **FR-012**: The font never leaves the device except by the person's own export; it is not
   part of a contribution.
 
@@ -257,6 +290,8 @@ size, spacing) and keep their shape.
 
 - **Careful / quick marking**: how a sample was written (FR-001), and the pair it belongs to.
 - **Preference**: two versions and the one chosen (FR-003).
+- **Mark**: the person's say over the letter model: a favourite or left-out variant, a
+  left-out sample (FR-031).
 - **Letter model**: per character, the person's best variants with their profiles, the line
   metrics and the spacing; derived
   data, rebuilt from samples, markings and preferences.
@@ -272,7 +307,7 @@ size, spacing) and keep their shape.
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
 | Sample format (marking, pair, preference records) | owned | minor bump of v1 | docs/samples.md |
-| Recognizer interface (letter model build and status, font build and installation, neaten) | owned | minor bump | docs/recognizer.md |
+| Recognizer interface (letter model build and status, one character learned again, marks, a character's samples, font build and installation, neaten) | owned | minor bump | docs/recognizer.md |
 | Neat ink layer (pen strokes and field context in; raw and neatened vector strokes, strength, candidates out; picks back) | owned | new, version 1 | this spec (FR-018 to FR-029); its protocol definition beside the ink protocol in GlassineOS/protocols |
 | Ink protocol (ink areas, pen-preview brushes) | consumed and extended: the neat ink layer wraps it | glassine_ink_v1 | GlassineOS/protocols `glassine-ink-v1.xml` |
 | E-ink stack pen preview (the panel engine draws the stroke at the pen's tip) | consumed | — | GlassineOS/epd |
@@ -296,6 +331,13 @@ Host level:
   with fewer than 3 usable samples is not covered;
 - in words and alone, the versions of t, f, i, j, k, x, E and H written with a late dot, bar
   or arm keep that stroke, and a full stop or comma beside a letter counts for both;
+- a favourite variant is shown a fixed amount more often in the font's cycle; a variant left
+  out is in the letter model, marked left out, and in neither the font nor neatening; a
+  sample left out counts as usable for no character it was left out of and shapes no variant
+  of it, while adaptation still reads it; putting back restores the model built before;
+  deleting the sample removes its marks; marks are in no export;
+- learning one character again changes only that character's line of the letter model, and
+  the model is reported up to date afterwards when nothing else changed;
 - a character written one way in about two thirds of its samples and another way in a
   third gets a variant for each, weighted alike, and the font shows them in about that
   proportion along a long text; a way written once among many gets none;
