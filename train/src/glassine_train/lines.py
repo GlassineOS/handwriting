@@ -18,9 +18,13 @@ Every line has a kind; `corpus()` mixes them in the shares of `SHARES`:
   `time`, `date`, `phone`, `postcode`, `plate`, `part` (part and model numbers: R2D2,
   X-200, ISO 9001), `email`, `web`, `number` (numbers and prices); a third of them inside a
   few words of the books, as codes are written in a sentence;
-- `uniform`: a small remainder of letter and digit strings, every character equally likely;
+- `uniform`: a small remainder of strings, each of letters only or digits only, every
+  character of its kind equally likely (a mix of letters and digits in one string is what
+  the code kinds write, where it belongs: in strings drawn at random it teaches that a digit
+  may stand anywhere in a word);
 - `lone`: one character alone (letters, digits, punctuation) or a short run of marks, for
-  ink at its true size (FR-018).
+  ink at its true size (FR-018); a capital letter and a digit equally often each, so a lone
+  `O` is not a `0` by the odds.
 
 The test book (text.TEST) is never used: neither its sentences nor its words. Names are
 split by a hash: one in NAME_HELD_MOD is held out for the test sets.
@@ -407,9 +411,14 @@ class Codes:
 
 # ---------------------------------------------------------------------------- the rest
 
+UNIFORM_DIGITS = 0.2  # share of uniform strings that are digits
+
+
 def uniform(rng) -> str:
-    alpha = list(text.CHARS[:62])
-    return " ".join("".join(rng.choice(alpha, int(rng.integers(1, 8)))) for _ in range(int(rng.integers(1, 4))))
+    letters, digits = list(text.CHARS[:52]), list(text.CHARS[52:62])
+    assert "".join(digits) == "0123456789"
+    return " ".join("".join(rng.choice(digits if rng.random() < UNIFORM_DIGITS else letters, int(rng.integers(1, 8))))
+                    for _ in range(int(rng.integers(1, 4))))
 
 
 LONE_PUNCT = ".,;:!?'-()@/&+#%_=$"
@@ -417,9 +426,10 @@ LONE_PUNCT = ".,;:!?'-()@/&+#%_=$"
 
 def lone(rng) -> str:
     k = rng.random()
+    # small letters 35 %; capitals and digits share 40 % in proportion to their number (26, 10)
     if k < 0.35:
         return str(rng.choice(list(LETTERS)))
-    if k < 0.6:
+    if k < 0.35 + 0.40 * 26 / 36:
         return str(rng.choice(list(LETTERS.upper())))
     if k < 0.75:
         return str(rng.integers(0, 10))

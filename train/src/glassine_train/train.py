@@ -47,7 +47,7 @@ def evaluate(model, ds, batch=64):
 def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: int = 32,
           lr: float = 2e-3, threads: int = 8, eval_every: int = 2000, seed: int = 0,
           val_limit: int = 2000, steps_per_s: float | None = None, augment: bool = False,
-          select: Path | list[Path] | None = None):
+          select: Path | list[Path] | None = None, init: Path | None = None):
     """Checkpoints every eval_every steps; best.pt is the lowest CER on `select` (fonts never
     trained on; several sets: the mean of their CERs) if given, else on `val`. The model's
     inputs and characters are the training set's."""
@@ -60,7 +60,12 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
     for d in [vs, *ss]:
         if d.nfeat != ds.nfeat or not set("".join(d.texts)) <= set(ds.alphabet):
             raise SystemExit(f"{d.feat.filename}: inputs or characters differ from the training set's")
-    model = Recognizer(**cfg, nfeat=ds.nfeat, alphabet=ds.alphabet)
+    if init:  # go on from a checkpoint: its architecture, inputs and characters
+        model = load(init)
+        if model.c1.in_channels != ds.nfeat or model.alphabet != ds.alphabet:
+            raise SystemExit(f"{init}: inputs or characters differ from the training set's")
+    else:
+        model = Recognizer(**cfg, nfeat=ds.nfeat, alphabet=ds.alphabet)
     nparam = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
     ctc = nn.CTCLoss(blank=0, zero_infinity=False)
