@@ -31,17 +31,193 @@ static int base_dir(char *out, size_t n, const char *xdg, const char *home_rel)
 	return r < 0 || (size_t)r >= n ? -1 : 0;
 }
 
-int hw_store_path(char *out, size_t n, const char *rel)
+/* ---------------------------------------------------------------- writer stores */
+
+/* the writer's store the process is for ("" the person's) */
+static char writer_id[17];
+
+static int valid_writer(const char *id)
+{
+	if (!id || strlen(id) != 16) return 0;
+	for (const char *c = id; *c; c++) if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f'))) return 0;
+	return 1;
+}
+
+const char *hw_store_writer(void)
+{
+	return writer_id[0] ? writer_id : NULL;
+}
+
+int hw_writers_dir(char *out, size_t n)
 {
 	char b[3800];
 	if (base_dir(b, sizeof b, "XDG_DATA_HOME", ".local/share")) return -1;
-	int r = snprintf(out, n, "%s/handwriting%s%s", b, *rel ? "/" : "", rel);
+	int r = snprintf(out, n, "%s/handwriting-writers", b);
+	return r < 0 || (size_t)r >= n ? -1 : 0;
+}
+
+static int writer_dir(char *out, size_t n, const char *id)
+{
+	char d[3900];
+	if (hw_writers_dir(d, sizeof d)) return -1;
+	int r = snprintf(out, n, "%s/%s", d, id);
+	return r < 0 || (size_t)r >= n ? -1 : 0;
+}
+
+int hw_writer_exists(const char *id)
+{
+	char p[4096];
+	struct stat st;
+	if (!valid_writer(id) || writer_dir(p, sizeof p, id)) return 0;
+	return !lstat(p, &st) && S_ISDIR(st.st_mode);
+}
+
+static int rm_tree(const char *p)
+{
+	struct stat st;
+	if (lstat(p, &st)) return errno == ENOENT ? 0 : -1;
+	if (!S_ISDIR(st.st_mode)) return unlink(p) && errno != ENOENT ? -1 : 0;
+	DIR *d = opendir(p);
+	if (!d) return -1;
+	int ret = 0;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		char c[4096];
+		if (snprintf(c, sizeof c, "%s/%s", p, e->d_name) >= (int)sizeof c) { ret = -1; continue; }
+		if (rm_tree(c)) ret = -1;
+	}
+	closedir(d);
+	if (rmdir(p) && errno != ENOENT) ret = -1;
+	return ret;
+}
+
+static void sync_dir(const char *p)
+{
+	int fd = open(p, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd >= 0) { fsync(fd); close(fd); }
+}
+
+void hw_writers_sweep(void)
+{
+	char d[4096];
+	if (hw_writers_dir(d, sizeof d)) return;
+	DIR *dd = opendir(d);
+	if (!dd) return;
+	struct dirent *e;
+	while ((e = readdir(dd))) {
+		if (strncmp(e->d_name, ".removing-", 10)) continue;
+		char c[4300];
+		snprintf(c, sizeof c, "%s/%s", d, e->d_name);
+		rm_tree(c);
+	}
+	closedir(dd);
+}
+
+int hw_store_set_writer(const char *id)
+{
+	hw_writers_sweep();
+	if (!hw_writer_exists(id)) return -1;
+	snprintf(writer_id, sizeof writer_id, "%s", id);
+	return 0;
+}
+
+void hw_store_set_person(void)
+{
+	writer_id[0] = 0;
+}
+
+int hw_writer_new(char out[17])
+{
+	char d[4096], p[4200];
+	hw_writers_sweep();
+	if (hw_writers_dir(d, sizeof d)) return -1;
+	/* its parents as the person's store has them, the directory 0700 */
+	char b[4096];
+	snprintf(b, sizeof b, "%s", d);
+	for (char *s = b + 1; *s; s++)
+		if (*s == '/') { *s = 0; mkdir(b, 0755); *s = '/'; }
+	if (mkdir(d, 0700) && errno != EEXIST) return -1;
+	if (chmod(d, 0700) && errno != EPERM) return -1;
+	for (int tries = 0; tries < 16; tries++) {
+		unsigned char r[8];
+		int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+		if (fd < 0) return -1;
+		ssize_t got = read(fd, r, sizeof r);
+		close(fd);
+		if (got != (ssize_t)sizeof r) return -1;
+		for (int k = 0; k < 8; k++) snprintf(out + 2 * k, 3, "%02x", r[k]);
+		snprintf(p, sizeof p, "%s/%s", d, out);
+		if (!mkdir(p, 0700)) { chmod(p, 0700); sync_dir(d); return 0; }
+		if (errno != EEXIST) return -1;
+	}
+	return -1;
+}
+
+int hw_writer_remove(const char *id)
+{
+	char p[4096], q[4200], d[4096], l[4200];
+	hw_writers_sweep();
+	if (!hw_writer_exists(id)) return 0;
+	if (writer_dir(p, sizeof p, id) || hw_writers_dir(d, sizeof d)) return -1;
+	/* after any write in progress: under the store's lock */
+	snprintf(l, sizeof l, "%s/lock", p);
+	int fd = open(l, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (fd >= 0) while (flock(fd, LOCK_EX)) if (errno != EINTR) break;
+	snprintf(q, sizeof q, "%s/.removing-%s", d, id);
+	int r = rename(p, q);
+	if (fd >= 0) close(fd);
+	if (r) return -1;
+	sync_dir(d);
+	rm_tree(q);
+	sync_dir(d);
+	return 1;
+}
+
+int hw_writers_list(char (**out)[17], size_t *n)
+{
+	char d[4096];
+	*out = NULL; *n = 0;
+	hw_writers_sweep();
+	if (hw_writers_dir(d, sizeof d)) return -1;
+	DIR *dd = opendir(d);
+	if (!dd) return errno == ENOENT ? 0 : -1;
+	size_t cap = 0;
+	struct dirent *e;
+	while ((e = readdir(dd))) {
+		if (!valid_writer(e->d_name) || !hw_writer_exists(e->d_name)) continue;
+		if (*n == cap) {
+			cap = cap ? 2 * cap : 8;
+			char (*x)[17] = realloc(*out, cap * sizeof *x);
+			if (!x) { closedir(dd); return -1; }
+			*out = x;
+		}
+		memcpy((*out)[(*n)++], e->d_name, 17);
+	}
+	closedir(dd);
+	if (*n) qsort(*out, *n, sizeof **out, (int (*)(const void *, const void *))strcmp);
+	return 0;
+}
+
+int hw_store_path(char *out, size_t n, const char *rel)
+{
+	char b[3800];
+	int r;
+	if (writer_id[0]) {
+		char d[3900];
+		if (writer_dir(d, sizeof d, writer_id)) return -1;
+		r = snprintf(out, n, "%s%s%s", d, *rel ? "/" : "", rel);
+		return r < 0 || (size_t)r >= n ? -1 : 0;
+	}
+	if (base_dir(b, sizeof b, "XDG_DATA_HOME", ".local/share")) return -1;
+	r = snprintf(out, n, "%s/handwriting%s%s", b, *rel ? "/" : "", rel);
 	return r < 0 || (size_t)r >= n ? -1 : 0;
 }
 
 int hw_store_adaptation_path(char *out, size_t n, const char *lang, const char *slot)
 {
 	char rel[128];
+	if (writer_id[0]) return -1;            /* a writer's store has no adaptation */
 	snprintf(rel, sizeof rel, "adaptation/%s/%s", lang, slot);
 	return hw_store_path(out, n, rel);
 }
@@ -55,6 +231,16 @@ static int mkdir_0700(const char *p)
 int hw_store_mkdir(const char *rel)
 {
 	char b[3800], p[4096];
+	if (writer_id[0]) {
+		/* a writer's store is made only by hw_writer_new: one removed stays gone */
+		if (!hw_writer_exists(writer_id) || hw_store_path(p, sizeof p, "")) { errno = ENOENT; return -1; }
+		if (!*rel) return 0;
+		size_t base = strlen(p);
+		snprintf(p + base, sizeof p - base, "/%s", rel);
+		for (char *s = p + base + 1; *s; s++)
+			if (*s == '/') { *s = 0; if (mkdir_0700(p)) return -1; *s = '/'; }
+		return mkdir_0700(p);
+	}
 	if (base_dir(b, sizeof b, "XDG_DATA_HOME", ".local/share")) return -1;
 	/* the parents (~/.local/share/glassine) with the usual mode, ours 0700 */
 	for (char *s = b + 1; *s; s++)
@@ -157,6 +343,8 @@ static int is_off(const char *v)
 int hw_learning_on(void)
 {
 	char v[64];
+	/* a writer's store keeps the samples the writer keeps: the person's setting is theirs */
+	if (writer_id[0]) return 1;
 	if (conf_read("handwriting.conf", "learning", v, sizeof v) && is_off(v)) return 0;
 	if (conf_read("predict.conf", "learning", v, sizeof v) && is_off(v)) return 0;
 	return 1;
@@ -1072,24 +1260,6 @@ int hw_samples_add(const char *json, const struct hw_meta *m)
 	int r = add_locked(json, m);
 	hw_store_unlock(fd);
 	return r;
-}
-
-static void rm_tree(const char *p)
-{
-	DIR *d = opendir(p);
-	if (d) {
-		struct dirent *e;
-		while ((e = readdir(d))) {
-			if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-			char q[4096];
-			snprintf(q, sizeof q, "%s/%s", p, e->d_name);
-			struct stat st;
-			if (!lstat(q, &st) && S_ISDIR(st.st_mode)) rm_tree(q);
-			else unlink(q);
-		}
-		closedir(d);
-	}
-	rmdir(p);
 }
 
 /* takes every line of the id out of an indexed file (the store's lock held, the index in
