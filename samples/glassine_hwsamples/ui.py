@@ -977,7 +977,8 @@ class Canvas(Gtk.DrawingArea):
         a = self.get_allocation()
         rot = read_file(ROTATION_FILE)
         rot = int(rot) if rot in ("0", "90", "180", "270") else 0
-        return strokes, units, (0, 0, a.width, a.height, LINE, rot)
+        # the first guide line (guides(): 0.62 of a line from the top): where letters sit
+        return strokes, units, (0, 0, a.width, a.height, LINE, rot, LINE * 0.62)
 
     def per_mm(self):
         """logical px per mm of the screen the window is on (whatever its rotation)"""
