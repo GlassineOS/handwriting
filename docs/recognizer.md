@@ -298,6 +298,10 @@ Nothing in it leaves the device except by export or a donation the person writes
   `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
+- `letters/model`: the letter model (below); `letters/font` (`NAME VERSION PATH`, tab-separated:
+  the installed font) and `letters/font-version` (the last version made, so a removed and
+  remade font doesn't reuse one). An erase of all samples or of a client's takes out the letter
+  model, the installed font and these files (the erased samples' preferences go with them).
 - `donation/licence` (`CC0-1.0` or `CC-BY-4.0`), `donation/samples.jsonl` (kept like
   `samples.jsonl`) with its index `donation/index` (first line `glassine-handwriting-donation-index
   1 INODE 0`, then `ID OFFSET LENGTH` or `- OFFSET LENGTH`), and `donation/donor-id`: the donor ID,
@@ -322,6 +326,47 @@ charging is enough, and it runs at the lowest priority so the device stays usabl
 the file); after a model update it is ignored until the next run. An erase while it runs drops its
 result.
 
+## The letter model and the font (spec 003)
+
+`glassine-handwriting letters build` makes the letter model from the person's prompted samples:
+for each character, up to three versions of how they write it. A character's sample is usable
+when its spans are exact (`spans_source` `exact`, as the samples app stores them) and its strokes
+are its own (not shared with a neighbour, so joined letters are never cut apart); a character is
+covered with 3 usable samples. Its samples are grouped by stroke count; the count with the most
+weight is the way it is written (another gives versions only when it is about as strong), each
+sample is resampled by arc length and centred, and weighted by how it was written (careful above
+quick), the person's picks (the chosen character or sample up, the other down), how well it was
+read (its stored first reading against the prompt) and how close it is to the group's middle.
+The strongest sample and then strong ones that differ from those chosen and have company seed the
+versions; a version is the weighted average of the samples near its seed, smoothed, so a single
+sample's jitter is gone. Sizes are in x-heights from the baseline of each sample's area (or of its
+own letters); the line metrics (cap height, ascender, descender, slant, letter and word spacing,
+ink width as the app's pen draws) come from all usable samples. The same samples and picks make
+the same model, byte for byte except the build time, in any order they were stored.
+
+It is made again when its inputs (the prompted samples and the picks) changed: after a background
+adaptation (the same conditions: charging and idle), or when asked (`-r`, any power; at the lowest
+priority, so the device stays usable). `-f` makes it even when nothing changed.
+
+**Model file** (`letters/model`, `letters show`): JSON lines. The first
+`{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
+then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"slant":…,
+"letter_spacing":…,"word_spacing":…,"ink_width":…}}`, then per character seen
+`{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,"members":N,
+"strokes":[[[x,y],…],…]}]}` (x from the version's left edge, y up from the baseline, in
+x-heights; no versions when not covered).
+
+**The font:** `font install` makes a TrueType font of the covered characters (a stroke outlined
+at the ink width; everything else falls back to the system's fonts) and installs it as
+`$XDG_DATA_HOME/fonts/glassine-handwriting/handwriting-VERSION.ttf`, replacing the one before, then
+runs `fc-cache` on that directory. Its family name is the person's (`-n`; first `My handwriting`,
+later the name it has), the version counts on with every install, so apps see a new font. A
+character with more versions has them as alternates that the `calt` feature picks in turn, the
+same way every time: after the first version comes the second, after the second the third (or the
+first when there are two), after the third the first; a run starts with the first after a space,
+a character with one version or one the font lacks. The font is made only on the device and is
+never donated or exported.
+
 ## Command line
 
 Part of contract 1, for the settings app and anything else that shows or changes the samples.
@@ -339,6 +384,8 @@ glassine-handwriting learning [on|off]          show or set handwriting.conf's l
 glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
+glassine-handwriting letters build [-f] [-r] | status | show
+glassine-handwriting font install [-n NAME] | remove | status | build [-n NAME] FILE
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
@@ -374,6 +421,16 @@ by their ids in that file.
 `list` prints `licence LICENCE|-`, `samples N` and `donor ID|-`. `samples` prints the id of each sample in the donation, once, in the order added. `donor` prints the donor ID (`-`
 before the first donation), `donor new` replaces it with a new one and prints that: later
 donations then count as another writer's. `erase` keeps the donor ID.
+
+`letters build` prints `built SAMPLES COVERED` or `skip REASON` (`charging`, `nothing-new`,
+`erased`). `letters status` prints `state none|current|outdated` (outdated: samples or picks
+changed since it was made), `samples N` (usable), `covered K`, one `char C SAMPLES VERSIONS` per
+character seen (C escaped like a text field) and `font NAME VERSION PATH` or `font -`. `font
+install` makes the font from the letter model as it is and prints `installed NAME VERSION PATH`,
+or `skip no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control
+characters is a usage error. `font status` prints `NAME VERSION PATH` or `none`; `font remove`
+takes the installed font out; `font build FILE` writes the font to FILE without installing it
+(testing).
 
 **Export file:** JSON lines. The first `{"format":"glassine-handwriting-export","version":1}`;
 then one `{"sample":{…},"client":"…","confirmed":TIME,"source":"…"}` per sample and one

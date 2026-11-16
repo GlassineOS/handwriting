@@ -135,10 +135,12 @@ class Writer:
 
     QUICK_EVERY = 3                     # every third careful word is written quickly first
 
-    def start_best(self):
-        """Write it your best: words written with care, now and then once quickly first"""
+    def start_best(self, chars=None):
+        """Write it your best: words written with care, now and then once quickly first;
+        with chars (the font's missing characters), each of them on its own, carefully, in
+        turn"""
         with self.lock:
-            self.best = {"step": "careful", "pair": "", "n": 0}
+            self.best = {"step": "careful", "pair": "", "n": 0, "chars": list(chars or [])}
             self.shown = None
             return self._best_next()
 
@@ -153,6 +155,10 @@ class Writer:
             b = self.best
             if same is not None:
                 base = same
+            elif b.get("chars"):
+                c = b["chars"][b["n"] % len(b["chars"])]
+                base = P.Prompt(c, "letters", self.state.lang)
+                b["step"], b["pair"] = "careful", ""
             else:
                 base = P.choose(self.sets, "words", self.cov, self.state.best_used)
                 b["step"] = "quick" if b["n"] % self.QUICK_EVERY == self.QUICK_EVERY - 1 else "careful"

@@ -1,0 +1,585 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// The handwriting font (spec 003 FR-009 to FR-011): the letter model as a TrueType font.
+// Every stroke is outlined in the pen's width as pieces of one direction (a quadrilateral
+// per segment, a disc at the ends, a wedge or a disc where it turns) that overlap; the
+// non-zero fill makes their union. Variants are unencoded glyphs a contextual-alternates
+// lookup ('calt', on by default in text shaping) picks along the text (letters.h,
+// hw_letters_rotate).
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "letters.h"
+#include "sample.h"
+
+#define UPEM 1000
+#define XH 500                  /* units per x-height */
+
+struct bb { unsigned char *d; size_t n, cap; int bad; };
+
+static void bgrow(struct bb *b, size_t k)
+{
+	if (b->n + k <= b->cap) return;
+	size_t c = (b->n + k) * 2 + 256;
+	unsigned char *x = realloc(b->d, c);
+	if (!x) { b->bad = 1; return; }
+	b->d = x; b->cap = c;
+}
+static void u8(struct bb *b, unsigned v) { bgrow(b, 1); if (!b->bad) b->d[b->n++] = (unsigned char)v; }
+static void u16(struct bb *b, unsigned v) { u8(b, v >> 8 & 255); u8(b, v & 255); }
+static void s16(struct bb *b, int v) { u16(b, (unsigned)v & 0xffff); }
+static void u32(struct bb *b, uint32_t v) { u16(b, v >> 16); u16(b, v & 0xffff); }
+static void put16(struct bb *b, size_t at, unsigned v) { if (!b->bad) { b->d[at] = (unsigned char)(v >> 8); b->d[at + 1] = (unsigned char)v; } }
+static void put32(struct bb *b, size_t at, uint32_t v) { put16(b, at, v >> 16); put16(b, at + 2, v & 0xffff); }
+static void pad4(struct bb *b) { while (b->n % 4) u8(b, 0); }
+
+/* ---------------------------------------------------------------- outlines */
+
+struct pt { int x, y, on; };
+struct glyph {
+	struct pt *p;
+	int np, cap;
+	int *ends, nc, ccap;
+	int adv, xmin, ymin, xmax, ymax;
+};
+
+static void gpt(struct glyph *g, double x, double y, int on)
+{
+	if (g->np == g->cap) {
+		g->cap = g->cap ? g->cap * 2 : 256;
+		struct pt *q = realloc(g->p, (size_t)g->cap * sizeof *q);
+		if (!q) return;
+		g->p = q;
+	}
+	g->p[g->np++] = (struct pt){ (int)lround(x), (int)lround(y), on };
+}
+
+/* closes the contour started at `start`: clockwise (TrueType's outer direction), or dropped
+ * when it has no area */
+static void gclose(struct glyph *g, int start)
+{
+	int n = g->np - start;
+	double a = 0;
+	for (int i = 0; i < n; i++) {
+		struct pt *p = &g->p[start + i], *q = &g->p[start + (i + 1) % n];
+		a += (double)p->x * q->y - (double)q->x * p->y;
+	}
+	if (n < 3 || fabs(a) < 1) { g->np = start; return; }
+	if (a > 0)      /* counter-clockwise (y up): reverse */
+		for (int i = 0, j = n - 1; i < j; i++, j--) { struct pt t = g->p[start + i]; g->p[start + i] = g->p[start + j]; g->p[start + j] = t; }
+	/* a contour must not start off the curve for some readers: rotate to an on-curve point */
+	int k = 0;
+	while (k < n && !g->p[start + k].on) k++;
+	if (k && k < n) {
+		struct pt *tmp = malloc((size_t)n * sizeof *tmp);
+		if (tmp) {
+			for (int i = 0; i < n; i++) tmp[i] = g->p[start + (i + k) % n];
+			memcpy(g->p + start, tmp, (size_t)n * sizeof *tmp);
+			free(tmp);
+		}
+	}
+	if (g->nc == g->ccap) {
+		g->ccap = g->ccap ? g->ccap * 2 : 64;
+		int *e = realloc(g->ends, (size_t)g->ccap * sizeof *e);
+		if (!e) return;
+		g->ends = e;
+	}
+	g->ends[g->nc++] = g->np - 1;
+}
+
+static void disc(struct glyph *g, double cx, double cy, double r)
+{
+	int s = g->np;
+	double ro = r / cos(M_PI / 8);
+	for (int i = 0; i < 8; i++) {
+		double a = -i * M_PI / 4;       /* clockwise */
+		gpt(g, cx + r * cos(a), cy + r * sin(a), 1);
+		gpt(g, cx + ro * cos(a - M_PI / 8), cy + ro * sin(a - M_PI / 8), 0);
+	}
+	gclose(g, s);
+}
+
+static void poly4(struct glyph *g, double ax, double ay, double bx, double by, double cx, double cy, double dx, double dy)
+{
+	int s = g->np;
+	gpt(g, ax, ay, 1); gpt(g, bx, by, 1); gpt(g, cx, cy, 1); gpt(g, dx, dy, 1);
+	gclose(g, s);
+}
+
+static void tri(struct glyph *g, double ax, double ay, double bx, double by, double cx, double cy)
+{
+	int s = g->np;
+	gpt(g, ax, ay, 1); gpt(g, bx, by, 1); gpt(g, cx, cy, 1);
+	gclose(g, s);
+}
+
+/* Douglas-Peucker on font units */
+static void simplify(const double *x, const double *y, size_t a, size_t b, double tol, char *keep)
+{
+	if (b <= a + 1) return;
+	double dx = x[b] - x[a], dy = y[b] - y[a], l = hypot(dx, dy), best = -1;
+	size_t bi = a;
+	for (size_t i = a + 1; i < b; i++) {
+		double d = l > 0 ? fabs(dy * (x[i] - x[a]) - dx * (y[i] - y[a])) / l : hypot(x[i] - x[a], y[i] - y[a]);
+		if (d > best) { best = d; bi = i; }
+	}
+	if (best > tol) { keep[bi] = 1; simplify(x, y, a, bi, tol, keep); simplify(x, y, bi, b, tol, keep); }
+}
+
+static void outline_stroke(struct glyph *g, const struct hw_lstroke *s, double ox, double r)
+{
+	if (!s->n) return;
+	double *x = malloc(s->n * sizeof *x), *y = malloc(s->n * sizeof *y);
+	char *keep = calloc(s->n, 1);
+	if (!x || !y || !keep) { free(x); free(y); free(keep); return; }
+	for (size_t i = 0; i < s->n; i++) { x[i] = ox + s->x[i] * XH; y[i] = s->y[i] * XH; }
+	keep[0] = keep[s->n - 1] = 1;
+	simplify(x, y, 0, s->n - 1, 2.5, keep);
+	size_t m = 0;
+	for (size_t i = 0; i < s->n; i++)
+		if (keep[i] && (!m || hypot(x[i] - x[m - 1], y[i] - y[m - 1]) > 0.5)) { x[m] = x[i]; y[m] = y[i]; m++; }
+	free(keep);
+	disc(g, x[0], y[0], r);
+	if (m > 1) disc(g, x[m - 1], y[m - 1], r);
+	for (size_t i = 0; i + 1 < m; i++) {
+		double dx = x[i + 1] - x[i], dy = y[i + 1] - y[i], l = hypot(dx, dy);
+		double nx = -dy / l * r, ny = dx / l * r;
+		poly4(g, x[i] + nx, y[i] + ny, x[i + 1] + nx, y[i + 1] + ny, x[i + 1] - nx, y[i + 1] - ny, x[i] - nx, y[i] - ny);
+		if (i + 2 < m) {
+			/* the joint: a wedge on the outer side, a disc where it turns sharply */
+			double ex = x[i + 2] - x[i + 1], ey = y[i + 2] - y[i + 1], el = hypot(ex, ey);
+			double cr = (dx * ey - dy * ex) / (l * el), dt = (dx * ex + dy * ey) / (l * el);
+			double turn = atan2(cr, dt);
+			if (fabs(turn) > 0.35) disc(g, x[i + 1], y[i + 1], r);
+			else if (fabs(turn) > 1e-3) {
+				double mx = -ey / el * r, my = ex / el * r, sg = turn > 0 ? -1 : 1;
+				tri(g, x[i + 1], y[i + 1], x[i + 1] + sg * nx, y[i + 1] + sg * ny, x[i + 1] + sg * mx, y[i + 1] + sg * my);
+			}
+		}
+	}
+	free(x); free(y);
+}
+
+static void glyph_of(struct glyph *g, const struct hw_variant *v, double gap, double ink)
+{
+	memset(g, 0, sizeof *g);
+	double r = ink * XH / 2;
+	if (r < 6) r = 6;
+	double ox = gap / 2 * XH + r;
+	for (size_t j = 0; j < v->nstrokes; j++) outline_stroke(g, &v->s[j], ox, r);
+	g->adv = (int)lround((v->width + gap) * XH + 2 * r);
+}
+
+static void glyph_box(struct glyph *g)
+{
+	g->xmin = g->ymin = 0x7fff; g->xmax = g->ymax = -0x7fff;
+	for (int i = 0; i < g->np; i++) {
+		if (g->p[i].x < g->xmin) g->xmin = g->p[i].x;
+		if (g->p[i].x > g->xmax) g->xmax = g->p[i].x;
+		if (g->p[i].y < g->ymin) g->ymin = g->p[i].y;
+		if (g->p[i].y > g->ymax) g->ymax = g->p[i].y;
+	}
+	if (!g->np) g->xmin = g->ymin = g->xmax = g->ymax = 0;
+}
+
+static void glyf_data(struct bb *b, const struct glyph *g)
+{
+	if (!g->nc) return;             /* an empty glyph has no data */
+	s16(b, g->nc);
+	s16(b, g->xmin); s16(b, g->ymin); s16(b, g->xmax); s16(b, g->ymax);
+	for (int i = 0; i < g->nc; i++) u16(b, (unsigned)g->ends[i]);
+	u16(b, 0);                      /* no instructions */
+	int px = 0, py = 0;
+	for (int i = 0; i < g->np; i++) {
+		int dx = g->p[i].x - px, dy = g->p[i].y - py;
+		unsigned f = g->p[i].on ? 1 : 0;
+		if (dx == 0) f |= 0x10; else if (abs(dx) < 256) f |= 0x02 | (dx > 0 ? 0x10 : 0);
+		if (dy == 0) f |= 0x20; else if (abs(dy) < 256) f |= 0x04 | (dy > 0 ? 0x20 : 0);
+		u8(b, f);
+		px = g->p[i].x; py = g->p[i].y;
+	}
+	px = 0;
+	for (int i = 0; i < g->np; i++) {
+		int dx = g->p[i].x - px;
+		if (dx && abs(dx) < 256) u8(b, (unsigned)abs(dx)); else if (dx) s16(b, dx);
+		px = g->p[i].x;
+	}
+	py = 0;
+	for (int i = 0; i < g->np; i++) {
+		int dy = g->p[i].y - py;
+		if (dy && abs(dy) < 256) u8(b, (unsigned)abs(dy)); else if (dy) s16(b, dy);
+		py = g->p[i].y;
+	}
+}
+
+/* ---------------------------------------------------------------- tables */
+
+static void coverage(struct bb *b, const int *gl, int n)
+{
+	u16(b, 1); u16(b, (unsigned)n);
+	for (int i = 0; i < n; i++) u16(b, (unsigned)gl[i]);
+}
+
+/* GSUB: one chain-context lookup in 'calt' with a rule per change of variant (rotate), and
+ * the single substitutions it calls */
+static void gsub(struct bb *b, int nl, const int *nvar, const int *base, const int *alt1, const int *alt2, int ngl)
+{
+	/* glyph classes by state */
+	int *s0 = malloc((size_t)(ngl + 1) * sizeof(int)), *s1 = malloc((size_t)(ngl + 1) * sizeof(int)), *s2 = malloc((size_t)(ngl + 1) * sizeof(int));
+	int *in23 = malloc((size_t)(nl + 1) * sizeof(int)), *in2 = malloc((size_t)(nl + 1) * sizeof(int)), *in3 = malloc((size_t)(nl + 1) * sizeof(int));
+	int *o1 = malloc((size_t)(nl + 1) * sizeof(int)), *o2 = malloc((size_t)(nl + 1) * sizeof(int)), *c3 = malloc((size_t)(nl + 1) * sizeof(int));
+	if (!s0 || !s1 || !s2 || !in23 || !in2 || !in3 || !o1 || !o2 || !c3) { b->bad = 1; goto out; }
+	int n0 = 0, n1 = 0, n2 = 0, k23 = 0, k2 = 0, k3 = 0;
+	s0[n0++] = 1;                   /* the space */
+	for (int i = 0; i < nl; i++) s0[n0++] = base[i];
+	for (int i = 0; i < nl; i++) if (nvar[i] >= 2) s1[n1++] = alt1[i];
+	for (int i = 0; i < nl; i++) if (nvar[i] >= 3) s2[n2++] = alt2[i];
+	for (int i = 0; i < nl; i++) {
+		if (nvar[i] >= 2) { in23[k23] = base[i]; o1[k23] = alt1[i]; k23++; }
+		if (nvar[i] == 2) in2[k2++] = base[i];
+		if (nvar[i] == 3) { in3[k3] = base[i]; o2[k3] = alt2[i]; k3++; }
+	}
+	size_t g0 = b->n;
+	u16(b, 1); u16(b, 0);           /* version 1.0 */
+	size_t at_sl = b->n; u16(b, 0);
+	size_t at_fl = b->n; u16(b, 0);
+	size_t at_ll = b->n; u16(b, 0);
+	/* ScriptList: DFLT and latn, each a default LangSys with feature 0 */
+	put16(b, at_sl, (unsigned)(b->n - g0));
+	size_t sl = b->n;
+	u16(b, 2);
+	const char *tags[2] = { "DFLT", "latn" };
+	size_t at_s[2];
+	for (int i = 0; i < 2; i++) { for (int c = 0; c < 4; c++) u8(b, (unsigned char)tags[i][c]); at_s[i] = b->n; u16(b, 0); }
+	for (int i = 0; i < 2; i++) {
+		put16(b, at_s[i], (unsigned)(b->n - sl));
+		u16(b, 4); u16(b, 0);   /* the default LangSys right after, no others */
+		u16(b, 0); u16(b, 0xffff); u16(b, 1); u16(b, 0);
+	}
+	/* FeatureList: calt -> lookup 0 */
+	put16(b, at_fl, (unsigned)(b->n - g0));
+	u16(b, 1);
+	u8(b, 'c'); u8(b, 'a'); u8(b, 'l'); u8(b, 't'); u16(b, 8);
+	u16(b, 0); u16(b, 1); u16(b, 0);
+	/* LookupList */
+	put16(b, at_ll, (unsigned)(b->n - g0));
+	size_t ll = b->n;
+	u16(b, 3);
+	size_t at_l[3];
+	for (int i = 0; i < 3; i++) { at_l[i] = b->n; u16(b, 0); }
+	/* lookup 0: chain context, format 3, a subtable per rule */
+	struct { const int *bt; int nbt; const int *inp; int ninp; int lookup; } rules[3] = {
+		{ s0, n0, in23, k23, 1 },       /* after variant 0: variant 1 */
+		{ s1, n1, in3, k3, 2 },         /* three variants, after variant 1: variant 2 */
+		{ s2, n2, in2, k2, 1 },         /* two variants, after variant 2: variant 1 */
+	};
+	int nr = 0, use[3];
+	for (int i = 0; i < 3; i++) if (rules[i].nbt && rules[i].ninp) use[nr++] = i;
+	put16(b, at_l[0], (unsigned)(b->n - ll));
+	size_t lk = b->n;
+	u16(b, 6); u16(b, 0); u16(b, (unsigned)nr);
+	size_t at_st[3];
+	for (int i = 0; i < nr; i++) { at_st[i] = b->n; u16(b, 0); }
+	for (int i = 0; i < nr; i++) {
+		int ri = use[i];
+		put16(b, at_st[i], (unsigned)(b->n - lk));
+		size_t st = b->n;
+		u16(b, 3);
+		u16(b, 1); size_t at_bc = b->n; u16(b, 0);
+		u16(b, 1); size_t at_ic = b->n; u16(b, 0);
+		u16(b, 0);
+		u16(b, 1); u16(b, 0); u16(b, (unsigned)rules[ri].lookup);
+		put16(b, at_bc, (unsigned)(b->n - st));
+		coverage(b, rules[ri].bt, rules[ri].nbt);
+		put16(b, at_ic, (unsigned)(b->n - st));
+		coverage(b, rules[ri].inp, rules[ri].ninp);
+	}
+	/* lookups 1 and 2: single substitution, format 2 (base -> variant 1, base -> variant 2) */
+	for (int k = 1; k <= 2; k++) {
+		const int *cov = k == 1 ? in23 : in3, *sub = k == 1 ? o1 : o2;
+		int n = k == 1 ? k23 : k3;
+		put16(b, at_l[k], (unsigned)(b->n - ll));
+		u16(b, 1); u16(b, 0); u16(b, 1); u16(b, 8);
+		size_t st = b->n;
+		u16(b, 2); size_t at_c = b->n; u16(b, 0); u16(b, (unsigned)n);
+		for (int i = 0; i < n; i++) u16(b, (unsigned)sub[i]);
+		put16(b, at_c, (unsigned)(b->n - st));
+		coverage(b, cov, n);
+	}
+out:
+	free(s0); free(s1); free(s2); free(in23); free(in2); free(in3); free(o1); free(o2); free(c3);
+}
+
+static void name_rec(struct bb *recs, struct bb *str, unsigned id, const char *utf8)
+{
+	unsigned cp[256];
+	size_t n = hw_utf8_decode(utf8, cp, 256);
+	if (n > 256) n = 256;
+	size_t off = str->n;
+	for (size_t i = 0; i < n; i++) {
+		unsigned c = cp[i];
+		if (c >= 0x10000) { c -= 0x10000; u16(str, 0xd800 + (c >> 10)); u16(str, 0xdc00 + (c & 0x3ff)); }
+		else u16(str, c);
+	}
+	u16(recs, 3); u16(recs, 1); u16(recs, 0x409); u16(recs, id);
+	u16(recs, (unsigned)(str->n - off)); u16(recs, (unsigned)off);
+}
+
+static uint32_t tsum(const unsigned char *d, size_t n)
+{
+	uint32_t s = 0;
+	for (size_t i = 0; i < n; i += 4) {
+		uint32_t w = 0;
+		for (int k = 0; k < 4; k++) w = w << 8 | (i + (size_t)k < n ? d[i + (size_t)k] : 0);
+		s += w;
+	}
+	return s;
+}
+
+unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len)
+{
+	/* glyphs: .notdef, space, then each covered character's variant 0, then 1s, then 2s */
+	int nl = 0;
+	for (size_t i = 0; i < L->n; i++) if (L->l[i].covered && L->l[i].nvar) nl++;
+	const struct hw_letter **ls = calloc((size_t)nl + 1, sizeof *ls);
+	int *nvar = calloc((size_t)nl + 1, sizeof(int)), *base = calloc((size_t)nl + 1, sizeof(int));
+	int *alt1 = calloc((size_t)nl + 1, sizeof(int)), *alt2 = calloc((size_t)nl + 1, sizeof(int));
+	if (!ls || !nvar || !base || !alt1 || !alt2) { free(ls); free(nvar); free(base); free(alt1); free(alt2); return NULL; }
+	int k = 0;
+	for (size_t i = 0; i < L->n; i++) if (L->l[i].covered && L->l[i].nvar && L->l[i].cp != ' ') { ls[k] = &L->l[i]; nvar[k] = L->l[i].nvar; k++; }
+	nl = k;
+	int ngl = 2;
+	for (int i = 0; i < nl; i++) base[i] = ngl++;
+	for (int i = 0; i < nl; i++) if (nvar[i] >= 2) alt1[i] = ngl++;
+	for (int i = 0; i < nl; i++) if (nvar[i] >= 3) alt2[i] = ngl++;
+	struct glyph *G = calloc((size_t)ngl, sizeof *G);
+	if (!G) { free(ls); free(nvar); free(base); free(alt1); free(alt2); return NULL; }
+	double gap = L->m.letter_gap, ink = L->m.ink;
+	G[0].adv = XH;
+	G[1].adv = (int)lround((L->m.word_gap - gap) * XH);
+	if (G[1].adv < XH / 5) G[1].adv = XH / 5;
+	for (int i = 0; i < nl; i++) {
+		glyph_of(&G[base[i]], &ls[i]->var[0], gap, ink);
+		if (nvar[i] >= 2) glyph_of(&G[alt1[i]], &ls[i]->var[1], gap, ink);
+		if (nvar[i] >= 3) glyph_of(&G[alt2[i]], &ls[i]->var[2], gap, ink);
+	}
+	int maxp = 0, maxc = 0, advmax = 0, minlsb = 0x7fff, minrsb = 0x7fff, xmaxext = -0x7fff;
+	int fxmin = 0x7fff, fymin = 0x7fff, fxmax = -0x7fff, fymax = -0x7fff;
+	long advsum = 0;
+	for (int i = 0; i < ngl; i++) {
+		glyph_box(&G[i]);
+		if (G[i].np > maxp) maxp = G[i].np;
+		if (G[i].nc > maxc) maxc = G[i].nc;
+		if (G[i].adv > advmax) advmax = G[i].adv;
+		advsum += G[i].adv;
+		if (G[i].nc) {
+			if (G[i].xmin < minlsb) minlsb = G[i].xmin;
+			if (G[i].adv - G[i].xmax < minrsb) minrsb = G[i].adv - G[i].xmax;
+			if (G[i].xmax > xmaxext) xmaxext = G[i].xmax;
+			if (G[i].xmin < fxmin) fxmin = G[i].xmin;
+			if (G[i].ymin < fymin) fymin = G[i].ymin;
+			if (G[i].xmax > fxmax) fxmax = G[i].xmax;
+			if (G[i].ymax > fymax) fymax = G[i].ymax;
+		}
+	}
+	if (fxmin > fxmax) fxmin = fymin = fxmax = fymax = 0;
+	if (minlsb == 0x7fff) minlsb = minrsb = xmaxext = 0;
+	double r = ink * XH / 2;
+	int asc = (int)lround(fmax(L->m.asc, L->m.cap) * XH + r), desc = (int)lround(L->m.desc * XH - r);
+	if (asc < fymax) asc = fymax;
+	if (desc > fymin) desc = fymin;
+	int gapline = (int)lround(0.15 * (asc - desc));
+
+	struct bb t[11] = { 0 }, f = { 0 };
+	enum { GSUB, OS2, CMAP, GLYF, HEAD, HHEA, HMTX, LOCA, MAXP, NAME, POST };
+	const char *tag[11] = { "GSUB", "OS/2", "cmap", "glyf", "head", "hhea", "hmtx", "loca", "maxp", "name", "post" };
+	int have_gsub = 0;
+	for (int i = 0; i < nl; i++) if (nvar[i] >= 2) have_gsub = 1;
+	if (have_gsub) gsub(&t[GSUB], nl, nvar, base, alt1, alt2, ngl);
+
+	/* glyf + loca (long) */
+	for (int i = 0; i < ngl; i++) {
+		u32(&t[LOCA], (uint32_t)t[GLYF].n);
+		glyf_data(&t[GLYF], &G[i]);
+		pad4(&t[GLYF]);
+	}
+	u32(&t[LOCA], (uint32_t)t[GLYF].n);
+	if (!t[GLYF].n) u32(&t[GLYF], 0);
+
+	/* hmtx */
+	for (int i = 0; i < ngl; i++) { u16(&t[HMTX], (unsigned)G[i].adv); s16(&t[HMTX], G[i].nc ? G[i].xmin : 0); }
+
+	/* cmap: format 4 (BMP) and format 12 (all), Windows */
+	unsigned *cps = malloc((size_t)(nl + 1) * sizeof *cps);
+	int *gid = malloc((size_t)(nl + 1) * sizeof *gid), nm = 0;
+	if (!cps || !gid) { free(cps); free(gid); goto fail; }
+	cps[nm] = ' '; gid[nm] = 1; nm++;
+	for (int i = 0; i < nl; i++) { cps[nm] = ls[i]->cp; gid[nm] = base[i]; nm++; }
+	/* sorted by code point already except the space, which is lowest of all but controls */
+	for (int a = 1; a < nm; a++) for (int b2 = a; b2 > 0 && cps[b2] < cps[b2 - 1]; b2--) {
+		unsigned tc = cps[b2]; cps[b2] = cps[b2 - 1]; cps[b2 - 1] = tc;
+		int tg = gid[b2]; gid[b2] = gid[b2 - 1]; gid[b2 - 1] = tg;
+	}
+	{
+		struct bb *c = &t[CMAP];
+		u16(c, 0); u16(c, 2);
+		u16(c, 3); u16(c, 1); size_t at4 = c->n; u32(c, 0);
+		u16(c, 3); u16(c, 10); size_t at12 = c->n; u32(c, 0);
+		/* format 4 segments: runs of consecutive code points and glyph ids */
+		int segs = 0;
+		unsigned ss[1024], se[1024];
+		int sd[1024];
+		for (int i = 0; i < nm && segs < 1023; i++) {
+			if (cps[i] > 0xfffe) break;
+			if (segs && cps[i] == se[segs - 1] + 1 && (int)((unsigned)gid[i] - cps[i]) == sd[segs - 1]) { se[segs - 1] = cps[i]; continue; }
+			ss[segs] = cps[i]; se[segs] = cps[i]; sd[segs] = (int)((unsigned)gid[i] - cps[i]); segs++;
+		}
+		ss[segs] = se[segs] = 0xffff; sd[segs] = 1; segs++;
+		put32(c, at4, (uint32_t)c->n);
+		size_t f4 = c->n;
+		u16(c, 4); size_t at4l = c->n; u16(c, 0); u16(c, 0);
+		int sr = 1, es = 0;
+		while (sr * 2 <= segs) { sr *= 2; es++; }
+		u16(c, (unsigned)segs * 2); u16(c, (unsigned)sr * 2); u16(c, (unsigned)es); u16(c, (unsigned)(segs - sr) * 2);
+		for (int i = 0; i < segs; i++) u16(c, se[i]);
+		u16(c, 0);
+		for (int i = 0; i < segs; i++) u16(c, ss[i]);
+		for (int i = 0; i < segs; i++) u16(c, (unsigned)sd[i] & 0xffff);
+		for (int i = 0; i < segs; i++) u16(c, 0);
+		put16(c, at4l, (unsigned)(c->n - f4));
+		put32(c, at12, (uint32_t)c->n);
+		u16(c, 12); u16(c, 0); size_t at12l = c->n; u32(c, 0); u32(c, 0);
+		size_t f12 = c->n - 12;
+		size_t atg = c->n; u32(c, 0);
+		uint32_t ng = 0;
+		for (int i = 0; i < nm;) {
+			int j = i;
+			while (j + 1 < nm && cps[j + 1] == cps[j] + 1 && gid[j + 1] == gid[j] + 1) j++;
+			u32(c, cps[i]); u32(c, cps[j]); u32(c, (uint32_t)gid[i]);
+			ng++;
+			i = j + 1;
+		}
+		put32(c, atg, ng);
+		put32(c, at12l, (uint32_t)(c->n - f12));
+	}
+
+	/* head */
+	{
+		struct bb *h = &t[HEAD];
+		u32(h, 0x00010000); u32(h, (uint32_t)version << 16); u32(h, 0); u32(h, 0x5F0F3CF5);
+		u16(h, 0x000B); u16(h, UPEM);
+		/* created, modified: the newest sample's time (seconds since 1904) */
+		uint64_t t1904 = (uint64_t)(L->built > 0 ? L->built : 0) + 2082844800ULL;
+		u32(h, (uint32_t)(t1904 >> 32)); u32(h, (uint32_t)t1904);
+		u32(h, (uint32_t)(t1904 >> 32)); u32(h, (uint32_t)t1904);
+		s16(h, fxmin); s16(h, fymin); s16(h, fxmax); s16(h, fymax);
+		u16(h, 0); u16(h, 8); s16(h, 2); s16(h, 1); s16(h, 0);
+	}
+	/* hhea */
+	{
+		struct bb *h = &t[HHEA];
+		u32(h, 0x00010000); s16(h, asc); s16(h, desc); s16(h, gapline);
+		u16(h, (unsigned)advmax); s16(h, minlsb); s16(h, minrsb); s16(h, xmaxext);
+		s16(h, 1); s16(h, 0); s16(h, 0);
+		for (int i = 0; i < 4; i++) s16(h, 0);
+		s16(h, 0); u16(h, (unsigned)ngl);
+	}
+	/* maxp 1.0 */
+	{
+		struct bb *h = &t[MAXP];
+		u32(h, 0x00010000); u16(h, (unsigned)ngl); u16(h, (unsigned)maxp); u16(h, (unsigned)maxc);
+		u16(h, 0); u16(h, 0); u16(h, 2);
+		for (int i = 0; i < 8; i++) u16(h, 0);
+	}
+	/* OS/2 version 4 */
+	{
+		struct bb *h = &t[OS2];
+		unsigned first = nm ? cps[0] : 0x20, last = nm ? cps[nm - 1] : 0x20;
+		u16(h, 4); s16(h, (int)(advsum / (ngl ? ngl : 1))); u16(h, 400); u16(h, 5); u16(h, 0);
+		s16(h, 650); s16(h, 600); s16(h, 0); s16(h, 75); s16(h, 650); s16(h, 600); s16(h, 0); s16(h, 350);
+		s16(h, (int)lround(r * 2)); s16(h, XH / 2); s16(h, 0);
+		for (int i = 0; i < 10; i++) u8(h, 0);
+		uint32_t ur1 = 1;               /* Basic Latin */
+		for (int i = 0; i < nm; i++) if (cps[i] >= 0x80 && cps[i] < 0x100) ur1 |= 2;
+		u32(h, ur1); u32(h, 0); u32(h, 0); u32(h, 0);
+		u8(h, 'N'); u8(h, 'O'); u8(h, 'N'); u8(h, 'E');
+		u16(h, 0x40 | 0x80);           /* regular, typo metrics */
+		u16(h, first > 0xffff ? 0xffff : first); u16(h, last > 0xffff ? 0xffff : last);
+		s16(h, asc); s16(h, desc); s16(h, gapline);
+		u16(h, (unsigned)(fymax > asc ? fymax : asc)); u16(h, (unsigned)(-(fymin < desc ? fymin : desc)));
+		u32(h, 1); u32(h, 0);
+		s16(h, XH); s16(h, (int)lround(L->m.cap * XH));
+		u16(h, 0); u16(h, ' '); u16(h, 2);
+	}
+	/* post 3.0 */
+	{
+		struct bb *h = &t[POST];
+		u32(h, 0x00030000); u32(h, 0); s16(h, -(int)lround(XH * 0.25)); s16(h, (int)lround(r * 2));
+		u32(h, 0); u32(h, 0); u32(h, 0); u32(h, 0); u32(h, 0);
+	}
+	/* name */
+	{
+		char ps[64], uniq[160], ver[32], full[128];
+		int pn = 0;
+		for (const char *p = name; *p && pn < 40; p++)
+			if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9')) ps[pn++] = *p;
+		ps[pn] = 0;
+		if (!pn) snprintf(ps, sizeof ps, "Handwriting");
+		snprintf(ps + strlen(ps), sizeof ps - strlen(ps), "-Regular");
+		snprintf(ver, sizeof ver, "Version %u.000", version);
+		snprintf(uniq, sizeof uniq, "%s;%u;%s", ps, version, L->inputs);
+		snprintf(full, sizeof full, "%s", name);
+		struct bb recs = { 0 }, str = { 0 };
+		name_rec(&recs, &str, 1, name);
+		name_rec(&recs, &str, 2, "Regular");
+		name_rec(&recs, &str, 3, uniq);
+		name_rec(&recs, &str, 4, full);
+		name_rec(&recs, &str, 5, ver);
+		name_rec(&recs, &str, 6, ps);
+		struct bb *h = &t[NAME];
+		u16(h, 0); u16(h, 6); u16(h, (unsigned)(6 + recs.n));
+		bgrow(h, recs.n + str.n);
+		if (!h->bad && recs.d && str.d) { memcpy(h->d + h->n, recs.d, recs.n); h->n += recs.n; memcpy(h->d + h->n, str.d, str.n); h->n += str.n; }
+		free(recs.d); free(str.d);
+	}
+	free(cps); free(gid);
+
+	/* the file */
+	int nt = 0, order[11];
+	for (int i = 0; i < 11; i++) if (i != GSUB || have_gsub) order[nt++] = i;
+	int sr = 1, es = 0;
+	while (sr * 2 <= nt) { sr *= 2; es++; }
+	u32(&f, 0x00010000); u16(&f, (unsigned)nt); u16(&f, (unsigned)sr * 16); u16(&f, (unsigned)es); u16(&f, (unsigned)(nt - sr) * 16);
+	size_t dir = f.n, headat = 0;
+	for (int i = 0; i < nt; i++) for (int k2 = 0; k2 < 16; k2++) u8(&f, 0);
+	for (int i = 0; i < nt; i++) {
+		int ti = order[i];
+		if (t[ti].bad) goto fail;
+		size_t off = f.n;
+		if (ti == HEAD) headat = off;
+		bgrow(&f, t[ti].n);
+		if (f.bad) goto fail;
+		if (t[ti].n) memcpy(f.d + f.n, t[ti].d, t[ti].n);
+		f.n += t[ti].n;
+		size_t e = dir + (size_t)i * 16;
+		for (int c = 0; c < 4; c++) f.d[e + (size_t)c] = (unsigned char)tag[ti][c];
+		put32(&f, e + 4, tsum(t[ti].d, t[ti].n));
+		put32(&f, e + 8, (uint32_t)off);
+		put32(&f, e + 12, (uint32_t)t[ti].n);
+		pad4(&f);
+	}
+	if (f.bad) goto fail;
+	put32(&f, headat + 8, 0xB1B0AFBAu - tsum(f.d, f.n));
+	for (int i = 0; i < 11; i++) free(t[i].d);
+	for (int i = 0; i < ngl; i++) { free(G[i].p); free(G[i].ends); }
+	free(G); free(ls); free(nvar); free(base); free(alt1); free(alt2);
+	*len = f.n;
+	return f.d;
+fail:
+	for (int i = 0; i < 11; i++) free(t[i].d);
+	for (int i = 0; i < ngl; i++) { free(G[i].p); free(G[i].ends); }
+	free(f.d);
+	free(G); free(ls); free(nvar); free(base); free(alt1); free(alt2);
+	return NULL;
+}
