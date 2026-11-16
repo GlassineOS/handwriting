@@ -786,14 +786,12 @@ class UI:
         self.redraw()
 
     def write_missing(self):
-        """the characters the font lacks, one at a time, written with care"""
+        """Write these now: the sheet of the first character the font lacks, on Write more"""
         f = self.font or {}
         miss = fontview.missing(f.get("model"), status=f.get("status"))
         if not miss:
             return
-        self.best = None
-        self.run(lambda: self.writer.start_best(chars=miss))
-        self.go("write")
+        self.open_char(miss[0])
 
     # ---------------------------------------------------------- the character sheet
 
@@ -1617,6 +1615,8 @@ def top_height(ui, w, head=True):
     """the writing page's top: measured without the last sample, plus room for it, so the
     writing area keeps its place while readings come in"""
     top, _ = parts(ui)
+    if sheet_writing(ui):           # the sheet makes room for a failed check while it shows
+        return int(top(_probe(), ui, Hits(), w, head=head))
     wr = ui.writer
     sh = wr.shown if wr else None
     if wr:
@@ -2020,6 +2020,9 @@ def demo(screen, voice="white"):
                 occ.append((sid, pos, state, var, word))
             ui.sheet["occ"] = occ
             ui.sheet["undo"] = occ[4][0]
+            for o in occ:                   # the versions name these samples
+                if o[3] >= 0:
+                    ui.font["model"]["chars"]["t"]["variants"][o[3]]["ids"].append(o[0])
         if sub == "pick":
             a, _ = demo_ink("t", 3)
             b, _ = demo_ink("t", 11)
