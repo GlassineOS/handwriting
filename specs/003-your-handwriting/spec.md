@@ -260,8 +260,8 @@ Host level:
   feature requested, and installs and is found by the system font cache in a test user;
   erasing the samples removes it;
 - neatening at strength 0 returns the input byte for byte; at strength 1 every covered
-  character is closer to its variant than before; stroke count, order, timing and pressure
-  are kept;
+  character is closer to its variant than before, unless the reading check gives its line
+  back; stroke count, order, timing and pressure are kept;
 - the recognizer reads neatened ink at least as well as the original on a held-back set;
 - through the neat ink layer, with a stand-in pen and recognizer: raw strokes pass on at
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
