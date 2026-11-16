@@ -564,12 +564,14 @@ shows a page about the letters, spec 003 FR-008). `-f` makes it even when nothin
 - `out`: the sample is left out of that character. It isn't a usable sample of it (not counted,
   shapes no version); it stays a sample for everything else (the reader's adaptation, base
   training, the donation).
-- `way-out`: the sample belongs to a version the person left out. A version most of whose samples
-  (by `use`, below) are marked so is kept in the model marked `left_out`: it is not in the font's
+- `way-out`: the sample belongs to a version the person left out. A version at least a third of
+  whose samples (by `use`, below) are marked so is kept in the model marked `left_out` (samples
+  written that way later join it without bringing it back): it is not in the font's
   cycle, not in the font and no target for neatening. A character with no other version isn't in
   the font (it stays covered in the counts).
-- `favourite`: the sample belongs to the person's favourite version. The version most of whose
-  samples are marked so (one per character) counts 2 times its use in the cycle.
+- `favourite`: the sample belongs to the person's favourite version. The version (not left out)
+  with the most samples marked so is the favourite (one per character) and counts 2 times its
+  use in the cycle.
 
 Marks name samples rather than versions, so they keep their meaning when the versions are made
 again: the client marks a version's `ids` (below); a model whose versions have no `ids` (built

@@ -1605,7 +1605,8 @@ int hw_letters_build(struct hw_letters *L)
 			else variant_free(&l->var[l->nvar]);
 		}
 		/* the samples written like each variant (as use counts them), and the person's marks
-		 * on them: a variant is left out, or their favourite, when most of its samples say so */
+		 * on them: a variant is left out when a third of its samples say so; the favourite is
+		 * the one with the most samples marked so */
 		for (int i = 0; i < nv; i++) {
 			int x = v[i], q = 0;
 			if (way[x] < 0) continue;
@@ -1637,8 +1638,10 @@ int hw_letters_build(struct hw_letters *L)
 				nfav += mk == HW_MARK_FAVOURITE;
 			}
 			if (va->ids) qsort(va->ids, va->nids, sizeof *va->ids, cmp_id17);
-			va->out = cnt && 2 * nout > cnt;
-			if (!va->out && cnt && 2 * nfav > cnt && nfav > favn) { fav = k; favn = nfav; }
+			/* left out while a third of its samples are marked so: samples written that way
+			 * later join it without bringing it back */
+			va->out = nout && 3 * nout >= cnt;
+			if (!va->out && nfav > favn) { fav = k; favn = nfav; }
 		}
 		if (fav >= 0) l->var[fav].favourite = 1;
 		letter_slots(l);

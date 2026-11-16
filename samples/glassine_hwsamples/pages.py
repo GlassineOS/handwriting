@@ -1695,6 +1695,10 @@ def sheet_samples(cr, ui, hits, x, y, w, h):
     if not occ:
         PT.text(cr, "No sample has %s yet: Write more puts some in." % c, k["row"], x, y, k.soft, maxw=w, wrap=True)
         return
+    # the version each sample belongs to as the cards show them (the stored model's order)
+    _, d, _ = ui.char_info(c)
+    vof = {i: n for n, v in enumerate((d or {}).get("variants") or []) for i in v.get("ids") or []}
+    occ = [(o[0], o[1], o[2], vof.get(o[0], -1) if o[2] in ("usable", "way-out") else o[3], o[4]) for o in occ]
     use = sum(1 for o in occ if o[2] == "usable")
     out = sum(1 for o in occ if o[2] in ("out", "way-out"))
     bad = len(occ) - use - out
@@ -1823,7 +1827,11 @@ def sheet_write_top(cr, ui, hits, w, h=None, head=True):
         cx += chip(cr, k, cx, y, label, on=i == done, done=i < done, outline=i != done) + 8
     y += 32 + 16
     p = wr.prompt if wr else None
-    if p is None or done >= len(prompts):
+    sh = wr.shown if wr else None
+    if sh and sh.status == "check":
+        # the ink didn't read as the prompt: Redo, Keep it or Skip before going on
+        y += check_note(cr, ui, hits, x, y, cw, sh) + 12
+    elif p is None or done >= len(prompts):
         _, th = PT.text(cr, "All %d written. Each one counts for %s now." % (len(prompts), c), k["row"], x, y, k.ink,
                         maxw=cw, wrap=True)
         y += th + 14
@@ -1860,7 +1868,7 @@ def sheet_write_bottom(cr, ui, hits, w, h, canvas):
     line = ("Prompt %d of %d · each one is kept as a careful sample" % (min(done + 1, len(prompts)), len(prompts))
             if prompts else "")
     if checking:
-        line = "That didn’t read as the prompt. Clear it and write it again."
+        line = "Redo it, keep it as it is, or skip it first."
     if narrow:
         PT.text(cr, line, k["sub"], x, 14, k.ink, maxw=cw)
     else:

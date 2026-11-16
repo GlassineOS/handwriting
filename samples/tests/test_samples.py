@@ -734,11 +734,14 @@ class Pages(Case):
             self.assertEqual(len(lay), len(xs))
             for (c, _, lx, _), hx in zip(lay, xs):
                 self.assertAlmostEqual(lx * fontview.XH, hx, delta=1.01, msg=(text, c))
-        # the missing ones, one at a time, written with care
+        # Write these now: the first missing one's sheet, on Write more, written with care
         u.write_missing()
         self.settle(u)
-        self.assertEqual(u.page, "write")
+        self.assertEqual((u.sheet["char"], u.sheet["seg"]), ("p", "write"))
+        self.assertTrue(self.U.writing(u))
         self.assertEqual((u.writer.prompt.text, u.writer.prompt.written), ("p", "careful"))
+        u.close_char()
+        self.settle(u, lambda: not u.relearn and not u.letters_loading)
         # a new name: made again under it, the version counts on
         u.open_best("intro")
         u.open_font()
@@ -799,20 +802,46 @@ class Pages(Case):
         self.assertTrue(self.U.writing(u))
         self.assertEqual([p.text for p in u.sheet["prompts"]][0], "l")
         self.assertTrue(all(p.written == "careful" for p in u.sheet["prompts"]))
+        # what is written there is kept as a careful sample at once
+        before = len(self.e.cli.samples())
+        p = u.writer.take()
+        self.assertEqual(p.text, "l")
+        u.submit(ink(self.rng, n=1), "device:6.2", (0, 0, 702, 300, 96, 0), p)
+        self.settle(u, lambda: not u.letters_loading)
+        sh = u.writer.shown
+        if sh.status == "kept":
+            self.assertEqual(len(self.e.cli.samples()), before + 1)
+            self.assertEqual(u.marked[sh.sample_id][0], "careful")
+            self.assertEqual(u.writer.prompt.text, u.sheet["prompts"][1].text)
+        # a failed check shows in the sheet, which makes room for it, with its buttons
+        import cairo
+        probe = lambda: cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
+        u.writer.shown = None
+        plain_hits = self.U.Hits()
+        self.U.pages.sheet_write_top(probe(), u, plain_hits, 702)
+        u.writer.shown = flow.Shown(p, ink(self.rng, n=1), "device:6.2", (0, 0, 702, 300, 96, 0), [("x", -1.0)],
+                                    "check", fit=0.2)
+        hits = self.U.Hits()
+        self.U.pages.sheet_write_top(probe(), u, hits, 702)
+        top = self.U.top_height(u, 702)
+        self.assertGreater(len(hits.boxes), len(plain_hits.boxes))  # Keep it, Skip, Redo
+        self.assertTrue(all(y + h <= top + 1 for _, y, _, h, _ in hits.boxes))
+        u.writer.shown = None
         # closing: l learned again in the background; the preview has it, the font doesn't
         u.close_char()
         self.assertIsNotNone(u.relearn)
         self.settle(u, lambda: not u.relearn and not u.letters_loading)
         st, model = u.font["status"], u.font["model"]
-        self.assertEqual(st["state"], "current")
+        wrote = sh.status == "kept"         # a new sample: the whole model is out of date (FR-032)
+        self.assertEqual(st["state"], "outdated" if wrote else "current")
         self.assertFalse(st["font_same"])
         l = model["chars"]["l"]
         # the marks follow their samples (the versions may come out in another order)
-        by = {frozenset(v["ids"]): v for v in l["variants"]}
-        self.assertTrue(by[frozenset(out_ids)].get("left_out"))
-        self.assertTrue(by[frozenset(fav_ids)].get("favourite"))
-        self.assertNotIn(l["variants"].index(by[frozenset(out_ids)]), fontview.slots(l))
-        self.assertEqual(self.U.pages.font_mode(u), "relearned")
+        by = lambda ids: next(v for v in l["variants"] if ids <= set(v["ids"]))   # (the new l may join one)
+        self.assertTrue(by(out_ids).get("left_out"))
+        self.assertTrue(by(fav_ids).get("favourite"))
+        self.assertNotIn(l["variants"].index(by(out_ids)), fontview.slots(l))
+        self.assertEqual(self.U.pages.font_mode(u), "outdated" if wrote else "relearned")
         # Update puts the new letters in the font
         u.make_font()
         self.settle(u, lambda: not u.font_busy and u.font["status"]["font"][1] == 2 and not u.letters_loading)
