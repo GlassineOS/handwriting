@@ -481,7 +481,9 @@ int hw_neaten(struct hw_neat *q)
 	 * the gaps between words (their boxes) towards the word spacing */
 	{
 		struct hw_profile *P = malloc((nc + 1) * sizeof *P);
-		if (!P) { ret = -1; goto done; }
+		struct hw_mid *M = calloc(nc + 1, sizeof *M);
+		double *mid = malloc((nc + 1) * sizeof *mid);
+		if (!P || !M || !mid) { free(P); free(M); free(mid); ret = -1; goto done; }
 		for (size_t k = 0; k < nc; k++) hw_profile_clear(&P[k]);
 		for (size_t j = 0; j < n; j++) {
 			if (!nown[j]) continue;
@@ -497,9 +499,11 @@ int hw_neaten(struct hw_neat *q)
 				x /= xh;
 				y = (base - (y + c->dy)) / xh;
 				hw_profile_seg(&P[o], po == o ? px : x, po == o ? py : y, x, y);
+				if (po == o) hw_mid_seg(&M[o], px, py, x, y);
 				px = x; py = y; po = o;
 			}
 		}
+		for (size_t k = 0; k < nc; k++) mid[k] = hw_mid_of(&M[k]);
 		/* a character pulled to its variant: at full strength its variant's profile, about its
 		 * middle as the pull places it */
 		for (size_t k = 0; k < nc && hasbase; k++) {
@@ -527,6 +531,7 @@ int hw_neaten(struct hw_neat *q)
 				P[k].l[bnd] = c->v->prof.l[bnd] + off;
 				P[k].r[bnd] = c->v->prof.r[bnd] + off;
 			}
+			mid[k] = c->v->mid + off;
 		}
 		double *lg = v, *wg = v + nc + 1;
 		size_t nl = 0, nw = 0;
@@ -553,10 +558,13 @@ int hw_neaten(struct hw_neat *q)
 						if (use) { if (space) wg[nw++] = g; else lg[nl++] = g; }
 					} else {
 						double t = tw;
+						/* with a letter model: where it places the pair, as a move */
+						double mv = NAN;
 						if (!space && q->L)
-							t = hw_spacing_gap(&q->L->sp, q->cp[prev], &P[prev], hw_spacing_side(&q->L->sp, &P[prev], 1),
-									   q->cp[k], &P[k], hw_spacing_side(&q->L->sp, &P[k], 0)) * xh;
+							mv = hw_spacing_place(&q->L->sp, q->cp[prev], &P[prev], mid[prev], hw_spacing_side(&q->L->sp, &P[prev], 1),
+									      q->cp[k], &P[k], mid[k], hw_spacing_side(&q->L->sp, &P[k], 0)) * xh;
 						else if (!space) t = tl;
+						if (isfinite(mv)) t = g + mv;
 						if (on.space && use && isfinite(t)) shift += clampd(t - g, -0.3 * xh, 0.3 * xh);
 					}
 				}
@@ -565,7 +573,7 @@ int hw_neaten(struct hw_neat *q)
 				space = 0;
 			}
 		}
-		free(P);
+		free(P); free(M); free(mid);
 	}
 
 	/* the points */

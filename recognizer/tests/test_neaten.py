@@ -243,6 +243,45 @@ class Neaten(unittest.TestCase):
         self.assertLess(sum(off_a), sum(off_b) / 3)
         self.assertTrue(all(x < 0.06 for x in off_a), off_a)          # within the step limit
 
+    def test_spacing_by_the_middles(self):
+        """a pair with an overhang that sits differently in words than in its variant (an f's
+        bar) goes towards the distance the person writes its letters' middles at (FR-007,
+        FR-014), measured on the ink neatening gives back"""
+        rnd = random.Random(52)
+        dist = {"fo": 1.0, "Tl": 0.6}
+        ss = []
+        for _ in range(6):
+            ss += [TL.overhang_word(w, rnd, dist) for w in ("fo", "Tl")]
+        for _ in range(4):
+            ss += [TL.overhang_word(c, rnd, dist, "alone") for c in "fTfTfTol"]
+        f = self.e.dir / "in.jsonl"
+        lines = [json.dumps({"format": "glassine-handwriting-export", "version": 1})]
+        for i, s in enumerate(ss):
+            lines.append(json.dumps({"sample": s, "client": "org.example.test", "confirmed": 1700000000 + i,
+                                     "source": "prompted"}))
+        f.write_text("\n".join(lines) + "\n")
+        self.e.run("samples", "import", str(f))
+        self.e.run("letters", "build", "-r")
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        # written with the bar above the x-height, as alone: the gap would set the o at the stem
+        s = TL.overhang_word("fo", random.Random(53), {"fo": 0.75}, "alone")
+        c = self.e.start()
+        self.begin(c, s)
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        _, out = parse(c.ask("neaten", "s", "1", "fo", align))
+        c.close()
+        xy = [EV.to_xy(o[2]) for o in out]
+        xh = EV.line_xh(s)
+        base = EV.line_base(s, xh)
+
+        def dist_of(strokes):
+            m = [TL.middle([[(p[0] / xh, (base - p[1]) / xh) for p in strokes[j]] for j in s["spans"][k]]) for k in range(2)]
+            return m[1] - m[0]
+        before = dist_of([[(p[0], p[1]) for p in st] for st in s["strokes"]])
+        after = dist_of(xy)
+        self.assertAlmostEqual(before, 0.75, delta=0.02)
+        self.assertLess(abs(after - 1.0), 0.06, (before, after))
+
     def test_line_level_without_letter_model(self):
         # letters on a slanted baseline: straight after (FR-014, FR-022)
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
