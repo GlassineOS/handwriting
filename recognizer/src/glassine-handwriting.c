@@ -36,6 +36,7 @@
 #include "hw/adapt.h"
 #include "hw/gesture.h"
 #include "hw/letters.h"
+#include "hw/neaten.h"
 #include "hw/recog.h"
 #include "hw/size.h"
 #include "hw/sample.h"
@@ -49,6 +50,7 @@
 #define MAX_STROKES 4096
 #define MAX_POINTS 100000
 #define MAX_CANDS 8
+#define NEAT_STEPS 2             /* neaten: tries before it gives the ink back as it was */
 #define IDLE_DEFAULT 300
 #define FIT_OK 0.6              /* a prompted alignment's score from which it passes the check */
 
@@ -281,6 +283,7 @@ struct session {
 	struct hw_units units;
 	char *before;
 	struct hw_ink *ink;
+	char **src;                     /* each stroke's POINTS as sent (neaten keeps what it doesn't move) */
 	int *ids;
 	size_t n, cap;
 	int next_id;
@@ -314,7 +317,7 @@ static void cands_clear(struct session *s)
 static void session_clear(struct session *s)
 {
 	cands_clear(s);
-	for (size_t i = 0; i < s->n; i++) hw_ink_free(&s->ink[i]);
+	for (size_t i = 0; i < s->n; i++) { hw_ink_free(&s->ink[i]); free(s->src[i]); }
 	s->n = 0;
 	s->width = 0;
 	s->pressure_all = 1;
@@ -324,7 +327,7 @@ static void session_clear(struct session *s)
 static void session_end(struct session *s)
 {
 	session_clear(s);
-	free(s->ink); free(s->ids); free(s->before);
+	free(s->ink); free(s->src); free(s->ids); free(s->before);
 	memset(s, 0, sizeof *s);
 }
 
@@ -376,7 +379,7 @@ static int parse_points(char *s, struct hw_ink *k, int *width)
 	return 0;
 }
 
-static int session_add(struct session *s, struct hw_ink *k, int width)
+static int session_add(struct session *s, struct hw_ink *k, int width, char *src)
 {
 	if (s->n >= MAX_STROKES) return -1;
 	if (s->n == s->cap) {
@@ -387,11 +390,15 @@ static int session_add(struct session *s, struct hw_ink *k, int width)
 		int *y = realloc(s->ids, c * sizeof *y);
 		if (!y) return -1;
 		s->ids = y;
+		char **z = realloc(s->src, c * sizeof *z);
+		if (!z) return -1;
+		s->src = z;
 		s->cap = c;
 	}
 	if (width < 4) s->pressure_all = 0;
 	if (width != 6) s->tilt_all = 0;
 	s->ink[s->n] = *k;
+	s->src[s->n] = src;
 	s->ids[s->n] = s->next_id++;
 	s->n++;
 	return s->ids[s->n - 1];
@@ -400,7 +407,9 @@ static int session_add(struct session *s, struct hw_ink *k, int width)
 static void session_remove(struct session *s, size_t i)
 {
 	hw_ink_free(&s->ink[i]);
+	free(s->src[i]);
 	memmove(s->ink + i, s->ink + i + 1, (s->n - i - 1) * sizeof *s->ink);
+	memmove(s->src + i, s->src + i + 1, (s->n - i - 1) * sizeof *s->src);
 	memmove(s->ids + i, s->ids + i + 1, (s->n - i - 1) * sizeof *s->ids);
 	s->n--;
 }
@@ -1027,6 +1036,302 @@ static int parse_area(const char *a, struct hw_area *o, int *has_base, double *b
 
 /* ---------------------------------------------------------------- requests */
 
+/* ---------------------------------------------------------------- neatening (spec 003) */
+
+/* the letter model, read again when its file changed */
+static struct {
+	int have;
+	struct stat st;
+	struct hw_letters L;
+} letters_cache;
+
+static const struct hw_letters *letters_now(void)
+{
+	char p[4096];
+	struct stat st;
+	if (hw_store_path(p, sizeof p, "letters/model") || stat(p, &st)) {
+		if (letters_cache.have) { hw_letters_free(&letters_cache.L); letters_cache.have = 0; }
+		return NULL;
+	}
+	if (letters_cache.have && st.st_mtim.tv_sec == letters_cache.st.st_mtim.tv_sec &&
+	    st.st_mtim.tv_nsec == letters_cache.st.st_mtim.tv_nsec && st.st_size == letters_cache.st.st_size &&
+	    st.st_ino == letters_cache.st.st_ino)
+		return &letters_cache.L;
+	if (letters_cache.have) { hw_letters_free(&letters_cache.L); letters_cache.have = 0; }
+	struct hw_letters L;
+	if (hw_letters_load(&L) != 1) return NULL;
+	letters_cache.L = L;
+	letters_cache.st = st;
+	letters_cache.have = 1;
+	return &letters_cache.L;
+}
+
+/* a coordinate as neaten writes it: to a thousandth, no trailing zeros, no "-0" */
+static void bcoord(struct buf *b, double v)
+{
+	char t[64];
+	double r = round(v * 1000) / 1000;
+	if (r == 0) r = 0;
+	snprintf(t, sizeof t, "%.3f", r);
+	size_t n = strlen(t);
+	while (n && t[n - 1] == '0') n--;
+	if (n && t[n - 1] == '.') n--;
+	t[n] = 0;
+	bstr(b, t);
+}
+
+/* ALIGN as read gives it, against the session's strokes: own[stroke][point] = character */
+static int parse_align(const struct session *s, const char *align, size_t nc, int **own)
+{
+	const char *p = align;
+	for (size_t k = 0; k < nc; k++) {
+		size_t len = strcspn(p, ";");
+		char part[4096];
+		if (len >= sizeof part) return -1;
+		memcpy(part, p, len);
+		part[len] = 0;
+		char *save = NULL;
+		for (char *e = strtok_r(part, ",", &save); e; e = strtok_r(NULL, ",", &save)) {
+			char *q;
+			long sn = strtol(e, &q, 10), a = -1, b2 = -1;
+			if (q == e) return -1;
+			if (*q == ':') {
+				char *r = q + 1;
+				a = strtol(r, &q, 10);
+				if (q == r || *q != '-') return -1;
+				r = q + 1;
+				b2 = strtol(r, &q, 10);
+				if (q == r) return -1;
+			}
+			if (*q) return -1;
+			for (size_t i = 0; i < s->n; i++) {
+				if (s->ids[i] != sn) continue;
+				long lo = a < 0 ? 0 : a, hi = a < 0 ? (long)s->ink[i].n - 1 : b2;
+				for (long t = lo; t <= hi && t < (long)s->ink[i].n; t++) if (t >= 0) own[i][t] = (int)k;
+			}
+		}
+		p += len;
+		if (*p == ';') p++;
+		else if (k + 1 < nc && *p == 0) break;
+	}
+	return 0;
+}
+
+/* the best reading of all the strokes, as read gives it, with x and y replaced (NULL: as
+ * they are) */
+static int read_text(struct hw_lang *l, const struct session *s, double **x, double **y,
+		     const struct hw_size_ref *ref, char *out, size_t max)
+{
+	out[0] = 0;
+	struct hw_ink *ink = malloc((s->n + 1) * sizeof *ink);
+	if (!ink) return -1;
+	size_t m = 0;
+	for (size_t i = 0; i < s->n; i++) {
+		ink[m] = s->ink[i];
+		if (x) { ink[m].x = x[i]; ink[m].y = y[i]; }
+		m++;
+	}
+	size_t *np;
+	struct hw_stroke *st = m ? strokes_of(ink, m, &np) : NULL;
+	int ret = 0;
+	struct hw_run r;
+	if (st && !hw_run_sized(l, st, m, ref, &r)) {
+		if (r.rows > 0) {
+			r.npoints = np;
+			struct hw_reading rd;
+			struct hw_context c;
+			if (s->words) hw_context_of(hw_words_get(l->lang), s->before, &c);
+			if (hw_read_words(l, &r, s->words && c.w ? &c : NULL, 1, &rd) >= 1) text_of(rd.c[0].cp, rd.c[0].len, out, max);
+		}
+		hw_run_free(&r);
+	} else if (m) ret = -1;
+	if (st) { free(st); free(np); }
+	free(ink);
+	return ret;
+}
+
+static size_t edit_utf8(const char *a, const char *b)
+{
+	unsigned x[HW_MAX_LABELS], y[HW_MAX_LABELS];
+	size_t na = hw_utf8_decode(a, x, HW_MAX_LABELS), nb = hw_utf8_decode(b, y, HW_MAX_LABELS);
+	if (na > HW_MAX_LABELS) na = HW_MAX_LABELS;
+	if (nb > HW_MAX_LABELS) nb = HW_MAX_LABELS;
+	return hw_edit(x, na, y, nb);
+}
+
+static const char *neat_how(int h) { return h == HW_NEAT_PULLED ? "pulled" : h == HW_NEAT_LINE ? "line" : "kept"; }
+
+static void do_neaten(const char *id, struct session *s, const char *strength, const char *text, const char *align)
+{
+	char *e;
+	double st = strtod(strength, &e);
+	if (e == strength || *e || !isfinite(st) || st < 0 || st > 1) { reply("error\t%s\tbad-strength", id); return; }
+	unsigned *cp = NULL;
+	size_t nc = 0;
+	if (text) {
+		cp = malloc((strlen(text) + 1) * sizeof *cp);
+		if (!cp) { reply("error\t%s\tmemory", id); return; }
+		nc = hw_utf8_decode(text, cp, strlen(text) + 1);
+		if (!nc || nc > HW_MAX_LABELS) { free(cp); reply("error\t%s\tbad-text", id); return; }
+	}
+	struct buf b = { 0 };
+	struct hw_neat q = { 0 };
+	unsigned char *keep = calloc(s->n + 1, 1);
+	int **own = calloc(s->n + 1, sizeof *own);
+	double *fit = NULL;
+	char used[4 * HW_MAX_LABELS + 1] = "";
+	int fail = !keep || !own;
+	for (size_t i = 0; !fail && i < s->n; i++) {
+		own[i] = malloc((s->ink[i].n + 1) * sizeof **own);
+		if (!own[i]) fail = 1;
+		else for (size_t t = 0; t < s->ink[i].n; t++) own[i][t] = -1;
+	}
+	if (fail) goto oom;
+	if (st > 0 && s->n) {
+		int bad;
+		struct hw_lang *l = pick_lang(s->langs, &bad);
+		if (!l && !align) { reply("error\t%s\tno-model", id); goto out; }
+		struct hw_size_ref ref = { 0 };
+		if (l) size_ref(l, s, &ref);
+		struct hw_size_ref ref_sz = ref;
+		double xh = ref.kind != HW_SIZE_NONE ? ref.x : 0;
+		/* a gesture (the newest stroke, as read sees it) and drawing stay as they are */
+		size_t *np;
+		struct hw_stroke *all = strokes_of(s->ink, s->n, &np);
+		if (!all) goto oom;
+		struct hw_gesture *ge = malloc(sizeof *ge);
+		size_t g = s->n - 1;
+		if (ge && hw_gesture(all, s->n, g, gesture_scale(all, s->n, g, &s->units), ge)) keep[g] = 1;
+		free(ge); free(all); free(np);
+		hw_neat_drawing(s->ink, s->n, xh, keep);
+		if (align && cp) {
+			if (parse_align(s, align, nc, own)) { reply("error\t%s\tbad-align", id); goto out; }
+			snprintf(used, sizeof used, "%s", text);
+		} else {
+			/* the reading of the writing: the strokes not kept */
+			size_t m = 0;
+			struct hw_ink *ink = malloc((s->n + 1) * sizeof *ink);
+			int *map = malloc((s->n + 1) * sizeof *map);
+			if (!ink || !map) { free(ink); free(map); goto oom; }
+			for (size_t i = 0; i < s->n; i++) if (!keep[i]) { ink[m] = s->ink[i]; map[m] = (int)i; m++; }
+			struct hw_stroke *sw = m ? strokes_of(ink, m, &np) : NULL;
+			struct hw_run r;
+			if (sw && !hw_run_sized(l, sw, m, &ref, &r)) {
+				if (r.rows > 0) {
+					r.npoints = np;
+					if (!cp) {
+						struct hw_reading rd;
+						struct hw_context x;
+						if (s->words) hw_context_of(hw_words_get(l->lang), s->before, &x);
+						if (hw_read_words(l, &r, s->words && x.w ? &x : NULL, 1, &rd) >= 1 && rd.c[0].len > 0) {
+							cp = malloc((size_t)rd.c[0].len * sizeof *cp);
+							if (cp) { memcpy(cp, rd.c[0].cp, (size_t)rd.c[0].len * sizeof *cp); nc = (size_t)rd.c[0].len; }
+						}
+					}
+					struct hw_charspan *cs = NULL;
+					long k = cp ? hw_align(l, &r, cp, nc, &cs) : -1;
+					if (k > 0) {
+						fit = malloc((size_t)k * sizeof *fit);
+						for (long c = 0; fit && c < k; c++) {
+							fit[c] = cs[c].fit;
+							if (cs[c].r0 < 0) continue;
+							for (long row = cs[c].r0; row <= cs[c].r1; row++) {
+								int si = map[r.org[row].stroke], pt = r.org[row].point;
+								if (pt >= 0 && (size_t)pt < s->ink[si].n) own[si][pt] = (int)c;
+							}
+						}
+						text_of(cp, (int)nc, used, sizeof used);
+					} else if (cp && k < 0) {
+						nc = 0;      /* the strokes can't hold the text: nothing read */
+					}
+					free(cs);
+				}
+				hw_run_free(&r);
+			}
+			if (sw) { free(sw); free(np); }
+			free(ink); free(map);
+		}
+		q.ink = s->ink;
+		q.n = s->n;
+		q.keep = keep;
+		q.cp = cp;
+		q.nc = used[0] ? nc : 0;
+		q.fit = align ? NULL : fit;
+		q.own = own;
+		q.strength = st;
+		q.L = letters_now();
+		q.xh = xh;
+		/* the neatened ink must read at least as well as the original (FR-016: the same
+		 * text in the same hand): else without the pull, then not at all */
+		char orig[4 * HW_MAX_LABELS + 1], now[4 * HW_MAX_LABELS + 1];
+		const char *goal = text ? text : orig;
+		size_t d0 = 0;
+		orig[0] = 0;
+		if (l && q.nc) {
+			if (read_text(l, s, NULL, NULL, &ref_sz, orig, sizeof orig)) goto oom;
+			d0 = edit_utf8(orig, goal);
+		}
+		const char *knob = getenv("GLASSINE_HANDWRITING_NEATEN");
+		int check = !(knob && strstr(knob, "check=0"));
+		int done = 0;
+		for (int step = 0; step < NEAT_STEPS && !done; step++) {
+			hw_neat_free(&q);
+			q.line_only = step > 0;
+			q.strength = st;
+			if (hw_neaten(&q)) goto oom;
+			/* as the reply writes them, so the check reads what the client gets */
+			for (size_t i = 0; i < s->n; i++)
+				for (size_t t = 0; t < s->ink[i].n; t++) {
+					q.x[i][t] = round(q.x[i][t] * 1000) / 1000;
+					q.y[i][t] = round(q.y[i][t] * 1000) / 1000;
+				}
+			if (!l || !q.nc || !check) { done = 1; break; }
+			int moved = 0;
+			for (size_t i = 0; i < s->n; i++) moved |= q.how[i] != HW_NEAT_KEPT;
+			if (!moved) { done = 1; break; }
+			if (read_text(l, s, q.x, q.y, &ref_sz, now, sizeof now)) goto oom;
+			if (edit_utf8(now, goal) <= d0) done = 1;
+		}
+		if (!done) {
+			hw_neat_free(&q);
+			q.strength = 0;
+			if (hw_neaten(&q)) goto oom;
+		}
+	}
+	bfmt(&b, "neaten\t%s\tok\t", id);
+	besc(&b, used);
+	bfmt(&b, "\t%zu", s->n);
+	for (size_t i = 0; i < s->n; i++) {
+		int how = q.how ? q.how[i] : HW_NEAT_KEPT;
+		bfmt(&b, "\t%d\t%s\t", s->ids[i], neat_how(how));
+		if (how == HW_NEAT_KEPT && s->src[i]) { bstr(&b, s->src[i]); continue; }
+		/* moved x and y, the rest of each point as it was sent */
+		const char *p = s->src[i];
+		for (size_t t = 0; t < s->ink[i].n; t++) {
+			while (p && *p == ' ') p++;
+			const char *c1 = p ? strchr(p, ',') : NULL, *c2 = c1 ? strchr(c1 + 1, ',') : NULL;
+			const char *end = p ? p + strcspn(p, " ") : NULL;
+			if (t) bstr(&b, " ");
+			bcoord(&b, q.x ? q.x[i][t] : s->ink[i].x[t]);
+			bstr(&b, ",");
+			bcoord(&b, q.y ? q.y[i][t] : s->ink[i].y[t]);
+			if (c2 && c2 < end) bput(&b, c2, (size_t)(end - c2));
+			else bfmt(&b, ",%.6g", s->ink[i].t[t] * 1000);
+			p = end;
+		}
+	}
+	bstr(&out, b.s);
+	bput(&out, "\n", 1);
+	goto out;
+oom:
+	reply("error\t%s\tmemory", id);
+out:
+	free(b.s);
+	hw_neat_free(&q);
+	if (own) for (size_t i = 0; i < s->n; i++) free(own[i]);
+	free(own); free(keep); free(fit); free(cp);
+}
+
 static int nfields(char **f, int max, char *line)
 {
 	int n = 0;
@@ -1122,7 +1427,7 @@ static void request(char *line, int skip_read)
 		for (char *p = strtok_r(f[7], ";", &save); p; p = strtok_r(NULL, ";", &save)) {
 			struct hw_ink k;
 			int w;
-			if (parse_points(p, &k, &w) || session_add(&tmp, &k, w) < 0) {
+			if (parse_points(p, &k, &w) || session_add(&tmp, &k, w, NULL) < 0) {
 				reply("error\t%s\tbad-points", id); session_end(&tmp); return;
 			}
 		}
@@ -1143,7 +1448,7 @@ static void request(char *line, int skip_read)
 	struct session *s = n >= 3 ? find_session(f[2]) : NULL;
 	if (!strcmp(v, "stroke") || !strcmp(v, "read") || !strcmp(v, "align") || !strcmp(v, "remove") ||
 	    !strcmp(v, "clear") || !strcmp(v, "end") || !strcmp(v, "confirm") || !strcmp(v, "donate") ||
-	    !strcmp(v, "area") || !strcmp(v, "mark")) {
+	    !strcmp(v, "area") || !strcmp(v, "mark") || !strcmp(v, "neaten")) {
 		if (n < 3) { reply("error\t%s\tbad-line", id); return; }
 		if (!s) { reply("error\t%s\tunknown-session", id); return; }
 	}
@@ -1151,8 +1456,10 @@ static void request(char *line, int skip_read)
 		NEED(4);
 		struct hw_ink k;
 		int w, sid;
-		if (parse_points(f[3], &k, &w)) { reply("error\t%s\tbad-points", id); return; }
-		if ((sid = session_add(s, &k, w)) < 0) { hw_ink_free(&k); reply("error\t%s\ttoo-many", id); return; }
+		char *src = strdup(f[3]);
+		if (!src) { reply("error\t%s\tmemory", id); return; }
+		if (parse_points(f[3], &k, &w)) { free(src); reply("error\t%s\tbad-points", id); return; }
+		if ((sid = session_add(s, &k, w, src)) < 0) { free(src); hw_ink_free(&k); reply("error\t%s\ttoo-many", id); return; }
 		reply("stroke\t%s\tok\t%d", id, sid);
 	} else if (!strcmp(v, "read")) {
 		/* read ID S [COUNT [raw]] */
@@ -1201,6 +1508,11 @@ static void request(char *line, int skip_read)
 		NEED(4);
 		if (parse_area(f[3], &s->area, &s->has_base, &s->base)) { reply("error\t%s\tbad-area", id); return; }
 		reply("area\t%s\tok", id);
+	} else if (!strcmp(v, "neaten")) {
+		/* neaten ID S STRENGTH [TEXT [ALIGN]] */
+		if (n < 4 || n > 6) { reply("error\t%s\tbad-line", id); return; }
+		if (n >= 5) UNESC(4);
+		do_neaten(id, s, f[3], n >= 5 ? f[4] : NULL, n == 6 ? f[5] : NULL);
 	} else if (!strcmp(v, "forget")) {
 		NEED(3);
 		do_forget(id, f[2]);

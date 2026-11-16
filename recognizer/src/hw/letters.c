@@ -291,7 +291,7 @@ int hw_letters_inputs(char out[17])
 	qsort(keys, k, sizeof *keys, cmp_str);
 	uint64_t h = FNV0;
 	char v[32];
-	snprintf(v, sizeof v, "letters %d\n", HW_LETTERS_VERSION);
+	snprintf(v, sizeof v, "letters %d %d\n", HW_LETTERS_VERSION, HW_LETTERS_BUILD);
 	h = fnv(h, v, strlen(v));
 	for (size_t i = 0; i < k; i++) { if (keys[i]) h = fnv(h, keys[i], strlen(keys[i]) + 1); free(keys[i]); }
 	free(keys);
@@ -517,6 +517,84 @@ static double guide_base(const struct hw_sample *s)
 	return first + (k > 0 ? k : 0) * line;
 }
 
+/* A dot or a bar written after the word (an i's dot, a t's bar) can be in the spans of
+ * several characters, as the alignment follows the order of writing: it goes to the one it
+ * stands over (whose other strokes' ink is nearest across), so the character keeps it as a
+ * stroke of its own. Long shared strokes are joined writing and stay shared. */
+static double stroke_len(const struct hw_ink *k)
+{
+	double t = 0;
+	for (size_t i = 1; i < k->n; i++) t += hypot(k->x[i] - k->x[i - 1], k->y[i] - k->y[i - 1]);
+	return t;
+}
+
+static void delayed_strokes(struct smp *m, size_t nc, const unsigned *cps, int *cnt)
+{
+	struct hw_sample *s = &m->s;
+	double small;
+	if (s->area.set && s->area.line > 0) small = 0.3 * s->area.line;
+	else {
+		struct dvec ls = { 0 };
+		for (size_t j = 0; j < s->nstrokes; j++) dpush(&ls, stroke_len(&s->strokes[j]));
+		small = 0.4 * median(ls.v, ls.n, 0);
+		free(ls.v);
+	}
+	if (small <= 0) return;
+	for (size_t j = 0; j < s->nstrokes; j++) {
+		const struct hw_ink *sj = &s->strokes[j];
+		if (!cnt[j] || !sj->n || stroke_len(sj) > small) continue;
+		double sx0 = INFINITY, sx1 = -INFINITY, sy1 = -INFINITY;
+		for (size_t i = 0; i < sj->n; i++) {
+			if (sj->x[i] < sx0) sx0 = sj->x[i];
+			if (sj->x[i] > sx1) sx1 = sj->x[i];
+			if (sj->y[i] > sy1) sy1 = sj->y[i];
+		}
+		double mid = (sx0 + sx1) / 2;
+		int best = -1, alone = 0;
+		double bd = INFINITY, cur = INFINITY;
+		for (size_t k = 0; k < s->nspans && k < nc; k++) {
+			if (cps[k] == ' ' || !s->spans[k]) continue;
+			int has = 0;
+			double x0 = INFINITY, x1 = -INFINITY, y0 = INFINITY, y1 = -INFINITY;
+			for (int *p = s->spans[k]; *p >= 0; p++) {
+				if (*p == (int)j) { has = 1; continue; }
+				if ((size_t)*p >= s->nstrokes) continue;
+				const struct hw_ink *o = &s->strokes[*p];
+				for (size_t i = 0; i < o->n; i++) {
+					if (o->x[i] < x0) x0 = o->x[i];
+					if (o->x[i] > x1) x1 = o->x[i];
+					if (o->y[i] < y0) y0 = o->y[i];
+					if (o->y[i] > y1) y1 = o->y[i];
+				}
+			}
+			if (!(x1 >= x0)) { alone |= has; continue; }    /* the stroke is all a character has */
+			double d = mid < x0 ? x0 - mid : mid > x1 ? mid - x1 : 0;
+			if (has && d < cur) cur = d;
+			/* a dot or a bar sits in the upper part of the character it belongs to */
+			if (sy1 > (y0 + y1) / 2) continue;
+			/* the nearest across; of those over it, one that has it already */
+			if (d < bd - 1e-9 || (d <= bd + 1e-9 && has)) { bd = d; best = (int)k; }
+		}
+		if (alone || best < 0 || bd > 0 || (cur <= 0 && cnt[j] == 1)) continue;
+		/* it goes to the one it stands over, and only to that one */
+		for (size_t k = 0; k < s->nspans && k < nc; k++) {
+			int *p = s->spans[k], w = 0;
+			if (!p) continue;
+			for (int r = 0; p[r] >= 0; r++) if (p[r] != (int)j) p[w++] = p[r];
+			p[w] = -1;
+			if ((int)k != best) continue;
+			int *x = realloc(p, (size_t)(w + 2) * sizeof *x);
+			if (!x) continue;
+			int q = w;
+			while (q > 0 && x[q - 1] > (int)j) { x[q] = x[q - 1]; q--; }
+			x[q] = (int)j;
+			x[w + 1] = -1;
+			s->spans[k] = x;
+		}
+		cnt[j] = 1;
+	}
+}
+
 int hw_letters_build(struct hw_letters *L)
 {
 	memset(L, 0, sizeof *L);
@@ -565,6 +643,7 @@ int hw_letters_build(struct hw_letters *L)
 		if (!cnt) continue;
 		for (size_t k = 0; k < m->s.nspans && k < nc; k++)
 			for (int *p = m->s.spans[k]; p && *p >= 0; p++) if ((size_t)*p < m->s.nstrokes) cnt[*p]++;
+		delayed_strokes(m, nc, cps, cnt);
 		for (size_t k = 0; k < m->s.nspans && k < nc; k++) {
 			int *sp = m->s.spans[k];
 			if (cps[k] == ' ' || !sp || sp[0] < 0) continue;
@@ -796,7 +875,16 @@ int hw_letters_build(struct hw_letters *L)
 		while (nsd < HW_LETTERS_VARIANTS) {
 			double bs = -1;
 			int bi = -1, bg = -1;
+			/* a way of writing it that is about as strong gets its first version before the
+			 * main way gets more (an i with its dot and one without) */
+			int want = -1;
+			for (int g = 0; g < ng && nsd && want < 0; g++) {
+				int has = 0;
+				for (int k = 0; k < nsd; k++) has |= sgr[k] == g;
+				if (g != main && !has && G[g].n >= 3 && gw[g] >= 0.5 * gw[main]) want = g;
+			}
 			for (int g = 0; g < ng; g++) {
+				if (want >= 0 && g != want) continue;
 				if (g != main && (!nsd || G[g].n < 3 || gw[g] < 0.5 * gw[main])) continue;
 				for (int i = 0; i < G[g].n; i++) {
 					int x = G[g].members[i];
