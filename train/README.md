@@ -532,13 +532,22 @@ training sessions, the person's letters from them; CER / WER, top 3):
 
 (paired bootstrap over the samples.) All choices (32 k steps, no weighing, no letter-model
 lines in the head) were made on the synthetic dev sets and the real dev session (65); the
-numbers above are the final configuration's reading of the test session.
+numbers above are the final configuration's reading of the test session. One later variant
+(`m4fix`, below) was also chosen on dev and read the test session once.
 
 Without a head, the person's letters as the reference make model 4 read worse, not better: 29.7 %
 with them against 21.1 % without on the test session, 30.1 % against 22.0 % on dev (model 2 does
 not use them for its features). On synthetic ink the letter height helps (tables below), so the
 measured height of a real person's small letters and the generator's x-height probably do not
-mean the same length; with a head the difference is learned away. Not resolved.
+mean the same length; with a head the difference is learned away. A sweep on the real dev
+session (no head, words + character model) with the reference scaled to a multiple of the
+measured height: 0.6× 48.8 %, 0.8× 35.4 %, 1.0× 29.4 %, 1.25× 23.1 %, 1.5× 18.1 %, 1.75× 19.7 %,
+2× 18.5 %, 2.5× 21.1 %, 3× 23.6 %. The model wants 1.5 to 2 times the measured height; the dev
+and test words are about as large as the training sessions' (0.86 and 0.91 of them), so it is
+not the size drifting. On synthetic ink the recognizer's way of measuring the small letters
+gives 0.74 to 0.94 of the generator's x-height, so the two definitions differ. The fix belongs
+in training (references measured the way the recognizer measures them, then featurize and
+train again), not in a factor tuned on one writer. Not done.
 
 The `s20` fine-tune (Fine-tuning, above; trained on this writer's ink) reads the same session
 at 4.0 % without a head and 2.1 % with a fresh one (model 4: 2.4 %, difference −1.1 to +1.8):
@@ -592,6 +601,62 @@ run). The recognizer weighs only version 1 models.
 - A lone `O` (above).
 - With the line alone (no letters of the person yet) model 4 reads 4 to 10 points worse than
   with the letter height, but still far below model 2.
+
+**One other writer** (19 prompted single words of a second person, read as a new person: no
+head, no letters; an evaluation set only, never trained on; CER, 95 % interval of the
+difference). 19 words is a small set:
+
+| | model 2 | model 4 | model 4 − model 2 |
+|---|---|---|---|
+| ink only | 54.9 % | 36.4 % | −25.5 to −11.8 |
+| character model | 54.9 % | 27.7 % | −37.1 to −17.4 |
+| words | 54.4 % | 32.5 % | −30.4 to −13.7 |
+| words + character model | 56.3 % | 27.7 % | −37.9 to −20.0 |
+
+Top reading right: model 4 16 %, model 2 5 %. No letter was read as a digit in any word.
+
+**Trying to fix the digit regressions** (`m4fix`, not adopted). Three things in the training
+text pushed letters towards digits: the `uniform` kind (31.6 % of the tokens that mix letters
+and digits) drew each character from letters and digits alike, so most of its tokens mixed
+them; lone digits came more often than lone capitals (`0` 545 against `O` 318); and over the
+whole set `0` came 2.4 times as often as `O` and `6` 2.3 times as often as `G`. The fonts'
+`O` is a little wider than their `0` (width / height 0.81 against 0.75), but the held-out
+fonts draw `O` narrow (0.57 to 0.67), so there a lone `O` and `0` are close to one shape. The
+change: a `uniform` token is all letters or all digits (a fifth digits), lone capitals come as
+often as lone digits (`lines.py`); 36 k new lone and 18 k new uniform lines replaced those
+kinds in the set (`gen4 --kinds`, `mergeset`), and m4long went on for 8 k steps (one-cycle
+to 1e-3). A control ran the same 8 k steps on the old set (`m4ctl`) to tell the text from
+the extra training.
+
+| | m4long | control | m4fix | model 2 |
+|---|---|---|---|---|
+| letters read as digits in words, letter height known | 53 / 3897 | 49 | 41 | 13 |
+| … line alone | 73 | 68 | 43 | 14 |
+| … ink only, letter height known / line alone | 106 / 152 | 97 / 134 | 78 / 91 | 23 / 25 |
+| lone `O` read as `0`, letter height known / line alone (of 120) | 87 / 49 | 82 / 51 | 80 / 43 | 34 / 83 |
+| real test session, letters read as digits in words (of 116) | 2 | | 1 | 0 |
+
+(words + character model unless noted.) Reduced, not fixed: about a fifth fewer with the
+letter height, two fifths fewer with the line alone, still three times model 2, and a lone `O`
+is still read as `0`. Against m4long, m4fix is lower or level on every synthetic set (95 %),
+but against the control it costs on numbers and punctuation (+0.4 to +1.6 points) and reads
+a lone `S` as `s` more often (17 % against 5 %). On the real dev session the two were level
+(m4fix 2.1 %, m4long 1.9 %, words + character model, fresh head), so m4fix read the test
+session once:
+
+| real test session (116 words) | m4long | m4fix | m4fix − m4long (95 %) |
+|---|---|---|---|
+| fresh head, words + character model | 2.4 % | 3.4 % | +0.1 to +1.9 |
+| fresh head, character model | 3.2 % | 4.1 % | +0.1 to +1.8 |
+| fresh head, words | 4.4 % | 5.3 % | −0.8 to +2.7 |
+| new person, words + character model | 21.1 % | 21.5 % | −1.8 to +2.6 |
+| new person, words | 28.2 % | 27.0 % | −3.5 to +1.1 |
+| the other writer, words + character model | 27.7 % | 24.3 % | −9.6 to +1.9 |
+
+With a fresh head m4fix is worse on this writer and does not pass the release gate against
+model 2 (−4.1 to +0.3 points), so m4long stays the candidate. The head is trained with one
+seed; the bootstrap covers the words, not the head's training. What is left of `O` against `0`
+is probably for the field's context or the decoder rather than more rebalancing of the text.
 
 **A head with letter-model lines.** Adding 400 lines written in the person's letter model
 (`gen4-letters`) to the training sessions of the fresh head makes it worse (real dev, words +
