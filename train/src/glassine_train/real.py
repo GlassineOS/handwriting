@@ -16,6 +16,14 @@ occasion (other pen grip, mood, pace), as a new day's writing is:
   DEV_MIN samples;
 - train: the rest.
 
+With a kept test set (`keep_test`, the ids of an earlier split's test session) the test set
+never changes as new samples arrive: exactly those ids are the test set (every one must be
+in the store), no new sample joins it, and samples written in the test set's sessions that
+are not in it are left out of every split (`left_out`), so no ink from a test session
+trains. Dev is then whole sessions, the latest ones besides the test sessions, until at
+least DEV_MIN samples; train is the rest. A new pull of the store gives the same test set
+and moves only the newest sessions into dev.
+
 Real ink is kept as strokes, not features: rotation, point jitter, resampling, time warp
 and stroke dropout act on the pen's points, so the features are computed per draw.
 """
@@ -77,8 +85,36 @@ def sessions(times: list[int], gap: float = SESSION_GAP) -> list[int]:
     return sess
 
 
-def split(recs: list[dict]) -> dict[str, list[str]]:
+def split_kept(recs: list[dict], keep_test: list[str]) -> dict[str, list[str]]:
+    """{train, dev, test, left_out} with the test set fixed to `keep_test` (module docstring)."""
+    recs = [r for r in recs if r["time"] is not None]
+    ids = {r["id"] for r in recs}
+    missing = [i for i in keep_test if i not in ids]
+    if missing:
+        raise SystemExit(f"{len(missing)} of the {len(keep_test)} kept test samples are not in the store")
+    kept = set(keep_test)
+    sess = sessions([r["time"] for r in recs])
+    test_sess = {s for r, s in zip(recs, sess) if r["id"] in kept}
+    left = [r["id"] for r, s in zip(recs, sess) if s in test_sess and r["id"] not in kept]
+    rest = sorted({s for s in sess if s not in test_sess}, reverse=True)
+    dev_sess = set()
+    n = 0
+    for s in rest:  # whole sessions from the newest until DEV_MIN samples
+        if n >= DEV_MIN or len(dev_sess) == len(rest) - 1:  # at least one session stays for train
+            break
+        dev_sess.add(s)
+        n += sum(x == s for x in sess)
+    dev = [r["id"] for r, s in zip(recs, sess) if s in dev_sess]
+    train = [r["id"] for r, s in zip(recs, sess) if s not in dev_sess and s not in test_sess]
+    if not train:
+        raise SystemExit("no session left for training besides the kept test set and dev")
+    return {"train": train, "dev": dev, "test": [i for i in keep_test], "left_out": left}
+
+
+def split(recs: list[dict], keep_test: list[str] | None = None) -> dict[str, list[str]]:
     """{train, dev, test}: sample ids, by the rule in the module docstring."""
+    if keep_test is not None:
+        return split_kept(recs, keep_test)
     recs = [r for r in recs if r["time"] is not None]
     times = [r["time"] for r in recs]
     sess = sessions(times)
@@ -196,12 +232,22 @@ def load_split(path: Path) -> dict[str, list[dict]]:
             for k in ("train", "dev", "test")}
 
 
-def prepare(store: Path, out: Path) -> dict:
+def kept_test_ids(path: Path) -> list[str]:
+    """The test ids of an earlier split (its split.json), or of a file of ids, one per line."""
+    raw = path.read_text()
+    if raw.lstrip().startswith("{"):
+        return list(json.loads(raw)["ids"]["test"])
+    return [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+
+def prepare(store: Path, out: Path, keep_test: list[str] | None = None) -> dict:
     """Write the split of a store to out/ ({train,dev,test}.jsonl with the original lines,
     {train,dev}.meta for an adaptation store, split.json with ids and counts). Stays on
-    the host: the samples are a person's handwriting."""
+    the host: the samples are a person's handwriting. With `keep_test`, the test set is
+    those ids (split_kept)."""
     recs = read_store(store)
-    sp = split(recs)
+    sp = split(recs, keep_test)
+    left_out = sp.pop("left_out", None)
     by = {r["id"]: r for r in recs}
     out.mkdir(parents=True, exist_ok=True)
     for k, ids in sp.items():
@@ -230,5 +276,10 @@ def prepare(store: Path, out: Path) -> dict:
     rep["sessions"] = max(sessions([r["time"] for r in recs if r["time"] is not None])) + 1
     tt = {k: {by[i]["sample"]["text"] for i in v} for k, v in sp.items()}
     rep["test_texts_also_in_train_or_dev"] = len(tt["test"] & (tt["train"] | tt["dev"]))
-    (out / "split.json").write_text(json.dumps({"ids": sp, "report": rep}, indent=1))
+    ids = dict(sp)
+    if left_out is not None:
+        rep["kept_test"] = True
+        rep["left_out"] = len(left_out)
+        ids["left_out"] = left_out
+    (out / "split.json").write_text(json.dumps({"ids": ids, "report": rep}, indent=1))
     return rep
