@@ -157,8 +157,8 @@ def pauses(samples_xh, flags) -> dict:
 def letter_gaps(samples_xh, baseline_of=None) -> dict:
     """Gaps between neighbouring letters of a word by their ink profiles (spacing.py), in
     x-heights, from characters with strokes of their own; and word gaps (box gaps)."""
-    from .spacing import Profile, gap
-    gaps, wgaps = [], []
+    from .spacing import Profile, gap, guard_gap
+    gaps, wgaps, xb = [], [], []
     for strokes, spans, text in samples_xh:
         own = owners(strokes, spans, text)
         cnt = {}
@@ -182,6 +182,9 @@ def letter_gaps(samples_xh, baseline_of=None) -> dict:
                 g = gap(prof[ci], prof[ci + 1])
                 if -0.6 <= g <= 1.6:
                     gaps.append(g)
+                    h = guard_gap(prof[ci], prof[ci + 1])
+                    if np.isfinite(h) and -0.6 <= h <= 1.6:
+                        xb.append(h)
         boxes = {}
         for ci, p in prof.items():
             lo, hi = p.box()
@@ -194,6 +197,8 @@ def letter_gaps(samples_xh, baseline_of=None) -> dict:
     g = np.array(gaps)
     return {"letter_gap": _qs(g), "letter_gap_sd": round(float(g.std()), 3) if len(g) else None,
             "touching_or_overlapping": round(float(np.mean(g <= 0)), 3) if len(g) else None,
+            "xband_gap": _qs(np.array(xb)), "xband_gap_sd": round(float(np.std(xb)), 3) if xb else None,
+            "xband_touching": round(float(np.mean(np.array(xb) <= 0)), 3) if xb else None,
             "word_gap": _qs(np.array(wgaps))}
 
 
