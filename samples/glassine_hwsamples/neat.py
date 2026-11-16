@@ -102,6 +102,7 @@ class PenInk:
         self.shown = {}
         self.text = ""
         self.offset = (0, 0)
+        self.neatens = "neaten" in pen.capabilities     # False: the service isn't there (or left)
 
     def place(self, x, y, w, h, line, first):
         """the writing area on the surface and its guides (in the area's coordinates)"""
@@ -139,6 +140,15 @@ class PenInk:
         ox, oy = self.offset
         self.shown[i] = [(x - ox, y - oy) for x, y, *_ in points]
         self.on_change()
+
+    def capabilities(self, caps):
+        self.neatens = "neaten" in caps
+        self.on_change()
+
+    def settle(self):
+        """the page goes back to the direct path: the pen's own strokes still waiting join it"""
+        self.page.extend(self.pending)
+        self.pending = []
 
     def reading(self, text, strokes):
         self.text = text
