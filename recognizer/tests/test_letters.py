@@ -94,6 +94,81 @@ def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0):
     return s
 
 
+BANDS, Y0, Y1 = 8, -0.6, 1.6      # letters.h HW_PROF_*
+
+
+def profile(strokes):
+    """an ink profile as spacing.c makes it (x-heights, y up): per height band the ink's
+    leftmost and rightmost x, every band a segment crosses"""
+    lo, hi = [math.inf] * BANDS, [-math.inf] * BANDS
+    bw = (Y1 - Y0) / BANDS
+
+    def band(y):
+        return max(0, min(BANDS - 1, int(math.floor((y - Y0) / bw))))
+
+    def put(b, x):
+        lo[b], hi[b] = min(lo[b], x), max(hi[b], x)
+
+    for st in strokes:
+        for i, (x1, y1) in enumerate(st):
+            x0, y0 = st[i - 1] if i else (x1, y1)
+            y0, y1 = (min(max(y, Y0 + 1e-9), Y1 - 1e-9) for y in (y0, y1))
+            b0, b1 = band(y0), band(y1)
+            put(b0, x0)
+            put(b1, x1)
+            for b in range(min(b0, b1) + 1, max(b0, b1) + 1):
+                xe = x0 + (Y0 + b * bw - y0) / (y1 - y0) * (x1 - x0)
+                put(b - 1, xe)
+                put(b, xe)
+    return lo, hi
+
+
+def profile_gap(a, b, shift=0.0):
+    ds = [b[0][k] + shift - a[1][k] for k in range(BANDS) if math.isfinite(a[1][k]) and math.isfinite(b[0][k])]
+    if ds:
+        return min(ds)
+    return min(x for x in b[0] if math.isfinite(x)) + shift - max(x for x in a[1] if math.isfinite(x))
+
+
+def spaced_sample(text, rnd, gaps=None, gap=0.35, word=1.2, line=150.0, xh=30.0):
+    """a word sample whose letters stand at the given profile gaps (x-heights; gaps by pair,
+    else gap) and whose words stand word apart (their boxes)"""
+    strokes, spans = [], []
+    base = line * 2 / 3
+    t, x, prev = 0.0, 20.0 / xh, None
+    for k, c in enumerate(text):
+        if c == " ":
+            spans.append([])
+            continue
+        sh = shape(c, 0, rnd)
+        # its full height, so the sample's x-height comes out as written
+        top = 1.0 if c.islower() and c not in "bdfhklt" else 1.5
+        bot = -0.6 if c in "gjpqy" else 0.0
+        y0, y1 = min(p[1] for st in sh for p in st), max(p[1] for st in sh for p in st)
+        sh = [[(px, bot + (py - y0) / (y1 - y0) * (top - bot)) for px, py in st] for st in sh]
+        pr = profile(sh)
+        if prev is not None and text[k - 1] != " ":
+            want = (gaps or {}).get(text[k - 1] + c, gap)
+            x = prev[1] + want - profile_gap(prev[0], pr, 0)
+        elif prev is not None:
+            x = prev[2] + word - min(p[0] for st in sh for p in st)
+        sp = []
+        for st in sh:
+            pts = []
+            for px, py in st:
+                pts.append([round((x + px) * xh, 3), round(base - py * xh, 3), round(t, 3), 0.5])
+                t += 0.01
+            sp.append(len(strokes))
+            strokes.append(pts)
+        spans.append(sp)
+        prev = (pr, x, x + max(p[0] for st in sh for p in st))
+    s = {"version": 1, "text": text, "lang": "en", "strokes": strokes, "spans": spans, "spans_source": "exact",
+         "source": "prompted", "units": {"xy": "device", "per_mm": 4.0, "rate": 200},
+         "area": {"box": [0, 0, (x + 3) * xh, line * 3], "line": line, "orientation": 0},
+         "reading": [{"text": text, "score": -1.0}]}
+    return s
+
+
 class Env:
     def __init__(self):
         self.dir = Path(tempfile.mkdtemp(prefix="hw-letters-"))
@@ -478,7 +553,7 @@ class LateStrokes(unittest.TestCase):
         self.e.run("letters", "build", "-r")
         st = self.e.status()
         self.assertEqual((st["samples"], st["covered"], {c: n for c, (n, _) in st["chars"].items()}), before)
-        model = {json.loads(x)["char"]: json.loads(x)["samples"] for x in self.e.model().splitlines()[2:]}
+        model = {d["char"]: d["samples"] for d in map(json.loads, self.e.model().splitlines()) if "char" in d}
         self.assertEqual(model, before[2])
         # more samples: the counts follow at once, the model is out of date
         self.e.put([late_sample("ako", rnd, "next") for _ in range(3)])
@@ -503,6 +578,94 @@ class LateStrokes(unittest.TestCase):
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class Spacing(unittest.TestCase):
+    """spec 003 FR-006, FR-007, FR-009: one spacing from the letters' profiles: a pair's own
+    gap, a rare pair its side shapes', an unseen pair one from the profiles; the font sets
+    each shaped pair at its gap and words at the word spacing"""
+    GAPS = {"lo": 0.05, "ol": 0.7, "ab": 0.5}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(21)
+        ss = alphabet_samples(seed=21, per=3)
+        for k in range(5):
+            ss.append(spaced_sample("lol abc", rnd, cls.GAPS))
+            ss.append(spaced_sample("ab cde", rnd, cls.GAPS))
+        ss.append(spaced_sample("zq", rnd, cls.GAPS))           # written once
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        lines = [json.loads(x) for x in cls.e.model().splitlines()]
+        cls.sp = next(d["spacing"] for d in lines if "spacing" in d)
+        cls.chars = {d["char"]: d for d in lines if "char" in d}
+        cls.ttf = cls.e.dir / "f.ttf"
+        cls.e.run("font", "build", "-n", "Spaced", str(cls.ttf))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_learned(self):
+        pairs = {(p[0], p[1]): (p[2], p[3]) for p in self.sp["pairs"]}
+        # in the letter model's x-height, which the made-up letters' heights set a little
+        # differently from the writing's: gaps scale with it alike
+        r = pairs[("b", "c")][0] / 0.35
+        self.assertAlmostEqual(r, 1, delta=0.15)
+        for ab, g in self.GAPS.items():
+            self.assertAlmostEqual(pairs[(ab[0], ab[1])][0], g * r, delta=0.02, msg=ab)
+        self.assertNotIn(("z", "q"), pairs)                    # too rare for a gap of its own
+        self.assertAlmostEqual(self.sp["word"], 1.2 * r, delta=0.03)
+        for d in self.chars.values():
+            for v in d["variants"]:
+                self.assertEqual(len(v["left"]), BANDS)
+                self.assertGreaterEqual(v["lc"], 0)
+                self.assertGreaterEqual(v["rc"], 0)
+
+    def placed(self, text):
+        """per glyph of text as shaped: its variant and pen x, in x-heights"""
+        if SKIP_TOOLS:
+            self.skipTest("no hb-shape")
+        p = subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(self.ttf), text], capture_output=True, text=True,
+                           check=True)
+        cov = sorted(c for c, d in self.chars.items() if d.get("covered") and d.get("variants"))
+        out, x = [], 0
+        for g in json.loads(p.stdout):
+            i, st = (g["g"] - 1) // SLOTS - 1, (g["g"] - 1) % SLOTS
+            c = cov[i] if i >= 0 else " "
+            v = self.chars[c]["variants"][self.chars[c]["slots"][st]] if c != " " else None
+            out.append((c, v, (x + g["dx"]) / 500))
+            x += g["ax"]
+        return out
+
+    def prof(self, v):
+        nan = float("nan")
+        return ([nan if x is None else x for x in v["left"]], [nan if x is None else x for x in v["right"]])
+
+    def gap_of(self, a, b):
+        pa, pb = self.prof(a[1]), self.prof(b[1])
+        ds = [pb[0][k] - pa[1][k] for k in range(BANDS) if pa[1][k] == pa[1][k] and pb[0][k] == pb[0][k]]
+        return min(ds) + b[2] - a[2]
+
+    def test_font_sets_the_gaps(self):
+        pairs = {p[0] + p[1]: p[2] for p in self.sp["pairs"]}
+        for text in ("lol", "olo", "abc", "lolol ab abc"):
+            pl = self.placed(text)
+            for a, b in zip(pl, pl[1:]):
+                if a[0] == " " or b[0] == " ":
+                    continue
+                self.assertAlmostEqual(self.gap_of(a, b), pairs[a[0] + b[0]], delta=0.02, msg=text)
+        # words at the word spacing: box to box
+        pl = self.placed("ab cd")
+        a, b = pl[1], pl[3]
+        right = max(p[0] for st in a[1]["strokes"] for p in st)
+        left = min(p[0] for st in b[1]["strokes"] for p in st)
+        gap = self.sp["letter"]
+        self.assertAlmostEqual((b[2] + gap / 2 + left) - (a[2] + gap / 2 + right), self.sp["word"], delta=0.02)
+        # a pair never written: a gap from its side shapes or its profiles, near the typical one
+        pl = self.placed("qz")
+        self.assertLess(abs(self.gap_of(pl[0], pl[1]) - self.sp["letter"]), 0.31)
+
+
 class Font(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

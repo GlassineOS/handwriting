@@ -307,9 +307,11 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   is more likely a descender read wrong); the slant of each character moves to the letter
   model's (without one, the line's own), at most 0.4; letters read with a fit of 0.5 or more are
   scaled to the line's x-height (by their class: small letters, tall letters, capitals and
-  digits; 0.85 to 1.18); the gaps between letters and between words move towards the line's
-  median gap (with fewer than two, the letter model's spacing), at most 0.3 x-heights each.
-  Characters joined in one stroke move together.
+  digits; 0.85 to 1.18); each pair of neighbouring letters moves so its profile gap (below,
+  taken from the ink as the line-level map and the pull leave it) goes towards the letter
+  model's gap for that pair (without a letter model, the line's median profile gap), and the
+  gaps between words (box to box) towards the letter model's word spacing (without one, the
+  line's median), at most 0.3 x-heights each. Characters joined in one stroke move together.
 - **The pull (FR-014).** A character with a fit of 0.5 or more (or from `ALIGN`) that the letter
   model covers, whose strokes are its own (a stroke mostly one character's, three quarters of
   its points or more, counts as its; then the strokes are put right by where the ink lies as
@@ -525,8 +527,25 @@ and have company seed more (so repeated letters don't look stamped). A version i
 average of the samples near its seed, smoothed, so a single sample's jitter is gone; its `use`
 is how many samples of its ways are nearest to it of the versions with their strokes, and the
 versions are stored most used first. Sizes are in x-heights from the baseline of each sample's area (or of its
-own letters); the line metrics (cap height, ascender, descender, slant, letter and word spacing,
-ink width as the app's pen draws) come from all usable samples. The same samples and picks make
+own letters); the line metrics (cap height, ascender, descender, slant, ink width as the app's
+pen draws) come from all usable samples.
+
+**Spacing** (spec 003 FR-007; `spacing.c`), one for the font and neatening. A version's ink
+profile is, per height band (8 bands from −0.6 to 1.6 x-heights, the outer two open-ended), the
+leftmost and rightmost x of its strokes' centre lines, every band a segment crosses. The gap
+between two letters is the narrowest distance between the first's right profile and the
+second's left one over the bands both have ink in (their boxes when they share none). From
+neighbouring letters of the word samples (each with strokes of its own, placed by where they
+lie; gaps beyond −0.6 or 1.6 x-heights are the alignment's errors and left out) come: the
+typical gap (the median); a pair's own gap (the median, written at least 3 times); the side
+shapes, the versions' left and right sides grouped by their shape (per band, how far in from
+the side's outermost ink, at most 1; within 0.3 x-heights RMS, at most 16 per side, greedily
+by use), and a pair of side shapes' gap (the median, seen at least 5 times); how much closer
+letters stand where their profiles leave more open space (`open`, the least-squares slope of
+the gap on the mean open space beyond the narrowest, at most 1). A pair's gap is its own, else
+its side shapes', else the typical gap less `open` times its open space beyond the median one
+(`open0`), within 0.3 x-heights of the typical gap. Word spacing is the median box gap between
+words. The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
 
 It is made again when its inputs (the prompted samples and the picks, and the way it is built)
@@ -537,17 +556,21 @@ shows a page about the letters, spec 003 FR-008). `-f` makes it even when nothin
 The usable samples per character are known without a model (FR-030): `letters/usable` holds,
 per prompted sample, the characters it has with strokes of their own, by the same rules as the
 build. It is derived like `size`: a count or a build writes it (skipped while another process
-holds the lock), a sample it lacks is read once, and it is made again when the way the model is
-built changes. `letters status` counts from it, so its figures are the model's as a build would
+holds the lock), a sample it lacks is read once, and it is made again when the way the usable
+samples are counted changes. `letters status` counts from it, so its figures are the model's as a build would
 make them now, at once.
 
 **Model file** (`letters/model`, `letters show`): JSON lines. The first
 `{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
 then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"slant":…,
-"letter_spacing":…,"word_spacing":…,"ink_width":…}}`, then per character seen
-`{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,"members":N,"use":N,
-"strokes":[[[x,y],…],…]}],"slots":[V,…]}` (x from the version's left edge, y up from the baseline,
-in x-heights; no versions when not covered). `slots` is the font's cycle (10 steps): the version
+"letter_spacing":…,"word_spacing":…,"ink_width":…}}` (the spacing's typical and word gaps), then
+`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N],…],
+"sides":[[RIGHT,LEFT,GAP,N],…],"left_shapes":[[…8],…],"right_shapes":[[…8],…]}}`, then per
+character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
+"members":N,"use":N,"lc":L,"rc":R,"left":[…8],"right":[…8],"strokes":[[[x,y],…],…]}],
+"slots":[V,…]}` (x from the version's left edge, y up from the baseline, in x-heights; `left` and
+`right` its profile, null for a band without ink, `lc` and `rc` its side shapes; no versions when
+not covered). `slots` is the font's cycle (10 steps): the version
 the character shows at each step, each about as often as it is used, spread out (smooth weighted
 round robin on `use`); a model without it shows its versions in turn.
 
@@ -561,7 +584,11 @@ after a character or space at step s the next one is at step s + 1 (after 9, 0; 
 the font lacks, 0 again); a character shows the version its `slots` give for that step. Each
 character and the space has a glyph per step (the step-0 one is its mapped glyph; the others are
 references to one of its versions), and the `calt` feature has a rule per step that turns the
-next glyph into its glyph at the step after. The font is made only on the device and is
+next glyph into its glyph at the step after. Letters are spaced by the spacing: each version has
+half the typical gap as side bearing on each side, and the `kern` feature (GPOS pair kerning
+with a class per version, every step glyph in its version's class) moves every pair of versions
+to its pair's gap; the space is the word spacing less the typical gap. A preview that lays text
+out from the model (the samples app) spaces it the same way. The font is made only on the device and is
 never donated or exported.
 
 ## Command line
