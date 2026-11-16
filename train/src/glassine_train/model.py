@@ -9,19 +9,23 @@ from .features import NFEAT
 
 class Recognizer(nn.Module):
     def __init__(self, conv: int = 128, hidden: int = 128, layers: int = 2, dropout: float = 0.1,
-                 down: int = 2):
+                 down: int = 2, nfeat: int = NFEAT, alphabet: str = ALPHABET):
         super().__init__()
         self.cfg = {"conv": conv, "hidden": hidden, "layers": layers, "dropout": dropout, "down": down}
+        if nfeat != NFEAT or alphabet != ALPHABET:  # model 2's checkpoints keep their cfg
+            self.cfg.update(nfeat=nfeat, alphabet=alphabet)
+        self.alphabet = alphabet
         # dx, dy are about one resampling step (0.1); bring them to unit scale like the rest
-        self.register_buffer("scale", torch.tensor([10.0, 10.0, 1.0, 1.0, 1.0]))
-        self.c1 = nn.Conv1d(NFEAT, conv // 2, 5, padding=2)
+        # (the size column of the reference-height features is already about unit scale)
+        self.register_buffer("scale", torch.tensor([10.0, 10.0, 1.0, 1.0, 1.0] + [1.0] * (nfeat - NFEAT)))
+        self.c1 = nn.Conv1d(nfeat, conv // 2, 5, padding=2)
         self.strided = nn.ModuleList(
             [nn.Conv1d(conv // 2 if i == 0 else conv, conv, 5, stride=2, padding=2) for i in range(down)])
         self.act = nn.GELU()
         self.lstm = nn.LSTM(conv, hidden, layers, batch_first=True, bidirectional=True,
                             dropout=dropout if layers > 1 else 0.0)
         self.drop = nn.Dropout(dropout)
-        self.out = nn.Linear(2 * hidden, len(ALPHABET) + 1)
+        self.out = nn.Linear(2 * hidden, len(alphabet) + 1)
 
     def out_lengths(self, lens: torch.Tensor) -> torch.Tensor:
         for _ in self.strided:
