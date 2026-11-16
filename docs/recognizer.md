@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1)
+# The handwriting recognizer (contract version 1.1)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -65,7 +65,7 @@ microsecond.
 | `client ID NAME` | `client ID ok` (after `hello … relay` only, else `not-relay`) |
 | `begin ID S LANGS FIELD UNITS BEFORE` | `begin ID ok`, or `begin ID private` (nothing is kept) |
 | `stroke ID S POINTS` | `stroke ID ok N`: the stroke's number in this session |
-| `read ID S [COUNT [raw] [detail]]` | `read ID text K {TEXT SCORE ALIGN}×K` (with `detail` `{TEXT SCORE ALIGN FROM CHECK}×K`), `read ID gesture …` (below), `read ID empty`, or `drop ID` |
+| `read ID S [COUNT [raw\|chars] [detail]]` | `read ID text K {TEXT SCORE ALIGN}×K` (with `detail` `{TEXT SCORE ALIGN FROM CHECK}×K`), `read ID gesture …` (below), `read ID empty`, or `drop ID` |
 | `align ID S PROMPT` | `align ID SCORE K {FIT SEGMENTS}×K`, or `align ID short` |
 | `remove ID S N[,N…]` | `remove ID ok REMOVED` |
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
@@ -85,7 +85,8 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1) and, optionally, the client: an application id
+**hello** names the contract version (1: version 1.1 only adds to 1.0, so a client of either
+says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
 the person's own process and can't check it).
@@ -105,8 +106,11 @@ In a private field (below) no session is kept: strokes sent to it get `unknown-s
 **stroke** adds a stroke. Stroke numbers count up from 0 and are never reused in a session, also
 after `remove`. At most 4096 strokes of 100000 points each.
 
-**read** reads the strokes so far, up to `COUNT` candidates (1 to 8, default 3), best first; with
-`raw`, the ink's reading alone, without words. A
+**read** reads the strokes so far, up to `COUNT` candidates (1 to 8, default 3), best first, with
+what the field reads with (Words, Characters, below); with `raw`, the ink's reading alone, with
+neither (how readable the ink itself is: prompted writing's checks); with `chars`, with the
+character model but without words (free writing that should not be bent towards the word list;
+in a field without the character model the same as `raw`). A
 client may read after every stroke (writing in progress, FR-004); a reading of the same strokes is
 the same whether they came one by one or at once. When several `read` requests of one session are
 read together (the client was faster than the recognizer), only the newest is answered; the older
@@ -115,7 +119,8 @@ ones get `drop ID`. Requests between them are carried out in order.
 - `text K`: `K` candidates (0 when nothing could be read), each
   `TEXT SCORE ALIGN`, with `detail` also `FROM CHECK`: where it came from (`ink` the ink's best
   reading, `beam` another reading of the ink, `words` a word of the list one edit from a reading,
-  `guided` the search the words guided; Words, below) and `ok` when a pick of it is stored as it
+  `guided` the search the words guided, `chars` the search the character model weighed; Words
+  and Characters, below) and `ok` when a pick of it is stored as it
   is or `check` when a pick is checked first and would not pass (confirm, below). `SCORE` is the log-probability (≤ 0, higher is better). `ALIGN` has one
   entry per character (code point) of `TEXT`, separated by `;`: the strokes that make it,
   comma-separated, each `N` (the whole stroke) or `N:A-B` (points `A` to `B` of stroke `N`); empty
@@ -164,8 +169,8 @@ adaptation from it), sample format `area` and `reading`.
 
 A `picked` or `confirmed` text that was one of the candidates of the session's last reading is
 stored with its place among them and where it came from (sample format `pick`). When the words
-put it there (a near word or the guided search, below) rather than the ink, it is checked like a
-prompted sample,
+or the character model put it there (a near word, the guided search or the character model's
+search, below) rather than the ink, it is checked like a prompted sample,
 and also every written character must fit at least 0.3; failing, the reply is
 `confirm ID skip fit SCORE` and `keep` doesn't override it (the client shows nothing).
 
@@ -176,8 +181,9 @@ readings use the keyboard's word predictor's words for the language
 (`$GLASSINE_PREDICT_MODELS/LANG.gpm` or `/usr/share/glassine/predict/LANG.gpm`, the base language
 when there is none for a regional one; shell `docs/predictor.md`) and the person's learned words
 (`$XDG_DATA_HOME/glassine/predict/words`, removed words left out), read only, picked up again when
-they change. Without either, readings are the ink's alone. The setting `words = off` turns them
-off. Every other field, and `read … raw`, reads without them.
+they change. Without either, readings are without words. The setting `words = off` turns them
+off. Every other field, and `read … raw` and `read … chars`, reads without them. The character
+model (below) weighs these readings too.
 
 - A second search of the ink is guided by the words: a prefix inside a word of the list pays
   nothing until the word ends, then as below; a letter that leaves the list makes an unknown
@@ -185,7 +191,8 @@ off. Every other field, and `read … raw`, reads without them.
   readings join the ink's own ten best, when the ink scores them within 6 of its best.
 - All these readings are scored again: the ink's log-probability, plus 0.3 × (for each
   word of the list, the natural log of its probability after the two words before, from `BEFORE`
-  and the reading itself; for every other character but a space, −4.5).
+  and the reading itself; for every other character but a space, −4.5), plus the character
+  model's score (below).
 - The ink's best reading stays first, unless another reading of the ink (its own or the guided
   search's) scores 2.5 more and the best
   isn't all words of the list; the ink's best then comes second. The rest follow by score.
@@ -193,6 +200,31 @@ off. Every other field, and `read … raw`, reads without them.
   frequent words of the list one edit away (a letter changed, left out, added, or two swapped)
   are added, in the written word's case, when the ink scores them within 6 of its best; never
   first.
+- `SCORE` stays the ink's log-probability of the text.
+
+## Characters (FR-019)
+
+The model reads each frame of the ink on its own, so it has no notion of which character is
+likely after the ones before ("lig4t" for "light"). The character model of the language,
+`chars.gclm` in its base model's directory (below; none: readings are without it), gives the
+probability of each character after the ones before it. It is used in prose fields (with the
+words) and in fields of purpose `alpha` or `name` (without them), with hints only those that
+change nothing (Fields); every other field, `read … raw`, and the setting `chars = off` read
+without it.
+
+- Each character of a reading adds 0.35 × max(ln P(character | the characters
+  before it), −8) + 1 (the English model looks at the 4 before it). The characters before a reading are the end of `BEFORE`; without
+  `BEFORE`, a space (a reading starts as a word does). Nothing is added for the end of a
+  reading: one still being written is not unfinished text.
+- The floor bounds what one character can cost, so a code, a name or a number such as `4th`
+  or `R2D2` that the ink reads clearly still comes through.
+- A search of the ink weighed by the character model runs beside the ink's own (width
+  8); its ten best readings join the others when the ink scores them within 6 of its
+  best. In a prose field the words' guided search is weighed by it too.
+- All readings are ranked by the ink's log-probability plus the character model's score (and
+  the words' in a prose field). Without words the reading that scores best comes first; with
+  words, as under Words, but the margin another reading needs over the ink's best is 1
+  instead of 2.5. Either way the ink's best reading is then second.
 - `SCORE` stays the ink's log-probability of the text.
 
 ## Size (FR-017)
@@ -233,7 +265,7 @@ reference and weighs the model's reading by it.
   dot hanging below it reads as `,`, one high above as `·`; a tick down to the line as `,`, one
   high above it as `'`; a dash on the line as `_`; a lone `p`/`P` or `y`/`Y` hanging below the
   line as the small form, one sitting on it as the capital.
-- **Readings.** All readings (`read`, `recognize`, with or without words and `raw`), the
+- **Readings.** All readings (`read`, `recognize`, with or without words, `raw` and `chars`), the
   prompted fit (`align`, `confirm … prompted`, `donate`) and the check of a pick are made on the
   weighed frames; for a lone dot, dash or tick, the marks its shape allows come first (also when
   the search found none of them), then the other readings. A fit is the better of the weighed
@@ -257,8 +289,8 @@ neatening followed, empty when none. The same strokes, letter model and strength
 the same reply. `neaten` changes nothing in the session (its strokes, the last reading's
 candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-024).
 
-- **The reading.** Without `TEXT`, the session's best reading (as `read` gives it, with the
-  words in a prose field) says which strokes make which character; with `TEXT` (the text the
+- **The reading.** Without `TEXT`, the session's best reading (as `read` gives it, with what
+  the field reads with) says which strokes make which character; with `TEXT` (the text the
   person confirmed or picked), the strokes are aligned to it as in `align`; with `ALIGN` too (as
   `read` gives it for that text: per character the strokes or `N:A-B` parts), that alignment
   is used as it is, trusted (`bad-align` when it doesn't parse; `bad-text` for an empty or too
@@ -352,13 +384,14 @@ or written; nothing changed), `memory`.
 
 The recognizer applies the rule itself, whatever the client sends:
 
-| Field | Reads | Learns |
-|---|---|---|
-| purpose `password` or `pin`, or the hint `sensitive_data` or `hidden_text` | no (`private`, nothing kept) | no |
-| purpose `normal`, `alpha`, `name`, or `-` | yes | yes |
-| purpose `email` or `url` | yes | only when the keyboard's `addresses` setting is `learn` |
-| `terminal`, `digits`, `number`, `phone`, `date`, `time`, `datetime` | yes | no |
-| a purpose or hint this version doesn't know | yes | no |
+| Field | Reads | Reads with | Learns |
+|---|---|---|---|
+| purpose `password` or `pin`, or the hint `sensitive_data` or `hidden_text` | no (`private`, nothing kept) | – | no |
+| purpose `normal` or `-` | yes | words and the character model | yes |
+| purpose `alpha` or `name` | yes | the character model | yes |
+| purpose `email` or `url` | yes | the ink alone | only when the keyboard's `addresses` setting is `learn` |
+| `terminal`, `digits`, `number`, `phone`, `date`, `time`, `datetime` | yes | the ink alone | no |
+| a purpose or hint this version doesn't know | yes | the ink alone | no |
 
 The hints `completion`, `spellcheck`, `auto_capitalization`, `lowercase`, `uppercase`,
 `titlecase`, `latin` and `multiline` change nothing. A FIELD with characters other than lowercase
@@ -375,6 +408,7 @@ letters, `_` and `,` is `bad-field`.
 | `languages` | languages in order (`en,de`), used when a request's `LANGS` is `-` or empty | unset: the locale, then `en` |
 | `readers` | client names, comma-separated, that may read every client's samples | none |
 | `words` | `off`: readings without words (Words) | on |
+| `chars` | `off`: readings without the character model (Characters) | on |
 
 The keyboard's `predict.conf` (`learning`, `addresses`) counts too: learning is off when either
 file says so, so the keyboard's one learning switch covers handwriting (shell spec 006 FR-008).
@@ -607,8 +641,9 @@ none exists.
 ## Base models
 
 One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
-`$GLASSINE_HANDWRITING_MODELS/LANG/`) with `recognizer.ghm` (the model), `README` (the recipe and
-data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
+`$GLASSINE_HANDWRITING_MODELS/LANG/`) with `recognizer.ghm` (the model), `chars.gclm` (the
+character model, optional; Characters) with `chars.json` (its recipe) and `CHARS-LICENSE`,
+`README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
 line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, one per line, and
 `SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
 `glassine-train release` makes the whole directory as a release tarball
@@ -636,6 +671,23 @@ trainer's (`train/`, `features.py`); the recognizer computes the same features t
 rounding, checked by `make check`. `R` feature rows give `ceil(R / 2^S)` frames; frame `f` is
 centred on row `f·2^S`.
 
+**gclm, version 1** (the character model, little-endian), made by the trainer's
+`glassine-train charlm` (`train/src/glassine_train/charlm.py`, from the training books' text,
+never the test texts). A 48-byte header: `GHCM`, then eleven 32-bit unsigned integers: version
+(1), header bytes (48), order `N` (1 to 8: `N − 1` characters of context), symbols `V`,
+charset bytes, nodes, edges, successors, smoothing (1, Witten-Bell) and two zeros. Then the
+charset (UTF-8, symbol `k` its `k`-th character), padded with zeros to a multiple of 4; then
+32-bit arrays: `edge_start[nodes + 1]`, `succ_start[nodes + 1]`, the edges (`symbol << 24 |
+node`) and the successors (`symbol << 24 | count`). Each node is a context; node 0 the empty
+one. A node's edges lead to the contexts one character older (that character the edge's
+symbol), sorted by symbol, to nodes after it; its successors are the characters seen after the
+context with their counts, sorted by symbol. P(c | h) = (C(h c) + T(h) · P(c | h′)) / (C(h) +
+T(h)) from the longest context in the file down to the empty one, below it 1/V; C(h) is the sum
+of h's counts, T(h) the number of its successors, h′ h without its oldest character. Text
+before is read as the trainer cleans it (white space a space, curly quotes `'`, dashes `-`); a
+character not in the charset ends the context, and as the next character it counts 1/V. A file
+whose size doesn't match the header, or whose arrays are out of order, is refused.
+
 **gha, version 1** (an adaptation, little-endian): `GHWA`, version, the base model's hash (64-bit),
 rank, dimension, classes, samples learned from, held back (32-bit), error after and before
 (float), time (64-bit), then from byte 56 the head's floats: adapter down weights and bias, up
@@ -655,3 +707,4 @@ weights and bias, output weights and bias.
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check (comma-separated) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
+| `GLASSINE_HANDWRITING_CHARS` | for tuning: `weight=…,floor=…,bonus=…,margin=…,beam=…` replace the Characters weights |
