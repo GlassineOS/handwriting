@@ -18,12 +18,12 @@ The same samples serve two purposes with different rules:
 
 - **Adaptation** of the person's own recognizer: samples stay on the device, in the
   person's data, and are used as spec 001 FR-009 describes.
-- **Base models** for everyone: only samples the person donates (spec 001 FR-014), reviewed
+- **Base models** for everyone: only samples the person contributes (spec 001 FR-014), reviewed
   and licensed by them, ever reach a base model.
 
 This app is a client of the recognizer. It owns the prompts, the writing session, the
-review of each sample and the controls for adapting and donating; the recognizer owns the
-samples, the adaptation and the donation file.
+review of each sample and the controls for adapting and contributing; the recognizer owns the
+samples, the adaptation and the contribution file.
 
 ## User scenarios
 
@@ -40,7 +40,7 @@ sample is kept. The ink appears under the pen as fast as on the keyboard's writi
 **Given** the person slipped, wrote something else, or was interrupted, **When** they tap
 Redo, Skip or Discard on the shown sample (also for the previous sample, until the next
 one is kept), **Then** that sample is not stored or is removed, and nothing from it is used
-for adaptation or donation.
+for adaptation or contribution.
 
 ### Scenario 3 – Adapting on request (Priority: P1)
 
@@ -61,17 +61,17 @@ characters, digits and punctuation, or their own list of words.
 ### Scenario 5 – Raw handwriting for future models (Priority: P1)
 
 **Given** a person who wants their prompted writing to help the base models, **When** they
-turn on donating in the app and choose a licence once, **Then** every prompted sample they
-keep from then on, already reviewed in Scenario 1, is also added to their donation, the
-app shows the donation's size, and on request writes the donation, with its licence, as
+turn on contributing in the app and choose a licence once, **Then** every prompted sample they
+keep from then on, already reviewed in Scenario 1, is also added to their contribution, the
+app shows the contribution's size, and on request writes the contribution, with its licence, as
 one file into a folder among the person's own files, for them to send themselves (spec 001
-FR-014). Turning donating off or erasing the donation never touches
+FR-014). Turning contributing off or erasing the contribution never touches
 the samples used for their own adaptation.
 
-**Given** the person already kept prompted samples before turning donating on, **When**
+**Given** the person already kept prompted samples before turning contributing on, **When**
 they turn it on, **Then** the app offers to add those earlier samples too, shows how many
 there are, and lets the person review the list and leave any out before they are added;
-declining adds none of them, and the offer can be taken up later from the donation page.
+declining adds none of them, and the offer can be taken up later from the Contribute page.
 
 ### Scenario 6 – The person stays in charge (Priority: P1)
 
@@ -82,12 +82,12 @@ export them as one file in the sample format; nothing leaves the device otherwis
 ## Requirements
 
 - **FR-001**: The app is a client of the recognizer's session interface (spec 001 FR-001);
-  it reads, stores, adapts and donates only through that interface and keeps no samples of
+  it reads, stores, adapts and contributes only through that interface and keeps no samples of
   its own.
 - **FR-002**: Prompts come from texts shipped with the app per language, each under a
-  licence that allows its use in donated training data (public domain or openly licensed),
+  licence that allows its use in contributed training data (public domain or openly licensed),
   with their sources and licences listed next to them, plus the person's own word list,
-  which is never shipped and never donated as a prompt set.
+  which is never shipped and never contributed as a prompt set.
 - **FR-003**: Prompt kinds: single words, short sentences, single characters (each letter
   in both cases, digits, punctuation), and pangram-like sentences that cover the language's
   alphabet. The first release ships English; other languages follow with no change to the
@@ -115,19 +115,19 @@ export them as one file in the sample format; nothing leaves the device otherwis
   follows spec 001 FR-009's check (held-back samples, kept only if better, previous one
   kept to go back to). The app shows progress and the before and after error rates, and
   the device stays usable while it runs.
-- **FR-011**: Donating (Scenario 5) is off until the person turns it on; the licence
-  (CC0 or CC BY 4.0) is chosen once per donation; samples written to shipped prompts are
-  added while donating is on, and earlier ones only when the person accepts the offer to
-  add them after reviewing the list (Scenario 5), under the licence of this donation;
+- **FR-011**: Contributing (Scenario 5) is off until the person turns it on; the licence
+  (CC0 or CC BY 4.0) is chosen once per contribution; samples written to shipped prompts are
+  added while contributing is on, and earlier ones only when the person accepts the offer to
+  add them after reviewing the list (Scenario 5), under the licence of this contribution;
   samples written to the person's own word list or from normal use are never added in
   bulk, only when the person adds such a sample one by one (spec 001 FR-014). The
-  donation file follows spec 001 FR-014 (no client, wall-clock time, device or person in
+  contribution file follows spec 001 FR-014 (no client, wall-clock time, device or person in
   it), states its licence, and is written into a folder among the person's own files; how
   it reaches the project is up to the person.
 - **FR-012**: Sessions are short and resumable: the app keeps its place in the prompt set,
   shows counts (today, total, since the last adaptation), and asks nothing before the
   first prompt except once, on the first start: a short introduction that lets the person
-  try one prompt (kept as an ordinary prompted sample) and asks whether to donate
+  try one prompt (kept as an ordinary prompted sample) and asks whether to contribute
   (Scenario 5), where declining is as easy as accepting.
 - **FR-013**: No device names in the app; the pen's properties come with its stroke data.
 
@@ -138,13 +138,13 @@ export them as one file in the sample format; nothing leaves the device otherwis
   orientation, and the recognizer's reading at the time of writing.
 - **Coverage**: samples and error rate per character and letter pair, from the person's
   samples.
-- **Donation**: as spec 001.
+- **Contribution**: as spec 001.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Recognizer session interface: prompted alignment, samples, adaptation run on request with its result, donation | consumer (spec 001) | 1 | spec 001 FR-001, FR-007, FR-009–FR-011, FR-014 |
+| Recognizer session interface: prompted alignment, samples, adaptation run on request with its result, contribution | consumer (spec 001) | 1 | spec 001 FR-001, FR-007, FR-009–FR-011, FR-014 |
 | Sample format: the writing area's geometry and orientation, the reading at the time of writing | consumer, adds optional fields (`docs/samples.md`) | 1 | FR-005, FR-008 |
 | Writing paper look (line height, guides, ink) | consumer (`GlassineOS/shell` spec 006) | — | FR-005 |
 | Pen ink areas (fast ink under the pen) | consumer (the e-ink session's ink protocol) | — | Scenario 1 |
@@ -161,7 +161,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
   a round trip through export and import gives the same samples.
 - After an adaptation from a few hundred prompted samples, the error rate on the person's
   held-back samples is lower than before, and is shown in the app.
-- A donation file holds only samples written to shipped prompts while donating was on,
+- A contribution file holds only samples written to shipped prompts while contributing was on,
   plus samples added one by one, each with the chosen licence, and nothing that names the
   person, device, client or time.
 
@@ -174,20 +174,20 @@ Device-neutral; it needs a pen that reports positions over time.
   makes recognition worse (spec 001 FR-009's check); a run slows the device (FR-010).
 - **What it never touches:** the network, partitions, the boot chain, system files.
 - **Escape route:** Discard or delete samples, go back to the previous adaptation, turn
-  learning or donating off.
+  learning or contributing off.
 
 ## Acceptance
 
 Host level: prompt choice by coverage and error; a kept sample has exact spans and
 unaltered points; Redo, Skip, Discard and delete store nothing or remove the sample; the
-donation rules (only shipped prompts while on, one-by-one additions, no identifying
+contribution rules (only shipped prompts while on, one-by-one additions, no identifying
 fields); export and import round trip.
 
 Hardware: supervised: a writing session of words and sentences in English, an adaptation
-on request with the before and after rates, a donation file inspected on the host.
+on request with the before and after rates, a contribution file inspected on the host.
 
 ## Out of scope
 
-- Training base models (the project's training pipeline reads donation files).
-- Sending a donation anywhere (the person does that outside the app).
+- Training base models (the project's training pipeline reads contribution files).
+- Sending a contribution anywhere (the person does that outside the app).
 - Fonts from the person's handwriting (spec 001 Scenario 4's app).

@@ -60,12 +60,12 @@ samples there are, from which apps, and can turn learning off, erase everything,
 and import their samples and adaptation as one file (for a new device); nothing leaves the
 device otherwise.
 
-### Scenario 7 – Donating samples to the base model (Priority: P3)
+### Scenario 7 – Contributing samples to the base model (Priority: P3)
 
-**Given** a person who wants to help the base models, **When** they start donating in the
+**Given** a person who wants to help the base models, **When** they start contributing in the
 handwriting samples app (spec 002), **Then** they are shown public-domain sentences to write, see each written
 sentence again before it is kept, choose a licence once, and get one file they send
-themselves; nothing is donated without that review, and their own samples are never
+themselves; nothing is contributed without that review, and their own samples are never
 included unless they pick them one by one.
 
 ## Requirements
@@ -127,26 +127,26 @@ included unless they pick them one by one.
   those it sent itself unless the person grants it all of them.
 - **FR-012**: Base models are trained only on data the project may use: data under a
   suitable licence, text rendered as synthetic handwriting, and samples a person gave for
-  it (donated under FR-014, or given to the project by their writer for training). The
+  it (contributed under FR-014, or given to the project by their writer for training). The
   training recipe, the data sources and their licences ship with the models; a model
   trained on real handwriting says so and from how many writers. The samples themselves
   are never published with a model or in the project's repositories, only aggregate
   measurements of them. No other sample of any person is part of a base model.
 - **FR-013**: No device names in the program; what differs per device (the pen's units,
   pressure, rate) comes from the client's stroke data.
-- **FR-014**: Donation: off unless the person starts it. Donated samples are prompted
+- **FR-014**: Contribution: off unless the person starts it. Contributed samples are prompted
   writing of public-domain or openly licensed sentences shipped with the program, or
   samples the person picks one by one from their own; each is shown before it is kept.
-  The person chooses the licence (CC0 or CC BY 4.0) once per donation. The donation file
+  The person chooses the licence (CC0 or CC BY 4.0) once per contribution. The contribution file
   uses the sample format with no client, wall-clock time, device or person named in it
-  (`docs/samples.md`), and carries one donor ID: a random identifier made when the person
-  first starts a donation, kept with their data on the device and the same in every later
-  donation from it, so the project can tell writers apart and count each writer's
-  samples across donations. It is not derived from the device, the account or anything
-  else about the person. The person sees it where they donate and can replace it with a
-  new one, after which their donations count as a new writer's. The recognizer only writes the file; sending it is a step the
-  person takes outside this program. Donations are separate from the samples used for
-  the person's own adaptation, and stopping or erasing a donation never touches those.
+  (`docs/samples.md`), and carries one contributor number: a random identifier made when the person
+  first starts a contribution, kept with their data on the device and the same in every later
+  contribution from it, so the project can tell writers apart and count each writer's
+  samples across contributions. It is not derived from the device, the account or anything
+  else about the person. The person sees it where they contribute and can replace it with a
+  new one, after which their contributions count as a new writer's. The recognizer only writes the file; sending it is a step the
+  person takes outside this program. Contributions are separate from the samples used for
+  the person's own adaptation, and stopping or erasing a contribution never touches those.
 
 - **FR-015**: Words: in prose fields (the purpose is plain text, or there is no text field)
   the recognizer reads with the language's words and the person's learned words, the
@@ -253,7 +253,7 @@ included unless they pick them one by one.
   - The generator's timing and dynamics drawn from real ink broadly, with a timing model
     fitted to the real ink of many writers, while the shapes stay broad (no one writer's
     geometry).
-  - A test set of other real writers' ink, from donations with their donor IDs, as soon as
+  - A test set of other real writers' ink, from contributions with their contributor numbers, as soon as
     there is one; the held-out synthetic fonts only stand in for other hands. The base
     model's real-ink error is then reported per writer.
 
@@ -264,14 +264,14 @@ included unless they pick them one by one.
 - **Sample**: strokes, confirmed text, alignment, language, client, time.
 - **Base model**: per language, shipped with the program, the same for everyone.
 - **Adaptation**: per person, built on the device from their samples.
-- **Donation**: samples the person reviewed and licensed for the base models.
+- **Contribution**: samples the person reviewed and licensed for the base models.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
 | Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import) | owned (this program) | 1.1 | FR-001–FR-011; defined with the plan |
-| Sample format (export/import, donation, training data) | owned (this program) | 1 | FR-010, FR-014; `docs/samples.md` |
+| Sample format (export/import, contribution, training data) | owned (this program) | 1 | FR-010, FR-014; `docs/samples.md` |
 | Base model package (model, language, recipe, data sources and licences) | owned (this program) | 1 | FR-005, FR-012 |
 | Writing paper and corrections | consumer (`GlassineOS/shell` spec 006) | — | shell spec 006 FR-011–FR-013a |
 | Settings: learning, erase, counts, export/import | consumer (the shell's settings app) | — | shell spec 006 FR-008 |
@@ -316,7 +316,7 @@ Device-neutral; it needs a pen that reports positions over time.
 Host level: the interface against recorded stroke files (recognize, streaming, prompted
 alignment, gestures); the sample rules (no sample without confirmation, none from a
 private field, erase and export/import round trip); an adaptation that does worse is
-rejected; a donation file holds only reviewed samples and no client, time or device;
+rejected; a contribution file holds only reviewed samples and no client, time or device;
 words (FR-015) off in every non-prose field, a list word never first, a proposed pick
 that doesn't fit makes no sample; the character model (FR-019) on and off per field and
 per request, a pick it put first that doesn't fit makes no sample, and the error rates
