@@ -39,6 +39,7 @@ struct hw_sample {
 	char source[16];                /* synthetic, confirmed, corrected, prompted */
 	char spans_source[16];          /* exact, inferred */
 	char licence[16];               /* donated samples only ("" otherwise) */
+	char donor[40];                 /* donated samples only: the donor ID ("" otherwise) */
 	struct hw_units units;
 	struct hw_ink *strokes;
 	size_t nstrokes;

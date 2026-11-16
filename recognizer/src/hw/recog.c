@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "adapt.h"
@@ -87,7 +88,7 @@ void hw_run_free(struct hw_run *r)
 	memset(r, 0, sizeof *r);
 }
 
-int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r)
+static int run_engine(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r)
 {
 	memset(r, 0, sizeof *r);
 	r->nstrokes = ns;
@@ -101,6 +102,69 @@ int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_ru
 	if (!r->logp) { hw_run_free(r); return -1; }
 	hw_head_forward(hw_lang_head(l), r->frames, r->T, r->logp, NULL, NULL);
 	return 0;
+}
+
+/* the last run, for the next request on the same strokes: a client reads, checks and keeps
+ * one piece of writing in several requests (a pause's check, read, confirm, donate), each
+ * of which would run the engine again */
+static int cache_on;
+static struct { uint64_t key; struct hw_run r; size_t dim; int have; } last;
+
+void hw_run_cache(int on)
+{
+	cache_on = on;
+	if (!on && last.have) { hw_run_free(&last.r); last.have = 0; }
+}
+
+static uint64_t run_key(const struct hw_lang *l, const struct hw_stroke *s, size_t ns)
+{
+	uint64_t h = hw_hash(l->lang, strlen(l->lang), 0);
+	const void *who[2] = { l, hw_lang_head(l) };
+	h = hw_hash(who, sizeof who, h);
+	long long st[4] = { (long long)l->adapt_st.st_ino, (long long)l->adapt_st.st_size,
+			    (long long)l->adapt_st.st_mtim.tv_sec, (long long)l->adapt_st.st_mtim.tv_nsec };
+	h = hw_hash(st, sizeof st, h);
+	h = hw_hash(&ns, sizeof ns, h);
+	for (size_t i = 0; i < ns; i++) {
+		h = hw_hash(&s[i].n, sizeof s[i].n, h);
+		h = hw_hash(s[i].x, s[i].n * sizeof *s[i].x, h);
+		h = hw_hash(s[i].y, s[i].n * sizeof *s[i].y, h);
+		h = hw_hash(s[i].t, s[i].n * sizeof *s[i].t, h);
+	}
+	return h;
+}
+
+static void *dup_of(const void *p, size_t n)
+{
+	void *q = p && n ? malloc(n) : NULL;
+	if (q) memcpy(q, p, n);
+	return q;
+}
+
+static int run_copy(const struct hw_run *a, struct hw_run *b, size_t dim)
+{
+	*b = *a;
+	b->feats = dup_of(a->feats, (size_t)a->rows * HW_NFEAT * sizeof *a->feats);
+	b->org = dup_of(a->org, (size_t)a->rows * sizeof *a->org);
+	b->frames = dup_of(a->frames, (size_t)a->T * dim * sizeof *a->frames);
+	b->logp = dup_of(a->logp, (size_t)a->T * a->C * sizeof *a->logp);
+	if ((a->feats && !b->feats) || (a->org && !b->org) || (a->frames && !b->frames) || (a->logp && !b->logp)) {
+		hw_run_free(b);
+		return -1;
+	}
+	return 0;
+}
+
+int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r)
+{
+	if (!cache_on) return run_engine(l, s, ns, r);
+	uint64_t key = run_key(l, s, ns);
+	size_t dim = 2 * (size_t)l->model.cfg.hidden;
+	if (last.have && last.key == key && last.dim == dim) return run_copy(&last.r, r, dim) ? run_engine(l, s, ns, r) : 0;
+	int ret = run_engine(l, s, ns, r);
+	if (last.have) { hw_run_free(&last.r); last.have = 0; }
+	if (!ret && r->rows > 0 && !run_copy(r, &last.r, dim)) { last.key = key; last.dim = dim; last.have = 1; }
+	return ret;
 }
 
 /* frame range -> feature rows (frame f is centred on row f * down) */
