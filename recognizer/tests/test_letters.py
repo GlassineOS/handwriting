@@ -625,7 +625,7 @@ class Spacing(unittest.TestCase):
         """per glyph of text as shaped: its variant and pen x, in x-heights"""
         if SKIP_TOOLS:
             self.skipTest("no hb-shape")
-        p = subprocess.run(["hb-shape", "--output-format=json", str(self.ttf), text], capture_output=True, text=True,
+        p = subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(self.ttf), text], capture_output=True, text=True,
                            check=True)
         cov = sorted(c for c, d in self.chars.items() if d.get("covered") and d.get("variants"))
         out, x = [], 0
