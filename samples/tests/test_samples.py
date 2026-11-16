@@ -29,7 +29,8 @@ from glassine_hwsamples import APP_ID, client, flow, prompts as P  # noqa: E402
 
 BIN = str(Path(os.environ.get("HW_BIN") or ROOT.parent / "recognizer" / "glassine-handwriting").resolve())
 MKMODEL = ROOT.parent / "recognizer" / "tests" / "mkmodel.py"
-CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?'-() "
+CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?'-() @/&+#%_=$"
+MARKS = "@/&+#%_=$"  # the next base model's added marks: prompted alone and in context
 
 
 def ink(rng, n=3, t=1731658123456):
@@ -120,6 +121,19 @@ class Prompts(Case):
         for p in sets["pangrams"]:
             self.assertFalse(set("abcdefghijklmnopqrstuvwxyz") - set(p.text.lower()), p.text)
         self.assertEqual(sets[P.OWN], [])
+
+    def test_marks_prompted_alone_and_in_context(self):
+        sets = P.load("en")
+        sym = sets["symbols"]
+        for c in MARKS:
+            alone = [p for p in sym if p.text == c]
+            self.assertTrue(alone and alone[0].kind == "character", c)
+            self.assertGreaterEqual(sum(c in p.text and p.text != c for p in sym), 2, c)
+        cov = P.Coverage()
+        for p in sym:
+            cov.add(p.text, p.text)
+        self.assertTrue(all(cov.count(c) >= 3 for c in MARKS))
+        self.assertEqual({c for c, n, _ in cov.table(CHARSET) if n} & set(MARKS), set(MARKS))
 
     def test_choice_by_coverage(self):
         """the next prompt teaches what has few samples"""

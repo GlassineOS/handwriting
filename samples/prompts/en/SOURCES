@@ -5,3 +5,4 @@ sentences.txt	CC0-1.0	written for GlassineOS/handwriting (the first lines are al
 pangrams.txt	public domain	traditional English pangrams, in wide use without known authors (also in capitals)
 letters.txt	CC0-1.0	the Latin alphabet in both cases
 digits.txt	CC0-1.0	the digits and the punctuation of the English base model
+symbols.txt	CC0-1.0	written for GlassineOS/handwriting (the marks @ / & + # % _ = $ alone and in email and web addresses on example domains, prices, percentages, hashtags, sums and snake_case names)
