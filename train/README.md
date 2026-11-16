@@ -335,6 +335,17 @@ fonts; held-out fonts = 1000 lines each, greedy.
 
 ## Next steps
 
+- **Open requirement for the next base model (spec 001 FR-018): absolute size.** The
+  features scale every input by its own core height (step 2 above), so a lone `.` or `,`
+  is blown up to letter size and `o`/`O`, `c`/`C`, `s`/`S` written alone look alike; the
+  model never sees how big the ink is. The recognizer makes up for part of it after the
+  model (`docs/recognizer.md`, Size), but the next base model must keep the size itself:
+  scale by a reference height (the writer's letter height when known, else the writing
+  area's line height) instead of the ink's own, give the model the size (the ink's height
+  in reference heights) as a feature of its own, and train with single characters and
+  punctuation at their true size relative to the line (synthetic lines with lone marks and
+  letters, and real samples' area line). This changes the features and so the model file:
+  a new ghm version that says how its input is scaled, read beside version 1.
 - Real ink from more writers (`../docs/samples.md`): one writer improves that writer
   but costs other hands (see above).
 - Joined script in the generator: connect letters within a word into pen-down strokes
