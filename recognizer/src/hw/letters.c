@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -517,10 +518,17 @@ static double guide_base(const struct hw_sample *s)
 	return first + (k > 0 ? k : 0) * line;
 }
 
-/* A dot or a bar written after the word (an i's dot, a t's bar) can be in the spans of
- * several characters, as the alignment follows the order of writing: it goes to the one it
- * stands over (whose other strokes' ink is nearest across), so the character keeps it as a
- * stroke of its own. Long shared strokes are joined writing and stay shared. */
+/* The spans follow the order of writing and split between two characters halfway between
+ * where the recognizer saw each, so a stroke can sit in the spans of characters it isn't
+ * part of. Two cases are put right here, by where the ink lies, before a character counts
+ * as having strokes of its own (joined writing, one stroke across two letters, stays
+ * shared):
+ * - a mark (a full stop, a comma) has its own small stroke, and its span also holds a
+ *   neighbour's stroke more than twice as long that lies wholly beside the mark's ink and
+ *   not under it (a mark above, an i's dot, stays): that stroke is the neighbour's alone;
+ * - a short stroke written after the strokes it belongs with (an i's dot, the bar of a t or
+ *   an f, the arms of an E, the bar of an H, the second stroke of an x or a k) goes to the
+ *   character whose other strokes it lies across, and to that one alone. */
 static double stroke_len(const struct hw_ink *k)
 {
 	double t = 0;
@@ -528,61 +536,149 @@ static double stroke_len(const struct hw_ink *k)
 	return t;
 }
 
-static void delayed_strokes(struct smp *m, size_t nc, const unsigned *cps, int *cnt)
+static void ink_box(const struct hw_ink *k, double b[4])
 {
-	struct hw_sample *s = &m->s;
+	for (size_t i = 0; i < k->n; i++) {
+		if (k->x[i] < b[0]) b[0] = k->x[i];
+		if (k->x[i] > b[2]) b[2] = k->x[i];
+		if (k->y[i] < b[1]) b[1] = k->y[i];
+		if (k->y[i] > b[3]) b[3] = k->y[i];
+	}
+}
+
+/* a character's strokes other than j: their box (y down), their length, whether one of them
+ * is the character's alone; 0 when it has no others */
+static int others(const struct hw_sample *s, const int *sp, int j, const int *cnt, double b[4], double *len, int *own)
+{
+	int n = 0;
+	b[0] = b[1] = INFINITY; b[2] = b[3] = -INFINITY;
+	*len = 0; *own = 0;
+	for (const int *p = sp; p && *p >= 0; p++) {
+		if (*p == j || (size_t)*p >= s->nstrokes || !s->strokes[*p].n) continue;
+		ink_box(&s->strokes[*p], b);
+		*len += stroke_len(&s->strokes[*p]);
+		if (cnt[*p] == 1) *own = 1;
+		n++;
+	}
+	return n;
+}
+
+static int span_has(const int *sp, int j)
+{
+	for (const int *p = sp; p && *p >= 0; p++) if (*p == j) return 1;
+	return 0;
+}
+
+static void span_drop(int *sp, int j)
+{
+	int w = 0;
+	for (int r = 0; sp && sp[r] >= 0; r++) if (sp[r] != j) sp[w++] = sp[r];
+	if (sp) sp[w] = -1;
+}
+
+static void spilled_strokes(struct hw_sample *s, size_t nc, const unsigned *cps, int *cnt)
+{
+	for (size_t j = 0; j < s->nstrokes; j++) {
+		const struct hw_ink *sj = &s->strokes[j];
+		if (cnt[j] < 2 || !sj->n) continue;
+		double sb[4] = { INFINITY, INFINITY, -INFINITY, -INFINITY };
+		ink_box(sj, sb);
+		/* of the characters it is with, the one it lies beside; with several (a letter's
+		 * arm beside its stem and its neighbour) it stays shared */
+		int beside = -1, nb = 0;
+		for (size_t k = 0; k < s->nspans && k < nc; k++) {
+			if (cps[k] == ' ' || !span_has(s->spans[k], (int)j)) continue;
+			double b[4], ol;
+			int own;
+			if (!others(s, s->spans[k], (int)j, cnt, b, &ol, &own) || !own) continue;
+			/* beside them: across at most a quarter of the narrower of the two */
+			double ov = fmin(b[2], sb[2]) - fmax(b[0], sb[0]);
+			if (ov > 0.25 * fmin(b[2] - b[0], sb[2] - sb[0])) continue;
+			if (b[3] <= (sb[1] + sb[3]) / 2) continue;      /* a mark above it */
+			beside = (int)k;
+			nb++;
+		}
+		if (nb != 1) continue;
+		span_drop(s->spans[beside], (int)j);
+		cnt[j]--;
+	}
+}
+
+/* characters with ink wholly above the rest of theirs (a dot, an accent, a colon's upper dot) */
+static int has_above(unsigned c)
+{
+	return (c < 128 && c && strchr("ij:;!?=%\"", (int)c)) || (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7);
+}
+/* of those, letters whose dot or accent the person may set well beside the stem, as a
+ * late dot often is */
+static int dotted(unsigned c) { return c == 'i' || c == 'j' || (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7); }
+
+static void delayed_strokes(struct hw_sample *s, size_t nc, const unsigned *cps, int *cnt)
+{
 	double small;
-	if (s->area.set && s->area.line > 0) small = 0.3 * s->area.line;
+	if (s->area.set && s->area.line > 0) small = 0.4 * s->area.line;
 	else {
 		struct dvec ls = { 0 };
 		for (size_t j = 0; j < s->nstrokes; j++) dpush(&ls, stroke_len(&s->strokes[j]));
-		small = 0.4 * median(ls.v, ls.n, 0);
+		small = 0.5 * median(ls.v, ls.n, 0);
 		free(ls.v);
 	}
 	if (small <= 0) return;
+	double line = s->area.set && s->area.line > 0 ? s->area.line : 0;
 	for (size_t j = 0; j < s->nstrokes; j++) {
 		const struct hw_ink *sj = &s->strokes[j];
 		if (!cnt[j] || !sj->n || stroke_len(sj) > small) continue;
-		double sx0 = INFINITY, sx1 = -INFINITY, sy1 = -INFINITY;
-		for (size_t i = 0; i < sj->n; i++) {
-			if (sj->x[i] < sx0) sx0 = sj->x[i];
-			if (sj->x[i] > sx1) sx1 = sj->x[i];
-			if (sj->y[i] > sy1) sy1 = sj->y[i];
-		}
-		double mid = (sx0 + sx1) / 2;
-		int best = -1, alone = 0;
-		double bd = INFINITY, cur = INFINITY;
+		double sb[4] = { INFINITY, INFINITY, -INFINITY, -INFINITY };
+		ink_box(sj, sb);
+		double mx = (sb[0] + sb[2]) / 2, my = (sb[1] + sb[3]) / 2, ext = fmax(sb[2] - sb[0], sb[3] - sb[1]);
+		int best = -1, dot = -1, alone = 0;
+		double bd = INFINITY, dd = INFINITY;
 		for (size_t k = 0; k < s->nspans && k < nc; k++) {
 			if (cps[k] == ' ' || !s->spans[k]) continue;
-			int has = 0;
-			double x0 = INFINITY, x1 = -INFINITY, y0 = INFINITY, y1 = -INFINITY;
-			for (int *p = s->spans[k]; *p >= 0; p++) {
-				if (*p == (int)j) { has = 1; continue; }
-				if ((size_t)*p >= s->nstrokes) continue;
-				const struct hw_ink *o = &s->strokes[*p];
-				for (size_t i = 0; i < o->n; i++) {
-					if (o->x[i] < x0) x0 = o->x[i];
-					if (o->x[i] > x1) x1 = o->x[i];
-					if (o->y[i] < y0) y0 = o->y[i];
-					if (o->y[i] > y1) y1 = o->y[i];
-				}
+			int has = span_has(s->spans[k], (int)j);
+			double b[4], ol;
+			int own;
+			/* the only stroke of its own a character has stays (its other strokes shared),
+			 * and so does one longer than the rest of the character it is with, unless that
+			 * is a mark (a 5's body below its bar is no late stroke of the 6 beside it) */
+			if (!others(s, s->spans[k], (int)j, cnt, b, &ol, &own) ||
+			    (has && cnt[j] == 1 && (!own || (stroke_len(sj) > ol && ol >= 0.25 * small)))) {
+				alone |= has;
+				continue;
 			}
-			if (!(x1 >= x0)) { alone |= has; continue; }    /* the stroke is all a character has */
-			double d = mid < x0 ? x0 - mid : mid > x1 ? mid - x1 : 0;
-			if (has && d < cur) cur = d;
-			/* a dot or a bar sits in the upper part of the character it belongs to */
-			if (sy1 > (y0 + y1) / 2) continue;
-			/* the nearest across; of those over it, one that has it already */
+			double h = b[3] - b[1], dx = mx < b[0] ? b[0] - mx : mx > b[2] ? mx - b[2] : 0;
+			int above = sb[3] < b[1] - 0.1 * h;   /* wholly above its ink, beyond the pen's wobble */
+			/* a dot or an accent above an i, a j or an accented letter, up to two of its
+			 * heights (or the writing paper's fifth of a line) to either side and three
+			 * above: the nearest such letter */
+			double reach = fmax(2 * h, line / 5);
+			if (dotted(cps[k]) && above && ext <= fmax(0.8 * h, line / 20) && dx <= reach && my >= b[1] - 1.5 * reach &&
+			    (dx < dd - 1e-9 || (dx <= dd + 1e-9 && has))) { dd = dx; dot = (int)k; }
+			/* across the character's ink (over half of the narrower of the two) or
+			 * touching its side, from above it (only where the character has ink above
+			 * the rest; else rising at most its height above it) down to its baseline */
+			double ov = fmin(sb[2], b[2]) - fmax(sb[0], b[0]), gap = -ov;
+			if (ov < 0.5 * fmin(sb[2] - sb[0], b[2] - b[0]) && !(dx <= 0 || gap <= 0.25 * h)) continue;
+			if (my > b[3] + 0.25 * h) continue;
+			if (has_above(cps[k]) ? my < b[1] - h : (above || sb[1] < b[1] - h)) continue;
+			/* of several, one whose ink its middle is over, then one it lies across, then
+			 * one it touches; of those the one it is centred over; then one that has it */
+			double d = (dx <= 0 ? 0 : ov >= 0.5 * fmin(sb[2] - sb[0], b[2] - b[0]) ? 1e6 : 2e6) +
+				   fabs(mx - (b[0] + b[2]) / 2);
 			if (d < bd - 1e-9 || (d <= bd + 1e-9 && has)) { bd = d; best = (int)k; }
 		}
-		if (alone || best < 0 || bd > 0 || (cur <= 0 && cnt[j] == 1)) continue;
-		/* it goes to the one it stands over, and only to that one */
+		/* where it is already, when that is the best place (a colon's upper dot stays) */
+		int stay = best >= 0 && cnt[j] == 1 && span_has(s->spans[best], (int)j);
+		if (dot >= 0 && !(stay && has_above(cps[best]))) best = dot;
+		if (alone || best < 0 || (cnt[j] == 1 && span_has(s->spans[best], (int)j))) continue;
+		/* it goes to that one, and only to that one */
 		for (size_t k = 0; k < s->nspans && k < nc; k++) {
-			int *p = s->spans[k], w = 0;
+			int *p = s->spans[k];
 			if (!p) continue;
-			for (int r = 0; p[r] >= 0; r++) if (p[r] != (int)j) p[w++] = p[r];
-			p[w] = -1;
+			span_drop(p, (int)j);
 			if ((int)k != best) continue;
+			int w = 0;
+			while (p[w] >= 0) w++;
 			int *x = realloc(p, (size_t)(w + 2) * sizeof *x);
 			if (!x) continue;
 			int q = w;
@@ -595,6 +691,239 @@ static void delayed_strokes(struct smp *m, size_t nc, const unsigned *cps, int *
 	}
 }
 
+
+int hw_letters_place(const struct hw_ink *ink, size_t n, double line, const unsigned *cps, size_t nc, int **spans)
+{
+	struct hw_sample s;
+	memset(&s, 0, sizeof s);
+	s.strokes = (struct hw_ink *)ink;
+	s.nstrokes = n;
+	s.spans = spans;
+	s.nspans = nc;
+	s.area.set = line > 0;
+	s.area.line = line;
+	int *cnt = calloc(n + 1, sizeof *cnt);
+	if (!cnt) return -1;
+	for (size_t k = 0; k < nc; k++)
+		for (int *p = spans[k]; p && *p >= 0; p++) if ((size_t)*p < n) cnt[*p]++;
+	spilled_strokes(&s, nc, cps, cnt);
+	delayed_strokes(&s, nc, cps, cnt);
+	free(cnt);
+	return 0;
+}
+
+/* A sample's characters with strokes of their own (FR-007), after the spans are put right
+ * by where the ink lies (above): own[k] for each of the nc characters. The spans change. */
+static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *own)
+{
+	int *cnt = calloc(s->nstrokes + 1, sizeof *cnt);
+	if (!cnt) return -1;
+	for (size_t k = 0; k < s->nspans && k < nc; k++)
+		for (int *p = s->spans[k]; p && *p >= 0; p++) if ((size_t)*p < s->nstrokes) cnt[*p]++;
+	spilled_strokes(s, nc, cps, cnt);
+	delayed_strokes(s, nc, cps, cnt);
+	for (size_t k = 0; k < nc; k++) {
+		int *sp = k < s->nspans ? s->spans[k] : NULL;
+		own[k] = 0;
+		if (cps[k] == ' ' || !sp || sp[0] < 0) continue;
+		int ok = 1, ink = 0;
+		for (int *p = sp; *p >= 0; p++) {
+			if ((size_t)*p >= s->nstrokes || cnt[*p] != 1) ok = 0;
+			else if (s->strokes[*p].n) ink = 1;
+		}
+		own[k] = (char)(ok && ink);
+	}
+	free(cnt);
+	return 0;
+}
+
+/* ---------------------------------------------------------------- usable samples (FR-030) */
+
+/* letters/usable: per prompted sample, the characters it has with strokes of their own, so
+ * counting them needn't read every sample again (derived like the size file: made again for
+ * samples it lacks; written by a count or a build, skipped while another process holds the
+ * store's lock) */
+#define USABLE_HEAD "glassine-handwriting-usable 1"
+
+struct urec { char id[17]; char *cps; };       /* cps: "-" or code points in hex, sorted, "," */
+
+static int cmp_urec(const void *a, const void *b) { return strcmp(((const struct urec *)a)->id, ((const struct urec *)b)->id); }
+
+static void urecs_free(struct urec *r, size_t n)
+{
+	for (size_t i = 0; i < n; i++) free(r[i].cps);
+	free(r);
+}
+
+static struct urec *usable_load(size_t *n)
+{
+	char p[4096], head[64];
+	*n = 0;
+	if (hw_store_path(p, sizeof p, "letters/usable")) return NULL;
+	FILE *f = fopen(p, "re");
+	if (!f) return NULL;
+	snprintf(head, sizeof head, "%s %d\n", USABLE_HEAD, HW_LETTERS_BUILD);
+	char *line = NULL;
+	size_t cap = 0, rc = 0;
+	struct urec *r = NULL;
+	if (getline(&line, &cap, f) < 0 || strcmp(line, head)) { free(line); fclose(f); return NULL; }
+	ssize_t k;
+	while ((k = getline(&line, &cap, f)) > 0) {
+		if (line[k - 1] == '\n') line[--k] = 0;
+		char *sp = strchr(line, ' ');
+		if (!sp || sp - line != 16 || !sp[1]) continue;
+		if (*n == rc) { rc = rc ? rc * 2 : 256; struct urec *t = realloc(r, rc * sizeof *r); if (!t) break; r = t; }
+		memcpy(r[*n].id, line, 16); r[*n].id[16] = 0;
+		r[*n].cps = strdup(sp + 1);
+		if (r[*n].cps) (*n)++;
+	}
+	free(line);
+	fclose(f);
+	if (r) qsort(r, *n, sizeof *r, cmp_urec);
+	return r;
+}
+
+static void usable_save(const struct urec *r, size_t n)
+{
+	char p[4096];
+	if (hw_store_path(p, sizeof p, "lock")) return;
+	int fd = open(p, O_RDWR | O_CLOEXEC);
+	if (fd < 0) return;
+	if (flock(fd, LOCK_EX | LOCK_NB)) { close(fd); return; }
+	struct sbuf b = { 0 };
+	sput(&b, "%s %d\n", USABLE_HEAD, HW_LETTERS_BUILD);
+	for (size_t i = 0; i < n; i++) sput(&b, "%s %s\n", r[i].id, r[i].cps);
+	if (b.s && !hw_store_mkdir("letters")) hw_store_replace("letters/usable", b.s, b.n);
+	free(b.s);
+	close(fd);
+}
+
+/* the cps text of a sample whose own characters are known */
+static char *usable_cps(const unsigned *cps, size_t nc, const char *own)
+{
+	unsigned *u = malloc((nc + 1) * sizeof *u);
+	size_t nu = 0;
+	if (!u) return NULL;
+	for (size_t k = 0; k < nc; k++) if (own[k]) u[nu++] = cps[k];
+	qsort(u, nu, sizeof *u, cmp_uint);
+	struct sbuf b = { 0 };
+	for (size_t k = 0; k < nu; k++) if (!k || u[k] != u[k - 1]) sput(&b, "%s%x", b.n ? "," : "", u[k]);
+	free(u);
+	return b.s ? b.s : strdup("-");
+}
+
+/* a prompted sample whose characters' strokes are known: the fit check passed (spans
+ * exact), or a prompt of one character alone that the person confirmed after a failed
+ * check, whose strokes can only be that character's (spec 003 FR-007). 1 when it counts,
+ * the lone one's spans then all its strokes */
+static int known_spans(struct hw_sample *s)
+{
+	if (strcmp(s->source, "prompted") || !s->nstrokes) return 0;
+	if (!strcmp(s->spans_source, "exact")) return 1;
+	unsigned cp[2];
+	if (strcmp(s->spans_source, "inferred") || hw_utf8_decode(s->text, cp, 2) != 1 || cp[0] == ' ') return 0;
+	int *sp = malloc((s->nstrokes + 1) * sizeof *sp);
+	int **spans = sp ? calloc(1, sizeof *spans) : NULL;
+	if (!spans) { free(sp); return 0; }
+	for (size_t j = 0; j < s->nstrokes; j++) sp[j] = (int)j;
+	sp[s->nstrokes] = -1;
+	spans[0] = sp;
+	for (size_t k = 0; k < s->nspans; k++) free(s->spans[k]);
+	free(s->spans);
+	s->spans = spans;
+	s->nspans = 1;
+	return 1;
+}
+
+/* a sample's cps text from its line ("-": no known spans, or nothing usable) */
+static char *usable_of_line(const char *json)
+{
+	struct hw_sample s;
+	char err[128];
+	if (hw_sample_parse(json, &s, err, sizeof err)) return strdup("-");
+	char *out = NULL;
+	if (known_spans(&s)) {
+		unsigned *cps = malloc(4097 * sizeof *cps);
+		char *own = malloc(4097);
+		if (cps && own) {
+			size_t nc = hw_utf8_decode(s.text, cps, 4096);
+			if (nc > 4096) nc = 4096;
+			if (!own_chars(&s, cps, nc, own)) out = usable_cps(cps, nc, own);
+		}
+		free(cps); free(own);
+	}
+	hw_sample_free(&s);
+	return out ? out : strdup("-");
+}
+
+static int cmp_lcount(const void *a, const void *b) { return cmp_uint(&((const struct hw_lcount *)a)->cp, &((const struct hw_lcount *)b)->cp); }
+
+int hw_letters_usable(struct hw_lcount **out, size_t *nout, long *samples, void (*progress)(size_t, size_t))
+{
+	*out = NULL; *nout = 0; *samples = 0;
+	const struct hw_index_entry *ix;
+	size_t nix;
+	if (hw_samples_index(&ix, &nix)) return -1;
+	struct urec *want = calloc(nix + 1, sizeof *want);
+	size_t nw = 0;
+	if (!want) return -1;
+	/* the index is borrowed until the next store call: the ids first */
+	for (size_t i = 0; i < nix; i++) if (!strcmp(ix[i].meta.source, "prompted")) memcpy(want[nw++].id, ix[i].meta.id, 17);
+	qsort(want, nw, sizeof *want, cmp_urec);
+	size_t k = 0;
+	for (size_t i = 0; i < nw; i++) if (!k || strcmp(want[k - 1].id, want[i].id)) want[k++] = want[i];
+	nw = k;
+	size_t nf;
+	struct urec *file = usable_load(&nf);
+	size_t miss = 0, done = 0;
+	for (size_t i = 0; i < nw; i++) {
+		struct urec *f = file ? bsearch(&want[i], file, nf, sizeof *file, cmp_urec) : NULL;
+		if (f) { want[i].cps = f->cps; f->cps = NULL; } else miss++;
+	}
+	int ret = 0;
+	for (size_t i = 0; i < nw && ret == 0; i++) {
+		if (want[i].cps) continue;
+		int err;
+		char *line = hw_samples_line(want[i].id, NULL, &err);
+		if (!line && err) { ret = -1; break; }
+		want[i].cps = line ? usable_of_line(line) : strdup("-");
+		free(line);
+		if (!want[i].cps) ret = -1;
+		if (progress) progress(++done, miss);
+	}
+	if (ret == 0 && (miss || nf != nw)) usable_save(want, nw);
+	/* the counts: each sample once per character */
+	struct hw_lcount *c = NULL;
+	size_t nc = 0, cc = 0;
+	for (size_t i = 0; ret == 0 && i < nw; i++) {
+		const char *p = want[i].cps;
+		if (!strcmp(p, "-")) continue;
+		(*samples)++;
+		while (*p) {
+			char *e;
+			unsigned long v = strtoul(p, &e, 16);
+			if (e == p) break;
+			if (nc == cc) { cc = cc ? cc * 2 : 128; struct hw_lcount *t = realloc(c, cc * sizeof *c); if (!t) { ret = -1; break; } c = t; }
+			c[nc++] = (struct hw_lcount){ (unsigned)v, 1 };
+			p = *e == ',' ? e + 1 : e;
+		}
+	}
+	urecs_free(want, nw);
+	urecs_free(file, nf);
+	if (ret) { free(c); return -1; }
+	if (c) qsort(c, nc, sizeof *c, cmp_lcount);
+	k = 0;
+	for (size_t i = 0; i < nc; i++) {
+		if (k && c[k - 1].cp == c[i].cp) c[k - 1].samples++;
+		else c[k++] = c[i];
+	}
+	*out = c;
+	*nout = k;
+	return 0;
+}
+
+static int build_progress;      /* letters build --progress */
+
 int hw_letters_build(struct hw_letters *L)
 {
 	memset(L, 0, sizeof *L);
@@ -606,16 +935,24 @@ int hw_letters_build(struct hw_letters *L)
 	struct smp *S = calloc(ne + 1, sizeof *S);
 	if (!S) { hw_entries_free(es, ne); return -1; }
 	size_t ns = 0;
+	/* what letters status counts, for each prompted sample (FR-030) */
+	struct urec *U = calloc(ne + 1, sizeof *U);
+	size_t nu0 = 0;
+	if (!U) { free(S); hw_entries_free(es, ne); return -1; }
+	int shown = -1;
 	for (size_t i = 0; i < ne; i++) {
+		if (build_progress && (int)(i * 50 / ne) != shown) { shown = (int)(i * 50 / ne); printf("progress\t%zu\t%zu\n", i, ne); fflush(stdout); }
 		if (strcmp(es[i].meta.source, "prompted")) continue;
+		/* a sample stored twice counts once */
+		int dup = 0;
+		for (size_t k = 0; k < nu0 && !dup; k++) dup = !strcmp(U[k].id, es[i].meta.id);
+		if (dup) continue;
+		memcpy(U[nu0].id, es[i].meta.id, 17);
+		U[nu0++].cps = NULL;
 		struct smp *m = &S[ns];
 		char err[128];
 		if (hw_sample_parse(es[i].json, &m->s, err, sizeof err)) continue;
-		if (strcmp(m->s.spans_source, "exact") || !m->s.nstrokes) { hw_sample_free(&m->s); continue; }
-		/* a sample stored twice counts once */
-		int dup = 0;
-		for (size_t k = 0; k < ns && !dup; k++) dup = !strcmp(S[k].id, es[i].meta.id);
-		if (dup) { hw_sample_free(&m->s); continue; }
+		if (!known_spans(&m->s)) { hw_sample_free(&m->s); continue; }
 		snprintf(m->id, sizeof m->id, "%s", es[i].meta.id);
 		m->time = es[i].meta.time;
 		m->parsed = 1;
@@ -639,17 +976,15 @@ int hw_letters_build(struct hw_letters *L)
 		readability(m, cps, nc);
 		m->guide = guide_base(&m->s);
 		m->first = (int)nin;
-		int *cnt = calloc(m->s.nstrokes + 1, sizeof *cnt);
-		if (!cnt) continue;
-		for (size_t k = 0; k < m->s.nspans && k < nc; k++)
-			for (int *p = m->s.spans[k]; p && *p >= 0; p++) if ((size_t)*p < m->s.nstrokes) cnt[*p]++;
-		delayed_strokes(m, nc, cps, cnt);
+		char *own = malloc(nc + 1);
+		if (!own || own_chars(&m->s, cps, nc, own)) { free(own); continue; }
+		for (size_t k = 0; k < nu0; k++)
+			if (!strcmp(U[k].id, m->id)) { free(U[k].cps); U[k].cps = usable_cps(cps, nc, own); break; }
 		for (size_t k = 0; k < m->s.nspans && k < nc; k++) {
 			int *sp = m->s.spans[k];
-			if (cps[k] == ' ' || !sp || sp[0] < 0) continue;
-			int own = 1, np = 0;
-			for (int *p = sp; *p >= 0; p++) { if ((size_t)*p >= m->s.nstrokes || cnt[*p] != 1) own = 0; np++; }
-			if (!own) continue;
+			if (!own[k]) continue;
+			int np = 0;
+			for (int *p = sp; *p >= 0; p++) np++;
 			if (nin == cin) { cin = cin ? cin * 2 : 1024; struct inst *x = realloc(in, cin * sizeof *x); if (!x) break; in = x; }
 			struct inst *x = &in[nin];
 			memset(x, 0, sizeof *x);
@@ -690,9 +1025,13 @@ int hw_letters_build(struct hw_letters *L)
 			nin++;
 		}
 		m->ninst = (int)nin - m->first;
-		free(cnt);
+		free(own);
 	}
 	free(pr);
+	for (size_t k = 0; k < nu0; k++) if (!U[k].cps) U[k].cps = strdup("-");
+	qsort(U, nu0, sizeof *U, cmp_urec);
+	usable_save(U, nu0);
+	urecs_free(U, nu0);
 
 	/* per sample: baseline and x-height from its own letters */
 	struct dvec r_xl = { 0 }, r_go = { 0 }, r_mm = { 0 };   /* x-height/line, base-guide (in x-heights), x-height mm */
@@ -774,7 +1113,7 @@ int hw_letters_build(struct hw_letters *L)
 	/* the characters */
 	size_t nu = 0;
 	unsigned *uc = malloc((nin + 1) * sizeof *uc);
-	for (size_t k = 0; uc && k < nin; k++) if (!in[k].dropped) uc[nu++] = in[k].cp;
+	for (size_t k = 0; uc && k < nin; k++) uc[nu++] = in[k].cp;
 	if (uc) qsort(uc, nu, sizeof *uc, cmp_uint);
 	size_t nd = 0;
 	for (size_t k = 0; k < nu; k++) if (!nd || uc[nd - 1] != uc[k]) uc[nd++] = uc[k];
@@ -787,6 +1126,11 @@ int hw_letters_build(struct hw_letters *L)
 		int *v = NULL, nv = 0;
 		v = malloc((nin + 1) * sizeof *v);
 		if (!v) continue;
+		/* usable samples: those with it written with strokes of its own (FR-007), as
+		 * letters status counts them; the versions are those that can be measured */
+		int last = -1;
+		for (size_t k = 0; k < nin; k++)
+			if (in[k].cp == uc[c] && in[k].sample != last) { l->samples++; last = in[k].sample; }
 		for (size_t k = 0; k < nin; k++) if (!in[k].dropped && in[k].cp == uc[c]) v[nv++] = (int)k;
 		/* a size far from the character's others is more likely a slip than a style */
 		if (nv >= 3) {
@@ -801,9 +1145,7 @@ int hw_letters_build(struct hw_letters *L)
 			}
 			nv = w;
 		}
-		int last = -1;
-		for (int i = 0; i < nv; i++) if (in[v[i]].sample != last) { l->samples++; last = in[v[i]].sample; }
-		l->covered = l->samples >= HW_LETTERS_MIN;
+		l->covered = l->samples >= HW_LETTERS_MIN && nv > 0;
 		if (!l->covered) { free(v); continue; }
 		/* groups by stroke count */
 		struct group G[16];
@@ -990,6 +1332,7 @@ int hw_letters_run(const struct hw_letters_opts *o)
 	}
 	unsigned long gen = hw_store_generation();
 	struct hw_letters L;
+	build_progress = o->progress;
 	if (hw_letters_build(&L)) return -1;
 	size_t len;
 	char *text = hw_letters_format(&L, &len);
@@ -1164,7 +1507,7 @@ void hw_letters_erase_locked(void)
 	remove_font_locked();
 	char p[4096];
 	if (hw_store_path(p, sizeof p, "letters")) return;
-	const char *files[] = { "model", "model.tmp", "font", "font.tmp", "font-version", "font-version.tmp" };
+	const char *files[] = { "model", "model.tmp", "font", "font.tmp", "font-version", "font-version.tmp", "usable", "usable.tmp" };
 	for (size_t i = 0; i < sizeof files / sizeof *files; i++) {
 		char q[4200];
 		snprintf(q, sizeof q, "%s/%s", p, files[i]);
