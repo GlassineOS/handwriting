@@ -5,7 +5,7 @@
 **Input**: One public, documented way for any app, including sandboxed third-party apps,
 to get the person's pen input as raw and neatened ink with recognized text, and to use
 the handwriting service (reading saved ink, samples, the letter model, the font,
-donation), with each app identified by the system rather than by its own claim.
+contribution), with each app identified by the system rather than by its own claim.
 
 ## Context
 
@@ -22,7 +22,7 @@ There are two interfaces, split by what an app is doing:
 - **Pen interface**: while the person writes in the app's surface. It travels with the
   pen input itself, through the display server that already delivers it.
 - **Service interface**: everything that is not live pen input (reading a saved drawing,
-  the person's samples, learning, the letter model and font, donation, settings).
+  the person's samples, learning, the letter model and font, contribution, settings).
 
 ## User scenarios
 
@@ -106,7 +106,7 @@ through itself, whatever name it gives itself.
   only from the person's own session.
 - **FR-013**: It offers: read ink (same results as the pen interface), the person's samples
   kept through the calling app (list, show, delete, export), learning status and control
-  for that app, the letter model and font status and build, donation (only through the
+  for that app, the letter model and font status and build, contribution (only through the
   samples app or Settings), and the permission state of the calling app.
 - **FR-014**: Requests that touch the person's data need the person's permission for the
   calling app (Scenario 4); a refused or missing permission gives a distinct answer, never
@@ -127,7 +127,7 @@ through itself, whatever name it gives itself.
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
 | Pen interface (surface choices and context in; raw and neatened strokes, readings, candidates out; reports back) | owned | new, version 1 | this spec; its protocol definition beside the ink protocol in GlassineOS/protocols |
-| Service interface (read ink, samples, learning, letter model and font, donation, permissions) | owned | new, version 1 | this spec; its schema in docs/ |
+| Service interface (read ink, samples, learning, letter model and font, contribution, permissions) | owned | new, version 1 | this spec; its schema in docs/ |
 | Neat ink layer | owned by spec 003, exposed through the pen interface | 1 | spec 003 FR-018–FR-029 |
 | Recognizer line contract | owned by spec 001; the engine interface behind both, no longer used by apps directly | 1 | docs/recognizer.md |
 | Ink protocol (ink areas, brushes) | consumed and extended | glassine_ink_v1 | GlassineOS/protocols `glassine-ink-v1.xml` |
