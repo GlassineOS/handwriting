@@ -247,12 +247,14 @@ class UI:
         self.asking_delete = False
         self.inks.clear()
         self.ink_wanted = set()
-        self.donated, self.marked, self.prefs, self.plan, self.adapts, self.result = set(), {}, [], None, {}, None
+        # the learning run's state and result stay: they are the owner's, shown on Learn alone
+        self.donated, self.marked, self.prefs, self.plan, self.adapts = set(), {}, [], None, {}
         self.donation, self.learning = (None, 0, None), True
         self.picking_licence, self.licence_pick, self.saved = False, None, None
         self.earlier, self.earlier_out, self.reviewing, self.ep = [], set(), False, 0
         self.confirm, self.sets_open, self.best, self.pick, self.pick_loading = None, False, None, None, False
         self.msg, self.loaded, self.cov_loaded = "", False, False
+        self.waiting_charge = False     # a learning run waiting for the charger is called off
         self.wstep, self.tried, self.adult, self.gflow = "w-welcome", False, False, None
         self.naming = self.removing = None
         self.page = self.tab = "write"
@@ -392,7 +394,8 @@ class UI:
         s = self.session
         if not s.guest:
             return
-        self.done = {"id": s.wid, "name": s.name, "saved": None, "samples": None, "busy": True}
+        self.done = {"id": s.wid, "name": s.name, "saved": None, "samples": None, "busy": True,
+                     "donating": s.state.donating}
         done = self.done
 
         def go():
@@ -854,7 +857,8 @@ class UI:
             self.msg = "No saved samples in Documents › Handwriting."
             self.redraw()
             return
-        self.run(lambda: self.cli.import_(files[-1]),
+        cli = self.cli
+        self.run(lambda: cli.import_(files[-1]),
                  lambda n: (setattr(self, "msg", "%d samples added from %s" % (n, os.path.basename(files[-1]))),
                             self.refresh()))
 
@@ -890,6 +894,7 @@ class UI:
         self.result = None
         self.adapting = True
         self.adapt_plan = self.adapt_round = None
+        cli, lang = self.cli, self.state.lang   # the owner's, also when a guest's session opens meanwhile
 
         def line(kind, f):
             if kind == "plan":
@@ -900,7 +905,7 @@ class UI:
 
         def go():
             try:
-                last = self.cli.adapt(self.state.lang, on_line=line)
+                last = cli.adapt(lang, on_line=line)
             except Exception as e:      # shown on the page, the app keeps running
                 print("glassine-handwriting-samples: error: %s" % e, file=sys.stderr, flush=True)
                 last = ("skip", ["error"])
@@ -922,7 +927,8 @@ class UI:
     def revert(self):
         self.confirm = None
         self.result = None
-        self.run(lambda: self.cli.revert(self.state.lang), lambda _: self.refresh())
+        cli, lang = self.cli, self.state.lang
+        self.run(lambda: cli.revert(lang), lambda _: self.refresh())
 
     # ---------------------------------------------------------- Your handwriting
 
@@ -973,12 +979,13 @@ class UI:
     def load_font(self, build=False):
         """the counts and the model as they are now (spec 003 FR-030); build: a missing or
         out-of-date model is built in the background (FR-008)"""
-        if self.demo:
+        if self.demo or self.guest:     # the letter model is the owner's (docs/recognizer.md)
             return
+        cli = self.cli
 
         def get():
-            st = self.cli.letters()
-            text = self.cli.letters_model() if st["state"] != "none" else ""
+            st = cli.letters()
+            text = cli.letters_model() if st["state"] != "none" else ""
             return {"status": st, "model": fontview.parse(text) if text else None}
 
         def got(r, err):
@@ -1028,7 +1035,8 @@ class UI:
             for f in then:
                 f(not err)
             self.redraw()
-        self.letters_bg(lambda: self.cli.letters_build(progress), fin)
+        cli = self.cli                  # the owner's: a guest's session may open while it builds
+        self.letters_bg(lambda: cli.letters_build(progress), fin)
         self.redraw()
 
     def letters_progress(self):
@@ -1050,7 +1058,7 @@ class UI:
             return
         self.font_busy = "making"
         self.msg = ""
-        name = self.font_name
+        name, cli = self.font_name, self.cli
 
         def fin(r, err):
             self.busy -= 1
@@ -1069,7 +1077,7 @@ class UI:
                 self.font_busy = None
                 return
             self.busy += 1
-            self.work.do(lambda: self.cli.font_install(name), fin)
+            self.work.do(lambda: cli.font_install(name), fin)
         self.build_letters(then=built)
         self.redraw()
 
@@ -1173,7 +1181,8 @@ class UI:
                 sh["occ"] = r
                 self.want_inks(sorted({o[0] for o in r}))
             self.redraw()
-        self.letters_bg(lambda: self.cli.letters_samples(c), got)
+        cli = self.cli
+        self.letters_bg(lambda: cli.letters_samples(c), got)
 
     def sheet_changed(self):
         if self.sheet:
@@ -1225,7 +1234,8 @@ class UI:
             for f in then:
                 f()
             self.redraw()
-        self.letters_bg(lambda: self.cli.letters_build(progress, char=c), fin)
+        cli = self.cli
+        self.letters_bg(lambda: cli.letters_build(progress, char=c), fin)
         self.redraw()
 
     def relearn_progress(self):
@@ -1242,7 +1252,8 @@ class UI:
                 then()
             self.redraw()
             return
-        self.run(lambda: self.cli.letters_mark(kind, c, ids), lambda _: then and then())
+        cli = self.cli
+        self.run(lambda: cli.letters_mark(kind, c, ids), lambda _: then and then())
 
     def mark_version(self, v, what):
         """a version's Favourite (again: no favourite), Leave out, Put back"""
@@ -1309,8 +1320,10 @@ class UI:
         _, d, _ = self.char_info(c)
         out = {i for v in (d or {}).get("variants", []) if v.get("left_out") for i in v.get("ids") or []}
 
+        cli = self.cli
+
         def get():
-            occ = sh["occ"] if sh["occ"] is not None else self.cli.letters_samples(c)
+            occ = sh["occ"] if sh["occ"] is not None else cli.letters_samples(c)
             use = [o for o in occ if o[2] == "usable" and o[0] not in out]
             random.shuffle(use)
             use.sort(key=lambda o: o[3])
@@ -1342,7 +1355,8 @@ class UI:
         sh["picks"] += 1
         self.sheet_changed()
         self.redraw()
-        self.run(lambda: self.rec.prefer(a[0], b[0], a[2], b[2]), lambda _: (self.refresh(), self.char_pick()))
+        rec = self.rec
+        self.run(lambda: rec.prefer(a[0], b[0], a[2], b[2]), lambda _: (self.refresh(), self.char_pick()))
 
     def char_picks(self):
         """the picks for the sheet's character so far"""
@@ -2486,7 +2500,8 @@ def others_demo(ui, sub):
     elif sub in ("done", "done-kept"):
         ui.page = ui.tab = "write"
         saved = os.path.join(documents_dir(), CONTRIB_DIR, "handwriting-contribution-6.jsonl") if sub == "done" else None
-        ui.done = {"id": a if saved else b, "name": an if saved else bn, "saved": saved, "samples": 48 if saved else 9}
+        ui.done = {"id": a if saved else b, "name": an if saved else bn, "saved": saved, "samples": 48 if saved else 9,
+                   "donating": bool(saved)}
 
 
 class Drawn:
