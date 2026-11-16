@@ -71,15 +71,19 @@ def font_tables(fonts: list[str], cache: Path, workers: int):
     return tabs, covers
 
 
-def style_pool(tabs, bigrams: list[str], extra: list[tuple[float, float]] = ()) -> tuple[list, float, dict]:
-    """(gap, word) styles: one per font (its own spacing) plus `extra` (letter models), and
-    the fonts' median open space."""
-    pool, opens, per = [], [], {}
+def style_pool(tabs, bigrams: list[str], extra: list[tuple[float, float]] = (),
+               calib: dict | None = None) -> tuple[list, float, dict]:
+    """(gap, word) styles: one per font (its own spacing, calibrated: gen.calibrate) plus
+    `extra` (letter models, as they are), and the fonts' median open space."""
+    raw, opens, per = [], [], {}
     for fid, t in tabs:
         g, o, w = gen.font_spacing(t, bigrams)
-        pool.append((g, w))
+        raw.append((g, w))
         opens.append(o)
         per[fid] = {"gap": round(g, 3), "open": round(o, 3), "word": round(w, 3)}
+    pool = gen.calibrate(raw, calib)
+    for (fid, _), (g, w) in zip(tabs, pool):
+        per[fid] |= {"gap_calibrated": round(g, 3), "word_calibrated": round(w, 3)}
     return pool + list(extra), float(np.median(opens)), per
 
 
@@ -121,7 +125,7 @@ def jobs_of(texts: list[tuple[str, str]], seed: int) -> list[tuple[str, str, int
     return [(t, k, int(s)) for (t, k), s in zip(texts, seeds.tolist())]
 
 
-def source_pins(fit_path: Path | None) -> dict:
+def source_pins(fit_path: Path | None, given: str = lines.GIVEN) -> dict:
     """What the set was made from: the repository commit, the books, the name lists, the
     character model, the fit (its sha256, not its numbers' origin)."""
     def git(*a):
@@ -133,7 +137,7 @@ def source_pins(fit_path: Path | None) -> dict:
     pins = {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "."))}
     pins["books"] = json.loads((raw / "manifest.json").read_text())
     pins["book_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(raw.glob("pg*.txt"))}
-    pins["names"] = lines.NAME_SOURCES
+    pins["names"] = lines.name_sources(given)
     if fit_path:
         pins["timing_fit_sha256"] = hashlib.sha256(fit_path.read_bytes()).hexdigest()
     return pins

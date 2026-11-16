@@ -404,7 +404,7 @@ def cmd_finetune(a):
     from .finetune import finetune
     from .real import RealSet, load_split
     data = Path("build/data")
-    sp = load_split(Path(a.real))
+    sp = load_split(Path(a.real), Path(a.test_ids) if a.test_ids else None)
     real = 1.0 - a.synth_share
     hand = a.synth_share * a.hand_frac if a.hand else 0.0
     sources = []
@@ -446,6 +446,8 @@ def cmd_realeval(a):
         heads["given"] = Path(a.head).resolve()
     res = {"models": str(models)}
     if a.adapt:
+        from .real import check_store, test_ids
+        check_store(real / a.adapt_store, test_ids(real, Path(a.test_ids) if a.test_ids else None))
         info = R.adapt(models, real / a.adapt_store, predict, (out / "fresh.gha").resolve(), tuple(a.adapt_arg))
         res["adapt"] = info
         if "head" in info:
@@ -545,8 +547,8 @@ def cmd_inkstats(a):
 def _gen4_setup(a, held: bool):
     from . import build4, gen, lines as L
     from .timing import Fit
-    L.fetch_names(Path(a.names))
-    lg = L.Generator(Path("build/text"), Path(a.gclm), Path(a.names), Path(a.wordlist), held=held)
+    L.fetch_names(Path(a.names), a.given)
+    lg = L.Generator(Path("build/text"), Path(a.gclm), Path(a.names), Path(a.wordlist), held=held, given=a.given)
     from .timing import FIT_ONE_WRITER
     f = json.loads(Path(a.fit).read_text()) if a.fit else {"fit": FIT_ONE_WRITER}
     fit = Fit(**f["fit"])
@@ -570,14 +572,18 @@ def cmd_gen4(a):
         extra = [tuple(map(float, x.split(","))) for x in a.pool_style]
     contrib = W.load(Path(a.writers), set(a.test_contributor)) if a.writers else []
     extra += [(w.spacing.get("letter", 0.4), w.spacing.get("word", 1.2)) for w, _ in contrib]
-    pool, open0, per_font = build4.style_pool([(f, by[f]) for f in sp["train"]], big, extra)
+    calib = gen.CALIB
+    if a.calib:
+        g0, g1, w0, w1 = map(float, a.calib.split(","))
+        calib = {"gap": (g0, g1), "word": (w0, w1)}
+    pool, open0, per_font = build4.style_pool([(f, by[f]) for f in sp["train"]], big, extra, calib)
     fw = lambda fonts: gen.FontWriter([(f, by[f]) for f in fonts], covers)
     mk = lambda fonts: gen.Generator(fw(fonts), fit, pool, open0)
     c = text.corpus(Path("build/text"), seed=1)
     groups = {"heldout": HELD_OUT, "newprint": sp["test-print"], "newscript": sp["test-script"]}
     kinds = [k for k in L.SHARES if k != "prose"]
     base_meta = {"generator": "glassine_train.gen", "alphabet": L.CHARS4, "line_kinds": L.SHARES,
-                 "sources": build4.source_pins(Path(a.fit) if a.fit else None), "style_pool": len(pool), "open0": open0,
+                 "sources": build4.source_pins(Path(a.fit) if a.fit else None, a.given), "style_pool": len(pool), "open0": open0,
                  "fonts": {"train": sp["train"]}, "provenance": {"fonts": _provenance()}}
     jobs = []
     if not a.only or "train" in a.only:
@@ -614,7 +620,7 @@ def cmd_gen4(a):
         meta = dict(base_meta, fonts=sorted(fonts), seed=seed)
         build4.render_set(out / name, build4.jobs_of(texts, seed), mk(fonts), None, a.workers, meta)
     man = {"sets": {}, "sources": base_meta["sources"], "alphabet": L.CHARS4, "line_kinds": L.SHARES,
-           "style_pool": {"fonts": per_font, "extra": len(extra)}, "timing_fit": {k: v for k, v in fj["fit"].items()},
+           "style_pool": {"fonts": per_font, "extra": len(extra), "calibration": calib}, "timing_fit": {k: v for k, v in fj["fit"].items()},
            "contributors": [m for _, m in contrib]}
     for d in sorted(out.iterdir()):
         if (d / "meta.json").exists():
@@ -729,7 +735,7 @@ def cmd_inkcheck(a):
         xs.append(([np.c_[q[:, :2] / row["xh"], q[:, 2]] for q in strokes], row["spans"], row["text"]))
     d, flags = M.delays(xs)
     syn = {"dynamics": T.dynamics([(s, q) for s, q, _ in xs]), "delays": d, "pauses": M.pauses(xs, flags),
-           "gaps": M.letter_gaps(xs, lambda strokes, own, text: 0.0)}
+           "gaps": M.letter_gaps(xs, lambda strokes, own, text: 0.0), "alignment": M.alignment(xs)}
     out = {"set": st.meta.get("kinds"), "lines": len(st), "bytes": st.meta.get("bytes"), "synthetic": syn}
     if a.real:
         r = json.loads(Path(a.real).read_text())
@@ -824,6 +830,7 @@ def main(argv=None):
     rl.add_argument("--out", default="build/real")
     rl.add_argument("--keep-test", help="an earlier split.json (or a file of ids): its test set stays the test set")
     ft = sub.add_parser("finetune", help="fine-tune on real ink mixed with synthetic ink")
+    ft.add_argument("--test-ids", help="more ids no training may see (beside the split's test-ids.txt)")
     ft.add_argument("--run", required=True)
     ft.add_argument("--init", default="build/runs/m2/best.pt")
     ft.add_argument("--real", default="build/real")
@@ -852,6 +859,7 @@ def main(argv=None):
     re_.add_argument("--head", help="an adaptation file to read with as well")
     re_.add_argument("--adapt", action="store_true", help="also a fresh adaptation on the training sessions")
     re_.add_argument("--adapt-store", default="store-trainsessions", help="the store a fresh adaptation learns from")
+    re_.add_argument("--test-ids", help="more ids an adaptation must not learn from (beside the split's test-ids.txt)")
     re_.add_argument("--adapt-arg", action="append", default=[], help="an option for adapt (e.g. --min-held=5)")
     re_.add_argument("--cutoff", action="store_true", help="the exported model records its training data's end")
     re_.add_argument("--real", default="build/real")
@@ -887,6 +895,8 @@ def main(argv=None):
     g4.add_argument("--fit", help="timing fit (glassine-train dynfit); default timing.FIT_ONE_WRITER")
     g4.add_argument("--gclm", default="build/release/glassine-handwriting-chars-en-1/chars.gclm")
     g4.add_argument("--names", default="build/names")
+    g4.add_argument("--calib", help="GAP_MEDIAN,GAP_SD,WORD_MEDIAN,WORD_SIGMA: where the fonts' spacing moves (gen.CALIB)")
+    g4.add_argument("--given", default="ssa", choices=["ssa", "census"], help="the given-name lists (lines.GIVEN_SOURCES)")
     g4.add_argument("--wordlist", default="build/lexicon/en/words.txt", help="words a pseudo-word must not be")
     g4.add_argument("--pool-style", nargs="*", default=[], help="GAP,WORD: a letter model's spacing as one style")
     g4.add_argument("--writers", help="contributors' letter models (writers.py)")
@@ -902,6 +912,7 @@ def main(argv=None):
     gl.add_argument("--fit", required=True)
     gl.add_argument("--gclm", default="build/release/glassine-handwriting-chars-en-1/chars.gclm")
     gl.add_argument("--names", default="build/names")
+    gl.add_argument("--given", default="ssa", choices=["ssa", "census"], help="the given-name lists (lines.GIVEN_SOURCES)")
     gl.add_argument("--wordlist", default="build/lexicon/en/words.txt")
     df = sub.add_parser("dynfit", help="timing, delayed strokes and spacing of real ink (aggregates)")
     df.add_argument("--real", default="build/real")

@@ -206,3 +206,58 @@ def test_real_reference_from_the_area():
     r = reference(s, 14.0)
     assert r == {"xh": 14.0, "line": 150, "base": 250.0}
     assert reference({"strokes": s["strokes"]}, None) == {"xh": None, "line": None, "base": None}
+
+
+def test_calibrate_keeps_rank_and_moves_spread():
+    from glassine_train.gen import calibrate
+    raw = [(0.1 * i - 0.2, 0.5 + 0.05 * i) for i in range(50)]
+    cal = calibrate(raw, {"gap": (0.4, 0.1), "word": (1.3, 0.2)})
+    g = np.array([x for x, _ in cal])
+    w = np.array([y for _, y in cal])
+    assert np.all(np.diff(g) > 0) and np.all(np.diff(w) > 0)
+    assert abs(np.median(g) - 0.4) < 0.01 and abs(np.std(g) - 0.1) < 0.02
+    assert abs(np.median(w) - 1.3) < 0.02
+
+
+def test_near_test_texts():
+    from glassine_train.real import near_test
+    tests = ["The red kite flew", "a"]
+    assert near_test("the red kite flew.", tests)
+    assert near_test("The red kites flew", tests)
+    assert not near_test("A blue boat sank", tests)
+    assert near_test("a", tests) and not near_test("b", tests)
+
+
+def test_guard_stops_on_a_test_sample(tmp_path):
+    import pytest
+    from glassine_train.real import check_store, guard, line_id, load_split
+    lines = ['{"version":1,"text":"x%d"}' % i for i in range(4)]
+    ids = {line_id(lines[3])}
+    guard(lines[:3], ids, "train")
+    with pytest.raises(SystemExit, match="STOP"):
+        guard(lines, ids, "train")
+    for k, ls in (("train", lines[:2]), ("dev", lines[2:3]), ("test", lines[3:])):
+        (tmp_path / f"{k}.jsonl").write_text("".join(x + "\n" for x in ls))
+    (tmp_path / "test-ids.txt").write_text(line_id(lines[3]) + "\n")
+    assert len(load_split(tmp_path)["train"]) == 2
+    (tmp_path / "dev.jsonl").write_text(lines[3] + "\n")
+    with pytest.raises(SystemExit, match="STOP"):
+        load_split(tmp_path)
+    st = tmp_path / "store"
+    st.mkdir()
+    (st / "samples.jsonl").write_text(lines[3] + "\n")
+    with pytest.raises(SystemExit, match="STOP"):
+        check_store(st, ids)
+
+
+def test_ssa_given_names(tmp_path):
+    import io
+    import zipfile
+    from glassine_train import lines as L
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("yob1990.txt", "Ada,F,40\nBo,M,30\n")
+        z.writestr("yob2000.txt", "Ada,F,30\nBo,F,10\nCy,M,10\n")
+        z.writestr("yob1900.txt", "Old,M,999\n")
+    c = L._ssa_counts(buf.getvalue())
+    assert c == {"Ada": 70, "Bo": 40, "Cy": 10}
