@@ -9,7 +9,7 @@ import time
 import cairo
 from glassine_ui import paint as PT
 
-from . import fontview as FV, prompts as P
+from . import fontview as FV, neat as N, prompts as P
 from .look import (BTN_H, LAND, PAD, bar, btn, btn_w, btns_right, card, checkbox, chevron_row, dialog, draw_ink,
                    footer, header, icon, icon_rows, lbl, note, page_head, radio, sep, soft_box, tabs)
 
@@ -270,6 +270,55 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     if ui.msg:
         PT.text(cr, ui.msg, k["sub"], PAD, by + BTN_H + 8, k.ink, maxw=w - 2 * PAD)
     return by + BTN_H + 20
+
+
+def neat_top(cr, ui, hits, w, h=None, head=True):
+    """Neaten my writing: the head and what it does"""
+    k = ui.theme
+    if h:
+        fill(cr, k, w, h)
+    y = chrome(cr, ui, hits, w) if head else 0
+    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Neaten my writing",
+                  "Write anything below. When you pause, it shows neater, in your own hand. Nothing you write "
+                  "here is kept.", small=True, keep_lead=True)
+    return y + 6
+
+
+def neat_bottom(cr, ui, hits, w, h, canvas):
+    """the strength, Original or Neatened, Clear, what was read -> height"""
+    k = ui.theme
+    fill(cr, k, w, h)
+    has_ink = bool(canvas and canvas.strokes)
+    narrow = w < NARROW
+    y = 14
+    lw, _ = lbl(cr, k, "Strength" if k.name == "white" else "strength", PAD, y + 9)
+    x = PAD + lw + 14
+    if narrow:
+        x, y = PAD, y + 30
+    for s, name in N.STRENGTHS:
+        cw = chip(cr, k, x, y, name, on=abs(ui.neat_strength - s) < 1e-6, outline=False)
+        hits.add(x, y, cw, 32, lambda s=s: ui.set_strength(s, canvas.payload()))
+        x += cw + 6
+    y += 46
+    x = PAD
+    for name, orig in (("Neatened", False), ("Original", True)):
+        cw = chip(cr, k, x, y + (BTN_H - 32) / 2, name, on=ui.neat_orig == orig, outline=False)
+        hits.add(x, y, cw, BTN_H, lambda orig=orig: ui.show_original(orig))
+        x += cw + 6
+    btns_right(cr, k, hits, w - PAD, y, [("Clear", (lambda: canvas.clear()) if has_ink else None, False)])
+    y += BTN_H + 10
+    if ui.msg:
+        line, col = ui.msg, k.ink
+    elif ui.neat_busy:
+        line, col = "Neatening…", k.soft
+    elif ui.neat_text:
+        line, col = "Read as “%s”" % ui.neat_text, k.soft
+    else:
+        line, col = "Nothing here becomes a sample.", k.soft
+    _, th = PT.text(cr, line, k["sub"], PAD, y, col, maxw=w - 2 * PAD)
+    y += th + 8
+    btn(cr, k, hits, PAD, y, "Your handwriting", lambda: ui.open_best("intro"), icon_name="arrow_back")
+    return y + BTN_H + 16
 
 
 def try_top(cr, ui, hits, w, h=None, head=True):
@@ -900,38 +949,33 @@ def best_intro(cr, ui, hits, w, h):
                   "Show it what your nicest writing looks like: a few words written with care, and now and then a "
                   "choice between two of your own versions.", small=True, keep_lead=True)
     cw = w - 2 * PAD
-    for name, desc, fn, art in (
-            ("Write it your best", "A word written slowly and carefully. Sometimes once quickly first, then once with "
-             "care.", ui.start_best, "Thursday"),
-            ("Which one is nicer?", "Two of your own versions side by side. Tap the one you like better.",
-             ui.start_pick, "g   g")):
-        _, th = PT.measure(cr, desc, k["sub"], maxw=cw - 230, wrap=True)
-        ch = max(108, th + 60)
-        card(cr, k, PAD, y, cw, ch)
-        soft_box(cr, k, PAD + 18, y + 16, 132, ch - 32)
-        script_word(cr, k, art, PAD + 28, y + ch / 2 - 22, 30)
-        PT.text(cr, name, k["row"], PAD + 168, y + 28, k.ink, weight=600, maxw=cw - 230)
-        PT.text(cr, desc, k["sub"], PAD + 168, y + 54, k.ink, maxw=cw - 230, wrap=True)
-        icon(cr, "chevron_right", 24, PAD + cw - 30, y + ch / 2, k.ink)
-        hits.add(PAD, y, cw, ch, fn)
-        y += ch + 14
-    desc = "Your letters as a font for any app. See which ones it has, then install it."
-    _, th = PT.measure(cr, desc, k["sub"], maxw=cw - 230, wrap=True)
-    ch = max(108, th + 60)
-    card(cr, k, PAD, y, cw, ch)
-    soft_box(cr, k, PAD + 18, y + 16, 132, ch - 32)
-    script_word(cr, k, "Aa Bb", PAD + 28, y + ch / 2 - 22, 30)
-    PT.text(cr, "Your font", k["row"], PAD + 168, y + 28, k.ink, weight=600, maxw=cw - 230)
-    PT.text(cr, desc, k["sub"], PAD + 168, y + 54, k.ink, maxw=cw - 230, wrap=True)
-    icon(cr, "chevron_right", 24, PAD + cw - 30, y + ch / 2, k.ink)
-    hits.add(PAD, y, cw, ch, ui.open_font)
-    y += ch + 14
-    t = "Tidying notes you wrote in a hurry. What you teach it now is kept for then."
-    _, th = PT.measure(cr, t, k["sub"], maxw=cw - 70, wrap=True)
-    soft_box(cr, k, PAD, y, cw, th + 46)
-    icon(cr, "schedule", 22, PAD + 26, y + 26, k.ink)
-    lbl(cr, k, "Coming later" if k.name == "white" else "coming later", PAD + 54, y + 16)
-    PT.text(cr, t, k["sub"], PAD + 54, y + 36, k.ink, maxw=cw - 70, wrap=True)
+    cards = (("Write it your best", "A word written slowly and carefully. Sometimes once quickly first, then once "
+              "with care.", ui.start_best, "Thursday"),
+             ("Which one is nicer?", "Two of your own versions side by side. Tap the one you like better.",
+              ui.start_pick, "g   g"),
+             ("Your font", "Your letters as a font for any app. See which ones it has, then install it.",
+              ui.open_font, "Aa Bb"),
+             ("Neaten my writing", "Write anything, in a hurry if you like. It comes back neater, in your own "
+              "hand.", ui.open_neat, "neat"))
+    cols = 2 if w > h else 1                  # turned: two cards side by side
+    gap = 14
+    colw = (cw - gap * (cols - 1)) / cols
+    for r in range(0, len(cards), cols):
+        row = cards[r:r + cols]
+        ch = 108
+        for name, desc, fn, art in row:
+            _, th = PT.measure(cr, desc, k["sub"], maxw=colw - 230, wrap=True)
+            ch = max(ch, th + 60)
+        for i, (name, desc, fn, art) in enumerate(row):
+            x = PAD + i * (colw + gap)
+            card(cr, k, x, y, colw, ch)
+            soft_box(cr, k, x + 18, y + 16, 132, ch - 32)
+            script_word(cr, k, art, x + 28, y + ch / 2 - 22, 30)
+            PT.text(cr, name, k["row"], x + 168, y + 28, k.ink, weight=600, maxw=colw - 230)
+            PT.text(cr, desc, k["sub"], x + 168, y + 54, k.ink, maxw=colw - 230, wrap=True)
+            icon(cr, "chevron_right", 24, x + colw - 30, y + ch / 2, k.ink)
+            hits.add(x, y, colw, ch, fn)
+        y += ch + gap
     careful = sum(1 for v in ui.marked.values() if v[0] == "careful")
     picks = len(ui.prefs)
     s = ("%d careful sample%s and %d pick%s so far. They are kept like your other samples. If you donate, a pick goes "
