@@ -178,6 +178,34 @@ included unless they pick them one by one.
   power loss at any point leaves every confirmed sample readable and no taken-back one
   readable again.
 
+- **FR-017**: Size: the reading respects the ink's size relative to the person's own
+  letters, so a lone mark and a lone letter, and the two cases of a letter whose forms
+  differ mainly in size, are told apart:
+  - The reference is the person's typical letter heights (small letters, capitals, and
+    each when written alone), learned from their confirmed samples without storing
+    anything new; without enough samples, the writing area's line height when the client
+    gives one; else the ink's own reading alone, as before.
+  - A mark far below the small-letter height reads as a mark (`.`, `,`, `'`, `-`), and a
+    letter or digit is not offered first for it; the marks the model can write are among
+    the candidates even when the ink's own search finds none of them.
+  - A lone letter at the person's capital height favours capitals and tall letters, one
+    at their small-letter height favours small forms (o and O, c and C, s and S, x and
+    X, v and V, w and W, z and Z). Pairs that size alone can't separate (k and K, p and
+    P without a line) are left to the letter's shape.
+  - Where the client tells where its lines are, the mark's place on the line decides too:
+    a comma sits on or below the line, an apostrophe high.
+  - The same size-aware reading is used for candidates, for prompted writing's fit
+    (FR-007), and for the check of a pick (FR-009); size only ever helps a fit, never
+    lowers it below what the ink alone gives. Words and sentences read as they do without
+    it; only a mark set apart at their end may read differently. Readings stay the same for
+    the same strokes and reference.
+- **FR-018**: Base models keep the ink's absolute size: the model reads ink scaled by a
+  reference height (the person's letter height when known, else the line height) rather
+  than by the ink's own height, takes the size as an input of its own, and is trained with
+  single characters and punctuation at their true size relative to the line. A model that
+  reads size this way says so in its file's format version, and the recognizer reads both
+  kinds.
+
 ## Key entities
 
 - **Stroke**: points between pen down and pen up (x, y, time, pressure).
@@ -235,7 +263,9 @@ private field, erase and export/import round trip); an adaptation that does wors
 rejected; a donation file holds only reviewed samples and no client, time or device;
 words (FR-015) off in every non-prose field, a list word never first, a proposed pick
 that doesn't fit makes no sample; error rates with and without words on held-back
-samples.
+samples; size (FR-017): a dot, comma, apostrophe and hyphen and the case
+pairs at their true size next to a known reference read as written, and words and
+sentences of a person's samples read no worse than without it.
 
 Hardware: supervised: writing on the keyboard's paper in English; an adaptation
 after a day of use, compared on held-back samples.
