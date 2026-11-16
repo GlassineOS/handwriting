@@ -382,6 +382,16 @@ def decode_set(m, ds, lex, kw, workers):
     return list(ds.texts[:len(ds)]), hyps
 
 
+def cmd_charlm(a):
+    """The character model (charlm.py) from the training books, and its release tarball."""
+    from . import charlm
+    raw = Path("build/text")
+    text.fetch(raw)
+    info, path, sha = charlm.release(raw, Path(a.out), a.lang, a.version, a.order, a.min_hist)
+    print(json.dumps({k: v for k, v in info.items() if k != "sources"}))
+    print(path, sha)
+
+
 def cmd_real(a):
     """A person's store, split by session for training and evaluation (real.py)."""
     from .real import prepare
@@ -605,6 +615,12 @@ def main(argv=None):
     lx.add_argument("--min-count", type=int, default=50)
     lx.add_argument("--max-lines", type=int)
     lx.add_argument("--prune-from", help="instead: a smaller copy of this built lexicon")
+    cl = sub.add_parser("charlm", help="the character model from the training books, as a release tarball")
+    cl.add_argument("--lang", default="en")
+    cl.add_argument("--version", type=int, required=True)
+    cl.add_argument("--order", type=int, default=5)
+    cl.add_argument("--min-hist", type=int, default=20)
+    cl.add_argument("--out", default="build/release")
     rl = sub.add_parser("real", help="a person's sample store, split by writing session")
     rl.add_argument("store", help="directory with samples.jsonl and samples.meta")
     rl.add_argument("--out", default="build/real")
@@ -664,7 +680,7 @@ def main(argv=None):
     ist.add_argument("--fonts", type=int, default=40, help="random training fonts to render with")
     ist.add_argument("--workers", type=int, default=8)
     a = ap.parse_args(argv)
-    {"inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+    {"inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":

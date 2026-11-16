@@ -44,6 +44,16 @@ def edits(a, b):
     return row[-1]
 
 
+def ast_chars():
+    """the trainer's character set (text.py CHARS)"""
+    import ast
+    src = (HERE.parent.parent / "train" / "src" / "glassine_train" / "text.py").read_text()
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "CHARS" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise SystemExit("text.py: no CHARS")
+
+
 def pts(stroke, t0=0.0):
     """sample-format points (t in s) -> the contract's POINTS (t in ms)"""
     return " ".join(f"{p[0]:.4f},{p[1]:.4f},{(p[2] - t0) * 1000:.1f}" for p in stroke)
@@ -114,6 +124,17 @@ class Env:
         assert len(hdr) == off
         body = b"".join(struct.pack("<IIB3x", k, k, 24) for k in keys) + strs + b"\0" * (4 * (n + 2))
         (self.predict / f"{lang}.gpm").write_bytes(hdr + body)
+
+    def chars(self, lines, order=4, lang="en"):
+        """a character model (gclm, the trainer's charlm.py) counted from these lines"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "charlm", HERE.parent.parent / "train" / "src" / "glassine_train" / "charlm.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        cs = ast_chars()
+        data = m.encode(m.prune(m.count(lines, order), 1), cs, order)
+        (self.models / lang / "chars.gclm").write_bytes(data)
 
     @property
     def store(self):
@@ -462,6 +483,86 @@ class Samples(unittest.TestCase):
             self.assertEqual(reads(field), raws, field)
         self.env.conf_set("handwriting.conf", "words = off\n")
         self.assertEqual(reads("normal"), raws, "words = off")
+
+    def test_chars(self):
+        """the character model weighs the readings in prose, name and letter fields only
+        (FR-019): with a model that likes the ink's other readings, those fields read
+        differently from `read … raw`; `read … chars` reads with it and without words;
+        every other field, a missing model and the setting off read as raw"""
+        c = self.env.start("-i", "0")
+        raws = []
+        for s in INK[:6]:
+            c.write_sample(s)
+            raws.append([t for t, _, _ in parse_text(c.ask("read", "s", "8", "raw"))])
+            c.ask("end", "s")
+        c.close()
+        self.env.env["GLASSINE_HANDWRITING_CHARS"] = "weight=3,floor=-40,margin=0"
+
+        def reads(field, *how):
+            c = self.env.start("-i", "0")
+            out = []
+            for s in INK[:6]:
+                c.write_sample(s, field=field)
+                out.append([t for t, _, _ in parse_text(c.ask("read", "s", "8", *how))])
+                self.assertEqual(c.ask("read", "s", "8", "raw", "chars")[2], "bad-line")
+                self.assertEqual(c.ask("read", "s", "8", "chars", "raw")[2], "bad-line")
+                self.assertEqual(c.ask("read", "s", "8", "detail", "chars")[2], "bad-line")
+                c.ask("end", "s")
+            c.close()
+            return out
+
+        self.assertEqual(reads("normal"), raws, "no character model: as raw")
+        self.assertEqual(reads("normal", "chars"), raws, "no character model: chars as raw")
+        # the ink's other readings, many times: the model likes them
+        self.env.chars([t for r in raws for t in r[1:] if t] * 20)
+        prose = reads("normal")
+        self.assertNotEqual(prose, raws, "the character model changes a prose reading")
+        self.assertEqual(reads("normal", "raw"), raws, "read … raw: the ink alone")
+        self.assertEqual(reads("normal", "chars"), prose, "no words: chars reads as the field does")
+        for field in ("-", "alpha", "name", "normal,lowercase"):
+            self.assertEqual(reads(field), prose, field)
+        for field in ("digits", "number", "phone", "url", "email", "terminal", "date", "time",
+                      "normal,someunknownhint", "someunknownpurpose"):
+            self.assertEqual(reads(field), raws, field)
+            self.assertEqual(reads(field, "chars"), raws, field + " chars")
+        self.env.conf_set("handwriting.conf", "chars = off\n")
+        self.assertEqual(reads("normal"), raws, "chars = off")
+        self.env.conf_set("handwriting.conf", "")
+        (self.env.models / "en" / "chars.gclm").write_bytes(b"GHCM not a model")
+        self.assertEqual(reads("normal"), raws, "a broken model: as raw")
+
+    def test_pick_from_chars_must_fit(self):
+        """a pick the character model put first (FROM chars) makes a sample only when its
+        strokes fit it; `detail` says where it came from"""
+        c = self.env.start("-i", "0")
+        raws = []
+        for s in INK[:6]:
+            c.write_sample(s)
+            raws.append([t for t, _, _ in parse_text(c.ask("read", "s", "8", "raw"))])
+            c.ask("end", "s")
+        c.close()
+        self.env.chars([t for r in raws for t in r[1:] if t] * 20)
+        self.env.env["GLASSINE_HANDWRITING_CHARS"] = "weight=3,floor=-40,margin=0"
+        self.env.env["GLASSINE_HANDWRITING_FIT_OK"] = "2"   # no fit passes
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.app")
+        seen = 0
+        for s, raw in zip(INK[:6], raws):
+            c.write_sample(s)
+            r = c.ask("read", "s", "8", "detail")
+            n = int(r[3])
+            cands = [(r[4 + 5 * i], r[7 + 5 * i], r[8 + 5 * i]) for i in range(n)]
+            for text, frm, ok in cands:
+                if frm == "chars":
+                    self.assertNotEqual(text, raw[0], "the ink's best is not the character model's")
+                    self.assertEqual(ok, "check")
+                    self.assertEqual(c.ask("confirm", "s", "picked", esc(text))[2:4], ["skip", "fit"])
+                    seen += 1
+                    break
+            c.ask("end", "s")
+        self.assertGreater(seen, 0, "the character model put a reading among the candidates")
+        self.assertFalse(self.env.store.exists())
+        c.close()
 
     def test_pick_recorded(self):
         """a picked candidate of the last reading records its place and origin (sample `pick`)"""
