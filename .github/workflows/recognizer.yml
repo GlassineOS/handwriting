@@ -10,6 +10,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: build and test on Alpine
@@ -21,5 +22,6 @@ jobs:
             git clone -q https://github.com/GlassineOS/ui /tmp/ui
             git -C /tmp/ui checkout -q 77ed45f37ff8fbc1ce2acf8321a17b87a64cbbc5
             make -C recognizer OUT=/tmp check
-            PYTHONPATH=/tmp/ui/python GLASSINE_HWSAMPLES_WINDOW_TEST=1 \
-              xvfb-run -a make -C samples check HW_BIN=/tmp/glassine-handwriting'
+            # a hang ends in tracebacks (faulthandler on SIGABRT), not in a stuck job
+            PYTHONPATH=/tmp/ui/python GLASSINE_HWSAMPLES_WINDOW_TEST=1 PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1 \
+              timeout -s ABRT 600 xvfb-run -a make -C samples check HW_BIN=/tmp/glassine-handwriting'
