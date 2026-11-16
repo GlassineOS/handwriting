@@ -89,6 +89,7 @@ PT.ICONS.update({k: v for k, v in {
     "lock_open": ["changes-allow-symbolic", "system-lock-screen-symbolic"],
     "tag": ["insert-text-symbolic", "format-text-strikethrough-symbolic", "text-x-generic-symbolic"],
     "compare": ["view-dual-symbolic", "object-flip-horizontal-symbolic"],
+    "alternate_email": ["mail-unread-symbolic", "insert-text-symbolic", "text-x-generic-symbolic"],
 }.items() if k not in PT.ICONS})
 
 

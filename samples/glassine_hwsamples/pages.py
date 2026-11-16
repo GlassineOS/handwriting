@@ -16,13 +16,15 @@ from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_w, btns_rig
 
 SUB = "Teach the tablet your hand"
 SET_NAMES = {P.AUTO: "What needs practice", "words": "Words", "sentences": "Sentences", "pangrams": "Pangrams",
-             "letters": "Single letters", "digits": "Digits and punctuation", P.OWN: "My own words"}
+             "letters": "Single letters", "digits": "Digits and punctuation", "symbols": "Symbols",
+             P.OWN: "My own words"}
 SET_NAMES.update({"best": "Write it your best", "pick": "Which one is nicer?"})
 SETS = ((P.AUTO, "A mix, weighted towards what it knows least about your hand", "auto_awesome"),
         ("words", "Common words, one at a time", "short_text"), ("sentences", "Short everyday sentences", "notes"),
         ("pangrams", "Sentences that use every letter", "abc"), ("letters", "Each letter, small and capital",
                                                                "match_case"),
         ("digits", "0 to 9, and marks like , . ? ! :", "pin"),
+        ("symbols", "@ / & + # % _ = $, alone and in addresses", "alternate_email"),
         (P.OWN, "A list you keep in your files. Never contributed.", "person_edit"))
 # a guest's sets (spec 002 FR-018): the shipped ones, and the careful samples and the picks, which
 # are on Learn in the owner's session; no word list of their own
@@ -958,7 +960,7 @@ def sample_detail(cr, ui, hits, w, h, y):
 
 
 GROUPS = (("Small letters", "abcdefghijklmnopqrstuvwxyz"), ("Capitals", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
-          ("Digits and marks", "0123456789.,?!:;’-()\"&@"))
+          ("Digits and marks", "0123456789.,?!:;’-()\"&@/+#%_=$"))
 FEW = 5                                  # fewer than this: "a few" (shaded)
 WRONG = 0.3                              # read wrong this often (with 3 or more samples): the dot
 
