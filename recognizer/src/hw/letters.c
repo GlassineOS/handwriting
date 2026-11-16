@@ -583,7 +583,10 @@ static void spilled_strokes(struct hw_sample *s, size_t nc, const unsigned *cps,
 		if (cnt[j] < 2 || !sj->n) continue;
 		double sb[4] = { INFINITY, INFINITY, -INFINITY, -INFINITY };
 		ink_box(sj, sb);
-		for (size_t k = 0; k < s->nspans && k < nc && cnt[j] > 1; k++) {
+		/* of the characters it is with, the one it lies beside; with several (a letter's
+		 * arm beside its stem and its neighbour) it stays shared */
+		int beside = -1, nb = 0;
+		for (size_t k = 0; k < s->nspans && k < nc; k++) {
 			if (cps[k] == ' ' || !span_has(s->spans[k], (int)j)) continue;
 			double b[4], ol;
 			int own;
@@ -592,9 +595,12 @@ static void spilled_strokes(struct hw_sample *s, size_t nc, const unsigned *cps,
 			double ov = fmin(b[2], sb[2]) - fmax(b[0], sb[0]);
 			if (ov > 0.25 * fmin(b[2] - b[0], sb[2] - sb[0])) continue;
 			if (b[3] <= (sb[1] + sb[3]) / 2) continue;      /* a mark above it */
-			span_drop(s->spans[k], (int)j);
-			cnt[j]--;
+			beside = (int)k;
+			nb++;
 		}
+		if (nb != 1) continue;
+		span_drop(s->spans[beside], (int)j);
+		cnt[j]--;
 	}
 }
 
@@ -632,7 +638,14 @@ static void delayed_strokes(struct hw_sample *s, size_t nc, const unsigned *cps,
 			int has = span_has(s->spans[k], (int)j);
 			double b[4], ol;
 			int own;
-			if (!others(s, s->spans[k], (int)j, cnt, b, &ol, &own)) { alone |= has; continue; }
+			/* the only stroke of its own a character has stays (its other strokes shared),
+			 * and so does one longer than the rest of the character it is with, unless that
+			 * is a mark (a 5's body below its bar is no late stroke of the 6 beside it) */
+			if (!others(s, s->spans[k], (int)j, cnt, b, &ol, &own) ||
+			    (has && cnt[j] == 1 && (!own || (stroke_len(sj) > ol && ol >= 0.25 * small)))) {
+				alone |= has;
+				continue;
+			}
 			double h = b[3] - b[1], dx = mx < b[0] ? b[0] - mx : mx > b[2] ? mx - b[2] : 0;
 			int above = sb[3] < b[1] - 0.1 * h;   /* wholly above its ink, beyond the pen's wobble */
 			/* a dot or an accent above an i, a j or an accented letter, up to two of its
@@ -799,14 +812,37 @@ static char *usable_cps(const unsigned *cps, size_t nc, const char *own)
 	return b.s ? b.s : strdup("-");
 }
 
-/* a sample's cps text from its line ("-": not prompted with exact spans, or nothing usable) */
+/* a prompted sample whose characters' strokes are known: the fit check passed (spans
+ * exact), or a prompt of one character alone that the person confirmed after a failed
+ * check, whose strokes can only be that character's (spec 003 FR-007). 1 when it counts,
+ * the lone one's spans then all its strokes */
+static int known_spans(struct hw_sample *s)
+{
+	if (strcmp(s->source, "prompted") || !s->nstrokes) return 0;
+	if (!strcmp(s->spans_source, "exact")) return 1;
+	unsigned cp[2];
+	if (strcmp(s->spans_source, "inferred") || hw_utf8_decode(s->text, cp, 2) != 1 || cp[0] == ' ') return 0;
+	int *sp = malloc((s->nstrokes + 1) * sizeof *sp);
+	int **spans = sp ? calloc(1, sizeof *spans) : NULL;
+	if (!spans) { free(sp); return 0; }
+	for (size_t j = 0; j < s->nstrokes; j++) sp[j] = (int)j;
+	sp[s->nstrokes] = -1;
+	spans[0] = sp;
+	for (size_t k = 0; k < s->nspans; k++) free(s->spans[k]);
+	free(s->spans);
+	s->spans = spans;
+	s->nspans = 1;
+	return 1;
+}
+
+/* a sample's cps text from its line ("-": no known spans, or nothing usable) */
 static char *usable_of_line(const char *json)
 {
 	struct hw_sample s;
 	char err[128];
 	if (hw_sample_parse(json, &s, err, sizeof err)) return strdup("-");
 	char *out = NULL;
-	if (!strcmp(s.source, "prompted") && !strcmp(s.spans_source, "exact") && s.nstrokes) {
+	if (known_spans(&s)) {
 		unsigned *cps = malloc(4097 * sizeof *cps);
 		char *own = malloc(4097);
 		if (cps && own) {
@@ -916,7 +952,7 @@ int hw_letters_build(struct hw_letters *L)
 		struct smp *m = &S[ns];
 		char err[128];
 		if (hw_sample_parse(es[i].json, &m->s, err, sizeof err)) continue;
-		if (strcmp(m->s.spans_source, "exact") || !m->s.nstrokes) { hw_sample_free(&m->s); continue; }
+		if (!known_spans(&m->s)) { hw_sample_free(&m->s); continue; }
 		snprintf(m->id, sizeof m->id, "%s", es[i].meta.id);
 		m->time = es[i].meta.time;
 		m->parsed = 1;

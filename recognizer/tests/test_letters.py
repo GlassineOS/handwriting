@@ -192,8 +192,8 @@ class LetterModel(unittest.TestCase):
     def test_three_usable_samples(self):
         rnd = random.Random(3)
         ss = [sample("ab", rnd) for _ in range(3)] + [sample("c", rnd) for _ in range(2)]
-        # a sample kept although its check failed (inferred spans) doesn't count
-        bad = sample("c", rnd)
+        # a word kept although its check failed (inferred spans) doesn't count
+        bad = sample("cd", rnd)
         bad["spans_source"] = "inferred"
         self.e.put(ss + [bad])
         self.e.run("letters", "build", "-r")
@@ -270,6 +270,10 @@ LATE = {
     "E": ([[(0.0, 1.5), (0.0, 0.0)]], [[(0.0, 1.5), (0.6, 1.5)], [(0.0, 0.75), (0.45, 0.75)], [(0.0, 0.0), (0.6, 0.0)]]),
     "H": ([[(0.0, 1.5), (0.0, 0.0)], [(0.6, 1.5), (0.6, 0.0)]], [[(0.0, 0.75), (0.6, 0.75)]]),
 }
+# written in turn, with a second stroke beside the first and too long to be a late one
+BESIDE = {"K": [[(0.0, 1.5), (0.0, 0.0)], [(1.0, 1.5), (0.15, 0.75), (1.0, 0.0)]],
+          # body first, close to the letter before it, then the bar above
+          "5": [[(-0.25, 1.2), (-0.3, 0.7), (0.05, 0.65), (0.1, 0.2), (-0.25, 0.0)], [(-0.25, 1.25), (0.35, 1.25)]]}
 ROUND = [[(0.3 + 0.3 * math.cos(a / 11 * 2 * math.pi), 0.5 + 0.5 * math.sin(a / 11 * 2 * math.pi)) for a in range(12)]]
 
 
@@ -304,9 +308,11 @@ def late_sample(word, rnd, where, line=150.0, xh=30.0):
             spans[k].insert(0, spans[k - 1][-1])
             x += 0.4 * xh
             continue
-        first, rest = LATE.get(c, (ROUND, []))
+        first, rest = LATE.get(c, (BESIDE.get(c, ROUND), []))
         for st in first:
             spans[k].append(put(st, x))
+        if c in BESIDE and where == "shared" and k + 1 < len(word):   # its second stroke with the next letter too
+            spans[k + 1].append(spans[k][-1])
         late += [(k, st, x) for st in rest]
         x += 1.0 * xh
     for k, st, x0 in late:
@@ -357,6 +363,49 @@ class LateStrokes(unittest.TestCase):
         # the letters the late strokes were put with count too
         self.assertEqual(st["chars"]["o"][0], 4 * len(LATE))
         self.assertEqual(st["chars"]["a"][0], 4 * len(LATE))
+
+    def test_a_stroke_beside_two_stays_shared(self):
+        """a K's long arm shared with the next letter, beside both, is not given to either"""
+        rnd = random.Random(25)
+        self.e.put([late_sample("aKo", rnd, "next") for _ in range(3)] +
+                   [late_sample("aKo", rnd, "shared") for _ in range(3)])
+        self.e.run("letters", "build", "-r")
+        st = self.e.status()
+        self.assertEqual(st["chars"]["K"][0], 3)          # only the three with their own arm
+        self.assertEqual(set(self.versions()["K"]), {2})
+
+    def test_a_body_below_its_bar_stays(self):
+        """a 5's body, beside the 6 before it and below its own bar, is the 5's"""
+        rnd = random.Random(26)
+        self.e.put([late_sample("ao65", rnd, "next") for _ in range(3)])
+        self.e.run("letters", "build", "-r")
+        st, v = self.e.status(), self.versions()
+        self.assertEqual(st["chars"]["5"][0], 3)
+        self.assertEqual(set(v["5"]), {2})
+        self.assertEqual(set(v["6"]), {1})
+
+    def test_lone_marks_confirmed(self):
+        """a full stop or comma written alone and kept on confirmation (spans inferred)
+        counts; in a word only with its check passed"""
+        rnd = random.Random(27)
+        ss = []
+        for c in ".,":
+            for _ in range(3):
+                d = late_sample("a" + c, rnd, "next")
+                d.update(text=c, spans=[list(range(len(d["strokes"]) - 1, len(d["strokes"])))],
+                         strokes=d["strokes"][-1:], spans_source="inferred")
+                d["spans"] = [[0]]
+                ss.append(d)
+        for _ in range(3):
+            d = late_sample("ao.", rnd, "next")
+            d["spans_source"] = "inferred"
+            ss.append(d)
+        self.e.put(ss)
+        self.e.run("letters", "build", "-r")
+        st = self.e.status()
+        self.assertEqual(st["chars"]["."][0], 3)
+        self.assertEqual(st["chars"][","][0], 3)
+        self.assertNotIn("a", st["chars"])
 
     def test_full_stop_and_its_neighbour(self):
         rnd = random.Random(22)

@@ -444,7 +444,9 @@ result.
 
 `glassine-handwriting letters build` makes the letter model from the person's prompted samples:
 for each character, up to three versions of how they write it. A character's sample is usable
-when its spans are exact (`spans_source` `exact`, as the samples app stores them) and its strokes
+when its spans are exact (`spans_source` `exact`, as the samples app stores them), or the sample
+is one character alone kept with `keep` after a failed check (its strokes can only be that
+character's: lone full stops and commas fail the check most often), and its strokes
 are its own (not shared with a neighbour, so joined letters are never cut apart); a character is
 covered with 3 usable samples (unless none of its versions can be measured: no baseline or
 x-height to put it on). The spans follow the order of writing, split halfway between where the
