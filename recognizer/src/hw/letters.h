@@ -10,6 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
+#define HW_LETTERS_BUILD 2      /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
 #define HW_LETTERS_VARIANTS 3   /* variants per character at most */
 #define HW_FONT_NAME_DEFAULT "My handwriting"

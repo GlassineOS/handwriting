@@ -79,6 +79,7 @@ microsecond.
 | `prefer ID CHOSEN OTHER [CHOSEN_CHAR OTHER_CHAR]` | `prefer ID ok` |
 | `preferences ID [all]` | `preferences ID K {CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR}×K` |
 | `sample ID SAMPLE` | `sample ID JSON` (the sample's line, escaped) |
+| `neaten ID S STRENGTH [TEXT [ALIGN]]` | `neaten ID ok TEXT K {N HOW POINTS}×K` |
 | `donate ID S TEXT [keep]` | `donate ID ok COUNT SAMPLE`, or `donate ID skip REASON` |
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
@@ -230,6 +231,60 @@ reference and weighs the model's reading by it.
 - The measurements are kept in the store's `size` (below); reading never waits on anything but
   the samples it hasn't measured yet.
 
+## Neatening (spec 003 FR-013 to FR-017)
+
+**neaten** gives the session's strokes back neatened: towards the person's own best letters
+(the letter model, below) with a straight baseline, a steady slant and even sizes and
+spacing. `STRENGTH` is 0 to 1 (`bad-strength` otherwise): 0 gives every stroke back exactly as
+it was sent, 1 the neatest version. The reply has one `N HOW POINTS` triple per stroke of the
+session, in the session's order: `N` the stroke's number, `POINTS` the stroke with the same
+points in the same order, each point's `x,y` moved (written to a thousandth) and the rest of it
+(time, pressure, tilt) exactly as sent. `HOW` says what was done: `pulled` (a character of it
+moved towards its version in the letter model, and the line-level corrections), `line` (the
+line-level corrections only) or `kept` (the stroke as sent). `TEXT` (escaped) is the reading the
+neatening followed, empty when none. The same strokes, letter model and strength always give
+the same reply. `neaten` changes nothing in the session (its strokes, the last reading's
+candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-024).
+
+- **The reading.** Without `TEXT`, the session's best reading (as `read` gives it, with the
+  words in a prose field) says which strokes make which character; with `TEXT` (the text the
+  person confirmed or picked), the strokes are aligned to it as in `align`; with `ALIGN` too (as
+  `read` gives it for that text: per character the strokes or `N:A-B` parts), that alignment
+  is used as it is, trusted (`bad-align` when it doesn't parse; `bad-text` for an empty or too
+  long `TEXT`).
+- **Writing only (FR-020).** The newest stroke when it is a gesture, strokes taller than 3.5
+  x-heights (the person's letters for the size, else the strokes' own median height) and
+  strokes no character of the reading has are drawing and stay `kept`. When the characters'
+  mean fit (as in `align`) is below 0.15 the ink isn't read as writing and every stroke is
+  kept.
+- **Line-level corrections (FR-014, FR-017).** For every character of the writing: the line's
+  baseline is fitted through the bottoms of the letters that sit on it (fit at least 0.5,
+  outliers more than 0.3 x-heights off left out) and straightened to its height at the line's
+  middle; such a letter moves onto it when its bottom is within 0.35 x-heights (one further off
+  is more likely a descender read wrong); the slant of each character moves to the letter
+  model's (without one, the line's own), at most 0.4; letters read with a fit of 0.5 or more are
+  scaled to the line's x-height (by their class: small letters, tall letters, capitals and
+  digits; 0.85 to 1.18); the gaps between letters and between words move towards the line's
+  median gap (with fewer than two, the letter model's spacing), at most 0.3 x-heights each.
+  Characters joined in one stroke move together.
+- **The pull (FR-014).** A character with a fit of 0.5 or more (or from `ALIGN`) that the letter
+  model covers, whose strokes are its own (a stroke mostly one character's, three quarters of
+  its points or more, counts as its), with as many strokes as one of its versions made of at
+  least two samples, and within 0.3 x-heights (centred RMS distance, the ink at the line's
+  x-height) of the nearest such version, goes towards that version: each point to the point of
+  the version at the same share of the stroke's length, the version placed on the straight
+  baseline at the character's middle, scaled to the line's x-height. A point moves by
+  `STRENGTH` × (where the corrections put it − where it is); a pulled character's point by
+  `STRENGTH` × (its place in the version − where it is). Where a stroke passes from one
+  character to the next, the moves are blended over a few points.
+- **Without a letter model** only the line-level corrections apply (FR-022).
+- **The check (SC-004).** The neatened ink is read again (as the reading above, words
+  included): it must read at least as close to `TEXT` (without `TEXT`, to the original
+  reading) as the original strokes do. When it doesn't, the request is tried again without the
+  pull, and when that still reads worse every stroke is `kept`. So neatening never makes the
+  reading worse. It costs one or two runs of the model on top of a reading of the strokes (a
+  client that just read them pays nothing more for that one).
+
 **recognize** is `begin`, a stroke per `;`-separated part of `STROKES`, `read`, `end` in one line,
 for a client that has the whole ink at once. It stores nothing.
 
@@ -274,7 +329,8 @@ deleted from the samples, and from the donation when it is there too. `WHERE` is
 
 Error reasons: `bad-line` (wrong number of fields, a bad number), `bad-id`, `bad-session`,
 `bad-client`, `unknown-verb`, `bad-escape`, `bad-units`, `bad-lang`, `bad-field`, `bad-points`,
-`bad-count`, `bad-area`, `bad-prompt` (empty or more than 512 characters), `bad-source`, `unknown-session`,
+`bad-count`, `bad-area`, `bad-prompt` (empty or more than 512 characters), `bad-source`, `bad-strength`,
+`bad-text`, `bad-align`, `unknown-session`,
 `too-many` (strokes in a session), `busy` (sessions), `no-model` (no model for any of the
 languages), `no-client`, `denied`, `unknown-sample`, `too-long`, `store` (the store can't be read
 or written; nothing changed), `memory`.
@@ -388,14 +444,21 @@ result.
 for each character, up to three versions of how they write it. A character's sample is usable
 when its spans are exact (`spans_source` `exact`, as the samples app stores them) and its strokes
 are its own (not shared with a neighbour, so joined letters are never cut apart); a character is
-covered with 3 usable samples. Its samples are grouped by stroke count; the count with the most
+covered with 3 usable samples. A short stroke (shorter than 0.3 area lines, or 0.4 times the
+sample's median stroke without an area) written after the strokes it belongs with, such as an
+i's dot or a t's bar, can sit in the spans of characters that were written around the same time
+instead of, or beside, the one it stands over. When it is an extra stroke of each character that
+has it, it goes to the character whose other strokes it lies across, above their middle (of
+several, one that had it), and to that one alone; one that is a single character's and lies
+across it stays. Its samples are grouped by stroke count; the count with the most
 weight is the way it is written (another gives versions only when it is about as strong), each
 sample is resampled by arc length and centred, and weighted by how it was written (careful above
 quick), the person's picks (the chosen character or sample up, the other down), how well it was
 read (its stored first reading against the prompt) and how close it is to the group's middle.
 The strongest sample and then strong ones that differ from those chosen and have company seed the
-versions; a version is the weighted average of the samples near its seed, smoothed, so a single
-sample's jitter is gone. Sizes are in x-heights from the baseline of each sample's area (or of its
+versions (a way of writing it that is about as strong as the main one gets its first version
+before the main way gets a second); a version is the weighted average of the samples near its
+seed, smoothed, so a single sample's jitter is gone. Sizes are in x-heights from the baseline of each sample's area (or of its
 own letters); the line metrics (cap height, ascender, descender, slant, letter and word spacing,
 ink width as the app's pen draws) come from all usable samples. The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
@@ -543,4 +606,5 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
+| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check (comma-separated) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
