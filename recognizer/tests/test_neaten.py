@@ -167,6 +167,46 @@ class Neaten(unittest.TestCase):
                 n += 1
         self.assertGreater(n, 8)
 
+    def test_same_strokes_variant(self):
+        """a t written in one stroke goes to the one-stroke variant, one in two strokes to a
+        two-stroke one (neatening keeps the strokes, FR-013, FR-014)"""
+        rnd = random.Random(40)
+        ss = [TL.late_sample("ato", rnd, "next") for _ in range(8)]
+        ss += [TL.late_sample("ato", rnd, "next", forms={"t": (TL.ONE_T, [])}) for _ in range(5)]
+        f = self.e.dir / "in.jsonl"
+        lines = [json.dumps({"format": "glassine-handwriting-export", "version": 1})]
+        for i, s in enumerate(ss):
+            lines.append(json.dumps({"sample": s, "client": "org.example.test", "confirmed": 1700000000 + i,
+                                     "source": "prompted"}))
+        f.write_text("\n".join(lines) + "\n")
+        self.e.run("samples", "import", str(f))
+        self.e.run("letters", "build", "-r")
+        L = {m["char"]: m for m in map(json.loads, (self.e.store / "letters" / "model").read_text().splitlines())
+             if "char" in m}
+        vt = L["t"]["variants"]
+        self.assertEqual({len(v["strokes"]) for v in vt}, {1, 2})
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        for forms, n in ((None, 2), ({"t": (TL.ONE_T, [])}, 1)):
+            s = TL.late_sample("ato", random.Random(41), "next", forms=forms)
+            for st in s["strokes"]:
+                for p in st:
+                    p[0] += rnd.gauss(0, 1.5)
+                    p[1] += rnd.gauss(0, 1.5)
+            c = self.e.start()
+            self.begin(c, s)
+            align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+            _, out = parse(c.ask("neaten", "s", "1", "ato", align))
+            c.close()
+            xy = [EV.to_xy(o[2]) for o in out]
+            mine = [v for v in vt if len(v["strokes"]) == n and v["members"] >= 2]
+            # the t's strokes: its own, and the bar written after the word (in the o's span)
+            ts = sorted(set(s["spans"][1]) | ({len(s["strokes"]) - 1} if n == 2 else set()))
+            before = [[(p[0], p[1]) for p in s["strokes"][j]] for j in ts]
+            after = [xy[j] for j in ts]
+            self.assertEqual(len(after), n)
+            self.assertTrue(all(out[j][1] == "pulled" for j in ts), n)
+            self.assertLess(min(shape_dist(after, v) for v in mine), min(shape_dist(before, v) for v in mine))
+
     def test_line_level_without_letter_model(self):
         # letters on a slanted baseline: straight after (FR-014, FR-022)
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
