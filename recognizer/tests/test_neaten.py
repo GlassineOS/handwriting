@@ -207,6 +207,42 @@ class Neaten(unittest.TestCase):
             self.assertTrue(all(out[j][1] == "pulled" for j in ts), n)
             self.assertLess(min(shape_dist(after, v) for v in mine), min(shape_dist(before, v) for v in mine))
 
+    def test_spacing_towards_the_letter_model(self):
+        """uneven gaps between letters go towards the gaps the person writes those pairs at
+        (FR-014; spacing.c), measured on the ink neatening gives back"""
+        rnd = random.Random(50)
+        gaps = {"lo": 0.05, "ol": 0.7, "ab": 0.5, "bc": 0.3}
+        ss = TL.alphabet_samples(seed=50, per=3)
+        ss += [TL.spaced_sample("lol abc", rnd, gaps) for _ in range(5)]
+        f = self.e.dir / "in.jsonl"
+        lines = [json.dumps({"format": "glassine-handwriting-export", "version": 1})]
+        for i, s in enumerate(ss):
+            lines.append(json.dumps({"sample": s, "client": "org.example.test", "confirmed": 1700000000 + i,
+                                     "source": "prompted"}))
+        f.write_text("\n".join(lines) + "\n")
+        self.e.run("samples", "import", str(f))
+        self.e.run("letters", "build", "-r")
+        sp = next(m["spacing"] for m in map(json.loads, (self.e.store / "letters" / "model").read_text().splitlines())
+                  if "spacing" in m)
+        learned = {(p[0], p[1]): p[2] for p in sp["pairs"]}
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        s = TL.spaced_sample("lol abc", random.Random(51), {"lo": 0.3, "ol": 0.5, "ab": 0.3, "bc": 0.5})
+        c = self.e.start()
+        self.begin(c, s)
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        _, out = parse(c.ask("neaten", "s", "1", "lol abc", align))
+        c.close()
+        xy = [EV.to_xy(o[2]) for o in out]
+        xh = EV.line_xh(s)
+        base = EV.line_base(s, xh)
+        before = EV.line_gaps(s["text"], s["spans"], [[(p[0], p[1]) for p in st] for st in s["strokes"]], xh, base)
+        after = EV.line_gaps(s["text"], s["spans"], xy, xh, base)
+        self.assertEqual(len(before), 4)
+        off_b = [abs(g - learned[(a, b)]) for a, b, g in before]
+        off_a = [abs(g - learned[(a, b)]) for a, b, g in after]
+        self.assertLess(sum(off_a), sum(off_b) / 3)
+        self.assertTrue(all(x < 0.06 for x in off_a), off_a)          # within the step limit
+
     def test_line_level_without_letter_model(self):
         # letters on a slanted baseline: straight after (FR-014, FR-022)
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
