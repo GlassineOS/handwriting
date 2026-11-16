@@ -377,6 +377,10 @@ fonts; held-out fonts = 1000 lines each, greedy.
   The release gate (beat model 2 + fresh head on real ink AND no held-out group more than
   about 0.5 points worse) is not met, so model 2 stays the base; the per-writer head
   already closes most of the gap for this writer.
+- The test session stays the test set across releases: `glassine-train real STORE --keep-test
+  OLD/split.json` keeps exactly the earlier split's test ids (all must be in the new store),
+  leaves out any other sample written in their sessions, and splits the rest by whole
+  sessions (dev: the newest sessions until 80 samples), so a new pull only adds sessions.
 - Model files now record when their training data ends (`--trained-until`, written from
   the split), so on-device adaptation never re-learns the base model's own samples.
 - To ship real ink in the base: samples from several writers, so one hand's quirks

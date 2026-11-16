@@ -394,8 +394,9 @@ def cmd_charlm(a):
 
 def cmd_real(a):
     """A person's store, split by session for training and evaluation (real.py)."""
-    from .real import prepare
-    print(json.dumps(prepare(Path(a.store), Path(a.out)), indent=1))
+    from .real import kept_test_ids, prepare
+    keep = kept_test_ids(Path(a.keep_test)) if a.keep_test else None
+    print(json.dumps(prepare(Path(a.store), Path(a.out), keep), indent=1))
 
 
 def cmd_finetune(a):
@@ -624,6 +625,7 @@ def main(argv=None):
     rl = sub.add_parser("real", help="a person's sample store, split by writing session")
     rl.add_argument("store", help="directory with samples.jsonl and samples.meta")
     rl.add_argument("--out", default="build/real")
+    rl.add_argument("--keep-test", help="an earlier split.json (or a file of ids): its test set stays the test set")
     ft = sub.add_parser("finetune", help="fine-tune on real ink mixed with synthetic ink")
     ft.add_argument("--run", required=True)
     ft.add_argument("--init", default="build/runs/m2/best.pt")
