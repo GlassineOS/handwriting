@@ -141,6 +141,9 @@ def ink_samples(ink: Path, out: Path, limit: int | None = None) -> int:
     with open(out, "w") as fh:
         for i in range(n):
             strokes, row = st[i]
+            strokes = [q for q in strokes if len(q)]
+            if not strokes:  # a mark too small to keep any ink (a few lone dots): nothing to read
+                continue
             k = XH_EM / row["xh"]
             line, base = row["line"] * k, row["base"] * k
             pts = np.concatenate(strokes)
