@@ -43,7 +43,8 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 
 /* The reference height a model that reads it (ghm version 2) scales the ink by: the
  * person's small letters, else HW_LINE_XH lines; 0 without either. *base: the guide line
- * the ink sits on (the first at or below the median of its y), NAN without guides. */
+ * the ink sits on (the one whose line, from two thirds of a line above it to a third below,
+ * holds the median of its y), NAN without guides. */
 double hw_size_ref_height(const struct hw_size_ref *ref, const struct hw_stroke *s, size_t ns, double *base);
 
 /* a sample taken back: its measurement out of the store's `size` (the caller holds the
