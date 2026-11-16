@@ -32,8 +32,9 @@ def recognise(model, ds, batch=64):
     model.eval()
     refs, hyps = [], []
     for x, lens, _, _, texts in loader(ds, batch, workers=0):
-        logp, ol = model(x, lens)
-        hyps += [decode(s, model.alphabet) for s in greedy(logp, ol)]
+        # a line without ink (a font without the glyph) reads as nothing
+        logp, ol = model(x, lens.clamp(min=1))
+        hyps += ["" if n == 0 else decode(s, model.alphabet) for s, n in zip(greedy(logp, ol), lens.tolist())]
         refs += texts
     return refs, hyps
 
