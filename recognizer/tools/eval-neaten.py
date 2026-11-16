@@ -171,6 +171,68 @@ def vdist(strokes, xh, var):
                          for i in range(n)) / n)
 
 
+BANDS, Y0, Y1 = 8, -0.6, 1.6
+
+
+def profile(strokes, xh, base):
+    """the ink profile as spacing.c makes it: per height band the leftmost and rightmost x"""
+    lo, hi = [math.inf] * BANDS, [-math.inf] * BANDS
+    bw = (Y1 - Y0) / BANDS
+
+    def band(y):
+        return max(0, min(BANDS - 1, int(math.floor((y - Y0) / bw))))
+
+    def put(b, x):
+        lo[b] = min(lo[b], x)
+        hi[b] = max(hi[b], x)
+
+    for st in strokes:
+        pts = [(x / xh, (base - y) / xh) for x, y in st]
+        for i, (x1, y1) in enumerate(pts):
+            x0, y0 = pts[i - 1] if i else (x1, y1)
+            y0, y1 = (min(max(y, Y0 + 1e-9), Y1 - 1e-9) for y in (y0, y1))
+            b0, b1 = band(y0), band(y1)
+            put(b0, x0)
+            put(b1, x1)
+            for b in range(min(b0, b1) + 1, max(b0, b1) + 1):
+                ye = Y0 + b * bw
+                xe = x0 + (ye - y0) / (y1 - y0) * (x1 - x0)
+                put(b - 1, xe)
+                put(b, xe)
+    return lo, hi
+
+
+def profile_gap(a, b):
+    g = min((b[0][k] - a[1][k] for k in range(BANDS) if math.isfinite(a[1][k]) and math.isfinite(b[0][k])), default=None)
+    if g is not None:
+        return g
+    return min(x for x in b[0] if math.isfinite(x)) - max(x for x in a[1] if math.isfinite(x))
+
+
+def line_gaps(text, spans, strokes, xh, base):
+    """the profile gaps (x-heights) of neighbouring letters with strokes of their own"""
+    cnt = {}
+    for sp in spans:
+        for j in sp:
+            cnt[j] = cnt.get(j, 0) + 1
+    out = []
+    for k in range(len(text) - 1):
+        if text[k] == " " or text[k + 1] == " " or k + 1 >= len(spans) or not spans[k] or not spans[k + 1]:
+            continue
+        if any(cnt[j] != 1 for j in spans[k] + spans[k + 1]):
+            continue
+        a = profile([strokes[j] for j in spans[k]], xh, base)
+        b = profile([strokes[j] for j in spans[k + 1]], xh, base)
+        out.append((text[k], text[k + 1], profile_gap(a, b)))
+    return out
+
+
+def line_base(s, xh):
+    ys = [max(p[1] for j in s["spans"][k] for p in s["strokes"][j])
+          for k, c in enumerate(s["text"]) if c in "acemnorsuvwxz" and k < len(s["spans"]) and s["spans"][k]]
+    return statistics.median(ys) if ys else 0
+
+
 def line_xh(s):
     hs = []
     for k, c in enumerate(s["text"]):
@@ -229,6 +291,9 @@ def main():
                    "better": 0, "worse": 0, "werr_o": 0, "werr_n": 0} for s in strengths}
         read_ms = []
         closer = {"n": 0, "closer": 0, "before": [], "after": []}
+        spacing = next((m["spacing"] for m in model if "spacing" in m), None)
+        learned = {(p[0], p[1]): p[2] for p in spacing["pairs"]} if spacing else {}
+        spread = {"before": [], "after": [], "dev_b": [], "dev_a": []}
         for sid, ln in held:
             s = json.loads(ln)
             strokes = [points(st) for st in s["strokes"]]
@@ -276,6 +341,17 @@ def main():
             for sp in spans:
                 for j in sp:
                     cnt[j] = cnt.get(j, 0) + 1
+            if xh > 0 and how.count("pulled") + how.count("line") > 0:
+                base = line_base(s, xh)
+                gb = line_gaps(text, spans, [[(p[0], p[1]) for p in st] for st in s["strokes"]], xh, base)
+                ga = line_gaps(text, spans, nxy, xh, base)
+                if len(gb) >= 3 and len(ga) == len(gb):
+                    spread["before"].append(statistics.pstdev([g for _, _, g in gb]))
+                    spread["after"].append(statistics.pstdev([g for _, _, g in ga]))
+                    for (ca, cb, g0), (_, _, g1) in zip(gb, ga):
+                        if (ca, cb) in learned:
+                            spread["dev_b"].append(abs(g0 - learned[(ca, cb)]))
+                            spread["dev_a"].append(abs(g1 - learned[(ca, cb)]))
             for k, c in enumerate(text):
                 le = letters.get(c)
                 if not le or not le["covered"] or k >= len(spans) or not spans[k] or xh <= 0:
@@ -306,6 +382,11 @@ def main():
         if read_ms:
             rm = sorted(read_ms)
             print(f"a read of the same lines: median {rm[len(rm) // 2]:.1f} ms, max {rm[-1]:.1f} ms")
+        if spread["before"]:
+            print(f"spacing between letters at strength 1, per line ({len(spread['before'])} lines): spread median "
+                  f"{statistics.median(spread['before']):.3f} -> {statistics.median(spread['after']):.3f} x-heights; "
+                  f"learned pairs ({len(spread['dev_b'])}) off their learned gap by median "
+                  f"{statistics.median(spread['dev_b'] or [0]):.3f} -> {statistics.median(spread['dev_a'] or [0]):.3f}")
         if closer["n"]:
             print(f"covered characters with strokes of their own: {closer['n']}, closer to their variant at "
                   f"strength 1: {closer['closer']}; distance median {statistics.median(closer['before']):.3f} -> "
