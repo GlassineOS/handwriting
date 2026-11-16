@@ -26,7 +26,7 @@ needs signals the existing samples don't carry: which samples were written with 
 which of two versions the person likes better. Spec 002 gets two modes that collect them.
 
 This spec is about the person's own hand on their own device. Learning from many writers
-(donations, base models) stays as spec 001 and 002 describe.
+(contributions, base models) stays as spec 001 and 002 describe.
 
 ## User scenarios
 
@@ -83,15 +83,15 @@ size, spacing) and keep their shape.
 
 - **FR-001**: A sample can carry how it was written: `careful` (written to "Write it your
   best"), `quick` (the quick half of a pair) or nothing (normal). The marking is part of the
-  sample format (docs/samples.md) and travels with the sample in export and donation.
+  sample format (docs/samples.md) and travels with the sample in export and contribution.
 - **FR-002**: A pair links a quick and a careful sample of the same prompt; deleting one
   sample of a pair keeps the other, unlinked. The link is a random value both samples carry,
-  so it says nothing about the person and survives export and donation unchanged.
+  so it says nothing about the person and survives export and contribution unchanged.
 - **FR-003**: A preference records two samples (or the same character in two samples, by
   its span) and which one the person chose. Preferences are the person's data: kept with the
-  samples, exported with them, erased with them, donated only together with both samples
-  they refer to and under the same donation rules (spec 002 FR-011). Deleting either sample
-  removes the preference. In a file of samples (an export, a donation) a preference is a
+  samples, exported with them, erased with them, contributed only together with both samples
+  they refer to and under the same contribution rules (spec 002 FR-011). Deleting either sample
+  removes the preference. In a file of samples (an export, a contribution) a preference is a
   record of its own beside the samples, naming the two samples of that same file it refers
   to; a reader that wants only samples can pass over it.
 - **FR-004**: "Which one is nicer?" picks pairs that teach the most: characters with few
@@ -171,7 +171,7 @@ size, spacing) and keep their shape.
   its file name, so apps and the font cache pick up the new outlines without a restart of
   the session. A rebuild keeps the name; the font is rebuilt only when the person asks.
 - **FR-012**: The font never leaves the device except by the person's own export; it is not
-  part of a donation.
+  part of a contribution.
 
 ### Neatening
 
@@ -193,11 +193,11 @@ size, spacing) and keep their shape.
   given: nothing it neatens becomes a sample, and it never changes the letter model.
 - **FR-024**: Neatened ink is never data about the person's hand. The neat ink layer
   always passes the raw strokes on beside the neatened ones, and itself feeds recognition,
-  samples, adaptation (spec 001 FR-009), the letter model and donations from the raw pen
+  samples, adaptation (spec 001 FR-009), the letter model and contributions from the raw pen
   input, whatever the app keeps. An app may keep raw strokes, neatened ones or both in its
   own documents; neatened ink it keeps is marked as neatened, and neatened ink that reaches
-  a sample (a confirm, an import, a donation) is refused, or kept marked and left out of
-  adaptation, the letter model, base training and donations.
+  a sample (a confirm, an import, a contribution) is refused, or kept marked and left out of
+  adaptation, the letter model, base training and contributions.
 - **FR-017**: Ink the recognizer can't read, or reads with low confidence, gets only the
   line-level corrections.
 
@@ -323,7 +323,7 @@ Host level:
   neat ink layer with neatening on stores a sample whose strokes are byte for byte those a
   client talking to the recognizer directly stores for the same pen input; neatened ink
   that reaches a sample path is refused or kept marked and left out of adaptation, the
-  letter model and a donation;
+  letter model and a contribution;
 - through the neat ink layer with text output on, the same pen input and field context give
   the same candidates (text, origin, fit verdict, character strokes) as the recognizer's own
   reading, partial readings arrive while writing, a pick stores one sample with the picked
