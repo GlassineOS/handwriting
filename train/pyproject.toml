@@ -10,6 +10,8 @@ dependencies = [
   "torch>=2.5",
   "onnx>=1.17",
   "onnxruntime>=1.20",
+  "fonttools>=4.40",  # which characters a font has (the model-4 generator)
+  "scipy>=1.11",
 ]
 
 [project.optional-dependencies]

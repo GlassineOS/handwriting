@@ -100,7 +100,8 @@ class InkSet(torch.utils.data.Dataset):
         self.augment = augment
         self.off = np.load(path / "offsets.npy")
         self.texts = json.loads((path / "texts.json").read_text())
-        self.feat = np.memmap(path / "feat.f16", np.float16, "r").reshape(-1, NFEAT)
+        nfeat = json.loads((path / "meta.json").read_text()).get("nfeat", NFEAT) if (path / "meta.json").exists() else NFEAT
+        self.feat = np.memmap(path / "feat.f16", np.float16, "r").reshape(-1, nfeat)
         self.n = len(self.texts) if limit is None else min(limit, len(self.texts))
 
     def __len__(self):

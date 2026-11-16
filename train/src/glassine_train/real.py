@@ -283,3 +283,20 @@ def prepare(store: Path, out: Path, keep_test: list[str] | None = None) -> dict:
         ids["left_out"] = left_out
     (out / "split.json").write_text(json.dumps({"ids": ids, "report": rep}, indent=1))
     return rep
+
+
+def reference(s: dict, writer_xh: float | None) -> dict:
+    """A real sample's references for features with a reference height (features_ref): the
+    writer's letter height (`writer_xh`, measured on the training sessions; None when not
+    known), the writing area's line height and the baseline of the guide the ink sits on
+    (the guides are at two thirds of each line), all in the sample's units."""
+    ar = s.get("area") or {}
+    line = ar.get("line")
+    base = None
+    if line:
+        ys = np.concatenate([np.asarray(q, float)[:, 1] for q in s["strokes"] if len(q)])
+        y0 = ar.get("box", [0, 0])[1]
+        first = y0 + line * 2 / 3
+        k = int(np.ceil((np.median(ys) - first) / line))
+        base = float(first + max(k, 0) * line)
+    return {"xh": writer_xh, "line": line, "base": base}
