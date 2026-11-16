@@ -42,7 +42,9 @@ The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
 - [`samples/`](samples): `glassine-handwriting-samples`, the handwriting samples app
   ([`specs/002-sample-collection`](specs/002-sample-collection/spec.md)): write shown words
   and sentences so the recognizer learns your hand, ask it to learn, and contribute reviewed
-  samples to the base models as a file you send yourself. Python with GTK 3; its prompt sets
+  samples to the base models as a file you send yourself. Other writers on the same tablet
+  (family, friends) write in sessions of their own, each with a store kept apart from yours
+  and a contribution only they turn on. Python with GTK 3; its prompt sets
   and their sources are in `samples/prompts/`. `make -C samples check` runs its tests.
 - [`service/`](service): `glassine-handwriting-service`, handwriting for apps
   ([`specs/004-handwriting-for-apps`](specs/004-handwriting-for-apps/spec.md)): one recognizer

@@ -19,9 +19,11 @@ from .client import Error
 SESSION = "w"
 
 
-def state_path():
+def state_path(writer=None):
+    """the owner's place, or a guest writer's (by their store's id; spec 002 FR-012, FR-023)"""
     base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return os.path.join(base, "glassine", "handwriting-samples", "state.json")
+    d = os.path.join(base, "glassine", "handwriting-samples")
+    return os.path.join(d, "writers", writer + ".json") if writer else os.path.join(d, "state.json")
 
 
 class State:
@@ -38,6 +40,7 @@ class State:
         self.introduced = False      # the first-start introduction was shown (or not needed)
         self.best_used = {}          # Your handwriting's prompts shown in this round
         self.picks = {}              # {day: picks made}, for "N picks today"
+        self.files = 0               # contribution files saved (the Remove question counts them)
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
@@ -50,17 +53,20 @@ class State:
             self.introduced = bool(d.get("introduced", False))
             self.best_used = {k: list(v) for k, v in d.get("best_used", {}).items()}
             self.picks = {k: int(v) for k, v in d.get("picks", {}).items()}
+            self.files = int(d.get("files", 0))
         except (OSError, ValueError, AttributeError, TypeError):
             pass
 
     def save(self):
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        os.chmod(os.path.dirname(self.path), 0o700)
         tmp = self.path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"set": self.set, "used": self.used, "current": list(self.current) if self.current else None,
                        "donating": self.donating, "lang": self.lang, "introduced": self.introduced,
-                       "best_used": self.best_used, "picks": dict(list(self.picks.items())[-7:])}, f)
+                       "best_used": self.best_used, "picks": dict(list(self.picks.items())[-7:]),
+                       "files": self.files}, f)
         os.replace(tmp, self.path)
 
 
@@ -83,13 +89,14 @@ class Shown:
 
 
 class Writer:
-    def __init__(self, rec, cli, state, sets=None, coverage=None):
+    def __init__(self, rec, cli, state, sets=None, coverage=None, own_words=True):
         # Next picks the next prompt in the UI thread while the reading of the last one runs
         # in the worker: the prompt state (used, current, coverage) changes under this lock,
         # never held across a recognizer call (Next would wait for it)
         self.lock = threading.RLock()
         self.rec, self.cli, self.state = rec, cli, state
-        self.sets = sets if sets is not None else P.load(state.lang)
+        self.own_words = own_words      # a guest writer has no word list of their own (spec 002 FR-018)
+        self.sets = sets if sets is not None else self._load()
         self.cov = coverage or P.Coverage()
         self.shown = None
         self.prompt = None
@@ -210,8 +217,14 @@ class Writer:
             self.prompt = dataclasses.replace(base, written="quick", pair=b["pair"])
             return self.prompt
 
+    def _load(self):
+        sets = P.load(self.state.lang)
+        if not self.own_words:
+            sets.pop(P.OWN, None)
+        return sets
+
     def reload_sets(self):
-        self.sets = P.load(self.state.lang)
+        self.sets = self._load()
 
     # ------------------------------------------------------------ writing
 
