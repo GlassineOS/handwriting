@@ -125,3 +125,31 @@ def test_adapter_head_starts_as_the_model_and_encoder_matches():
     train_head(head, frames * 4, ["ab"] * 4, epochs=2)
     assert all(torch.equal(a, b) for a, b in zip(before, m.parameters()))  # encoder frozen
     assert len(read_with_head(head, frames)) == 1
+
+
+def test_reference_model_inputs_and_characters():
+    """a model 4 run: six inputs and CHARS4 kept in the checkpoint's cfg, model 2's cfg as before"""
+    from glassine_train.features import NFEAT_REF, features_ref
+    from glassine_train.lines import CHARS4
+    m = Recognizer(conv=32, hidden=16, layers=1, down=3, nfeat=NFEAT_REF, alphabet=CHARS4).eval()
+    assert m.cfg["nfeat"] == NFEAT_REF and m.cfg["alphabet"] == CHARS4 and m.out.out_features == len(CHARS4) + 1
+    assert "nfeat" not in Recognizer(conv=32, hidden=16, layers=1, down=3).cfg
+    again = Recognizer(**m.cfg)
+    again.load_state_dict(m.state_dict())
+    x = torch.from_numpy(features_ref(_ink(), 0.2, 0.0))
+    with torch.no_grad():
+        lp, _ = again(x[None], torch.tensor([len(x)]))
+    assert lp.shape[-1] == len(CHARS4) + 1
+    assert decode(encode("a@b", CHARS4), CHARS4) == "a@b"
+    # the old characters keep their classes
+    assert all(encode(c, CHARS4) == encode(c) for c in ALPHABET)
+
+
+def test_augment_moves_the_size_with_the_stretch():
+    from glassine_train.data import _extent, augment
+    from glassine_train.features import features_ref
+    f = features_ref(_ink(), 0.2, 0.0)
+    for seed in range(5):
+        g = augment(f, np.random.default_rng(seed))
+        assert np.allclose(g[:, 5] - f[:, 5], np.log(_extent(g) / _extent(f)), atol=1e-6)
+        assert np.ptp(g[:, 5]) < 1e-6  # still the same in every row
