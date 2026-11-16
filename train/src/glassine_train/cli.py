@@ -103,7 +103,7 @@ def cmd_train(a):
     (out / "args.json").write_text(json.dumps(vars(a), default=str, indent=1))
     train(Path("build/data") / a.data, Path("build/data") / a.val, out, a.minutes, cfg,
           a.batch, a.lr, a.threads, a.eval_every, a.seed, steps_per_s=a.steps_per_s,
-          augment=a.augment, select=Path("build/data") / a.select if a.select else None)
+          augment=a.augment, select=[Path("build/data") / x for x in a.select.split(",") if x])
 
 
 def _model(a):
@@ -764,7 +764,8 @@ def main(argv=None):
     t = sub.add_parser("train")
     t.add_argument("--data", default="train")
     t.add_argument("--val", default="val", help="dataset shown during training (training fonts)")
-    t.add_argument("--select", default="dev", help="dataset for model selection (fonts never trained on); '' = val")
+    t.add_argument("--select", default="dev", help="datasets for model selection (fonts never trained on), "
+                   "comma-separated: the mean of their CERs; '' = val")
     t.add_argument("--run", required=True)
     t.add_argument("--minutes", type=float, default=60)
     t.add_argument("--steps-per-s", type=float, help="measured rate, sets the LR schedule length")

@@ -1,5 +1,6 @@
 """Training loop (CTC, AdamW, one-cycle schedule) and evaluation."""
 
+import functools
 import json
 import time
 from pathlib import Path
@@ -7,19 +8,22 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .data import BucketSampler, InkSet, collate, decode
+from .data import ALPHABET, BucketSampler, InkSet, collate, decode
 from .metrics import rates
 from .model import Recognizer, greedy
 
 
 def loader(ds, batch, shuffle_seed=None, workers=2, down=3):
-    if shuffle_seed is None:  # evaluation: fixed order, sorted batches
+    alphabet = getattr(ds, "alphabet", None) or ALPHABET
+    if shuffle_seed is None:  # evaluation: fixed order, sorted batches, no labels needed
         order = sorted(range(len(ds)), key=ds.length)
         sampler = [order[i:i + batch] for i in range(0, len(order), batch)]
+        alphabet = None
     else:
         sampler = BucketSampler(ds, batch, shuffle_seed, down)
         print(f"{sampler.dropped} lines too short for CTC left out", flush=True)
-    return torch.utils.data.DataLoader(ds, batch_sampler=sampler, collate_fn=collate,
+    return torch.utils.data.DataLoader(ds, batch_sampler=sampler,
+                                       collate_fn=functools.partial(collate, alphabet=alphabet),
                                        num_workers=workers, persistent_workers=workers > 0)
 
 
@@ -29,7 +33,7 @@ def recognise(model, ds, batch=64):
     refs, hyps = [], []
     for x, lens, _, _, texts in loader(ds, batch, workers=0):
         logp, ol = model(x, lens)
-        hyps += [decode(s) for s in greedy(logp, ol)]
+        hyps += [decode(s, model.alphabet) for s in greedy(logp, ol)]
         refs += texts
     return refs, hyps
 
@@ -42,15 +46,20 @@ def evaluate(model, ds, batch=64):
 def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: int = 32,
           lr: float = 2e-3, threads: int = 8, eval_every: int = 2000, seed: int = 0,
           val_limit: int = 2000, steps_per_s: float | None = None, augment: bool = False,
-          select: Path | None = None):
+          select: Path | list[Path] | None = None):
     """Checkpoints every eval_every steps; best.pt is the lowest CER on `select` (fonts never
-    trained on) if given, else on `val`."""
+    trained on; several sets: the mean of their CERs) if given, else on `val`. The model's
+    inputs and characters are the training set's."""
     torch.manual_seed(seed)
     torch.set_num_threads(threads)
     out.mkdir(parents=True, exist_ok=True)
     ds, vs = InkSet(data, augment=augment), InkSet(val, val_limit)
-    ss = InkSet(select, val_limit) if select else None
-    model = Recognizer(**cfg)
+    sel = [select] if isinstance(select, Path) else list(select or [])
+    ss = [InkSet(p, val_limit) for p in sel]
+    for d in [vs, *ss]:
+        if d.nfeat != ds.nfeat or not set("".join(d.texts)) <= set(ds.alphabet):
+            raise SystemExit(f"{d.feat.filename}: inputs or characters differ from the training set's")
+    model = Recognizer(**cfg, nfeat=ds.nfeat, alphabet=ds.alphabet)
     nparam = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
     ctc = nn.CTCLoss(blank=0, zero_infinity=False)
@@ -81,15 +90,16 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
                 print(f"step {step}/{total} loss {run:.3f} {step / el:.2f} step/s lr {sched.get_last_lr()[0]:.2e}", flush=True)
             if step % eval_every == 0 or step >= total or time.time() > deadline:
                 r = evaluate(model, vs)
-                if ss is not None:
-                    r["select"] = evaluate(model, ss)
+                if ss:
+                    each = {p.name: evaluate(model, d) for p, d in zip(sel, ss)}
+                    r["select"] = {"cer": sum(e["cer"] for e in each.values()) / len(each), "sets": each}
                 r.update(step=step, loss=run, minutes=(time.time() - t0) / 60)
                 print("val", json.dumps(r), flush=True)
                 log.write(json.dumps(r) + "\n")
                 log.flush()
                 ck = {"cfg": model.cfg, "state": model.state_dict(), "step": step, "val": r}
                 torch.save(ck, out / "last.pt")
-                score = r["select"]["cer"] if ss is not None else r["cer"]
+                score = r["select"]["cer"] if ss else r["cer"]
                 if score < best:
                     best = score
                     torch.save(ck, out / "best.pt")
