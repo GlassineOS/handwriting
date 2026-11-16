@@ -148,11 +148,11 @@ size, spacing) and keep their shape.
   always give the same letter model.
 - **FR-008**: The letter model is rebuilt when samples, markings or preferences changed,
   under the same conditions as adaptation (spec 001 FR-009: charging and idle, or when the
-  person asks), and stays on the device. Having a page open that shows or uses it (the font
-  page, neatening) counts as asking: when the model is missing or out of date (its samples,
-  markings or preferences changed, or the way it is built changed) such a page has it built in
-  the background at the lowest priority, shows its progress and stays usable meanwhile, and
-  offers to build it at once. Building the letter model never changes the installed font
+  person asks), and stays on the device. A page that shows or uses it (the font page,
+  neatening) says when it is missing or out of date (its samples, markings, marks or
+  preferences changed, or the way it is built changed) and offers to build it at once; the
+  person asking has it built in the background at the lowest priority, with its progress shown
+  and the device usable meanwhile. Building the letter model never changes the installed font
   (FR-011). Erasing samples (all, or one client's) erases the
   letter model, the preferences and the font with them; deleting one sample leaves the
   letter model out of date until its next rebuild.
@@ -173,8 +173,9 @@ size, spacing) and keep their shape.
 - **FR-032**: A single character can be learned again on its own: after a change to it
   (marks, new samples of it, preferences between its samples), its variants are rebuilt
   from its samples while the rest of the letter model stays as it was, in seconds, at the
-  lowest priority; the font page's preview shows the result. The letter model then counts
-  as up to date for that character; it is still out of date if other samples changed.
+  lowest priority; the font page's preview shows the result. Its marks then count as
+  learned; when samples were added or removed since the last whole build, the letter model
+  still counts as out of date.
 - **FR-030**: How many usable samples each character has is known from the samples
   themselves, whether a letter model is built or not: a page about the person's letters shows
   these counts as soon as it opens, says whether the letter model is built, out of date or
@@ -343,7 +344,7 @@ Host level:
   proportion along a long text; a way written once among many gets none;
 - without a letter model, and with one that is out of date, the usable samples per character
   are reported as a built model would count them; the font page and neatening show them, say
-  the model isn't built or is out of date, and build it without installing the font;
+  the model isn't built or is out of date, and build it when asked without installing the font;
 - word samples with a fixed gap for a pair give that pair that gap, a rare pair its side
   shapes' value and an unseen pair spacing from the profiles;
 - the font built from it passes a standard font validator, maps exactly the covered
