@@ -11,7 +11,11 @@ variant before and after (strength 1, with the sample's own spans), and the time
 (and of a read of the same line, for comparison).
 The store given is only read; everything happens in a temporary copy.
 
-    eval-neaten.py BIN STORE_DIR --models DIR [--strength S ...] [--limit N] [--adaptation] [--no-letters]
+    eval-neaten.py BIN STORE_DIR --models DIR [--strength S ...] [--limit N] [--adaptation] [--no-letters] [--words]
+
+--words neatens as the pen interface's service does (service/glassine_hwservice/pen.py): the
+line read once, then each word of the best reading on its own with the word as its text; the
+time is that of the read and all the words.
 """
 import argparse
 import json
@@ -24,6 +28,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "service"))
 
 
 def esc(s):
@@ -82,14 +88,35 @@ def units_of(s):
     return "device"
 
 
-def session(rec, s, strokes):
-    rec.ask("begin", "s", s.get("lang", "en"), "-", units_of(s), "")
+def session(rec, s, strokes, name="s"):
+    rec.ask("begin", name, s.get("lang", "en"), "-", units_of(s), "")
     a = s.get("area")
     if a:
         b = a["box"]
-        rec.ask("area", "s", f"{b[0]},{b[1]},{b[2]},{b[3]},{a['line']},{a.get('orientation', 0)}")
+        rec.ask("area", name, f"{b[0]},{b[1]},{b[2]},{b[3]},{a['line']},{a.get('orientation', 0)}")
     for st in strokes:
-        rec.ask("stroke", "s", st)
+        rec.ask("stroke", name, st)
+
+
+def neaten_words(rec, s, strokes, strength):
+    """the service's way: a read with detail, then each word apart -> (how, points) per stroke"""
+    from glassine_hwservice.engine import parse_text
+    from glassine_hwservice.pen import words
+    r = rec.ask("read", "s", "1", "detail")
+    rd = parse_text([r[0]] + r[2:])
+    how, out = ["kept"] * len(strokes), list(strokes)
+    if not rd or isinstance(rd, tuple):
+        return how, out
+    for wt, ks in words(rd[0][0], rd[0][2]):
+        ks = sorted(ks)
+        if not ks:
+            continue
+        session(rec, s, [strokes[k] for k in ks], "w")
+        _, h, o = parse_neaten(rec.ask("neaten", "w", strength, esc(wt)))
+        rec.ask("end", "w")
+        for j, k in enumerate(ks):
+            how[k], out[k] = h[j], o[j]
+    return how, out
 
 
 def parse_neaten(r):
@@ -162,6 +189,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--adaptation", action="store_true", help="read with the store's adaptation (it has seen the train part only when made from the same split)")
     ap.add_argument("--no-letters", action="store_true", help="no letter model: line-level corrections only")
+    ap.add_argument("--words", action="store_true", help="word by word, as the pen interface's service")
     a = ap.parse_args()
     strengths = a.strength or [0.5, 1.0]
     store = Path(a.store)
@@ -214,9 +242,11 @@ def main():
             ro = unesc(o[4]) if len(o) > 4 and o[2] == "text" and o[3] != "0" else ""
             for st in strengths:
                 t0 = time.perf_counter()
-                r = rec.ask("neaten", "s", st)
+                if a.words:
+                    how, out = neaten_words(rec, s, strokes, st)
+                else:
+                    _, how, out = parse_neaten(rec.ask("neaten", "s", st))
                 ms = (time.perf_counter() - t0) * 1000
-                _, how, out = parse_neaten(r)
                 session(rec, s, out)
                 n = rec.ask("read", "s", "1", "raw")
                 rn = unesc(n[4]) if len(n) > 4 and n[2] == "text" and n[3] != "0" else ""
