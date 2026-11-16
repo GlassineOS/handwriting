@@ -296,34 +296,7 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
     fill(cr, k, w, h)
     has_ink = bool(canvas and canvas.strokes)
     y = 16
-    lbl(cr, k, "Strength" if k.name == "white" else "strength", PAD, y)
-    y += 22
-    segs(cr, k, hits, PAD, y, w - 2 * PAD,
-         [(s, name, None if ui.neat_orig else (lambda s=s: ui.set_strength(s, canvas.payload())))
-          for s, name in N.STRENGTHS], None if ui.neat_orig else
-         next((s for s, _ in N.STRENGTHS if abs(ui.neat_strength - s) < 1e-6), None))
-    y += BTN_H + 12
-    segs(cr, k, hits, PAD, y, 200, [(False, "Neatened", lambda: ui.show_original(False)),
-                                    (True, "Original", lambda: ui.show_original(True))], ui.neat_orig)
-    btns_right(cr, k, hits, w - PAD, y, [("Clear", (lambda: canvas.clear()) if has_ink else None, False)])
-    y += BTN_H + 14
     unl = neat_unlearned(ui)
-    if ui.msg:
-        _, th = PT.text(cr, ui.msg, k["sub"], PAD, y, k.ink, maxw=w - 2 * PAD, wrap=True)
-        y += th + 8
-    elif ui.neat_busy:
-        PT.text(cr, "Neatening…", k["row"], PAD, y, k.soft, maxw=w - 2 * PAD)
-        y += 28
-    elif ui.neat_text:
-        _, th = PT.text(cr, "Read as “%s”" % ui.neat_text, k["row"], PAD, y, k.ink, weight=600, maxw=w - 2 * PAD)
-        y += th + 2
-        _, th = PT.text(cr, "Each letter keeps its shape. Nothing here becomes a sample." if unl else
-                        "Shown in your own letters. Nothing here becomes a sample.", k["sub"], PAD, y, k.ink,
-                        maxw=w - 2 * PAD)
-        y += th + 10
-    else:
-        _, th = PT.text(cr, "Nothing here becomes a sample.", k["sub"], PAD, y, k.ink, maxw=w - 2 * PAD)
-        y += th + 10
     if ui.letters_progress() is not None:
         _, th = PT.text(cr, "Learning your letters… %d%%" % round(100 * ui.letters_progress()), k["sub"], PAD, y,
                         k.ink, maxw=w - 2 * PAD)
@@ -338,6 +311,34 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
         PT.text(cr, t, k["sub"], PAD + 48, y + (nh - th) / 2, k.ink, maxw=w - 2 * PAD - bw - 50, wrap=True)
         btn(cr, k, hits, w - PAD - bw - 12, y + (nh - BTN_H) / 2, "Learn letters now", ui.build_letters, w=bw)
         y += nh + 12
+    lbl(cr, k, "Strength" if k.name == "white" else "strength", PAD, y)
+    y += 22
+    segs(cr, k, hits, PAD, y, w - 2 * PAD,
+         [(s, name, None if ui.neat_orig else (lambda s=s: ui.set_strength(s, canvas.payload())))
+          for s, name in N.STRENGTHS], None if ui.neat_orig else
+         next((s for s, _ in N.STRENGTHS if abs(ui.neat_strength - s) < 1e-6), None))
+    y += BTN_H + 12
+    segs(cr, k, hits, PAD, y, 200, [(False, "Neatened", lambda: ui.show_original(False)),
+                                    (True, "Original", lambda: ui.show_original(True))], ui.neat_orig)
+    btns_right(cr, k, hits, w - PAD, y, [("Clear", (lambda: canvas.clear()) if has_ink else None, False)])
+    y += BTN_H + 14
+    if ui.msg:
+        _, th = PT.text(cr, ui.msg, k["sub"], PAD, y, k.ink, maxw=w - 2 * PAD, wrap=True)
+        y += th + 8
+    elif ui.neat_busy:
+        PT.text(cr, "Neatening…", k["row"], PAD, y, k.soft, maxw=w - 2 * PAD)
+        y += 28
+    elif ui.neat_text:
+        _, th = PT.text(cr, "Read as “%s”" % ui.neat_text, k["row"], PAD, y, k.ink, weight=600, maxw=w - 2 * PAD)
+        y += th + 2
+        _, th = PT.text(cr, "Showing what you wrote. Neatened brings the neat version back." if ui.neat_orig else
+                        "Each letter keeps its shape. Nothing here becomes a sample." if unl else
+                        "Shown in your own letters. Nothing here becomes a sample.", k["sub"], PAD, y, k.ink,
+                        maxw=w - 2 * PAD)
+        y += th + 10
+    else:
+        _, th = PT.text(cr, "Nothing here becomes a sample.", k["sub"], PAD, y, k.ink, maxw=w - 2 * PAD)
+        y += th + 10
     btn(cr, k, hits, PAD, y, "Your handwriting", lambda: ui.open_best("intro"), icon_name="arrow_back")
     return y + BTN_H + 16
 
