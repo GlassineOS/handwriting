@@ -454,7 +454,7 @@ result.
 ## The letter model and the font (spec 003)
 
 `glassine-handwriting letters build` makes the letter model from the person's prompted samples:
-for each character, up to three versions of how they write it. A character's sample is usable
+for each character, a version for each way they write it often enough (up to 5). A character's sample is usable
 when its spans are exact (`spans_source` `exact`, as the samples app stores them), or the sample
 is one character alone kept with `keep` after a failed check (its strokes can only be that
 character's: lone full stops and commas fail the check most often), and its strokes
@@ -477,15 +477,20 @@ line) to either side. Of several, the one whose ink its middle is over, then one
 across, then one it touches; among those the one it is centred over. That covers an i's or
 j's dot, the bar of a t or an f, the arms of an E, the bar of an H and the second stroke of an
 x or a k, in words as well as alone. A stroke that is all a character has stays with it.
-Its samples are grouped by stroke count; the count with the most
-weight is the way it is written (another gives versions only when it is about as strong), each
-sample is resampled by arc length and centred, and weighted by how it was written (careful above
-quick), the person's picks (the chosen character or sample up, the other down), how well it was
-read (its stored first reading against the prompt) and how close it is to the group's middle.
-The strongest sample and then strong ones that differ from those chosen and have company seed the
-versions (a way of writing it that is about as strong as the main one gets its first version
-before the main way gets a second); a version is the weighted average of the samples near its
-seed, smoothed, so a single sample's jitter is gone. Sizes are in x-heights from the baseline of each sample's area (or of its
+Its samples are grouped by stroke count, each resampled by arc length (strokes in the order
+written) and centred; within a stroke count, the ways of writing it are the samples within 0.6
+x-heights (RMS) of each other, taken greedily from the one with the most such company, so a
+different stroke order or shape is another way. A way gives a version when it holds at least 3
+samples and at least a tenth of the character's (a slip, a lead-in or a neighbour's part stays
+out; with no such way, the largest one). Each sample is weighted by how it was written (careful
+above quick), the person's picks (the chosen character or sample up, the other down), how well it
+was read (its stored first reading against the prompt) and how close it is to its way's typical
+shape. Each way's seed is its most supported sample, the most used way first; while a character
+has fewer than three versions, further strong samples of its ways that differ from those chosen
+and have company seed more (so repeated letters don't look stamped). A version is the weighted
+average of the samples near its seed, smoothed, so a single sample's jitter is gone; its `use`
+is how many samples of its ways are nearest to it of the versions with their strokes, and the
+versions are stored most used first. Sizes are in x-heights from the baseline of each sample's area (or of its
 own letters); the line metrics (cap height, ascender, descender, slant, letter and word spacing,
 ink width as the app's pen draws) come from all usable samples. The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
@@ -506,19 +511,23 @@ make them now, at once.
 `{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
 then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"slant":…,
 "letter_spacing":…,"word_spacing":…,"ink_width":…}}`, then per character seen
-`{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,"members":N,
-"strokes":[[[x,y],…],…]}]}` (x from the version's left edge, y up from the baseline, in
-x-heights; no versions when not covered).
+`{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,"members":N,"use":N,
+"strokes":[[[x,y],…],…]}],"slots":[V,…]}` (x from the version's left edge, y up from the baseline,
+in x-heights; no versions when not covered). `slots` is the font's cycle (10 steps): the version
+the character shows at each step, each about as often as it is used, spread out (smooth weighted
+round robin on `use`); a model without it shows its versions in turn.
 
 **The font:** `font install` makes a TrueType font of the covered characters (a stroke outlined
 at the ink width; everything else falls back to the system's fonts) and installs it as
 `$XDG_DATA_HOME/fonts/glassine-handwriting/handwriting-VERSION.ttf`, replacing the one before, then
 runs `fc-cache` on that directory. Its family name is the person's (`-n`; first `My handwriting`,
-later the name it has), the version counts on with every install, so apps see a new font. A
-character with more versions has them as alternates that the `calt` feature picks in turn, the
-same way every time: after the first version comes the second, after the second the third (or the
-first when there are two), after the third the first; a run starts with the first after a space,
-a character with one version or one the font lacks. The font is made only on the device and is
+later the name it has), the version counts on with every install, so apps see a new font. Along the
+text the font steps through a cycle of 10, the same way every time: a run starts at step 0, and
+after a character or space at step s the next one is at step s + 1 (after 9, 0; after a character
+the font lacks, 0 again); a character shows the version its `slots` give for that step. Each
+character and the space has a glyph per step (the step-0 one is its mapped glyph; the others are
+references to one of its versions), and the `calt` feature has a rule per step that turns the
+next glyph into its glyph at the step after. The font is made only on the device and is
 never donated or exported.
 
 ## Command line

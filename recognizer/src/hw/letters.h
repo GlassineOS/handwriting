@@ -10,9 +10,11 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 4      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 5      /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
-#define HW_LETTERS_VARIANTS 3   /* variants per character at most */
+#define HW_LETTERS_VARIANTS 5   /* variants per character at most (FR-006) */
+#define HW_LETTERS_SLOTS 10     /* the font's cycle of variants along the text (FR-010): a tenth each */
+#define HW_LETTERS_WAY_SHARE 10 /* a way of writing a character gives a variant from 1/this of its samples */
 #define HW_FONT_NAME_DEFAULT "My handwriting"
 #define HW_FONT_NAME_MAX 63     /* bytes of UTF-8 */
 
@@ -27,6 +29,7 @@ struct hw_variant {
 	double width;                   /* of the ink, x-heights */
 	double weight;                  /* the sum of its samples' weights */
 	int members;                    /* versions it was made from */
+	int use;                        /* versions written this way (nearest to it of their strokes) */
 	size_t nstrokes;
 	struct hw_lstroke *s;
 };
@@ -36,7 +39,9 @@ struct hw_letter {
 	int samples;                    /* usable samples with this character */
 	int covered;
 	int nvar;
-	struct hw_variant var[HW_LETTERS_VARIANTS];
+	struct hw_variant var[HW_LETTERS_VARIANTS];    /* the most used first */
+	/* the variant at each step of the font's cycle, as often as each is used */
+	unsigned char slot[HW_LETTERS_SLOTS];
 };
 
 struct hw_metrics {
@@ -93,10 +98,10 @@ struct hw_letters_opts {
 /* 1 built, 2 nothing to do (reason printed when verbose), -1 error */
 int hw_letters_run(const struct hw_letters_opts *o);
 
-/* The variant a text shows at each character, as the font's contextual alternates give it
- * (FR-010): prev is the variant of the character before in the same run (-1 at the start or
- * after a character the font lacks), n the variants of this one. */
-int hw_letters_rotate(int prev, int n);
+/* The step of the font's cycle a text is at, as its contextual alternates give it (FR-010):
+ * prev the step of the character (or space) before in the same run, -1 at its start or after a
+ * character the font lacks. The character shows its variant slot[step]. */
+int hw_letters_step(int prev);
 
 /* The installed font (letters/font: NAME VERSION PATH): 1 there, 0 none, -1 error. */
 int hw_font_record(char *name, size_t nn, unsigned *version, char *path, size_t np);
