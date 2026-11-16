@@ -27,6 +27,8 @@ def parse(text):
         d = json.loads(ln)
         if "metrics" in d:
             out["metrics"] = d["metrics"]
+        elif "spacing" in d:
+            out["spacing"] = d["spacing"]
         elif "char" in d:
             out["chars"][d["char"]] = d
     return out
@@ -70,26 +72,98 @@ def variants(model, text):
     return out
 
 
+XH = 500        # ttf.c: font units per x-height; the preview rounds as the font does
+BANDS = 8       # letters.h HW_PROF_BANDS
+
+
+def _nan(v):
+    return float("nan") if v is None else float(v)
+
+
+def _prof(var):
+    return [_nan(v) for v in var.get("left") or [None] * BANDS], [_nan(v) for v in var.get("right") or [None] * BANDS]
+
+
+def _ok(v):
+    return v == v
+
+
+def profile_gap(a, b, shift):
+    """spacing.c hw_profile_gap: the narrowest distance between a's right side and b's left
+    side, b moved right by shift; their boxes when they share no height band"""
+    ds = [b[0][k] + shift - a[1][k] for k in range(BANDS) if _ok(a[1][k]) and _ok(b[0][k])]
+    if ds:
+        return min(ds)
+    ar = [x for x in a[1] if _ok(x)]
+    bl = [x for x in b[0] if _ok(x)]
+    return min(bl) + shift - max(ar) if ar and bl else 0.0
+
+
+def profile_open(a, b):
+    """spacing.c hw_profile_open"""
+    g = profile_gap(a, b, 0)
+    ds = [min(b[0][k] - a[1][k] - g, 1.0) for k in range(BANDS) if _ok(a[1][k]) and _ok(b[0][k])]
+    return sum(ds) / len(ds) if len(ds) >= 2 else 0.0
+
+
+def pair_gap(sp, a, va, b, vb):
+    """spacing.c hw_spacing_gap: the pair's own gap, its side shapes', or from the profiles"""
+    for p in sp.get("pairs", []):
+        if p[0] == a and p[1] == b:
+            return p[2]
+    rc, lc = va.get("rc", -1), vb.get("lc", -1)
+    if rc >= 0 and lc >= 0:
+        for q in sp.get("sides", []):
+            if q[0] == rc and q[1] == lc:
+                return q[2]
+    letter = sp.get("letter", 0.15)
+    g = letter
+    if sp.get("open", 0) > 0:
+        g -= sp["open"] * (profile_open(_prof(va), _prof(vb)) - sp.get("open0", 0))
+    return min(max(g, letter - 0.3), letter + 0.3)
+
+
+def _kern(sp, a, va, b, vb, gap):
+    """ttf.c gpos: the kerning between two variants, in font units"""
+    at = profile_gap(_prof(va), _prof(vb), va["width"] + gap)
+    k = _round((pair_gap(sp, a, va, b, vb) - at) * XH)
+    return max(-3 * XH, min(3 * XH, k))
+
+
+def _round(x):
+    return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+
+
 def layout(model, text):
     """[(char, strokes or None, x, advance)] in x-heights, x from the left of the text, y up
-    from the baseline; strokes None: the system font draws the character"""
+    from the baseline; strokes None: the system font draws the character. Spaced as the font
+    spaces it (ttf.c): half the typical gap each side, each pair of neighbouring letters
+    kerned to its gap, the space the word gap less the two sides beside it."""
     m = model["metrics"]
-    gap, ink = m.get("letter_spacing", 0.15), m.get("ink_width", 0.07)
-    word = m.get("word_spacing", 0.7)
-    out, x = [], 0.0
+    sp = model.get("spacing") or {"letter": m.get("letter_spacing", 0.15), "word": m.get("word_spacing", 0.7)}
+    gap, word = sp.get("letter", 0.15), sp.get("word", 0.7)
+    out, x, prev = [], 0, None
     for c, v in zip(text, variants(model, text)):
         if c == " ":
-            adv = max(word - gap, 0.2)
-            out.append((c, [], x, adv))
+            adv = max(_round((word - gap) * XH), XH // 10)
+            out.append((c, [], x / XH, adv / XH))
+            prev = None
         elif v is None:
-            adv = 0.7
-            out.append((c, None, x, adv))
+            adv = round(0.7 * XH)
+            out.append((c, None, x / XH, adv / XH))
+            prev = None
         else:
             var = model["chars"][c]["variants"][v]
-            ox = gap / 2 + ink / 2
+            if prev is not None:
+                k = _kern(sp, prev[0], prev[1], c, var, gap)
+                x += k
+                pc, ps, px, pa = out[-1]
+                out[-1] = (pc, ps, px, pa + k / XH)
+            ox = gap / 2
             strokes = [[(ox + p[0], p[1]) for p in s] for s in var["strokes"]]
-            adv = var["width"] + gap + ink
-            out.append((c, strokes, x, adv))
+            adv = _round((var["width"] + gap) * XH)
+            out.append((c, strokes, x / XH, adv / XH))
+            prev = (c, var)
         x += adv
     return out
 
