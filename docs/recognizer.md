@@ -478,6 +478,64 @@ Nothing in it leaves the device except by export or a donation the person writes
 
 A running recognizer picks up a new adaptation at its next reading.
 
+## Writer stores (contract 1.3, FR-021)
+
+Contract 1.3 adds stores for guest writers of the samples app (spec 002 FR-014 to FR-025). A
+program of contract 1.2 has none of this: it takes `--writer` and `writer` as a usage error
+(exit 2), so a client can tell. `hello` still answers 1.
+
+**Where.** `$XDG_DATA_HOME/glassine/handwriting-writers/WRITER/` (or
+`~/.local/share/glassine/handwriting-writers/WRITER/`), beside the person's store, never inside
+it: directory 0700, files 0600, laid out and locked like the person's store (above), with its
+own `lock`. `WRITER` is 16 lowercase hex digits from the system's random source, made by the
+recognizer when it creates the store; it says nothing about the writer, and is not the
+writer's donor ID. A writer's name never reaches the recognizer; the samples app keeps it.
+`handwriting-writers/` itself (0700) holds only the stores and, while one is being removed,
+`.removing-WRITER`.
+
+**Naming the store.** A writer's store is used only when named, with `--writer WRITER` before
+anything else: for the line contract `glassine-handwriting --writer WRITER [-i IDLE_SECONDS]`,
+so every request of that process is for that store, and for every command,
+`glassine-handwriting --writer WRITER samples …`. No variable chooses a store; without
+`--writer`, everything is the person's store, as before. A `WRITER` that isn't a store (never
+made, or removed) is refused: a process exits 1 at start with `unknown-writer` on stderr, a
+command exits 1 the same way, and a request of a running process whose store was removed
+meanwhile gets `error ID unknown-writer` and keeps nothing.
+
+```
+glassine-handwriting writer new               create a store; prints WRITER
+glassine-handwriting writer list              WRITER SAMPLES DONATION per store
+glassine-handwriting writer remove WRITER     delete that store for good; prints removed
+```
+
+`writer remove` takes the store's lock, renames it to `.removing-WRITER` and deletes that, so
+the store is gone from its name when the command returns; a `.removing-*` left by a crash is
+deleted at the next `writer` command or open of any writer store. A process of the removed
+store finds it gone at its next request.
+
+**What a writer's store does.** Everything the person's store does for samples, preferences,
+marks, the size measurements and the donation, with the same requests and commands: `confirm`,
+`donate`, `forget`, `samples`, `list`, `mark`, `prefer`, `sample`, `samples stats|list|erase|
+delete|export`, `donation …` (its own `donation/donor-id`, made at its first `donation start`,
+kept when its donation is erased, replaced by `donor new`), `read`. The person's `learning`
+setting doesn't apply: a writer's prompted samples are kept whatever it says. Readings are the
+base model's alone, with the writer's own size measurements (Size), the language's word list
+and the character model; never the person's adaptation, learned words (the predictor's
+`words` file is not read) or letter model. `words`, `chars` and `languages` from
+`handwriting.conf` apply as for the person.
+
+**What it refuses.** For a writer's store: `neaten` gets `error ID writer-store`; `adapt`,
+`adaptation`, `letters …`, `font …`, `learning` and `samples import` exit 2 with `writer-store`
+on stderr. An idle exit of a writer's process starts no adaptation.
+
+**The person's store.** `samples stats` without `--writer` also prints `writers N`, the number
+of writer stores, so the settings app can say they are kept. `samples erase`, `samples export`
+and `import` without `--writer` cover the person's store only; no erase of the person's store
+touches `handwriting-writers/`.
+
+**The service.** The handwriting service (docs/service.md) serves the person's store only; the
+samples app reaches a writer's store through a process or command of its own with `--writer`.
+
 ## Adaptation (FR-009)
 
 `glassine-handwriting adapt` trains a small head (a residual adapter on the encoder's output and
@@ -778,7 +836,7 @@ weights and bias, output weights and bias.
 | Variable | Meaning |
 |---|---|
 | `GLASSINE_HANDWRITING_MODELS` | the base models' directory instead of `/usr/share/glassine/handwriting` |
-| `XDG_DATA_HOME`, `XDG_CONFIG_HOME` | the store and the settings, as above |
+| `XDG_DATA_HOME`, `XDG_CONFIG_HOME` | the store, the writer stores' directory and the settings, as above; never which writer's store |
 | `GLASSINE_HANDWRITING_SYSFS` | for tests: a directory laid out like `/sys/class/power_supply` |
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
