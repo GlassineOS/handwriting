@@ -375,6 +375,7 @@ def reference(s: dict, writer_xh: float | None) -> dict:
         ys = np.concatenate([np.asarray(q, float)[:, 1] for q in s["strokes"] if len(q)])
         y0 = ar.get("box", [0, 0])[1]
         first = y0 + line * 2 / 3
-        k = int(np.ceil((np.median(ys) - first) / line))
+        # each guide owns its line from two thirds above it to a third below (as the recognizer)
+        k = int(np.ceil((np.median(ys) - first) / line - 1 / 3))
         base = float(first + max(k, 0) * line)
     return {"xh": writer_xh, "line": line, "base": base}
