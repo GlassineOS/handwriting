@@ -1690,6 +1690,18 @@ long hw_donation_count(void)
 	return n;
 }
 
+int hw_donation_ids(char (**out)[17], size_t *n)
+{
+	*out = NULL; *n = 0;
+	if (ix_sync(&DIX, 0)) return -1;
+	if (!DIX.n) return 0;
+	*out = malloc(DIX.n * sizeof **out);
+	if (!*out) return -1;
+	for (size_t i = 0; i < DIX.n; i++)
+		if (DIX.e[i].id[0] && !DIX.e[i].dup) strcpy((*out)[(*n)++], DIX.e[i].id);
+	return 0;
+}
+
 int hw_donation_write(const char *path)
 {
 	char p[4096], lic[16], donor[40];

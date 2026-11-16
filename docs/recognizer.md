@@ -339,7 +339,7 @@ glassine-handwriting learning [on|off]          show or set handwriting.conf's l
 glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]
 glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
-glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
+glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
 ```
@@ -371,7 +371,7 @@ donating was on (spec 002 FR-011); `remove` takes one out by id; `write` writes 
 format v1 lines, each with `licence` and `donor`, times from 0 and no client or time of day, then
 a preference record for each preference whose two samples are both in the donation, naming them
 by their ids in that file.
-`list` prints `licence LICENCE|-`, `samples N` and `donor ID|-`. `donor` prints the donor ID (`-`
+`list` prints `licence LICENCE|-`, `samples N` and `donor ID|-`. `samples` prints the id of each sample in the donation, once, in the order added. `donor` prints the donor ID (`-`
 before the first donation), `donor new` replaces it with a new one and prints that: later
 donations then count as another writer's. `erase` keeps the donor ID.
 
