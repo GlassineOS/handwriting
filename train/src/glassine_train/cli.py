@@ -542,6 +542,203 @@ def cmd_inkstats(a):
     print(json.dumps(res, indent=1))
 
 
+def _gen4_setup(a, held: bool):
+    from . import build4, gen, lines as L
+    from .timing import Fit
+    L.fetch_names(Path(a.names))
+    lg = L.Generator(Path("build/text"), Path(a.gclm), Path(a.names), Path(a.wordlist), held=held)
+    from .timing import FIT_ONE_WRITER
+    f = json.loads(Path(a.fit).read_text()) if a.fit else {"fit": FIT_ONE_WRITER}
+    fit = Fit(**f["fit"])
+    return build4, gen, L, lg, fit, f
+
+
+def cmd_gen4(a):
+    """The next base model's ink sets (build4.py): train, val, dev, dev_kinds, the test sets."""
+    import hashlib
+    from . import writers as W
+    build4, gen, L, lg, fit, fj = _gen4_setup(a, held=False)
+    _, _, _, lg_held, _, _ = _gen4_setup(a, held=True)
+    sp = font_splits()
+    out = Path(a.out)
+    big = build4.bigrams(lg.train_s)
+    every = sp["train"] + sp["dev"] + sp["test"]
+    tabs, covers = build4.font_tables(every, Path("build/cache"), a.workers)
+    by = dict(tabs)
+    extra = []
+    if a.pool_style:  # a letter model's spacing as one style among the fonts'
+        extra = [tuple(map(float, x.split(","))) for x in a.pool_style]
+    contrib = W.load(Path(a.writers), set(a.test_contributor)) if a.writers else []
+    extra += [(w.spacing.get("letter", 0.4), w.spacing.get("word", 1.2)) for w, _ in contrib]
+    pool, open0, per_font = build4.style_pool([(f, by[f]) for f in sp["train"]], big, extra)
+    fw = lambda fonts: gen.FontWriter([(f, by[f]) for f in fonts], covers)
+    mk = lambda fonts: gen.Generator(fw(fonts), fit, pool, open0)
+    c = text.corpus(Path("build/text"), seed=1)
+    groups = {"heldout": HELD_OUT, "newprint": sp["test-print"], "newscript": sp["test-script"]}
+    kinds = [k for k in L.SHARES if k != "prose"]
+    base_meta = {"generator": "glassine_train.gen", "alphabet": L.CHARS4, "line_kinds": L.SHARES,
+                 "sources": build4.source_pins(Path(a.fit) if a.fit else None), "style_pool": len(pool), "open0": open0,
+                 "fonts": {"train": sp["train"]}, "provenance": {"fonts": _provenance()}}
+    jobs = []
+    if not a.only or "train" in a.only:
+        tr = lg.lines(a.lines, a.seed)
+        jobs.append(("train", tr, sp["train"], a.seed + 1))
+    if contrib and (not a.only or "train_contributors" in a.only):
+        # contributors as writers: each writes --contrib-lines lines of the text it covers
+        rng = np.random.default_rng(a.seed + 7)
+        cj = []
+        for wi, (w, _) in enumerate(contrib):
+            texts = [x for x in lg.lines(a.contrib_lines * 3, int(rng.integers(1 << 30))) if w.covers(x[0])]
+            cj += [(t, k, s_, wi) for (t, k, s_) in build4.jobs_of(texts[:a.contrib_lines], int(rng.integers(1 << 30)))]
+        g = gen.Generator(None, fit, pool, open0)
+        build4.render_set(out / "train_contributors", cj, g, [w for w, _ in contrib], a.workers,
+                          dict(base_meta, contributors=[m for _, m in contrib]))
+    jobs.append(("val", [(t, "prose") for t in c["val"][:2000]], ORIG_TRAIN, 12))
+    jobs.append(("dev", [(t, "prose") for t in c["val"][:2000]], sp["dev"], 12))
+    jobs.append(("dev_kinds", [(lg_held.one(k, np.random.default_rng(1000 + i)), k) for k in kinds
+                               for i in range(100)], sp["dev"], 14))
+    test_kinds = [(lg_held.one(k, np.random.default_rng(5000 + i)), k) for k in kinds for i in range(100)]
+    for name, n in EVAL_SIZES.items():
+        texts = [(t, {"test": "prose", "test_words": "words", "test_symbols": "symbols",
+                      "test_letters": "uniform"}[name]) for t in c[name][:n]]
+        for g, fonts in groups.items():
+            jobs.append((f"{name}-{g}", texts, fonts, 13))
+    for g, fonts in groups.items():
+        jobs.append((f"test_kinds-{g}", test_kinds, fonts, 15))
+    for f in HELD_OUT + sp["test-print"] + sp["test-script"]:
+        jobs.append((f"test-font-{f}", [(t, "prose") for t in c["test"][:300]], [f], 13))
+    for name, texts, fonts, seed in jobs:
+        if a.only and not any(name.startswith(o) for o in a.only):
+            continue
+        texts = [(t, k) for t, k in texts if all(ch in L.CHARS4 for ch in t)]
+        meta = dict(base_meta, fonts=sorted(fonts), seed=seed)
+        build4.render_set(out / name, build4.jobs_of(texts, seed), mk(fonts), None, a.workers, meta)
+    man = {"sets": {}, "sources": base_meta["sources"], "alphabet": L.CHARS4, "line_kinds": L.SHARES,
+           "style_pool": {"fonts": per_font, "extra": len(extra)}, "timing_fit": {k: v for k, v in fj["fit"].items()},
+           "contributors": [m for _, m in contrib]}
+    for d in sorted(out.iterdir()):
+        if (d / "meta.json").exists():
+            m = json.loads((d / "meta.json").read_text())
+            man["sets"][d.name] = {k: m[k] for k in ("lines", "strokes", "points", "characters", "kinds", "bytes",
+                                                     "seed", "fonts") if k in m}
+    (out / "manifest.json").write_text(json.dumps(man, indent=1, default=float))
+
+
+def cmd_gen4_letters(a):
+    """Lines in a letter model's own versions, spacing and timing (gen.LetterWriter): one
+    synthetic writer, timed by --fit as fitted (no writer drawn around it) and with the fit's
+    delayed-stroke habits. Its output stays where the letter model is (a person's
+    handwriting): never in a repository, a release or a log."""
+    from . import build4
+    build4_, gen, L, lg, fit, fj = _gen4_setup(a, held=False)
+    rows = [json.loads(ln) for ln in Path(a.letters).read_text().splitlines() if ln.strip()]
+    lw = gen.LetterWriter(rows, a.name)
+    lw.habits = fj.get("delays", {})  # the writer's own, when the fit is of their ink
+    texts = []
+    rng = np.random.default_rng(a.seed)
+    tries = 0
+    while len(texts) < a.lines and tries < a.lines * 50:
+        k = list(L.SHARES)[int(rng.choice(len(L.SHARES), p=np.array(list(L.SHARES.values()))))]
+        if k == "prose":
+            ch = text.chunks([lg.train_s[int(rng.integers(len(lg.train_s)))]], rng)
+            if not ch:
+                continue
+            t = ch[int(rng.integers(len(ch)))]
+        else:
+            t = lg.one(k, rng)
+        tries += 1
+        if lw.covers(t):
+            texts.append((t, k))
+    g = gen.Generator(None, fit, [(lw.spacing.get("letter", 0.4), lw.spacing.get("word", 1.2))], residual=1.0)
+    meta = {"generator": "glassine_train.gen", "writer": "letter model", "alphabet": L.CHARS4,
+            "covered": "".join(sorted(lw.chars)), "seed": a.seed, "letters_inputs": rows[0].get("inputs")}
+    build4_.render_set(Path(a.out), build4_.jobs_of(texts, a.seed), g, lw, a.workers, meta)
+
+
+def cmd_dynfit(a):
+    """The timing model (timing.py) fitted to real ink, with delayed strokes and spacing:
+    aggregate numbers only, written to --out."""
+    from . import inkmeasure as M, timing as T
+    from .real import load_split, usable
+    sp = load_split(Path(a.real))
+    ss = [s for s in sp["train"] + sp["dev"] if usable(s)]  # never the test session
+    xs, xh = M.to_xh(ss)
+    d, flags = M.delays(xs)
+    f, rep = T.fit([(s, q) for s, q, _ in xs], workers=a.workers, cache=Path(a.cache) if a.cache else None)
+    f = T.fit_pauses(f, [(s, q) for s, q, _ in xs], flags)
+    out = {"fit": T.asdict_fit(f), "report": rep, "delays": d, "pauses": M.pauses(xs, flags),
+           "gaps": M.letter_gaps(xs), "dynamics": T.dynamics([(s, q) for s, q, _ in xs]), "samples": len(xs)}
+    Path(a.out).write_text(json.dumps(out, indent=1, default=float))
+    print(json.dumps({k: v for k, v in out.items() if k != "dynamics"}, indent=1, default=float))
+
+
+def cmd_featurize(a):
+    """Model input from an ink set: the shipped features (--ref none) or the reference-height
+    prototype (features_ref; --ref xh, line, or mix: the line alone for --line-share)."""
+    import multiprocessing as mp
+    from .features import NFEAT, NFEAT_REF
+    from .inkstore import InkStore
+    src = Path(a.ink)
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    st = InkStore(src)
+    n = len(st) if not a.limit else min(a.limit, len(st))
+    rng = np.random.default_rng(a.seed)
+    use_line = rng.random(n) < (a.line_share if a.ref == "mix" else 1.0 if a.ref == "line" else 0.0)
+    global _FZ
+    _FZ = (st, a.ref, use_line)
+    offsets = [0]
+    tmp = out / "feat.f16.tmp"
+    with open(tmp, "wb") as fh, mp.get_context("fork").Pool(a.workers) as pool:
+        for f in pool.imap(_featurize_one, range(n), chunksize=256):
+            fh.write(f.astype(np.float16).tobytes())
+            offsets.append(offsets[-1] + len(f))
+    tmp.rename(out / "feat.f16")
+    np.save(out / "offsets.npy", np.array(offsets, np.int64))
+    (out / "texts.json").write_text(json.dumps([r["text"] for r in st.rows[:n]]))
+    meta = {"n": n, "points": offsets[-1], "nfeat": NFEAT if a.ref == "none" else NFEAT_REF, "ref": a.ref,
+            "line_share": a.line_share if a.ref == "mix" else None, "from": str(src), "ink_meta": st.meta}
+    (out / "meta.json").write_text(json.dumps(meta, indent=1, default=float))
+    print(f"{out}: {n} lines, {offsets[-1]} points")
+
+
+_FZ = None
+
+
+def _featurize_one(i):
+    from .features import features, features_ref, ref_height
+    st, ref, use_line = _FZ
+    strokes, row = st[i]
+    if ref == "none":
+        return features(strokes)
+    h = ref_height(None if use_line[i] else row["xh"], row["line"])
+    return features_ref(strokes, h, row["base"])
+
+
+def cmd_inkcheck(a):
+    """Measures of an ink set against real ink's (dynfit's file): dynamics, delayed strokes,
+    letter gaps, line kinds, sizes; and a sheet of lines to look at. Aggregates only."""
+    from . import build4, inkmeasure as M, timing as T
+    from .inkstore import InkStore
+    st = InkStore(Path(a.ink))
+    rng = np.random.default_rng(a.seed)
+    idx = rng.choice(len(st), min(a.n, len(st)), replace=False)
+    xs = []
+    for i in idx:
+        strokes, row = st[i]
+        xs.append(([np.c_[q[:, :2] / row["xh"], q[:, 2]] for q in strokes], row["spans"], row["text"]))
+    d, flags = M.delays(xs)
+    syn = {"dynamics": T.dynamics([(s, q) for s, q, _ in xs]), "delays": d, "pauses": M.pauses(xs, flags),
+           "gaps": M.letter_gaps(xs, lambda strokes, own, text: 0.0)}
+    out = {"set": st.meta.get("kinds"), "lines": len(st), "bytes": st.meta.get("bytes"), "synthetic": syn}
+    if a.real:
+        r = json.loads(Path(a.real).read_text())
+        out["real"] = {k: r[k] for k in ("dynamics", "delays", "pauses", "gaps") if k in r}
+    if a.sheet:
+        build4.sheet(st, [int(i) for i in idx[:a.sheet_lines]], Path(a.sheet))
+    print(json.dumps(out, indent=1, default=float))
+
+
 def main(argv=None):
     import sys
     argv = sys.argv[1:] if argv is None else argv
@@ -681,8 +878,54 @@ def main(argv=None):
     ist.add_argument("--presets", nargs="*", default=["real1"])
     ist.add_argument("--fonts", type=int, default=40, help="random training fonts to render with")
     ist.add_argument("--workers", type=int, default=8)
+    g4 = sub.add_parser("gen4", help="the next base model's ink sets (build4.py)")
+    g4.add_argument("--out", default="build/ink4")
+    g4.add_argument("--lines", type=int, default=600_000)
+    g4.add_argument("--seed", type=int, default=41)
+    g4.add_argument("--workers", type=int, default=8)
+    g4.add_argument("--only", nargs="*", help="set name prefixes")
+    g4.add_argument("--fit", help="timing fit (glassine-train dynfit); default timing.FIT_ONE_WRITER")
+    g4.add_argument("--gclm", default="build/release/glassine-handwriting-chars-en-1/chars.gclm")
+    g4.add_argument("--names", default="build/names")
+    g4.add_argument("--wordlist", default="build/lexicon/en/words.txt", help="words a pseudo-word must not be")
+    g4.add_argument("--pool-style", nargs="*", default=[], help="GAP,WORD: a letter model's spacing as one style")
+    g4.add_argument("--writers", help="contributors' letter models (writers.py)")
+    g4.add_argument("--test-contributor", nargs="*", default=[], help="contributors in the real test set")
+    g4.add_argument("--contrib-lines", type=int, default=20_000, help="lines per contributor writer")
+    gl = sub.add_parser("gen4-letters", help="lines in one letter model's own letters")
+    gl.add_argument("letters", help="a letter model file (letters/model)")
+    gl.add_argument("--out", required=True)
+    gl.add_argument("--name", default="letters")
+    gl.add_argument("--lines", type=int, default=20_000)
+    gl.add_argument("--seed", type=int, default=47)
+    gl.add_argument("--workers", type=int, default=8)
+    gl.add_argument("--fit", required=True)
+    gl.add_argument("--gclm", default="build/release/glassine-handwriting-chars-en-1/chars.gclm")
+    gl.add_argument("--names", default="build/names")
+    gl.add_argument("--wordlist", default="build/lexicon/en/words.txt")
+    df = sub.add_parser("dynfit", help="timing, delayed strokes and spacing of real ink (aggregates)")
+    df.add_argument("--real", default="build/real")
+    df.add_argument("--out", required=True)
+    df.add_argument("--workers", type=int, default=8)
+    df.add_argument("--cache", help="the strokes' fitted pulses, kept to refit faster")
+    fz = sub.add_parser("featurize", help="model input from an ink set")
+    fz.add_argument("ink")
+    fz.add_argument("--out", required=True)
+    fz.add_argument("--ref", choices=["none", "xh", "line", "mix"], default="none")
+    fz.add_argument("--line-share", type=float, default=0.3)
+    fz.add_argument("--limit", type=int)
+    fz.add_argument("--seed", type=int, default=0)
+    fz.add_argument("--workers", type=int, default=8)
+    ic = sub.add_parser("inkcheck", help="an ink set measured against real ink (aggregates) and a sheet")
+    ic.add_argument("ink")
+    ic.add_argument("--real", help="dynfit's file")
+    ic.add_argument("--n", type=int, default=2000)
+    ic.add_argument("--seed", type=int, default=0)
+    ic.add_argument("--sheet", help="a PNG of some lines")
+    ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
-    {"inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+    {"inkcheck": cmd_inkcheck, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
+     "inkstats": cmd_inkstats, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":
