@@ -76,17 +76,18 @@ def unesc(s):
 
 
 class Env:
-    """A model directory and a person's home of their own."""
+    """A model directory and a person's home of their own (ref: a random model reading the
+    reference-height features, ghm version 2)."""
 
-    def __init__(self, model_dir=None):
+    def __init__(self, model_dir=None, ref=False):
         self.dir = Path(tempfile.mkdtemp(prefix="hw-test-"))
         self.models = self.dir / "models"
         (self.models / "en").mkdir(parents=True)
         if model_dir:
             shutil.copy(Path(model_dir) / "en" / "recognizer.ghm", self.models / "en" / "recognizer.ghm")
         else:
-            subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(self.models / "en" / "recognizer.ghm")],
-                           check=True)
+            subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(self.models / "en" / "recognizer.ghm")]
+                           + (["--ref"] if ref else []), check=True)
         (self.models / "en" / "prompts.txt").write_text("The quick brown fox jumps over the lazy dog.\n")
         (self.models / "en" / "prompts").mkdir()
         (self.models / "en" / "prompts" / "words.txt").write_text("hello\nwater\n")
@@ -1407,6 +1408,69 @@ class Adaptation(unittest.TestCase):
         out, _ = p.communicate(timeout=300)
         self.assertIn("erased meanwhile", out)
         self.assertFalse((self.env.store / "adaptation").exists())
+
+
+class ReferenceHeight(unittest.TestCase):
+    """a model that reads the ink scaled by a reference height (ghm version 2, FR-018): it
+    reads, its readings follow the ink's size (a version 1 model's don't), and it adapts"""
+
+    def scores(self, ref, scale, area=None, size=None):
+        env = Env(ref=ref)
+        try:
+            if size:
+                env.env["GLASSINE_HANDWRITING_SIZE"] = size
+            c = env.start("-i", "0")
+            c.ask("hello", "1", "org.example.keyboard")
+            out = []
+            for s in INK[:6]:
+                c.ask("begin", "s", "en", "normal", "em", "")
+                if area:
+                    self.assertEqual(c.ask("area", "s", area)[2:], ["ok"])
+                for q in s["strokes"]:
+                    c.ask("stroke", "s", pts([(p[0] * scale, p[1] * scale, p[2]) for p in q]))
+                r = parse_text(c.ask("read", "s", "1", "raw"))
+                c.ask("end", "s")
+                out.append(r[0][1] if r else None)
+            c.close()
+            return out
+        finally:
+            env.close()
+
+    def test_size_is_read(self):
+        # version 1: the ink's own height, so the same ink twice as big reads the same
+        self.assertEqual(self.scores(False, 1), self.scores(False, 2))
+        one, two = self.scores(True, 1), self.scores(True, 2)
+        self.assertTrue(all(x is not None for x in one))
+        self.assertNotEqual(one, two)
+        # the same reference and ink: the same reading
+        self.assertEqual(one, self.scores(True, 1))
+        # the person's letters replace the line's guess, and with them the reading
+        self.assertNotEqual(one, self.scores(True, 1, size="0.05,0.12"))
+        # the reference for the model alone, no weighing: still read at that size
+        self.assertEqual(self.scores(True, 1, size="noweigh"), self.scores(True, 1, size="noweigh"))
+        self.assertEqual(self.scores(True, 1, size="0.05,0.12"), self.scores(True, 1, size="0.05,0.12,noweigh"))
+        # the guide line the ink sits on moves its height
+        self.assertNotEqual(self.scores(True, 1, area="-5,-5,10,10,1,0,0.62"),
+                            self.scores(True, 1, area="-5,-5,10,10,1,0,0.2"))
+
+    def test_adapts(self):
+        env = Env(ref=True)
+        try:
+            rng = random.Random(3)
+            c = env.start("-i", "0")
+            c.ask("hello", "1", "org.example.keyboard")
+            for i in range(150):
+                ch = "olxz"[i % 4]
+                c.ask("begin", "s", "en", "normal", "device:10", "")
+                for q in shapes(ch, rng):
+                    c.ask("stroke", "s", q)
+                self.assertEqual(c.ask("confirm", "s", "picked", ch)[2], "ok")
+            c.close()
+            out = env.run("adapt", *Adaptation.ARGS).stdout
+            self.assertIn("kept", out)
+            self.assertTrue((env.store / "adaptation" / "en" / "current").exists())
+        finally:
+            env.close()
 
 
 class Serving(unittest.TestCase):

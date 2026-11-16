@@ -10,6 +10,9 @@
 
 #define HW_GHM_MAGIC "GHWM"
 #define HW_GHM_VERSION 1
+/* version 2: the same layout; the model reads the reference-height features
+ * (hw_features_ref, HW_NFEAT_REF per row) */
+#define HW_GHM_VERSION_REF 2
 #define HW_MAX_CLASSES 512
 
 struct hw_cfg {
@@ -28,6 +31,7 @@ struct hw_head {
 
 struct hw_model {
 	struct hw_cfg cfg;
+	uint32_t version;                       /* HW_GHM_VERSION or HW_GHM_VERSION_REF */
 	uint32_t charset[HW_MAX_CLASSES];       /* class k+1 = charset[k]; 0 = CTC blank */
 	char lang[32];
 	uint64_t hash;                          /* of the whole file: ties an adaptation to it */

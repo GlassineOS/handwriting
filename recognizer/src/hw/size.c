@@ -323,6 +323,9 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	out->base = out->has_base ? base : 0;
 	const char *e = getenv("GLASSINE_HANDWRITING_SIZE");
 	if (e && *e) {
+		/* "noweigh", alone or after the letters: the reference for the model only */
+		const char *nw = strstr(e, "noweigh");
+		out->noweigh = nw && (nw == e || nw[-1] == ',') && !nw[7];
 		double v[4] = { 0 };
 		int k = sscanf(e, "%lf,%lf,%lf,%lf", &v[0], &v[1], &v[2], &v[3]);
 		if (k >= 2 && v[0] > 0 && v[1] > 0) {
@@ -360,7 +363,7 @@ static void resolve(struct hw_size_ref *out)
 		/* the line alone: only the marks are told apart (a letter's size on a line varies
 		 * too much from hand to hand) */
 		out->kind = HW_SIZE_LINE;
-		out->x = 0.2 * line;
+		out->x = HW_LINE_XH * line;
 		out->c = 0.5 * line;
 		complete(out);
 	}
@@ -561,10 +564,34 @@ static int best_len(const struct hw_run *r)
 	return hw_ctc_beam(r->logp, r->T, r->C, 8, &c, 1) == 1 ? (c.n < 3 ? c.n : 3) : 0;
 }
 
+double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke *s, size_t ns, double *base)
+{
+	*base = NAN;
+	if (!ref0) return 0;
+	struct hw_size_ref rf = *ref0;
+	resolve(&rf);
+	if (rf.kind == HW_SIZE_NONE || !(rf.x > 0)) return 0;
+	if (rf.has_base && rf.line > 0) {
+		size_t n = 0;
+		for (size_t i = 0; i < ns; i++) n += s[i].n;
+		double *y = n ? malloc(n * sizeof *y) : NULL;
+		if (y) {
+			size_t k = 0;
+			for (size_t i = 0; i < ns; i++) for (size_t j = 0; j < s[i].n; j++) y[k++] = s[i].y[j];
+			double med = median(y, n);
+			double g = ceil((med - rf.base) / rf.line);
+			*base = rf.base + (g > 0 ? g : 0) * rf.line;
+			free(y);
+		}
+	}
+	return rf.x;
+}
+
 int hw_run_sized(struct hw_lang *l, const struct hw_stroke *s, size_t ns, const struct hw_size_ref *ref,
 		 struct hw_run *r)
 {
-	int ret = hw_run(l, s, ns, r);
+	double base = NAN, h = l->model.version == HW_GHM_VERSION_REF ? hw_size_ref_height(ref, s, ns, &base) : 0;
+	int ret = hw_run_at(l, s, ns, h, base, r);
 	if (!ret && r->rows > 0) hw_size_weigh(l, r, s, ns, ref);
 	return ret;
 }
@@ -572,7 +599,8 @@ int hw_run_sized(struct hw_lang *l, const struct hw_stroke *s, size_t ns, const 
 void hw_size_weigh(const struct hw_lang *l, struct hw_run *r, const struct hw_stroke *s, size_t ns,
 		   const struct hw_size_ref *ref0)
 {
-	if (r->rows <= 0 || r->T <= 0 || !ref0 || (!ref0->pending && ref0->kind == HW_SIZE_NONE) || !may_need(r, s, ns))
+	if (r->rows <= 0 || r->T <= 0 || !ref0 || ref0->noweigh || (!ref0->pending && ref0->kind == HW_SIZE_NONE) ||
+	    !may_need(r, s, ns))
 		return;
 	struct hw_size_ref rf = *ref0, *ref = &rf;
 	resolve(ref);

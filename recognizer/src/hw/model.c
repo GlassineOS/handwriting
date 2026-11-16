@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "ctc.h"
+#include "featurize.h"
 #include "model.h"
 
 #define HDR_WORDS 16     /* magic, version, header bytes, 8 config words, charset bytes, trained until (2), 2 reserved */
@@ -63,8 +64,13 @@ int hw_model_load(struct hw_model *m, const char *path, char *err, size_t errlen
 	memcpy(w, buf, sizeof w);
 	struct hw_cfg *c = &m->cfg;
 	if (memcmp(buf, HW_GHM_MAGIC, 4)) { snprintf(err, errlen, "not a model"); goto bad; }
-	if (w[1] != HW_GHM_VERSION) { snprintf(err, errlen, "model version %u", w[1]); goto bad; }
+	if (w[1] != HW_GHM_VERSION && w[1] != HW_GHM_VERSION_REF) { snprintf(err, errlen, "model version %u", w[1]); goto bad; }
 	*c = (struct hw_cfg){ w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10] };
+	m->version = w[1];
+	/* the features each version reads */
+	if (c->nfeat != (m->version == HW_GHM_VERSION_REF ? HW_NFEAT_REF : HW_NFEAT)) {
+		snprintf(err, errlen, "%u features in a version %u model", c->nfeat, m->version); goto bad;
+	}
 	uint32_t hdr = w[2], cs = w[11];
 	m->trained_until = (int64_t)((uint64_t)w[12] | (uint64_t)w[13] << 32);
 	if (hdr != HDR_WORDS * 4 || c->nfeat == 0 || c->nfeat > 64 || c->c1 == 0 || c->c1 > 4096 ||

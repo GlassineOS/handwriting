@@ -90,13 +90,21 @@ void hw_run_free(struct hw_run *r)
 	memset(r, 0, sizeof *r);
 }
 
-static int run_engine(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r)
+static int run_engine(struct hw_lang *l, const struct hw_stroke *s, size_t ns, double h, double base,
+		      struct hw_run *r)
 {
 	memset(r, 0, sizeof *r);
 	r->nstrokes = ns;
 	r->C = (int)l->model.cfg.nclass;
 	r->down = 1 << l->model.cfg.nstrided;
-	r->rows = hw_features(s, ns, &r->feats, &r->org);
+	r->nfeat = (int)l->model.cfg.nfeat;
+	if (l->model.version == HW_GHM_VERSION_REF) {
+		double tilt, mid, x0;
+		/* no reference: the ink's own core height, as version 1 scales it */
+		if (!(h > 0) && hw_line_metrics(s, ns, &tilt, &h, &mid, &x0)) return 0;
+		r->rows = hw_features_ref(s, ns, h, base, &r->feats, &r->org);
+	} else
+		r->rows = hw_features(s, ns, &r->feats, &r->org);
 	if (r->rows <= 0) return (int)r->rows;
 	r->T = hw_encode(&l->model, r->feats, r->rows, &r->frames);
 	if (r->T <= 0) { hw_run_free(r); return -1; }
@@ -118,9 +126,11 @@ void hw_run_cache(int on)
 	if (!on && last.have) { hw_run_free(&last.r); last.have = 0; }
 }
 
-static uint64_t run_key(const struct hw_lang *l, const struct hw_stroke *s, size_t ns)
+static uint64_t run_key(const struct hw_lang *l, const struct hw_stroke *s, size_t ns, double ref, double base)
 {
 	uint64_t h = hw_hash(l->lang, strlen(l->lang), 0);
+	double rb[2] = { ref, isfinite(base) ? base : 0 };
+	h = hw_hash(rb, sizeof rb, h);
 	const void *who[2] = { l, hw_lang_head(l) };
 	h = hw_hash(who, sizeof who, h);
 	long long st[4] = { (long long)l->adapt_st.st_ino, (long long)l->adapt_st.st_size,
@@ -146,7 +156,7 @@ static void *dup_of(const void *p, size_t n)
 static int run_copy(const struct hw_run *a, struct hw_run *b, size_t dim)
 {
 	*b = *a;
-	b->feats = dup_of(a->feats, (size_t)a->rows * HW_NFEAT * sizeof *a->feats);
+	b->feats = dup_of(a->feats, (size_t)a->rows * a->nfeat * sizeof *a->feats);
 	b->org = dup_of(a->org, (size_t)a->rows * sizeof *a->org);
 	b->frames = dup_of(a->frames, (size_t)a->T * dim * sizeof *a->frames);
 	b->logp = dup_of(a->logp, (size_t)a->T * a->C * sizeof *a->logp);
@@ -159,11 +169,18 @@ static int run_copy(const struct hw_run *a, struct hw_run *b, size_t dim)
 
 int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r)
 {
-	if (!cache_on) return run_engine(l, s, ns, r);
-	uint64_t key = run_key(l, s, ns);
+	return hw_run_at(l, s, ns, 0, NAN, r);
+}
+
+int hw_run_at(struct hw_lang *l, const struct hw_stroke *s, size_t ns, double h, double base, struct hw_run *r)
+{
+	if (l->model.version != HW_GHM_VERSION_REF) h = 0, base = NAN;     /* the same run either way */
+	if (!cache_on) return run_engine(l, s, ns, h, base, r);
+	uint64_t key = run_key(l, s, ns, h, base);
 	size_t dim = 2 * (size_t)l->model.cfg.hidden;
-	if (last.have && last.key == key && last.dim == dim) return run_copy(&last.r, r, dim) ? run_engine(l, s, ns, r) : 0;
-	int ret = run_engine(l, s, ns, r);
+	if (last.have && last.key == key && last.dim == dim)
+		return run_copy(&last.r, r, dim) ? run_engine(l, s, ns, h, base, r) : 0;
+	int ret = run_engine(l, s, ns, h, base, r);
 	if (last.have) { hw_run_free(&last.r); last.have = 0; }
 	if (!ret && r->rows > 0 && !run_copy(r, &last.r, dim)) { last.key = key; last.dim = dim; last.have = 1; }
 	return ret;
