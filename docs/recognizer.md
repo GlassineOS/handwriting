@@ -537,6 +537,14 @@ touches `handwriting-writers/`.
 **The service.** The handwriting service (docs/service.md) serves the person's store only; the
 samples app reaches a writer's store through a process or command of its own with `--writer`.
 
+**Moving a store into a writer's store.** A store kept elsewhere (another `XDG_DATA_HOME`'s
+`glassine/handwriting/`) becomes a writer's store by hand, with no recognizer running for
+either: `writer new` gives `WRITER`; then everything in the old store except `lock`,
+`adaptation/` and `letters/` (what a writer's store has none of) is copied into
+`handwriting-writers/WRITER/`, keeping the names, directories 0700 and files 0600. The writer's
+samples, preferences, marks, size measurements and donation, with its `donation/donor-id`,
+are then that store's; `writer list` counts them.
+
 ## Adaptation (FR-009)
 
 `glassine-handwriting adapt` trains a small head (a residual adapter on the encoder's output and

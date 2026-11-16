@@ -1412,6 +1412,8 @@ static void request(char *line, int skip_read)
 	const char *id = n >= 2 && valid_name(f[1], 32) ? f[1] : "-";
 	if (n < 2 || !*v) { reply("error\t-\tbad-line"); return; }
 	if (!valid_name(f[1], 32)) { reply("error\t-\tbad-id"); return; }
+	/* a writer's store removed while the process runs: nothing more for it */
+	if (hw_store_writer() && !hw_writer_exists(hw_store_writer())) { reply("error\t%s\tunknown-writer", id); return; }
 #define NEED(k) do { if (n != (k)) { reply("error\t%s\tbad-line", id); return; } } while (0)
 #define UNESC(i) do { if (unescape(f[i])) { reply("error\t%s\tbad-escape", id); return; } } while (0)
 	if (!strcmp(v, "hello")) {
@@ -1590,6 +1592,7 @@ static void request(char *line, int skip_read)
 		/* neaten ID S STRENGTH [TEXT [ALIGN]] */
 		if (n < 4 || n > 6) { reply("error\t%s\tbad-line", id); return; }
 		if (n >= 5) UNESC(4);
+		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
 		do_neaten(id, s, f[3], n >= 5 ? f[4] : NULL, n == 6 ? f[5] : NULL);
 	} else if (!strcmp(v, "forget")) {
 		NEED(3);
@@ -1684,7 +1687,7 @@ static int serve(int idle_s, int adapt)
 		int r = poll(&p, 1, idle_s > 0 ? idle_s * 1000 : -1);
 		if (r < 0) { if (errno == EINTR) continue; break; }
 		if (r == 0) {        /* idle: stop; learn first if the device is idle and charging */
-			if (adapt) background_adapt();
+			if (adapt && !hw_store_writer()) background_adapt();      /* never a writer's store */
 			break;
 		}
 		if (len + 65536 + 1 > cap) {
@@ -1745,7 +1748,9 @@ static int serve(int idle_s, int adapt)
 
 static void usage(void)
 {
-	fputs("usage: glassine-handwriting [-i IDLE_SECONDS] [--no-adapt]\n"
+	fputs("usage: glassine-handwriting [--writer WRITER] [-i IDLE_SECONDS] [--no-adapt]\n"
+	      "       glassine-handwriting [--writer WRITER] COMMAND ...\n"
+	      "       glassine-handwriting writer new | list | remove WRITER\n"
 	      "       glassine-handwriting samples stats|list [-c CLIENT]|erase [-c CLIENT]|delete ID|export [-c CLIENT] FILE|import FILE\n"
 	      "       glassine-handwriting learning [on|off]\n"
 	      "       glassine-handwriting adapt [-f] [-r] [--plan] [--progress] [-l LANG] [--min-train N] [--min-held N] [--epochs N] [--rank N] [--lr X]\n"
@@ -1794,6 +1799,12 @@ static int cmd_samples(int argc, char **argv)
 			}
 			for (int k = 0; k < ns; k++) printf("client\t%s\t%zu\n", seen[k], count[k]);
 			printf("donation\t%ld\n", hw_donation_count());
+			/* the person's counts say how many writer stores are kept beside them */
+			if (!hw_store_writer()) {
+				char (*ws)[17];
+				size_t nw;
+				if (!hw_writers_list(&ws, &nw)) { printf("writers\t%zu\n", nw); free(ws); }
+			}
 		}
 		return 0;
 	}
@@ -1815,6 +1826,7 @@ static int cmd_samples(int argc, char **argv)
 		return 0;
 	}
 	if (!strcmp(sub, "import") && argc == 2) {
+		if (hw_store_writer()) { fputs("writer-store\n", stderr); return 2; }
 		long r = hw_import(argv[1]);
 		if (r < 0) return 1;
 		printf("%ld\n", r);
@@ -2249,10 +2261,58 @@ static int cmd_read(int argc, char **argv, int bench)
 	return 0;
 }
 
+static int cmd_writer(int argc, char **argv)
+{
+	if (argc == 1 && !strcmp(argv[0], "new")) {
+		char id[17];
+		if (hw_writer_new(id)) { fputs("glassine-handwriting: can't create a writer's store\n", stderr); return 1; }
+		puts(id);
+		return 0;
+	}
+	if (argc == 1 && !strcmp(argv[0], "list")) {
+		char (*ws)[17];
+		size_t n;
+		if (hw_writers_list(&ws, &n)) return 1;
+		for (size_t i = 0; i < n; i++) {
+			if (hw_store_set_writer(ws[i])) continue;
+			const struct hw_index_entry *es;
+			size_t ns = 0;
+			if (hw_samples_index(&es, &ns)) ns = 0;
+			printf("%s\t%zu\t%ld\n", ws[i], ns, hw_donation_count());
+		}
+		hw_store_set_person();
+		free(ws);
+		return 0;
+	}
+	if (argc == 2 && !strcmp(argv[0], "remove")) {
+		int r = hw_writer_remove(argv[1]);
+		if (r == 0) { fputs("unknown-writer\n", stderr); return 1; }
+		if (r < 0) { fputs("glassine-handwriting: can't remove the writer's store\n", stderr); return 1; }
+		puts("removed");
+		return 0;
+	}
+	usage();
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
+	/* --writer WRITER: everything is for that writer's store */
+	if (argc > 2 && !strcmp(argv[1], "--writer")) {
+		if (hw_store_set_writer(argv[2])) { fputs("unknown-writer\n", stderr); return 1; }
+		argv[2] = argv[0];
+		argv += 2;
+		argc -= 2;
+		if (argc > 1 && argv[1][0] != '-') {
+			const char *c = argv[1];
+			if (!strcmp(c, "adapt") || !strcmp(c, "adaptation") || !strcmp(c, "letters") || !strcmp(c, "font") ||
+			    !strcmp(c, "learning")) { fputs("writer-store\n", stderr); return 2; }
+			if (!strcmp(c, "writer")) { usage(); return 2; }
+		}
+	} else if (argc > 1 && !strcmp(argv[1], "--writer")) { usage(); return 2; }
 	if (argc > 1 && argv[1][0] != '-') {
 		const char *c = argv[1];
+		if (!strcmp(c, "writer")) return cmd_writer(argc - 2, argv + 2);
 		if (!strcmp(c, "samples")) return cmd_samples(argc - 2, argv + 2);
 		if (!strcmp(c, "learning")) {
 			if (argc == 2) { puts(hw_learning_on() ? "on" : "off"); return 0; }
