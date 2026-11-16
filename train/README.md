@@ -226,6 +226,61 @@ read time): prose lines with words 241 → 243 ms (+1 %; 95th percentile +3 %), 
 85 → 88 ms (+4 %; +6 %); with the character model alone against the ink alone, 222 → 227 ms
 (+2 %) and 81 → 85 ms (+4 %). Round-to-round spread is about ±5 %.
 
+## Data for the next base model (model 4; `gen4`)
+
+Spec 001 FR-018 and FR-020. The data only: no model is trained on it yet, and the shipped
+features and model file are unchanged.
+
+```sh
+uv run glassine-train real STORE --out build/real --keep-test OLD/split.json  # the fixed test set
+uv run glassine-train dynfit --real build/real --out build/real/fit.json      # timing, delays, gaps (aggregates)
+uv run glassine-train gen4 --out build/ink4 --workers 16                       # every set, manifest.json
+uv run glassine-train inkcheck build/ink4/train --real build/real/fit.json --sheet build/ink4/train.png
+uv run glassine-train featurize build/ink4/train --out build/data/train4-ref --ref mix
+uv run glassine-train gen4-letters LETTERS/model --out PRIVATE/letters4 --fit build/real/fit.json
+```
+
+**Ink sets, not features** (`inkstore.py`): the pen's points (x, y in 1/512 em, t in
+seconds) and per line its text, kind, writer, spans and its references: `xh`, the
+writer's letter height, `line`, the line height of a writing area drawn for it, and `base`,
+the baseline. `featurize` turns a set into the trainer's dataset format, either with the
+shipped features (`--ref none`) or with the reference-height prototype
+(`features.features_ref`, `--ref xh|line|mix`): lengths in reference heights (the letter
+height, or 0.2 lines when only the line is known; `mix` uses the line alone for 30 % of the
+lines), y above the baseline, and a sixth input, the ink's height in reference heights. A
+real sample's references come from `real.reference` (the writer's letter height measured on
+the training sessions, the area's line and guide). `InkSet` reads the number of inputs from
+the dataset.
+
+**Generator** (`gen.py`): the fonts' glyphs with the synth's per-letter jitter and
+variation, laid out by writers drawn per line:
+
+- *spacing* by ink profiles as the recognizer's `spacing.c` (`spacing.py`; on the letter
+  model's versions it gives the stored profiles to 5e-5 x-heights): each pair at the
+  writer's typical gap, closer where the profiles leave open space, plus a spread per pair,
+  never more than 0.12 x-heights into a letter; word gaps box to box. Typical gaps and word
+  gaps come from a pool of styles: each training font laid out at its own advances, and a
+  letter model's spacing as one style more;
+- *timing* (`timing.py`): a sigma-lognormal speed model fitted to real ink (`dynfit`):
+  pulses found by least squares on each stroke's speed, described by duration, skew and
+  overlap, with the stroke's duration from its path; pen-up pauses from the jump. Each
+  writer is drawn around the fit (`BROADEN`: tempo, skew, pulse rate, overlap and pauses);
+  the fit is of one writer (`FIT_ONE_WRITER`), so that spread is assumed, not measured;
+- *delayed strokes*: dots of i and j (chance per writer around 0.8), bars of t, f and barred
+  capitals (0.03 to 0.2) after the word or, a tenth of the time, after a later letter,
+  several mostly right to left, after their own pause; in every set;
+- *size*: lone characters and marks at their true size on the line; the writing area's
+  x-height over line height drawn per line (median 0.14, 0.06 to 0.35).
+
+The sets (`build4.py`): `train` (600 k lines in `lines.SHARES`, training fonts), `val`,
+`dev`, `dev_kinds`, model 2's test texts in each held-out group, `test_kinds` (100 lines of
+every kind but prose, held-out names) and one set per held-out font. `writers.py` adds
+contributors' letter models as writers (`--writers`): only under a licence that covers
+derived models (CC0-1.0, CC-BY-4.0) and never a contributor in the real test set.
+`gen4-letters` writes in one letter model's own versions (in proportion of use), spacing,
+fitted timing and delay habits; ink made from a person's letter model stays with their
+samples, never in a repository, a release or a log.
+
 ## Results
 
 CER = character edit distance / reference length, WER the same over words, "greedy" =
