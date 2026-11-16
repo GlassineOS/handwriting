@@ -25,6 +25,8 @@ class Prompt:
     lang: str
     source: str = ""
     licence: str = ""
+    written: str = ""                # Your handwriting: careful or quick (spec 003 FR-001)
+    pair: str = ""                   # the link a quick and a careful sample share (FR-002)
 
     @property
     def kind(self):

@@ -15,6 +15,11 @@ jobs:
       - name: build and test on Alpine
         run: |
           docker run --rm -v "$PWD":/src -w /src alpine:3.24 sh -euc '
-            apk add -q build-base pkgconf json-c-dev python3 py3-numpy
+            apk add -q build-base pkgconf json-c-dev python3 py3-numpy \
+              py3-gobject3 py3-cairo gtk+3.0 font-dejavu xvfb-run git
+            # the samples app draws with glassine_ui: the commit the packages build
+            git clone -q https://github.com/GlassineOS/ui /tmp/ui
+            git -C /tmp/ui checkout -q 77ed45f37ff8fbc1ce2acf8321a17b87a64cbbc5
             make -C recognizer OUT=/tmp check
-            make -C samples check HW_BIN=/tmp/glassine-handwriting'
+            PYTHONPATH=/tmp/ui/python GLASSINE_HWSAMPLES_WINDOW_TEST=1 \
+              xvfb-run -a make -C samples check HW_BIN=/tmp/glassine-handwriting'
