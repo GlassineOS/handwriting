@@ -35,7 +35,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from glassine_ui import paint as PT  # noqa: E402
 
-from . import APP_ID, client, flow, fontview, pages, prompts as P  # noqa: E402
+from . import APP_ID, client, flow, fontview, neat as N, pages, prompts as P  # noqa: E402
 from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
 W0, H0 = 702, 884
@@ -43,6 +43,7 @@ RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 THEME_FILE = RUN + "/glassine-shell.theme"
 ROTATION_FILE = "/run/glassine-rotation"
 LINE = float(os.environ.get("GLASSINE_HANDWRITING_LINE", "150"))   # the writing paper's line height
+NEAT_PAUSE_MS = 900                 # Neaten my writing: a pause this long neatens the page
 PAUSE_MS = {"word": 1500, "character": 1200, "sentence": 2500, "pangram": 2500}
 LOG = os.environ.get("GLASSINE_HWSAMPLES_LOG") == "1"      # input and flow events on stderr
 
@@ -174,6 +175,14 @@ class UI:
         self.font_name = None           # a name chosen before the font is installed
         self.pick = None                # {"a": (id, strokes, k), "b": ..., "chosen": i}
         self.pick_loading = False
+        self.neat = None                # Neaten my writing: a neat.Neat while the page is open
+        self.neat_strength = N.DEFAULT
+        self.neat_orig = False          # the original shown instead
+        self.neat_shown = {}            # {stroke index: [(x, y)]}: the neatened strokes
+        self.neat_text = ""             # what was read, line after line
+        self.neat_gen = 0               # counts the clears: a result for ink cleared since is dropped
+        self.neat_busy = False
+        self.neat_again = None          # the payload to neaten once the running call is done
         self.wstep = "w-welcome"        # the introduction's step
         self.tried = False              # its one prompt was written
         self.demo = demo
@@ -263,6 +272,7 @@ class UI:
     # ---------------------------------------------------------- navigation
 
     def go(self, page):
+        self.close_neat()
         self.page = page
         self.tab = page
         self.detail = None
@@ -574,6 +584,7 @@ class UI:
     def open_best(self, mode):
         """Learn's Your handwriting (mode "intro"), or back to Learn (None); either way the
         careful writing stops"""
+        self.close_neat()
         if self.writer and self.writer.best is not None:
             self.run(self.writer.stop_best)
         self.page = self.tab = "learn"
@@ -678,6 +689,73 @@ class UI:
         self.best = None
         self.run(lambda: self.writer.start_best(chars=miss))
         self.go("write")
+
+    # ---------------------------------------------------------- Neaten my writing
+
+    def open_neat(self):
+        """Neaten my writing: free writing, shown neatened; nothing becomes a sample"""
+        self.neat = N.Neat(self.rec, self.state.lang)
+        self.neat_shown, self.neat_text, self.neat_orig = {}, "", False
+        self.page, self.tab, self.best = "neat", "learn", None
+        self.msg = ""
+        self.redraw()
+
+    def close_neat(self):
+        if self.neat is None:
+            return
+        n, self.neat = self.neat, None
+        self.neat_gen += 1
+        self.neat_shown, self.neat_text, self.neat_again = {}, "", None
+        if self.page == "neat":
+            self.page, self.best = "learn", "intro"
+        if self.work:
+            self.work.do(n.close)
+
+    def neaten(self, payload):
+        """the page's ink (the writing area's payload) neatened at the strength chosen; a
+        call while one runs waits for it, only the newest ink goes"""
+        if self.neat is None or self.demo:
+            return
+        if self.neat_busy:
+            self.neat_again = payload
+            return
+        self.neat_busy = True
+        nt, gen, st = self.neat, self.neat_gen, self.neat_strength
+        strokes, units, area = payload
+
+        def go():
+            return nt.run(strokes, units, area, st, LINE, area[6])
+
+        def fin(r, err):
+            self.neat_busy = False
+            if err:
+                print("glassine-handwriting-samples: neaten: %s" % err, file=sys.stderr, flush=True)
+                self.msg = "Couldn’t neaten it: %s" % err
+            elif gen == self.neat_gen and nt is self.neat:
+                self.neat_shown = r[0]
+                self.neat_text = " · ".join(v for _, v in sorted(r[2].items()) if v)
+                self.msg = ""
+            again, self.neat_again = self.neat_again, None
+            if again and gen == self.neat_gen and nt is self.neat:
+                self.neaten(again)
+            self.redraw()
+        self.work.do(go, fin)
+
+    def neat_cleared(self):
+        self.neat_gen += 1
+        self.neat_shown, self.neat_text, self.neat_again = {}, "", None
+        self.redraw()
+
+    def set_strength(self, s, payload):
+        self.neat_strength = s
+        self.neat_orig = False
+        if payload[0]:
+            self.neaten(payload)
+        self.redraw()
+
+    def show_original(self, on):
+        self.neat_orig = on
+        self.redraw()
 
     def start_pick(self):
         self.best = "pick"
@@ -868,7 +946,8 @@ class Canvas(Gtk.DrawingArea):
     def __init__(self, ui, on_change):
         super().__init__()
         self.ui, self.on_change = ui, on_change
-        self.strokes, self.cur = [], None
+        self.inks = {"write": [], "neat": []}   # Write's ink and Neaten my writing's, each kept apart
+        self.cur = None
         self.timer = None
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
                         Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.TOUCH_MASK)
@@ -878,6 +957,14 @@ class Canvas(Gtk.DrawingArea):
         self.connect("motion-notify-event", self.on_motion)
         self.connect("button-release-event", self.on_release)
         self.connect("touch-event", lambda w, e: True)      # fingers don't write (palms rest on it)
+
+    @property
+    def strokes(self):
+        return self.inks["neat" if self.ui.page == "neat" else "write"]
+
+    @strokes.setter
+    def strokes(self, v):
+        self.inks["neat" if self.ui.page == "neat" else "write"] = v
 
     @staticmethod
     def point(e):
@@ -926,6 +1013,9 @@ class Canvas(Gtk.DrawingArea):
         log("release", len(self.cur), "points,", len(self.strokes), "strokes")
         self.cur = None
         self.on_change()
+        if self.ui.page == "neat":
+            self.timer = GLib.timeout_add(NEAT_PAUSE_MS, self.paused)
+            return True
         p = self.ui.writer.prompt if self.ui.writer else None
         self.timer = GLib.timeout_add(PAUSE_MS.get(p.kind if p else "word", 1500), self.paused)
         return True
@@ -940,6 +1030,9 @@ class Canvas(Gtk.DrawingArea):
         more ink or Next"""
         self.timer = None
         if not self.strokes or self.cur is not None:
+            return False
+        if self.ui.page == "neat":        # a pause on Neaten my writing: the ink comes back neater
+            self.ui.neaten(self.payload())
             return False
         if self.ui.busy:                  # look again once the recognizer is free
             self.timer = GLib.timeout_add(500, self.paused)
@@ -960,6 +1053,8 @@ class Canvas(Gtk.DrawingArea):
     def clear(self):
         self.stop_timer()
         self.strokes, self.cur = [], None
+        if self.ui.page == "neat":
+            self.ui.neat_cleared()
         self.queue_draw()
         self.on_change()
 
@@ -1015,7 +1110,7 @@ class Canvas(Gtk.DrawingArea):
         cr.set_line_width(max(2.0, LINE / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
-        for s in self.strokes:
+        for s in neat_view(self.ui, self.strokes):
             cr.move_to(s[0][0], s[0][1])
             for p in s[1:]:
                 cr.line_to(p[0], p[1])
@@ -1023,6 +1118,14 @@ class Canvas(Gtk.DrawingArea):
                 cr.line_to(s[0][0] + 0.1, s[0][1])
             cr.stroke()
         return True
+
+
+def neat_view(ui, strokes):
+    """the strokes as the page shows them: on Neaten my writing each neatened one in its
+    neatened form (unless the original is shown), the ones written since as written"""
+    if ui.page != "neat" or ui.neat_orig or not ui.neat_shown:
+        return strokes
+    return [ui.neat_shown.get(i, s) for i, s in enumerate(strokes)]
 
 
 class Moved:
@@ -1049,13 +1152,16 @@ def writing(ui):
     """the pages with the writing area: Write (also Your best) and the introduction's Try one"""
     if ui.confirm or not ui.loaded:
         return False
-    return (ui.page == "write" and not ui.sets_open) or (ui.page == "wizard" and ui.wstep == "w-try")
+    return ((ui.page == "write" and not ui.sets_open) or (ui.page == "wizard" and ui.wstep == "w-try") or
+            ui.page == "neat")
 
 
 def parts(ui):
     """the top and bottom painters of a writing page"""
     if ui.page == "wizard":
         return pages.try_top, pages.try_bottom
+    if ui.page == "neat":
+        return pages.neat_top, pages.neat_bottom
     return pages.write_top, pages.write_bottom
 
 
@@ -1086,7 +1192,7 @@ def bottom_height(ui, w, canvas=None, foot=True):
     if ui.page == "wizard":
         y = pages.try_bottom(_probe(), ui, Hits(), w, 2000, canvas, foot=False)
         return int(y) + 12 + (pages.WIZ_FOOT if foot else 0)
-    return int(pages.write_bottom(_probe(), ui, Hits(), w, 200, canvas))
+    return int(parts(ui)[1](_probe(), ui, Hits(), w, 200, canvas))
 
 
 def side_width(w):
@@ -1200,7 +1306,7 @@ class Window(Gtk.ApplicationWindow):
         self.stack.set_visible_child_name("write" if w else "full")
         if w:
             self.fit()
-        for p in list(self.panels.values()) + [self.full]:
+        for p in list(self.panels.values()) + [self.full, self.canvas]:
             p.queue_draw()
 
 
@@ -1245,7 +1351,7 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "wizard.licence", "wizard.ready", "write.prompt", "write.ink", "write.kept", "write.check", "write.sentence",
            "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
-           "best.pick", "best.font", "best.font-new", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
+           "best.pick", "best.font", "best.neat", "best.font-new", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved")
 DEMO_WORDS = ["quiet", "Jackdaws love my big sphinx of quartz.", "jump", "Q", "7:30", "o’clock", "garden", "bright",
               "yellow", "Thursday", "minimum", "fifty"]
 
@@ -1382,6 +1488,9 @@ def demo(screen, voice="white"):
             ui.page = ui.tab = "learn"
             ui.best = "font"
             ui.font = demo_font(sub == "font")
+        elif sub == "neat":
+            ui.page, ui.tab = "neat", "learn"
+            ui.neat_text = "quiet"
         elif sub == "pick":
             ui.page = ui.tab = "learn"
             ui.best = "pick"
@@ -1425,6 +1534,9 @@ class Drawn:
     def submit(self):
         self.strokes = []
 
+    def payload(self):
+        return self.strokes, "device", (0, 0, 1, 1, LINE, 0, LINE * 0.62)
+
 
 def paint(cr, ui, W, H, ink=None):
     """one whole window as the app draws it -> the tap targets"""
@@ -1456,7 +1568,7 @@ def render(argv):
     screen = opt("--screen", opt("--page", "write.prompt"))
     ui = demo(screen, opt("--theme", "white"))
     surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try") else None)
+    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try", "best.neat") else None)
     surf.write_to_png(opt("--render"))
 
 
