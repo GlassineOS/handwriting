@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "../src/hw/chars.h"
 #include "../src/hw/ctc.h"
 #include "../src/hw/featurize.h"
 #include "../src/hw/model.h"
@@ -602,6 +603,40 @@ static void test_size(void)
 	hw_run_free(&r);
 }
 
+/* the character model against charlm.py: {"lang": L, "cases": [{"before": B, "text": T,
+ * "logp": [...]}]} with $GLASSINE_HANDWRITING_MODELS/L/chars.gclm; "missing": a language
+ * without a model reads none */
+static void test_chars(const char *file)
+{
+	json_object *v = load(".", file), *lang, *cases, *missing;
+	json_object_object_get_ex(v, "lang", &lang);
+	json_object_object_get_ex(v, "cases", &cases);
+	const struct hw_chars *m = hw_chars_get(json_object_get_string(lang));
+	CHECK(m != NULL, "character model not read");
+	if (json_object_object_get_ex(v, "missing", &missing))
+		CHECK(hw_chars_get(json_object_get_string(missing)) == NULL, "a language without a model has one");
+	double worst = 0;
+	size_t n = 0;
+	for (size_t c = 0; m && c < json_object_array_length(cases); c++) {
+		json_object *o = json_object_array_get_idx(cases, c), *b, *t, *lp;
+		json_object_object_get_ex(o, "before", &b);
+		json_object_object_get_ex(o, "text", &t);
+		json_object_object_get_ex(o, "logp", &lp);
+		unsigned cp[HW_MAX_LABELS];
+		size_t k = hw_utf8_decode(json_object_get_string(t), cp, HW_MAX_LABELS);
+		CHECK(k == json_object_array_length(lp), "case %zu: %zu characters, %zu values", c, k,
+		      json_object_array_length(lp));
+		hw_chars_ctx h = hw_chars_start(m, json_object_get_string(b));
+		for (size_t i = 0; i < k && i < json_object_array_length(lp); i++, n++) {
+			double d = fabs(hw_chars_logp(m, h, cp[i]) - json_object_get_double(json_object_array_get_idx(lp, i)));
+			if (d > worst) worst = d;
+			h = hw_chars_push(m, h, cp[i]);
+		}
+	}
+	CHECK(worst <= 1e-9, "character model: off by %g over %zu characters", worst, n);
+	json_object_put(v);
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -613,6 +648,12 @@ int main(int argc, char **argv)
 		test_engine(".", argv[2], tmp);
 		if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 		printf("test-engine: engine ok\n");
+		return 0;
+	}
+	if (argc > 2 && !strcmp(argv[1], "--chars")) {        /* a character model against charlm.py */
+		test_chars(argv[2]);
+		if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
+		printf("test-engine: character model ok\n");
 		return 0;
 	}
 	if (argc > 2 && !strcmp(argv[1], "--features")) {     /* a vector from the trainer's features.py */
