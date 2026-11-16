@@ -78,6 +78,10 @@ def documents_dir():
     return d or os.path.join(os.path.expanduser("~"), "Documents")
 
 
+# where a written contribution goes, in the person's Documents
+CONTRIB_DIR = "Handwriting contributions"
+
+
 def free_name(folder, stem, ext):
     os.makedirs(folder, exist_ok=True)
     k = 1
@@ -487,8 +491,8 @@ class UI:
 
     def ask_erase_all(self):
         n = len(self.samples)
-        self.confirm = ("Erase all %d samples?" % n, "They’re removed from this tablet for good. Your donation keeps its copies "
-                        "until you erase it in Donate. What it has already learned stays until it learns again.", "Erase all", self.erase_all)
+        self.confirm = ("Erase all %d samples?" % n, "They’re removed from this tablet for good. Your contribution keeps its copies "
+                        "until you erase it in Contribute. What it has already learned stays until it learns again.", "Erase all", self.erase_all)
         self.redraw()
 
     def erase_all(self):
@@ -523,7 +527,7 @@ class UI:
 
     def donate_one(self, sid):
         self.run(lambda: self.cli.donation_add(sid),
-                 lambda _: (setattr(self, "msg", "Added to your donation."), self.refresh()))
+                 lambda _: (setattr(self, "msg", "Added to your contribution."), self.refresh()))
 
     # ---------------------------------------------------------- learning
 
@@ -923,11 +927,11 @@ class UI:
         ids = [e[0] for e in self.earlier if e[0] not in self.earlier_out]
         self.reviewing = False
         self.run(lambda: self.cli.donation_add_all(ids),
-                 lambda n: (setattr(self, "msg", "%d earlier samples added to your donation." % n), self.refresh()))
+                 lambda n: (setattr(self, "msg", "%d earlier samples added to your contribution." % n), self.refresh()))
 
     def write_donation(self):
         lic = self.donation[0]
-        path = free_name(os.path.join(documents_dir(), "Handwriting donations"), "handwriting-donation", ".jsonl")
+        path = free_name(os.path.join(documents_dir(), CONTRIB_DIR), "handwriting-contribution", ".jsonl")
 
         def go():
             self.cli.donation_write(path)
@@ -937,7 +941,7 @@ class UI:
         self.run(go, lambda _: (setattr(self, "saved", path), self.refresh()))
 
     def ask_new_donor(self):
-        self.confirm = ("Get a new donor ID?", "Your next donations then count as another writer’s. The ones you "
+        self.confirm = ("Get a new contributor number?", "Your next contributions then count as another writer’s. The ones you "
                         "already sent keep the old one.", "Get a new one", self.new_donor)
         self.redraw()
 
@@ -946,7 +950,7 @@ class UI:
         self.run(self.cli.donor_new, lambda _: self.refresh())
 
     def ask_erase_donation(self):
-        self.confirm = ("Erase your donation?", "The copy set aside for donating goes. Your own samples stay.", "Erase",
+        self.confirm = ("Erase your contribution?", "The copy set aside for contributing goes. Your own samples stay.", "Erase",
                         self.erase_donation)
         self.redraw()
 
@@ -1676,7 +1680,7 @@ def demo(screen, voice="white"):
                 ui.reviewing = True
                 ui.earlier_out = {ui.earlier[1][0], ui.earlier[4][0]}
             if sub == "saved":
-                ui.saved = os.path.join(documents_dir(), "Handwriting donations", "handwriting-donation-3.jsonl")
+                ui.saved = os.path.join(documents_dir(), CONTRIB_DIR, "handwriting-contribution-3.jsonl")
     return ui
 
 

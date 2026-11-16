@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The pages, as the design draws them (GlassineOS/ui designs/handwriting): the first-start
-introduction, Write, Samples, Coverage, Learn with Your handwriting, Donate. Each paint
+introduction, Write, Samples, Coverage, Learn with Your handwriting, Contribute. Each paint
 function draws one page into a cairo context and adds its tap targets; none reads or
 writes anything itself, the UI object (ui.py) does."""
 import os
@@ -21,23 +21,23 @@ SETS = ((P.AUTO, "A mix, weighted towards what it knows least about your hand", 
         ("pangrams", "Sentences that use every letter", "abc"), ("letters", "Each letter, small and capital",
                                                                "match_case"),
         ("digits", "0 to 9, and marks like , . ? ! :", "pin"),
-        (P.OWN, "A list you keep in your files. Never donated.", "person_edit"))
+        (P.OWN, "A list you keep in your files. Never contributed.", "person_edit"))
 LICENCES = (("CC0-1.0", "Free for anyone", "CC0",
              "Anyone may use, change and share your samples for anything, with no conditions."),
             ("CC-BY-4.0", "Free, with a mention", "CC BY 4.0",
-             "Anyone may use, change and share them, as long as they say the handwriting was donated to "
+             "Anyone may use, change and share them, as long as they say the handwriting was contributed to "
              "GlassineOS. Your name is not in it."))
 LIC = {k: (n, c) for k, n, c, _ in LICENCES}
-# what a donation holds, as hw_donation_write writes it (docs/samples.md)
+# what a contribution holds, as hw_donation_write writes it (docs/samples.md)
 HOLDS = ["The pen strokes you write for the words the app shows", "Those words themselves",
          "The size of the writing area, and which way the tablet was turned",
          "What the tablet read when you wrote it", "Quick or careful, and your picks (with both versions)",
-         "A random donor number, the same in all your donations"]
+         "A random contributor number, the same in all your contributions"]
 NEVER = ["Your name, or anything else about you", "Anything else about this tablet", "Dates and times",
          "Anything you write in other apps, or words from your own list unless you add them one by one",
          "A font made from your handwriting"]
 WIZ = ("w-welcome", "w-try", "w-private", "w-learning", "w-share")
-WIZ_NAMES = ("Welcome", "Try one", "Your samples", "Learning", "Donating")
+WIZ_NAMES = ("Welcome", "Try one", "Your samples", "Learning", "Contributing")
 WIZ_STEP = {"w-try-done": 1, "w-licence": 4, "w-ready": 4}
 PAPER_R = "16px"
 
@@ -144,7 +144,7 @@ def shown_strip(cr, ui, hits, x, y, w):
     if pair_quick:
         state, sub = "The quick one", "Kept. Now the careful one."
     elif sh.status == "kept":
-        state = "Kept" + (" · in the donation" if sh.donated_id else "")
+        state = "Kept" + (" · in the contribution" if sh.donated_id else "")
         sub = "Read as “%s”" % read if read else "Nothing read"
     else:
         state = "Not kept: learning is off" if sh.why == "learning" else "Not kept"
@@ -422,14 +422,14 @@ def wizard_foot(cr, ui, hits, w, h):
     back = {"w-try": "w-welcome", "w-try-done": "w-welcome", "w-private": "w-try", "w-learning": "w-private",
             "w-share": "w-learning", "w-licence": "w-share", "w-ready": "w-share"}.get(s)
     land = w > h
-    status = {"w-share": "Either way is fine; change it any time in Donate." if land else "Your choice, either way", "w-licence": "" if ui.licence_pick else "Pick one to go on"}.get(s, "")
-    label = {"w-welcome": "Begin", "w-licence": "Donate with this licence", "w-ready": "Start writing"}.get(s, "Continue")
+    status = {"w-share": "Change your mind any time in Contribute." if land else "Your choice, either way", "w-licence": "" if ui.licence_pick else "Pick one to go on"}.get(s, "")
+    label = {"w-welcome": "Begin", "w-licence": "Contribute with this licence", "w-ready": "Start writing"}.get(s, "Continue")
     nxt = ui.wizard_next if (s != "w-licence" or ui.licence_pick) else None
     if s == "w-try" and ui.tried and not (ui.writer and ui.writer.shown):
         nxt = None                       # its reading is still coming
     if s == "w-share":
         label = None
-    choices = [("Not now", "schedule", ui.wizard_decline), ("Yes, I’d like to donate", "volunteer_activism",
+    choices = [("Not now", "schedule", ui.wizard_decline), ("Yes, I’d like to contribute", "volunteer_activism",
                                                          lambda: ui.wizard_to("w-licence"))] if s == "w-share" and land else []
     footer(cr, k, hits, w, h - WIZ_FOOT, WIZ_FOOT, choices=choices, back=(lambda: ui.wizard_to(back)) if back else None,
            status=status, skip=ui.wizard_skip if s not in ("w-share", "w-licence", "w-ready") else None,
@@ -473,7 +473,7 @@ def wizard_page(cr, ui, hits, w, h):
             ("school", "It learns your hand", "Over time it reads your writing better: here, and on the keyboard’s "
              "writing paper."),
             ("lock", "It stays on this tablet", "Your writing is kept here and nowhere else, unless you export or "
-             "donate it.")])
+             "contribute it.")])
     elif s in ("w-private", "w-learning"):
         if s == "w-private":
             y = page_head(cr, k, PAD, y, cw, None, "Your samples stay here",
@@ -482,7 +482,7 @@ def wizard_page(cr, ui, hits, w, h):
             rows = [("grid_view", "Look at any sample", "Samples shows everything you have written here."),
                     ("delete", "Delete what you don’t want", "One at a time, or all at once."),
                     ("folder", "Take a copy with you", "Export saves them all as one file in your Documents."),
-                    ("volunteer_activism", "Share only if you choose to", "Next, you can decide about donating. It is "
+                    ("volunteer_activism", "Share only if you choose to", "Next, you can decide about contributing. It is "
                      "off unless you turn it on.")]
         else:
             y = page_head(cr, k, PAD, y, cw, None, "Learning happens on its own",
@@ -503,24 +503,24 @@ def wizard_page(cr, ui, hits, w, h):
         PT.text(cr, art[1], k["row"], PAD + 84, y + (ah - th) / 2, k.ink, maxw=cw - 100, wrap=True)
         icon_rows(cr, k, PAD, y + ah + 16, cw, rows)
     elif s == "w-share":
-        y = page_head(cr, k, PAD, y, cw, None, "Would you like to donate your samples?",
+        y = page_head(cr, k, PAD, y, cw, None, "Would you like to contribute your samples?",
                       "The handwriting reader in GlassineOS is open source. It learns to read everyone from handwriting "
-                      "that people choose to donate. Your samples could help it, if you like.", small=True)
+                      "that people choose to contribute. Your samples could help it, if you like.", small=True)
         y = holds_lists(cr, k, PAD, y, cw) + 14
-        y = how_note(cr, k, PAD, y, cw, "outgoing_mail", "Nothing is sent by itself. Donating sets a copy aside on the "
+        y = how_note(cr, k, PAD, y, cw, "outgoing_mail", "Nothing is sent by itself. Contributing sets a copy aside on the "
                      "tablet. When you like, the app saves it as one file in your Documents, and you send that file to "
                      "the project yourself.") + 18
         if w > h:
             return wizard_foot(cr, ui, hits, w, h)       # the two answers are in the foot
         bw = (cw - 14) / 2
         btn(cr, k, hits, PAD, y, "Not now", ui.wizard_decline, icon_name="schedule", w=bw, h=60)
-        btn(cr, k, hits, PAD + bw + 14, y, "Yes, I’d like to donate", lambda: ui.wizard_to("w-licence"),
+        btn(cr, k, hits, PAD + bw + 14, y, "Yes, I’d like to contribute", lambda: ui.wizard_to("w-licence"),
             icon_name="volunteer_activism", w=bw, h=60)
-        PT.text(cr, "Either way is fine. You can change your mind any time in Donate.", k["sub"], w / 2, y + 76, k.soft,
+        PT.text(cr, "Either way is fine. You can change your mind any time in Contribute.", k["sub"], w / 2, y + 76, k.soft,
                 align=1)
     elif s == "w-licence":
         y = page_head(cr, k, PAD, y, cw, None, "How may others use your samples?",
-                      "Pick the licence for your donation. Both let anyone use it; you choose once.", small=True)
+                      "Pick the licence for your contribution. Both let anyone use it; you choose once.", small=True)
         licence_cards(cr, ui, hits, PAD, y, cw, ui.licence_pick, lambda key: ui.pick_licence(key))
     elif s == "w-ready":
         brand = icon(cr, "stylus_note", 48, PAD + 34, y + 24, k.ink) or icon(cr, "draw", 48, PAD + 34, y + 24, k.ink)
@@ -531,10 +531,10 @@ def wizard_page(cr, ui, hits, w, h):
                       "many at once.", small=True)
         lic = ui.donation[0]
         don = ("On · %s (%s)" % LIC[lic] if ui.state.donating and lic in LIC else
-               "Off · you can turn it on any time in Donate")
+               "Off · you can turn it on any time in Contribute")
         sep(cr, k, PAD, y, cw)
         for ic, name, value in (("school", "Learning", "On its own, while the tablet charges"),
-                                ("lock", "Your samples", "Kept on this tablet"), ("volunteer_activism", "Donating", don)):
+                                ("lock", "Your samples", "Kept on this tablet"), ("volunteer_activism", "Contributing", don)):
             icon(cr, ic, 22, PAD + 12, y + 30, k.ink)
             lbl(cr, k, name, PAD + 40, y + 22)
             PT.text(cr, value, k["row"], PAD + 170, y + 18, k.ink, maxw=cw - 170)
@@ -547,16 +547,16 @@ def wizard_page(cr, ui, hits, w, h):
 
 
 def holds_lists(cr, k, x, y, w):
-    """what a donation holds and what it never holds, side by side; -> the y below"""
+    """what a contribution holds and what it never holds, side by side; -> the y below"""
     cw = (w - 14) / 2
     hs = []
-    for head, items in (("What a donation holds", HOLDS), ("What it never holds", NEVER)):
+    for head, items in (("What a contribution holds", HOLDS), ("What it never holds", NEVER)):
         hh = 40
         for it in items:
             hh += PT.measure(cr, it, k["sub"], maxw=cw - 52, wrap=True)[1] + 10
         hs.append(hh + 8)
     h = max(hs)
-    for i, (head, items, ic) in enumerate((("What a donation holds", HOLDS, "check"),
+    for i, (head, items, ic) in enumerate((("What a contribution holds", HOLDS, "check"),
                                           ("What it never holds", NEVER, "remove"))):
         bx = x + i * (cw + 14)
         card(cr, k, bx, y, cw, h)
@@ -592,7 +592,7 @@ def licence_cards(cr, ui, hits, x, y, w, cur, pick):
         PT.text(cr, desc, k["sub"], x + 52, y + 40, k.ink, maxw=w - 76, wrap=True)
         hits.add(x, y, w, h, lambda key=key: pick(key))
         y += h + 12
-    PT.text(cr, "To pick the other licence later, erase the donation in Donate and start a new one.", k["sub"], x, y,
+    PT.text(cr, "To pick the other licence later, erase the contribution in Contribute and start a new one.", k["sub"], x, y,
             k.soft, maxw=w, wrap=True)
     return y + 30
 
@@ -729,7 +729,7 @@ def sample_detail(cr, ui, hits, w, h, y):
     add = None
     if not don and ui.donation[0] and ui.state.donating:
         add = ("Add", lambda: ui.donate_one(sid))
-    rows.append(("Donation", "In your donation" if don else "Not in your donation", add))
+    rows.append(("Contribution", "In your contribution" if don else "Not in your contribution", add))
     sep(cr, k, PAD, y, w - 2 * PAD, strong=True)
     for name, value, b in rows:
         lbl(cr, k, name, PAD, y + 20)
@@ -740,7 +740,7 @@ def sample_detail(cr, ui, hits, w, h, y):
         sep(cr, k, PAD, y, w - 2 * PAD)
     by = h - 20 - BTN_H
     if ui.asking_delete:
-        text = ("It’s removed from your samples, and from your donation, for good. What the tablet has already "
+        text = ("It’s removed from your samples, and from your contribution, for good. What the tablet has already "
                 "learned from it stays until it learns again." if don else
                 "It’s removed from your samples for good. What the tablet has already learned from it stays until it "
                 "learns again.")
@@ -982,7 +982,7 @@ def best_intro(cr, ui, hits, w, h):
         y += ch + gap
     careful = sum(1 for v in ui.marked.values() if v[0] == "careful")
     picks = len(ui.prefs)
-    s = ("%d careful sample%s and %d pick%s so far. They are kept like your other samples. If you donate, a pick goes "
+    s = ("%d careful sample%s and %d pick%s so far. They are kept like your other samples. If you contribute, a pick goes "
          "along only with both of its versions; a font made from your writing never does."
          % (careful, "" if careful == 1 else "s", picks, "" if picks == 1 else "s"))
     by = h - 20 - BTN_H
@@ -1199,7 +1199,7 @@ def best_font(cr, ui, hits, w, h):
     elif inst:
         foot = "Installed, version %d. You wrote more since: Update makes it again under the same name." % inst[1]
     elif ready:
-        foot = "Not installed yet. Only you have it on this tablet; it is never donated."
+        foot = "Not installed yet. Only you have it on this tablet; it is never contributed."
     else:
         foot = ""
     btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
@@ -1218,7 +1218,7 @@ def best_font(cr, ui, hits, w, h):
         PT.text(cr, foot, k["sub"], PAD, by - 30, k.soft, maxw=cw, wrap=True)
 
 
-# ---------------------------------------------------------------- Donate
+# ---------------------------------------------------------------- Contribute
 
 
 def donate_page(cr, ui, hits, w, h):
@@ -1230,51 +1230,52 @@ def donate_page(cr, ui, hits, w, h):
     cw = w - 2 * PAD
     by = h - 20 - BTN_H
     if ui.picking_licence:
-        y = page_head(cr, k, PAD, y + 18, cw, "Donate", "How may others use your samples?",
-                      "Pick the licence for your donation. Both let anyone use it; you choose once.", small=True, keep_lead=True)
+        y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "How may others use your samples?",
+                      "Pick the licence for your contribution. Both let anyone use it; you choose once.", small=True, keep_lead=True)
         licence_cards(cr, ui, hits, PAD, y, cw, ui.licence_pick, ui.pick_licence)
         btns_right(cr, k, hits, w - PAD, by, [
             ("Cancel", ui.cancel_licence, False),
-            ("Turn on donating", (lambda: ui.donating(True, ui.licence_pick)) if ui.licence_pick else None, True)])
+            ("Turn on contributing", (lambda: ui.donating(True, ui.licence_pick)) if ui.licence_pick else None, True)])
         return
     if on and ui.reviewing:
         return earlier_review(cr, ui, hits, w, h, y)
     if not on:
-        y = page_head(cr, k, PAD, y + 18, cw, "Donate", "Help the reader for everyone",
-                      "The handwriting reader is open source. It learns from handwriting people choose to donate. "
-                      "Donating is off unless you turn it on.", small=True)
+        y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "Help the reader for everyone",
+                      "The handwriting reader is open source. It learns from handwriting people choose to contribute. "
+                      "Contributing is off unless you turn it on.", small=True)
         card(cr, k, PAD, y, cw, 62)
         icon(cr, "toggle_off", 26, PAD + 28, y + 31, k.ink)
-        PT.text(cr, "Donating is off", k["row"], PAD + 54, y + 10, k.ink, weight=600)
+        PT.text(cr, "Contributing is off", k["row"], PAD + 54, y + 10, k.ink, weight=600)
         PT.text(cr, "Nothing is set aside. Your samples stay yours alone.", k["sub"], PAD + 54, y + 34, k.soft,
                 maxw=cw - 70)
         y = holds_lists(cr, k, PAD, y + 76, cw) + 14
         y = how_note(cr, k, PAD, y, cw, "folder", "Nothing is sent by itself. When you choose, the app saves your "
-                     "donation as one file in your Documents, and you send it yourself.") + 14
+                     "contribution as one file in your Documents, and you send it yourself.") + 14
         y = donor_row(cr, ui, hits, PAD, y, cw, donor)
         msg_line(cr, ui, by - 30, w)
         bw = btn_w(cr, k, "Turn on…")
         btn(cr, k, hits, w - PAD - bw, by, "Turn on…", ui.turn_on, w=bw)
         return
-    y = page_head(cr, k, PAD, y + 18, cw, "Donate", "Thank you for donating",
+    y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "Thank you for contributing",
                   None if ui.saved else "Every sample you keep for a word or sentence the app shows is added. Samples "
                   "you wrote before can be added too, below.", small=True, land_hide=True)
     if ui.saved:
         card(cr, k, PAD, y, cw, 62)
         icon(cr, "check_circle", 24, PAD + 26, y + 31, k.ink)
         PT.text(cr, "Saved as " + os.path.basename(ui.saved), k["row"], PAD + 52, y + 10, k.ink, maxw=cw - 70)
-        PT.text(cr, "In Documents › Handwriting donations. Send it to the project whenever it suits you.", k["sub"],
+        folder = os.path.basename(os.path.dirname(ui.saved))
+        PT.text(cr, "In Documents › %s. Send it to the project whenever it suits you." % folder, k["sub"],
                 PAD + 52, y + 34, k.soft, maxw=cw - 70)
         y += 76
     soft_box(cr, k, PAD, y, cw, 76)
     icon(cr, "volunteer_activism", 26, PAD + 28, y + 38, k.ink)
-    PT.text(cr, "Donating is on", k["row"], PAD + 54, y + 16, k.ink, weight=600)
+    PT.text(cr, "Contributing is on", k["row"], PAD + 54, y + 16, k.ink, weight=600)
     PT.text(cr, "%s (%s). New samples are added as you write." % LIC.get(lic, (lic, lic)), k["sub"], PAD + 54, y + 42,
             k.soft, maxw=cw - 190)
     PT.text(cr, str(n), k["num"], PAD + cw - 18, y + 12, k.ink, align=2)
     PT.text(cr, "sample" if n == 1 else "samples", k["mono"], PAD + cw - 18, y + 50, k.ink, align=2)
     y += 90
-    # what a donation holds: shown when there is room for it (it was shown before turning on)
+    # what a contribution holds: shown when there is room for it (it was shown before turning on)
     rest = (62 + 12 if ui.earlier else 0) + 60 + 30
     probe = cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
     if holds_lists(probe, k, PAD, y, cw) + 14 + rest <= by - 10:
@@ -1282,21 +1283,21 @@ def donate_page(cr, ui, hits, w, h):
     if ui.earlier:
         e = len(ui.earlier)
         y += chevron_row(cr, k, hits, PAD, y, cw, "add_to_photos", "Add earlier samples",
-                         "%d sample%s written before donating %s not in it. Look through them, if you like." % (
+                         "%d sample%s written before contributing %s not in it. Look through them, if you like." % (
                              e, "" if e == 1 else "s", "is" if e == 1 else "are"), ui.review_earlier, shaded=False) + 12
     y = donor_row(cr, ui, hits, PAD, y, cw, donor)
     msg_line(cr, ui, by - 30, w)
     btns_right(cr, k, hits, w - PAD, by, [
-        ("Erase donation", ui.ask_erase_donation if n else None, False), ("Turn off", ui.ask_turn_off, False),
+        ("Erase contribution", ui.ask_erase_donation if n else None, False), ("Turn off", ui.ask_turn_off, False),
         ("Save as a file", ui.write_donation if n else None, True)])
 
 
 def donor_row(cr, ui, hits, x, y, w, donor):
-    """quiet: what the donor ID is, and a way to count as another writer from now on"""
+    """quiet: what the contributor number is, and a way to count as another writer from now on"""
     if not donor:
         return y
     k = ui.theme
-    t = "Donor ID: %s… — a random number, the same in all your donations, so they count as one writer's. It says " \
+    t = "Contributor number: %s… — random, the same in all your contributions, so they count as one writer's. It says " \
         "nothing about you." % donor[:4]
     gw, _ = PT.measure(cr, "Get a new one", k["sub"])
     _, th = PT.text(cr, t, k["sub"], x, y, k.soft, maxw=w - gw - 30, wrap=True)
@@ -1307,11 +1308,11 @@ def donor_row(cr, ui, hits, x, y, w, donor):
 
 
 def earlier_review(cr, ui, hits, w, h, y):
-    """the prompted samples kept before donating was on: a tap leaves one out; Not now adds none"""
+    """the prompted samples kept before contributing was on: a tap leaves one out; Not now adds none"""
     k = ui.theme
     cw = w - 2 * PAD
     total = len(ui.earlier)
-    y = page_head(cr, k, PAD, y + 18, cw, "Donate", "Add your earlier samples too?",
+    y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "Add your earlier samples too?",
                   "You’ve already written %d sample%s for words the app showed. Tap any you’d rather leave out. If you "
                   "say not now, none are added, and you can come back here any time." % (total, "" if total == 1 else "s"),
                   small=True, keep_lead=True)

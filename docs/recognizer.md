@@ -361,6 +361,8 @@ sample's line (sample format v1, escaped as a text field): the client's own, or 
 `readers`. Both need a client name from `hello` (`no-client`) and are what an app that builds a
 font from the person's writing uses.
 
+"Donation" is the internal name of what the person sees as a contribution (spec 001 FR-014).
+
 **donate** (FR-014): with a donation started (`glassine-handwriting donation start`), adds the
 session's strokes with `TEXT` (the prompt) to the donation, separate from the person's samples,
 checked and stored like a prompted `confirm` (`skip fit SCORE`, `keep`). `TEXT` must be one of

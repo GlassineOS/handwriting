@@ -73,7 +73,8 @@ Error codes: `bad-request`, `unknown-method`, `permission-needed`, `not-allowed`
 
 Not in version 1, still owed for spec 004 FR-013 and FR-015: sample export and show,
 learning control, letter model and font builds with progress notifications, and donation
-(through the samples app or Settings only).
+(through the samples app or Settings only). "Donation" is the internal name of what the
+person sees as a contribution.
 
 ## The compositor's channel
 
