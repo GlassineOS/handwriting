@@ -1449,6 +1449,8 @@ class ReferenceHeight(unittest.TestCase):
         # the reference for the model alone, no weighing: still read at that size
         self.assertEqual(self.scores(True, 1, size="noweigh"), self.scores(True, 1, size="noweigh"))
         self.assertEqual(self.scores(True, 1, size="0.05,0.12"), self.scores(True, 1, size="0.05,0.12,noweigh"))
+        # weighing a version 2 model is asked for only
+        self.assertTrue(all(x is not None for x in self.scores(True, 1, size="0.05,0.12,weigh")))
         # the guide line the ink sits on moves its height
         self.assertNotEqual(self.scores(True, 1, area="-5,-5,10,10,1,0,0.62"),
                             self.scores(True, 1, area="-5,-5,10,10,1,0,0.2"))
