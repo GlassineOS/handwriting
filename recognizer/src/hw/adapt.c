@@ -374,7 +374,7 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 		if (id_value(es[i].meta.id) % 5 == 0) he[nhe++] = x; else tr[ntr++] = x;
 	}
 	/* nothing new since the last run: don't spend the battery's charge again */
-	char cur[4096], prev[4096], rel[128], buf[64];
+	char cur[4096], prev[4096], rel[160], buf[64];
 	hw_store_adaptation_path(cur, sizeof cur, o->lang, "current");
 	hw_store_adaptation_path(prev, sizeof prev, o->lang, "previous");
 	struct state sta;
@@ -409,7 +409,7 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 				      (float)before, (int64_t)time(NULL) };
 	int fd = hw_store_lock();
 	if (fd < 0) { hw_head_free(&cand); goto out; }
-	snprintf(rel, sizeof rel, "adaptation/%s", o->lang);
+	hw_store_adaptation_dir(rel, sizeof rel, o->lang);
 	if (hw_store_generation() != gen) {
 		/* erased while this ran: what it learned came from samples that are gone */
 		if (o->verbose) printf("adapt %s: samples erased meanwhile, dropped\n", o->lang);
@@ -423,13 +423,13 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 		for (size_t i = 0; i < ne; i++)
 			if (!strcmp(es[i].meta.lang, o->lang)) { if (es[i].meta.time > newest) newest = es[i].meta.time; nid = es[i].meta.id; }
 		int n = snprintf(buf, sizeof buf, "%zu %lu %lld %s\n", usable, gen, newest, nid);
-		char srel[160];
+		char srel[192];
 		snprintf(srel, sizeof srel, "%s/state", rel);
 		hw_store_replace(srel, buf, (size_t)n);
 		char line[256];
 		n = snprintf(line, sizeof line, "%lld %s %zu %zu %.4f %.4f\n", (long long)info.time,
 			     after < before ? "kept" : "rejected", ntr, nhe, before, after);
-		char lrel[160], lp[4096];
+		char lrel[192], lp[4096];
 		snprintf(lrel, sizeof lrel, "%s/log", rel);
 		if (!hw_store_path(lp, sizeof lp, lrel)) {
 			FILE *lf = fopen(lp, "ae");
@@ -438,7 +438,7 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 		if (after < before) {
 			size_t len;
 			char *bin = hw_adapt_serialize(&cand, &info, &len);
-			char crel[160], prel[160];
+			char crel[192], prel[192];
 			snprintf(crel, sizeof crel, "%s/current", rel);
 			snprintf(prel, sizeof prel, "%s/previous", rel);
 			struct stat st;

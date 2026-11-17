@@ -38,6 +38,18 @@ RESULTS = [
     ("test_letters-heldout", "random letters, held-out fonts"),
 ]
 
+# a model reading the reference height (ghm version 2, ink4 sets): keys get the sets' reference
+# suffix (.mxh: the letter height measured as the recognizer measures it, .xh: the generator's)
+RESULTS_REF = [
+    ("test-heldout", "test book, held-out fonts"),
+    ("test-newprint", "test book, new print fonts"),
+    ("test-newscript", "test book, new script fonts"),
+    ("test_words-heldout", "random words, held-out fonts"),
+    ("test_symbols-heldout", "numbers and punctuation, held-out fonts"),
+    ("test_letters-heldout", "random letters, held-out fonts"),
+    ("test_kinds-heldout", "names, codes, numbers, lone characters, held-out fonts"),
+]
+
 MODEL_LICENCE = """\
 recognizer.ghm (the model)
   GPL-2.0-or-later, as the rest of GlassineOS/handwriting that produces it (the trainer,
@@ -61,6 +73,13 @@ prompts.txt (texts for prompted writing and donation)
 """
 
 
+def texts_of(ink):
+    """the training texts: glassine-synth's provenance, or the ink4 generator's sources"""
+    if "text" in ink["provenance"]:
+        return ink["provenance"]["text"]
+    return {k: {f: b[f] for f in ("title", "author", "split", "source")} for k, b in ink["sources"]["books"].items()}
+
+
 def fail(msg):
     raise SystemExit(f"glassine-train release: {msg}")
 
@@ -73,8 +92,9 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def export(build, run, ckpt, work):
-    """glassine-train export in a scratch build dir: ONNX + export.json from the checkpoint"""
+def export(build, run, ckpt, work, data="test-heldout"):
+    """glassine-train export in a scratch build dir: ONNX + export.json from the checkpoint,
+    the held-out error on `data`"""
     from argparse import Namespace
 
     from .cli import cmd_export
@@ -82,27 +102,34 @@ def export(build, run, ckpt, work):
     rdir.mkdir(parents=True)
     shutil.copy2(build / "runs" / run / ckpt, rdir / ckpt)
     (work / "build" / "data").mkdir()
-    (work / "build" / "data" / "test-heldout").symlink_to((build / "data" / "test-heldout").resolve())
+    (work / "build" / "data" / data).symlink_to((build / "data" / data).resolve())
     cwd = os.getcwd()
     os.chdir(work)
     try:
-        cmd_export(Namespace(run=run, ckpt=ckpt))
+        cmd_export(Namespace(run=run, ckpt=ckpt, data=data))
     finally:
         os.chdir(cwd)
     return rdir / "recognizer.onnx", json.loads((rdir / "export.json").read_text())
 
 
-def readme(a, run_args, meta, ev, exp, ghm, test_meta):
-    fonts = meta["provenance"]["fonts"]
-    texts = meta["provenance"]["text"]
-    train_fonts = meta["fonts"]
+def readme(a, run_args, meta, ev, exp, ghm, test_meta, suffix=None):
+    """suffix: a model reading the reference height (ghm version 2), its sets' suffix"""
+    ink = meta.get("ink_meta", meta)
+    fonts = ink["provenance"]["fonts"]
+    texts = texts_of(ink)
+    train_fonts = ink["fonts"]
     held = sorted(f for f in fonts if f not in train_fonts)
     L = []
     w = L.append
     w(f"glassine-handwriting base model: {a.lang}, version {a.version}")
     w("")
     w("The base model of glassine-handwriting (GlassineOS/handwriting, docs/recognizer.md)")
-    w(f"for the language '{a.lang}'. recognizer.ghm is model file format ghm version 1.")
+    w(f"for the language '{a.lang}'. recognizer.ghm is model file format ghm version {2 if suffix else 1}.")
+    if suffix:
+        w("It reads the ink scaled by a reference height, the person's small letters as the")
+        w("recognizer measures them or else a fifth of the writing area's line, and the ink's")
+        w("size as an input of its own (spec 001 FR-018); a recognizer that reads version 2")
+        w("is needed.")
     w("")
     w(f"recognizer.ghm  sha256 {sha256(ghm)}")
     w("")
@@ -112,20 +139,42 @@ def readme(a, run_args, meta, ev, exp, ghm, test_meta):
     w("full recipe, the features and the model). Trained with:")
     w("")
     w("  (cd synth && uv run glassine-synth fetch)")
-    w("  cd train && uv run glassine-train data")
-    args = " ".join(f"--{k.replace('_', '-')} {v}" for k, v in run_args.items()
-                    if k not in ("cmd", "run", "data", "val") and v not in (None, False))
-    w(f"  uv run glassine-train train --run {a.run} {args}")
+    if suffix:
+        w("  cd train  # then the ink sets and their features as in train/README.md (model 4)")
+        chain, r = [], run_args
+        while r:                                   # a run that went on from another (--init)
+            chain.insert(0, r)
+            init = r.get("init")
+            r = json.loads((a.build / "runs" / Path(init).parent.name / "args.json").read_text()) if init else None
+        for r in chain:
+            args = " ".join(f"--{k.replace('_', '-')} {v}" for k, v in r.items()
+                            if k not in ("cmd", "run") and v not in (None, False))
+            w(f"  uv run glassine-train train --run {r['run']} {args}".replace(" --augment True", " --augment"))
+    else:
+        w("  cd train && uv run glassine-train data")
+        args = " ".join(f"--{k.replace('_', '-')} {v}" for k, v in run_args.items()
+                        if k not in ("cmd", "run", "data", "val") and v not in (None, False))
+        w(f"  uv run glassine-train train --run {a.run} {args}")
     w(f"  uv run glassine-train release --run {a.run} --lang {a.lang} --version {a.version} ...")
     w("")
     w(f"Model: convolutions + 2-layer bidirectional LSTM + CTC, {exp['params']} parameters;")
-    w("the checkpoint with the best validation character error was kept.")
+    w("the checkpoint with the best " + ("character error on the selection sets (--select)" if run_args.get("select")
+                                          else "validation character error") + " was kept.")
     w("")
     w("Data")
     w("----")
-    w(f"Synthetic ink only: {meta['n']} text lines rendered as online handwriting by")
-    w(f"glassine-synth (GlassineOS/handwriting synth/) from {len(train_fonts)} fonts, seed {meta['seed']}.")
-    w("No real handwriting and no sample of any person is in this model.")
+    if suffix:
+        w(f"Synthetic ink only: {meta['n']} lines (text, names, codes, numbers, lone characters)")
+        w("rendered as online handwriting by the trainer's generator (train/README.md, model 4)")
+        w(f"from {len(train_fonts)} fonts, seed {ink['seed']}. No ink of any person is in this model or")
+        w("its data. The generator's timing (speed, pauses, delayed strokes) and one of its")
+        w(f"{ink['style_pool']} spacing styles are aggregate numbers measured on one writer's samples,")
+        w("given to the project for training. Names: U.S. Social Security Administration given")
+        w("names and 2010 census surnames (public domain).")
+    else:
+        w(f"Synthetic ink only: {meta['n']} text lines rendered as online handwriting by")
+        w(f"glassine-synth (GlassineOS/handwriting synth/) from {len(train_fonts)} fonts, seed {meta['seed']}.")
+        w("No real handwriting and no sample of any person is in this model.")
     w("")
     w("Fonts (SIL Open Font License 1.1 or Apache License 2.0, from google/fonts; upstream commit):")
     for d in sorted(fonts):
@@ -142,11 +191,21 @@ def readme(a, run_args, meta, ev, exp, ghm, test_meta):
     w("-------")
     w("Character error rate (edit distance / reference length), greedy decoding, no word")
     w("list, measured on synthetic ink. The held-out fonts never appear in training and are")
-    w("the honest proxy for a new hand; there is no measurement on real handwriting yet.")
+    if suffix:
+        w("a proxy for a new hand.")
+    else:
+        w("the honest proxy for a new hand; there is no measurement on real handwriting yet.")
     w("")
-    for k, what in RESULTS:
+    if suffix:
+        w("Letter height known (" + ("each writer's small letters measured as the recognizer measures"
+          " a person's" if suffix == ".mxh" else "the generator's x-height") + "):")
+    for k, what in (RESULTS_REF if suffix else RESULTS):
+        k = k + (suffix or "")
         if k in ev:
-            w(f"  {what:44s} {pct(ev[k]['cer']):>7s}   ({ev[k]['lines']} lines)")
+            w(f"  {what:56s} {pct(ev[k]['cer']):>7s}   ({ev[k]['lines']} lines)")
+    if suffix:
+        w("The real-ink results (one writer, a held-back session; and one other writer) are in")
+        w("train/README.md (Results, model 4).")
     w("")
     w(f"Export check: ONNX matches the checkpoint to {exp['max_abs_diff_vs_torch']:.1e}; held-out")
     w(f"character error through ONNX {pct(exp['fp32_test_heldout_cer'])}.")
@@ -257,8 +316,9 @@ def readme_finetune(a, run_args, meta, ev, exp, ghm, split, rev, base_rev):
 
 
 def licenses(meta, fonts_dir, writers=0):
+    meta = meta.get("ink_meta", meta)
     fonts = meta["provenance"]["fonts"]
-    texts = meta["provenance"]["text"]
+    texts = texts_of(meta)
     man = {f["dir"]: f for f in json.loads((fonts_dir / "manifest.json").read_text())}
     words = {1: "one", 2: "two", 3: "three"}
     real = REAL_LICENCE.format(writers=words.get(writers, str(writers))) if writers else ""
@@ -268,6 +328,8 @@ def licenses(meta, fonts_dir, writers=0):
     for k in sorted(texts, key=lambda k: texts[k]["title"]):
         t = texts[k]
         L.append(f"  {t['title']}, {t['author']}: {t['source']}")
+    for n in meta.get("sources", {}).get("names", []):
+        L.append(f"Names ({n['kind']}), {n['licence']}: {n['url']} (sha256 {n['sha256']})")
     L += ["", "Fonts, used only to render training ink. SIL Open Font License 1.1:"]
     ofl = apache = None
     rest = []
@@ -344,26 +406,30 @@ def main(argv=None):
     rundir = build / "runs" / a.run
     run_args = json.loads((rundir / "args.json").read_text()) if (rundir / "args.json").exists() else {}
     tuned = run_args.get("cmd") == "finetune"
+    data = run_args["synth"][0] if tuned else run_args.get("data", "train")
+    meta = json.loads((build / "data" / data / "meta.json").read_text()) if (build / "data" / data / "meta.json").exists() else {}
+    suffix = (".mxh" if meta.get("measured") else ".xh") if meta.get("nfeat") == 6 else None
+    held = "test-heldout" + (suffix or "")
     need = [rundir / a.ckpt, rundir / "args.json", rundir / "eval-best.json",
-            build / "data" / "train" / "meta.json", build / "data" / "test-heldout",
+            build / "data" / data / "meta.json", build / "data" / held,
             REPO / "models" / a.lang / "prompts.txt", a.fonts / "manifest.json"]
     if tuned:
         need += [a.real / "split.json", build / "realeval" / a.run / "result.json", a.base_realeval]
     for p in need:
         if not p.exists():
             fail(f"missing {p}")
-    data = run_args["synth"][0] if tuned else run_args.get("data", "train")
-    meta = json.loads((build / "data" / data / "meta.json").read_text())
     ev = json.loads((rundir / "eval-best.json").read_text())
-    tm = build / "data" / "test-heldout" / "meta.json"
+    tm = build / "data" / held / "meta.json"
     test_meta = json.loads(tm.read_text()) if tm.exists() else None
+    if test_meta and "ink_meta" in test_meta:
+        test_meta = test_meta["ink_meta"]
 
     name = f"glassine-handwriting-model-{a.lang}-{a.version}"
     a.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="release-", dir=a.out) as tmp:
         tmp = Path(tmp)
-        onnx, exp = export(build, a.run, a.ckpt, tmp / "export")
-        want = ev["test-heldout"]["cer"]
+        onnx, exp = export(build, a.run, a.ckpt, tmp / "export", held)
+        want = ev[held]["cer"]
         got = exp["fp32_test_heldout_cer"]
         if abs(got - want) > a.tolerance:
             fail(f"held-out error through ONNX {got:.4f}, the run's evaluation says {want:.4f}: "
@@ -371,7 +437,11 @@ def main(argv=None):
         stage = tmp / "stage"
         stage.mkdir()
         until = json.loads((a.real / "split.json").read_text())["report"]["trained_until"] if tuned else 0
-        subprocess.run([sys.executable, str(ONNX2GHM), str(onnx), "--charset-from", str(TEXT_PY),
+        # a model's own characters (model 4's go beyond text.py's CHARS); onnx2ghm writes version 2
+        # for one reading the reference height
+        from .train import load
+        alphabet = load(rundir / a.ckpt).alphabet
+        subprocess.run([sys.executable, str(ONNX2GHM), str(onnx), "--charset", alphabet,
                         "-o", str(stage / "recognizer.ghm"), "--trained-until", str(until)], check=True)
         shutil.copyfile(REPO / "models" / a.lang / "prompts.txt", stage / "prompts.txt")
         if tuned:
@@ -381,7 +451,8 @@ def main(argv=None):
             (stage / "README").write_text(readme_finetune(a, run_args, meta, ev, exp, stage / "recognizer.ghm",
                                                           split, rev, base_rev))
         else:
-            (stage / "README").write_text(readme(a, run_args, meta, ev, exp, stage / "recognizer.ghm", test_meta))
+            (stage / "README").write_text(readme(a, run_args, meta, ev, exp, stage / "recognizer.ghm", test_meta,
+                                                 suffix))
         (stage / "LICENSES").write_text(licenses(meta, a.fonts, 1 if tuned else 0))
         # the unpacked model directory too, for make check-model
         mdir = a.out / name / a.lang

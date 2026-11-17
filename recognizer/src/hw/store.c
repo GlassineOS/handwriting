@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The person's store and settings (see store.h and docs/recognizer.md).
 #include <dirent.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <json-c/json.h>
@@ -214,11 +215,34 @@ int hw_store_path(char *out, size_t n, const char *rel)
 	return r < 0 || (size_t)r >= n ? -1 : 0;
 }
 
+/* the adaptations of another set of base models (the setting `models`) are kept apart, in
+ * adaptation/LANG@NAME with NAME the set's directory name, so the default set's head stays
+ * as it is and is used again when the setting goes back */
+void hw_store_adaptation_dir(char *rel, size_t n, const char *lang)
+{
+	char conf[4000], name[64] = "";
+	const char *e = getenv("GLASSINE_HANDWRITING_MODELS");
+	if (!(e && *e) && hw_conf_get("models", conf, sizeof conf) && conf[0] == '/') {
+		size_t k = strlen(conf);
+		while (k > 1 && conf[k - 1] == '/') conf[--k] = 0;
+		if (strcmp(conf, "/usr/share/glassine/handwriting")) {
+			const char *b = strrchr(conf, '/') + 1;
+			size_t j = 0;
+			for (; *b && j + 1 < sizeof name; b++)
+				name[j++] = isalnum((unsigned char)*b) || *b == '.' || *b == '-' || *b == '_' ? *b : '_';
+			name[j] = 0;
+		}
+	}
+	if (name[0]) snprintf(rel, n, "adaptation/%s@%s", lang, name);
+	else snprintf(rel, n, "adaptation/%s", lang);
+}
+
 int hw_store_adaptation_path(char *out, size_t n, const char *lang, const char *slot)
 {
-	char rel[128];
+	char dir[160], rel[192];
 	if (writer_id[0]) return -1;            /* a writer's store has no adaptation */
-	snprintf(rel, sizeof rel, "adaptation/%s/%s", lang, slot);
+	hw_store_adaptation_dir(dir, sizeof dir, lang);
+	snprintf(rel, sizeof rel, "%s/%s", dir, slot);
 	return hw_store_path(out, n, rel);
 }
 

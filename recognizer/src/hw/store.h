@@ -38,6 +38,7 @@ void hw_writers_sweep(void);                    /* deletes what a crashed remove
 
 int hw_store_path(char *out, size_t n, const char *rel);      /* rel "" = the directory */
 int hw_store_adaptation_path(char *out, size_t n, const char *lang, const char *slot);
+void hw_store_adaptation_dir(char *rel, size_t n, const char *lang);    /* adaptation/LANG[@MODELS] */
 int hw_store_mkdir(const char *rel);    /* the directory (and rel under it), 0700 */
 int hw_store_lock(void);                /* creates the directory; fd to pass to unlock, -1 */
 void hw_store_unlock(int fd);
