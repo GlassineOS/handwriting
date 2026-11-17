@@ -114,11 +114,28 @@ through itself, whatever name it gives itself.
 - **FR-015**: Long work (learning, letter model and font builds) runs in the service at low
   priority and reports progress by notification; no request blocks the pen interface.
 
+### The writing's size
+
+- **FR-016**: Every request the service makes of the recognizer for an app, through either
+  interface, carries the units of the ink and a writing area, so a model that reads the
+  ink's size (spec 001 FR-018) has a reference: the app's ink area and ruled lines when it
+  set them; otherwise the bounding box of the writing held, with a line height and guide
+  line found from the writing itself (documented). Writing too little to find a line in
+  (a lone character) gets the line found earlier on the same surface, and none before
+  there is one; ink in em, whose units say how high a line is, gets an area only when the
+  app gives one. Through the service interface an app may give the area itself.
+- **FR-017**: The pen interface's units are the surface's points with the points per
+  millimetre of the output the pen writes on, whenever the display server knows the
+  output's size, and the pen's rate measured from the time between its points. Without a
+  known output size the units stay the pen's own, and no size in millimetres is assumed.
+
 ## Key entities
 
 - **App identity**: the system's id of the calling app (FR-001).
 - **Writing surface**: an app surface with the pen interface on, its choices and context.
 - **Reading**: partial readings and ranked candidates for a piece of writing.
+- **Writing area**: where a piece of writing lies, its line height and guide line, in the
+  units of its ink (FR-016).
 - **Report**: what the person did with a reading (FR-008).
 - **Permission**: per app, whether it may keep samples and read them.
 
@@ -149,9 +166,14 @@ Host level:
   strokes and candidates for a stand-in pen;
 - an app claiming another app's name gets none of that app's samples;
 - a pick reported through the pen interface stores a sample identical to one confirmed
-  through the recognizer contract for the same pen input;
+  through the recognizer contract for the same pen input, units and area;
 - a surface with text off causes no recognizer request; a private field sends nothing;
 - a service request without permission returns the distinct refusal;
+- without an ink area every recognizer request for a surface's writing of a few
+  characters carries an area and units with points per millimetre; with one, that area;
+- a model that reads the ink's size reads the recorded ink through the pen interface about
+  as well as through the keyboard's own path, and a model that doesn't reads it no worse
+  than before;
 - two apps reading at once share one loaded model;
 - a client library example passes against the schema.
 
