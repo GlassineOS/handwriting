@@ -15,6 +15,7 @@ than it guesses, far worse."""
 import math
 
 LINE_SIZES = 6.0        # a line found from the writing: six median stroke sizes
+MIN_GLYPHS = 3          # writing with fewer glyphs tells nothing of its line
 MIN_STEPS = 8           # the pen's rate needs this many time steps
 
 
@@ -42,10 +43,24 @@ def box(strokes):
     return (x0, y0, max(x1, x0 + 1), max(y1, y0 + 1))
 
 
+def glyphs(strokes):
+    """how many glyphs: strokes overlapping horizontally, also through others, are one"""
+    n, right = 0, None
+    for x0, x1 in sorted((min(p[0] for p in s), max(p[0] for p in s)) for s in strokes if s):
+        if right is None or x0 > right:
+            n += 1
+            right = x1
+        else:
+            right = max(right, x1)
+    return n
+
+
 def line(strokes):
-    """the line height found from the writing; 0 without ink"""
-    sizes = [stroke_size(s) for s in strokes if s]
-    return LINE_SIZES * _median(sizes) if sizes else 0.0
+    """the line height found from the writing; 0 when it has fewer than MIN_GLYPHS glyphs
+    (a lone character's line, found from itself, would hide its size: o or O)"""
+    if glyphs(strokes) < MIN_GLYPHS:
+        return 0.0
+    return LINE_SIZES * _median([stroke_size(s) for s in strokes if s])
 
 
 def base(strokes):

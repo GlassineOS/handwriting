@@ -107,4 +107,5 @@ After `candidates_done(serial, count)`, the app reports once on that serial:
 corrected writing is stored as a sample only when the person has let this app learn
 (`learn` permission, docs/service.md). The sample is built from the raw strokes the
 compositor sent, never from what the app keeps (FR-009). It is the same sample a client of
-the recognizer contract stores for the same pen input.
+the recognizer contract stores for the same pen input, units and area (docs/service.md, The
+writing's size).

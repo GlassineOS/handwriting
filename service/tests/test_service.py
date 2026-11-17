@@ -70,6 +70,10 @@ class AreaRules(unittest.TestCase):
         self.assertEqual(A.text(A.box(st), A.line(st), A.base(st)), "0,20,101,60,120,0,50")
         self.assertEqual(A.text((0, 0, 1, 1), 1.23456), "0,0,1,1,1.235,0")
         self.assertEqual(A.box([[[5, 5, 0]]]), (5, 5, 6, 6))      # a dot: never an empty box
+        self.assertEqual(A.glyphs(st), 3)
+        self.assertEqual(A.glyphs(st[:2]), 2)
+        self.assertEqual(A.line(st[:2]), 0)                        # too little to tell its line
+        self.assertEqual(A.glyphs([[[0, 0, 0], [10, 0, 1]], [[5, 5, 2], [20, 5, 3]], [[30, 0, 4]]]), 2)
         self.assertEqual(A.rate(st), 0)                            # too few steps
         self.assertEqual(A.rate([[[i, 0, 5 * i] for i in range(9)]]), 200)
         self.assertEqual(A.with_rate("device:6.25", 200), "device:6.25:200")
@@ -332,6 +336,14 @@ class Service(unittest.TestCase):
         a("read", strokes=st, count=1, units="device:6.25", area={"box": [0, 0, 400, 200], "line": 80, "base": 60})
         self.assertEqual(self.assert_every_read_has_an_area("device:6.25:143"), ["0,0,400,200,80,0,60"])
         self.assertEqual(a("read", strokes=st, area={"box": [0, 0, 0, 0], "line": 80})["error"]["code"], "bad-request")
+        # em says how high a line is: no area found for it; one given is used
+        self.log.write_text("")
+        a("read", strokes=[[[x / 40, y / 40, t] for x, y, t, *_ in s] for s in st], count=1, units="em")
+        self.assertEqual([b for x in self.sessions() for b in x["asks"] if isinstance(b, tuple)], [])
+        # a lone character: too little writing to find a line in, no area
+        self.log.write_text("")
+        a("read", strokes=st[:1], count=1, units="device:6.25")
+        self.assertEqual([b for x in self.sessions() for b in x["asks"] if isinstance(b, tuple)], [])
 
     def test_nothing_sent_when_off_or_private(self):
         self.pen_send(op="surface", s=3, sandbox="org.example.Draw", pid=0)
