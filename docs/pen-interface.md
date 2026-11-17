@@ -27,6 +27,11 @@ line by line on them. Without them the lines are found from the writing. Each li
 then neatened word by word, so a long line costs a few short requests rather than one long
 one.
 
+Every reading has a writing area and the units with the output's px per millimetre: the app's
+area and guides when it set them, else ones found from the writing (docs/service.md, The
+writing's size), so a model that reads the ink's size reads an app's writing as it reads the
+keyboard's.
+
 **Privacy (FR-010).** Nothing reaches the service for a surface with neatening and text both
 off, nor for a private field: a purpose of `password` or `pin`, or the hints
 `sensitive_data` or `hidden_text`. A surface that becomes private is forgotten by the
@@ -102,4 +107,5 @@ After `candidates_done(serial, count)`, the app reports once on that serial:
 corrected writing is stored as a sample only when the person has let this app learn
 (`learn` permission, docs/service.md). The sample is built from the raw strokes the
 compositor sent, never from what the app keeps (FR-009). It is the same sample a client of
-the recognizer contract stores for the same pen input.
+the recognizer contract stores for the same pen input, units and area (docs/service.md, The
+writing's size).

@@ -54,6 +54,16 @@
         "languages": {"type": "string", "description": "comma-separated, in order; empty: the person's setting"}
       }
     },
+    "area": {
+      "type": "object",
+      "description": "the writing area in the units of the strokes (docs/service.md, The writing's size); a part left out is found from the writing",
+      "properties": {
+        "box": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "x0, y0, x1, y1"},
+        "line": {"type": "number", "exclusiveMinimum": 0, "description": "the line height"},
+        "base": {"type": "number", "description": "the y of the first guide line, the next ones every line below it"},
+        "rot": {"enum": [0, 90, 180, 270], "description": "the screen's turn in degrees"}
+      }
+    },
     "permission": {"enum": ["allowed", "refused", "unasked"]},
     "candidate": {
       "type": "object",
@@ -98,7 +108,7 @@
         "result": {"$ref": "#/$defs/methods/permission.get/result"}
       },
       "read": {
-        "params": {"type": "object", "required": ["strokes"], "properties": {"strokes": {"$ref": "#/$defs/strokes"}, "count": {"type": "integer", "minimum": 1, "maximum": 8}, "units": {"type": "string"}, "context": {"$ref": "#/$defs/context"}}},
+        "params": {"type": "object", "required": ["strokes"], "properties": {"strokes": {"$ref": "#/$defs/strokes"}, "count": {"type": "integer", "minimum": 1, "maximum": 8}, "units": {"type": "string"}, "area": {"$ref": "#/$defs/area"}, "context": {"$ref": "#/$defs/context"}}},
         "result": {
           "type": "object",
           "required": ["candidates"],
@@ -110,7 +120,7 @@
         }
       },
       "neaten": {
-        "params": {"type": "object", "required": ["strokes"], "properties": {"strokes": {"$ref": "#/$defs/strokes"}, "strength": {"type": "number", "minimum": 0, "maximum": 1}, "text": {"type": "string"}, "units": {"type": "string"}, "context": {"$ref": "#/$defs/context"}}},
+        "params": {"type": "object", "required": ["strokes"], "properties": {"strokes": {"$ref": "#/$defs/strokes"}, "strength": {"type": "number", "minimum": 0, "maximum": 1}, "text": {"type": "string"}, "units": {"type": "string"}, "area": {"$ref": "#/$defs/area"}, "context": {"$ref": "#/$defs/context"}}},
         "result": {
           "type": "object",
           "required": ["strokes"],
