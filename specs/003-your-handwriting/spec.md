@@ -53,6 +53,11 @@ a sentence in it, characters that are not yet covered are listed with a way to w
 now, and on confirmation the font is installed for this person and appears wherever fonts
 are chosen (the settings app, text editors, notes apps).
 
+**Given** the font page, **When** the person picks one of the font's three styles (an even
+pen line, a broad nib, a brush that follows their own pressure and speed), **Then** the
+preview shows the same sentence in that style, letter for letter in the same places as
+in the others.
+
 **Given** the font is installed, **When** the person writes more samples and asks again,
 **Then** the font is rebuilt under the same name and apps that use it show the new version.
 
@@ -128,7 +133,9 @@ size, spacing) and keep their shape.
   shows each variant follows from how often the person writes it that way and from their
   marks (FR-031). Each variant carries
   its left and right ink profiles: how far its ink reaches to each side in each height band
-  from the descender to the cap height.
+  from the descender to the cap height, and, along each of its strokes from start to end,
+  how hard and how fast the person wrote it on average over the samples it is made from
+  (speed alone where the pen reported no pressure).
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
   prompt with its fit check passed (spans exact) or, for a prompt of one character alone,
   kept on the person's confirmation after a failed check (its strokes can only be that
@@ -227,6 +234,22 @@ size, spacing) and keep their shape.
   kerning that text shaping applies by default, for every pair of variants, so each pair
   of variants comes out where the spacing places it (FR-007) and words at the word spacing.
   Every other character falls back to the system's default font.
+- **FR-034**: The font comes in three styles of one family, installed and updated together,
+  that differ only in how wide the ink is along each stroke; the letters' shapes, their
+  variants and how the font switches between them, the spacing and the kerning are the
+  same in all three, so a text sets in the same places in each:
+  - **Regular**: an even line of the person's ink width (FR-009).
+  - **Calligraphy**: a broad nib held at one angle (about 35° by default; the angle is a
+    setting on the font page): the line is widest where the stroke runs across the nib and
+    thinnest where it runs along it, between widths set by the x-height.
+  - **Brush**: the width follows how the person wrote each stroke (FR-006): wider where they
+    pressed harder, and, more lightly, where they wrote slowly; strokes taper where they
+    start and end, and quick flicks thin out. Where the pen gave no pressure, speed alone.
+
+  The font page shows the preview in the style the person picks. Each style is a full
+  outline font of its own on the system (style names Regular, Calligraphy and Brush);
+  overlapping strokes draw as one ink. The styles are a matter of the font and its preview:
+  neatening and reading always use the person's ink as written.
 - **FR-010**: Repeated letters don't look stamped: the font switches between a character's
   variants along the text, each about as often as the person writes it that way, the same
   way every time for the same text, by contextual
@@ -424,7 +447,7 @@ by its neatened version and the original comes back at strength 0.
 
 - **SC-001**: With 40 careful samples of the alphabet in both cases and the digits, the
   font covers all of them.
-- **SC-002**: The font builds in under 2 minutes on the device while charging, without
+- **SC-002**: The font, all three styles, builds in under 2 minutes on the device while charging, without
   making the device less responsive.
 - **SC-003**: Neatening one line of ink answers within 300 ms on the device.
 - **SC-004**: The recognizer's error on neatened ink is not higher than on the original.
