@@ -1480,7 +1480,7 @@ def styles_shown(ui, mode):
                 any(ok for _, _, ok in FV.coverage(model, status=f.get("status"))))
 
 
-STYLE_W = 330                   # the style control's width, as the design's
+STYLE_W = 350                   # the style control's width: the design's, with room for "Calligraphy" in every voice
 
 
 def style_segs(cr, ui, hits, x, y, w):
