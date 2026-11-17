@@ -18,9 +18,52 @@ HERE = Path(__file__).resolve().parent
 BIN = os.environ.get("HW_BIN") or str(HERE.parent / "glassine-handwriting")
 
 
+SMALL = set("acemnorsuvwxz")
+
+
+def tall(c):
+    return c.isupper() or c.isdigit() or c in "bdhkl"   # as size.c, less t, f, J and Q
+
+
+def letters(path):
+    """the fixture writer's letters as the recognizer measures a person's (size.c measure):
+    per word of three or more characters the median height of its small letters and of its
+    tall ones drawn with strokes of their own, then the median over the words"""
+    xs, cs = [], []
+    for line in path.read_text().splitlines():
+        r = json.loads(line)
+        t, st, sp = r["text"], r["strokes"], r["spans"]
+        if len(t) < 3 or len(sp) != len(t):
+            continue
+        uses = [0] * len(st)
+        for s in sp:
+            for i in s:
+                uses[i] += 1
+        x, c = [], []
+        for ch, s in zip(t, sp):
+            if not s or any(uses[i] != 1 for i in s) or not (ch in SMALL or tall(ch)):
+                continue
+            ys = [p[1] for i in s for p in st[i]]
+            (x if ch in SMALL else c).append(max(ys) - min(ys))
+        if x:
+            xs.append(sorted(x)[len(x) // 2] if len(x) % 2 else sum(sorted(x)[len(x) // 2 - 1:len(x) // 2 + 1]) / 2)
+        if c:
+            cs.append(sorted(c)[len(c) // 2] if len(c) % 2 else sum(sorted(c)[len(c) // 2 - 1:len(c) // 2 + 1]) / 2)
+    med = lambda v: sorted(v)[len(v) // 2] if len(v) % 2 else sum(sorted(v)[len(v) // 2 - 1:len(v) // 2 + 1]) / 2
+    return med(xs), med(cs)
+
+
 def main():
     models = Path(sys.argv[1]).resolve()
     env = dict(os.environ, GLASSINE_HANDWRITING_MODELS=str(models))
+    with open(models / "en" / "recognizer.ghm", "rb") as fh:
+        version = int.from_bytes(fh.read(8)[4:8], "little")
+    if version >= 2 and "GLASSINE_HANDWRITING_SIZE" not in env:
+        # a model reading the reference height: the fixtures are em ink without a writing area,
+        # so it gets the fixture writer's letters, measured as a person's would be
+        x, c = letters(HERE / "data" / "ink.jsonl")
+        env["GLASSINE_HANDWRITING_SIZE"] = f"{x:.4f},{c:.4f}"
+        print(f"version {version} model: the fixture writer's letters {x:.3f} and {c:.3f} em")
     vec = json.loads((HERE / "data" / "model-en.json").read_text())
     fails = 0
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as fh:

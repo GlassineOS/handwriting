@@ -228,8 +228,8 @@ read time): prose lines with words 241 → 243 ms (+1 %; 95th percentile +3 %), 
 
 ## Data for the next base model (model 4; `gen4`)
 
-Spec 001 FR-018 and FR-020. Model 4 is trained on it (Results, Model 4); the shipped model is
-still model 2.
+Spec 001 FR-018 and FR-020. Model 4 is trained on it (Results, Model 4); the default model
+is still model 2, model 4 is released for a trial beside it (Results, Model 4).
 
 ```sh
 uv run glassine-train real STORE --out build/real --keep-test OLD/split.json  # the fixed test set
@@ -242,7 +242,7 @@ uv run glassine-train gen4-letters LETTERS/model --out PRIVATE/letters4 --fit bu
 uv run glassine-train gen4 --only train-fix --train-name train-fix --kinds uniform lone --lines 54000 --seed 43
 uv run glassine-train featurize build/ink4/train-fix --out build/data/train-fix-ref --ref mix
 uv run glassine-train mergeset --base train4-ref --drop-kinds uniform lone --add train-fix-ref --out train4-fix
-# the letter height measured as the recognizer measures a person's (model 4 as released):
+# the letter height measured as the recognizer measures a person's (model 4, m4mref):
 uv run glassine-train featurize build/ink4/train --out build/data/train4-mref --ref mix --measured
 uv run glassine-train inkread SETS... --models DIR --measured --samples build/eval/samples-m ...
 ```
@@ -503,7 +503,7 @@ fonts; held-out fonts = 1000 lines each, greedy.
 - To ship real ink in the base: samples from several writers, so one hand's quirks
   average out; the same split and gate apply.
 
-### Model 4: reading the size (FR-018, FR-020; not released)
+### Model 4: reading the size (FR-018, FR-020; released for a trial)
 
 **Recipe.** `ink4` train (600 k lines) featurized with `--ref mix` (six inputs: lengths in
 reference heights, y above the baseline, the ink's height); the characters of `CHARS4` (82,
@@ -730,8 +730,22 @@ and 88 ms per word (above) would be about 190 ms and 67 ms; not measured on the 
 real session (words + character model 2.4 % against 5.2 %, 95 % interval of the difference
 −5.1 to −0.8 points), and no held-out group is worse (all three far lower; read in ink4's
 versions of model 2's held-out fonts and texts, since model 2's own test ink is kept only as
-model 2's features). Not released: the device run (time, the samples app, a person writing)
-is still to do.
+model 2's features). m4mref (below) passes it too (−4.8 to −0.7 points).
+
+**Released for a trial: model 4 = m4mref**, as `glassine-handwriting-model-en-4`, installed
+beside model 2 in its own directory (docs/recognizer.md, Base models; the setting `models`
+switches). Not the default: the device run (time, the samples app, a person writing) is
+still to do. Its costs: with the line alone, a lone `o` is read as `O` more often (57 % read
+right against 92 %, ink only, synthetic), and `make check-model` reads one of the three
+fixture lines of model 2 right ("The quick brown fox" as "… fot", "it's" as "jt's"; the
+recorded ink 4.96 %, the same as model 2's), with the fixture writer's letters measured as a
+person's (`check_model.py`; the fixtures are em ink without a writing area).
+
+The look-alike lean with model 2 (the same sets, field by kind, letter height known): all
+lines level (−0.02 to +0.01), a lone `O` read as `0` 34 → 21 of 120, lone characters +0.00
+to +0.55, part numbers +0.03 to +0.56, phone numbers −0.48 to −0.04. Model 2 reads ink4's
+sets far worse than its own (43 % here), so this is a rough check, not a measure of model
+2 on the device.
 
 ## What limits accuracy
 

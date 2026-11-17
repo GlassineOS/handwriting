@@ -1272,6 +1272,41 @@ class Size(unittest.TestCase):
         self.assertFalse(f.exists())
 
 
+
+class ModelsSetting(unittest.TestCase):
+    """the setting `models`: another set of base models installed beside the default one,
+    taken at the next request; the environment's directory comes first"""
+
+    def test_switch(self):
+        env = Env(REAL)
+        try:
+            other = env.dir / "other"
+            (other / "en").mkdir(parents=True)          # a set without English
+            del env.env["GLASSINE_HANDWRITING_MODELS"]
+            stroke = pts(INK[13]["strokes"][0])
+
+            def recognize(c):
+                return c.ask("recognize", "en", "normal", "em", "1", "", stroke)
+
+            env.conf_set("handwriting.conf", f"models = {env.models}\n")
+            c = env.start("-i", "0")
+            c.ask("hello", "1", "org.example.test")
+            self.assertEqual(recognize(c)[0], "recognize")
+            env.conf_set("handwriting.conf", f"models = {other}\n")
+            self.assertEqual(recognize(c)[2:], ["no-model"])
+            env.conf_set("handwriting.conf", f"models = {env.models}\nmodels = relative/not/taken\n")
+            self.assertEqual(recognize(c)[2:], ["no-model"])  # not a full path: the default directory
+            env.conf_set("handwriting.conf", f"models = {env.models}\n")
+            self.assertEqual(recognize(c)[0], "recognize")
+            c.close()
+            env.env["GLASSINE_HANDWRITING_MODELS"] = str(other)
+            c = env.start("-i", "0")
+            c.ask("hello", "1", "org.example.test")
+            self.assertEqual(recognize(c)[2:], ["no-model"])  # the environment wins
+            c.close()
+        finally:
+            env.close()
+
 class Adaptation(unittest.TestCase):
     ARGS = ["-f", "--min-train", "20", "--min-held", "5", "--epochs", "20", "--lr", "1e-2"]
 
@@ -1335,6 +1370,27 @@ class Adaptation(unittest.TestCase):
         second = cur.read_bytes()
         self.env.run("adaptation", "revert")
         self.assertEqual((cur.read_bytes(), prev.read_bytes()), (first, second))
+
+    def test_models_setting_keeps_its_own(self):
+        """with the setting `models` on another set, an adaptation goes to adaptation/en@NAME:
+        the default set's head stays and is used again when the setting goes back"""
+        ad = self.env.store / "adaptation"
+        self.teach(120)
+        self.assertNotIn("not kept", self.env.run("adapt", *self.ARGS).stdout)
+        first = (ad / "en" / "current").read_bytes()
+        trial = self.env.dir / "handwriting-trial"
+        shutil.copytree(self.env.models, trial)
+        del self.env.env["GLASSINE_HANDWRITING_MODELS"]
+        self.env.conf_set("handwriting.conf", f"models = {trial}/\n")
+        self.assertEqual(self.env.run("adaptation", "show").stdout.splitlines()[0], "current\tnone")
+        self.teach(20)
+        self.assertNotIn("not kept", self.env.run("adapt", *self.ARGS).stdout)
+        self.assertTrue((ad / "en@handwriting-trial" / "current").exists())
+        self.assertEqual((ad / "en" / "current").read_bytes(), first)
+        self.assertFalse((ad / "en" / "previous").exists())
+        self.env.conf_set("handwriting.conf", "")
+        self.env.env["GLASSINE_HANDWRITING_MODELS"] = str(self.env.models)
+        self.assertTrue(self.env.run("adaptation", "show").stdout.startswith("current\t1"))
 
     def test_conditions(self):
         self.teach(20)
