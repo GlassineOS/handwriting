@@ -268,3 +268,67 @@ def alignment(samples_xh) -> dict:
     sd = lambda v: round(float(np.std(v)), 3) if len(v) else None
     return {"bottom_sd": sd(bot), "top_sd": sd(top), "bottom": _qs(np.abs(bot)), "n": len(bot),
             "capital_gap": _qs(np.array(cap))}
+
+
+# ---------------------------------------------------------------- the recognizer's letter height
+
+SMALL = set("acemnorsuvwxz")  # the recognizer's small letters (recognizer/src/hw/size.c)
+
+
+def small_height(strokes: list[np.ndarray], spans: list[list[int]], text: str) -> float:
+    """A line's small-letter height measured as the recognizer measures a person's samples
+    (size.c, measure): for three or more characters with a span each, the median height of
+    the small letters drawn with strokes of their own (a stroke two characters share says
+    nothing about either); a lone small letter's own height. 0 when there is none."""
+    n = len(text)
+    if n == 1 and text in SMALL and strokes:
+        pts = np.concatenate([q for q in strokes if len(q)])
+        return float(np.ptp(pts[:, 1])) if len(pts) else 0.0
+    if n < 3 or len(spans) != n:
+        return 0.0
+    uses = np.zeros(len(strokes) + 1, int)
+    for sp in spans:
+        for j in sp:
+            if 0 <= j < len(strokes):
+                uses[j] += 1
+    hs = []
+    for c, sp in zip(text, spans):
+        if c not in SMALL or not sp or any(not (0 <= j < len(strokes)) or uses[j] != 1 for j in sp):
+            continue
+        pts = np.concatenate([strokes[j] for j in sp if len(strokes[j])]) if any(len(strokes[j]) for j in sp) else None
+        if pts is None:
+            continue
+        h = float(np.ptp(pts[:, 1]))
+        if h > 0:
+            hs.append(h)
+    return float(np.median(hs)) if hs else 0.0
+
+
+def writer_ratios(stores, per_writer: int = 400, seed: int = 0) -> dict:
+    """{writer: the median of small_height / xh over up to per_writer of its lines of three or
+    more characters in the ink sets `stores` (one or a list)}, and "*": the median over all
+    writers (for a writer without enough measurable lines). As with a person, the reference
+    is the median over many lines, not each line's own. ValueError when no writer has five."""
+    if not isinstance(stores, (list, tuple)):
+        stores = [stores]
+    rng = np.random.default_rng(seed)
+    by = {}
+    for si, store in enumerate(stores):
+        for i in rng.permutation(len(store)):
+            row = store.rows[i]
+            if len(row["text"]) >= 3 and len(by.setdefault(row.get("writer"), [])) < per_writer:
+                by[row.get("writer")].append((si, int(i)))
+    out = {}
+    for w, idx in by.items():
+        v = []
+        for si, i in idx:
+            strokes, row = stores[si][i]
+            h = small_height(strokes, row["spans"], row["text"])
+            if h > 0:
+                v.append(h / row["xh"])
+        if len(v) >= 5:
+            out[w] = float(np.median(v))
+    if not out:
+        raise ValueError("no writer with five lines whose small letters can be measured")
+    out["*"] = float(np.median(list(out.values())))
+    return out

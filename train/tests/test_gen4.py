@@ -320,3 +320,35 @@ def test_mergeset_replaces_kinds(tmp_path, monkeypatch):
     ds, base, new = (InkSet(tmp_path / "build/data" / n) for n in ("merged", "base", "new"))
     assert ds.texts == ["tin", "salt", "i", "mat"] and ds.nfeat == NFEAT_REF
     assert np.array_equal(ds[1][0].numpy(), base[2][0].numpy()) and np.array_equal(ds[3][0].numpy(), new[1][0].numpy())
+
+
+def test_small_height_as_the_recognizer_measures_it():
+    sq = lambda x, h: np.array([[x, 0.0, 0.0], [x + 0.3, -h, 0.1]])
+    strokes = [sq(0, 0.5), sq(1, 0.7), sq(2, 1.2), sq(3, 0.6), sq(4, 0.4)]
+    # "oaTs" + a joined pair: T is not small; the stroke c and e share says nothing
+    assert inkmeasure.small_height(strokes[:4], [[0], [1], [2], [3]], "oaTs") == pytest.approx(0.6)
+    assert inkmeasure.small_height(strokes, [[0], [1], [2], [3, 4], [4]], "oaTce") == pytest.approx(0.6)
+    assert inkmeasure.small_height(strokes[:1], [[0]], "o") == pytest.approx(0.5)
+    assert inkmeasure.small_height(strokes[:2], [[0], [1]], "oa") == 0.0  # two characters: not measured
+
+
+def test_featurize_measured_scales_by_the_writers_small_letters(tmp_path):
+    from glassine_train.cli import main
+    from glassine_train.data import InkSet
+    g, st = _gen()
+    w = Writer(tmp_path / "ink")
+    for i, t in enumerate(["mason", "sun", "ocean", "worn", "came", "nose"]):
+        smp = g.line(t, np.random.default_rng(i), st)
+        smp["writer"] = "hand"
+        w.add(smp, "words", i)
+    w.close({})
+    for m in ((), ("--measured",)):
+        main(["featurize", str(tmp_path / "ink"), "--out", str(tmp_path / f"d{len(m)}"), "--ref", "xh",
+              "--workers", "1", *m])
+    meta = json.loads((tmp_path / "d1" / "meta.json").read_text())
+    r = meta["measured"]["hand"]
+    assert 0.3 < r < 1.5 and meta["measured"]["*"] == r
+    a, b = InkSet(tmp_path / "d0")[0][0].numpy(), InkSet(tmp_path / "d1")[0][0].numpy()
+    # the reference r times the generator's: the size column log(1/r) more, more points per stroke
+    assert b[0, 5] - a[0, 5] == pytest.approx(-np.log(r), abs=2e-3)
+    assert (len(b) > len(a)) == (r < 1)
