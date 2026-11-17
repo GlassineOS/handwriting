@@ -75,6 +75,6 @@ to the new version and replace the tarball's line in `sha512sums` with the new `
 same recipe.
 
 A model under trial is a package of its own beside the default one
-(`glassine-handwriting-model-en-4`, in `/usr/share/glassine/handwriting-model-4/en/` with the
+(`glassine-handwriting-model4-en`, in `/usr/share/glassine/handwriting-model-4/en/` with the
 same character model): installing it changes nothing until the setting `models` names that
 directory (`docs/recognizer.md`, Base models).
