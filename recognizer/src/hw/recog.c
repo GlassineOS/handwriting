@@ -21,7 +21,11 @@ static int nlangs;
 const char *hw_models_dir(void)
 {
 	const char *d = getenv("GLASSINE_HANDWRITING_MODELS");
-	return d && *d ? d : "/usr/share/glassine/handwriting";
+	if (d && *d) return d;
+	/* the setting: another set of base models installed beside the default one */
+	static char conf[4000];
+	if (hw_conf_get("models", conf, sizeof conf) && conf[0] == '/') return conf;
+	return "/usr/share/glassine/handwriting";
 }
 
 static void refresh_adaptation(struct hw_lang *l)
@@ -43,27 +47,44 @@ static void refresh_adaptation(struct hw_lang *l)
 	if (!hw_adapt_load(p, &l->model, &l->adapted, &info)) l->has_adapted = 1;
 }
 
+/* l (cleared) holds lang's model from dir */
+static void lang_load(struct hw_lang *l, const char *lang, const char *dir)
+{
+	memset(l, 0, sizeof *l);
+	snprintf(l->lang, sizeof l->lang, "%s", lang);
+	snprintf(l->dir, sizeof l->dir, "%s", dir);
+	char p[4200], err[128];
+	snprintf(p, sizeof p, "%s/recognizer.ghm", l->dir);
+	l->loaded = -1;
+	if (!hw_model_load(&l->model, p, err, sizeof err)) l->loaded = 1;
+	else if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
+		fprintf(stderr, "glassine-handwriting: %s: %s\n", p, err);
+}
+
+static void lang_free(struct hw_lang *l)
+{
+	if (l->loaded > 0) hw_model_free(&l->model);
+	if (l->has_adapted > 0) hw_head_free(&l->adapted);
+}
+
 struct hw_lang *hw_lang_get(const char *lang)
 {
 	struct hw_lang *l = NULL;
+	char dir[sizeof l->dir];
+	snprintf(dir, sizeof dir, "%s/%s", hw_models_dir(), lang);
 	for (int i = 0; i < nlangs; i++) if (!strcmp(langs[i].lang, lang)) l = &langs[i];
+	if (l && strcmp(l->dir, dir)) {               /* the setting moved to other models */
+		lang_free(l);
+		lang_load(l, lang, dir);
+	}
 	if (!l) {
 		if (nlangs == NLANGS) {               /* forget the oldest */
-			if (langs[0].loaded > 0) hw_model_free(&langs[0].model);
-			if (langs[0].has_adapted > 0) hw_head_free(&langs[0].adapted);
+			lang_free(&langs[0]);
 			memmove(langs, langs + 1, sizeof langs - sizeof *langs);
 			nlangs--;
 		}
 		l = &langs[nlangs++];
-		memset(l, 0, sizeof *l);
-		snprintf(l->lang, sizeof l->lang, "%s", lang);
-		snprintf(l->dir, sizeof l->dir, "%s/%s", hw_models_dir(), lang);
-		char p[4200], err[128];
-		snprintf(p, sizeof p, "%s/recognizer.ghm", l->dir);
-		l->loaded = -1;
-		if (!hw_model_load(&l->model, p, err, sizeof err)) l->loaded = 1;
-		else if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
-			fprintf(stderr, "glassine-handwriting: %s: %s\n", p, err);
+		lang_load(l, lang, dir);
 	}
 	if (l->loaded < 0) return NULL;
 	refresh_adaptation(l);

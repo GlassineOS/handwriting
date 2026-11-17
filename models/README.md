@@ -14,7 +14,7 @@ holding the directory the recognizer reads (`docs/recognizer.md`, "Base models")
 
 | File | What |
 |---|---|
-| `recognizer.ghm` | the model (ghm version 1) |
+| `recognizer.ghm` | the model (ghm version 1, or 2 for one reading the reference height) |
 | `README` | the recipe (trainer commit, training command), the data sources, the results |
 | `LICENSES` | the licences of these files and of the training data (font notices, OFL text) |
 | `prompts.txt` | `models/LANG/prompts.txt` |
@@ -73,3 +73,8 @@ variable for the character model). For a new English model, set `pkgver`
 to the new version and replace the tarball's line in `sha512sums` with the new `.sha512`
 (or run `abuild checksum`). A language with its own version is a new subpackage of the
 same recipe.
+
+A model under trial is a package of its own beside the default one
+(`glassine-handwriting-model-en-4`, in `/usr/share/glassine/handwriting-model-4/en/` with the
+same character model): installing it changes nothing until the setting `models` names that
+directory (`docs/recognizer.md`, Base models).
