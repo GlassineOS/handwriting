@@ -13,6 +13,7 @@
 #include "../src/hw/chars.h"
 #include "../src/hw/ctc.h"
 #include "../src/hw/featurize.h"
+#include "../src/hw/lookalike.h"
 #include "../src/hw/model.h"
 #include "../src/hw/recog.h"
 #include "../src/hw/sample.h"
@@ -642,6 +643,54 @@ static void test_chars(const char *file)
 	json_object_put(v);
 }
 
+/* look-alike letters and digits (FR-019): a field's lean decides only where the ink is unsure */
+static void test_lookalike(void)
+{
+	struct hw_lang l;
+	memset(&l, 0, sizeof l);
+	const char *cs = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?'-() ";
+	for (int k = 0; cs[k]; k++) l.model.charset[k] = (unsigned char)cs[k];
+	l.model.cfg.nclass = (uint32_t)strlen(cs) + 1;
+	struct hw_run r;
+	memset(&r, 0, sizeof r);
+	char all[64], t;
+
+	CHECK(hw_lean_of_field("normal") == HW_LEAN_LETTERS && hw_lean_of_field("name,titlecase") == HW_LEAN_LETTERS &&
+	      hw_lean_of_field("alpha") == HW_LEAN_LETTERS && hw_lean_of_field("phone") == HW_LEAN_DIGITS &&
+	      hw_lean_of_field("date") == HW_LEAN_DIGITS && hw_lean_of_field("number") == HW_LEAN_DIGITS &&
+	      hw_lean_of_field("-") == HW_LEAN_NONE && hw_lean_of_field("") == HW_LEAN_NONE &&
+	      hw_lean_of_field("email") == HW_LEAN_NONE && hw_lean_of_field("terminal") == HW_LEAN_NONE &&
+	      hw_lean_of_field("normalx") == HW_LEAN_NONE, "the lean of each field");
+
+	struct { const char *cps; float v[2]; int lean; char want; const char *what; } c[] = {
+		{ "0O", { -0.6f, -0.8f }, HW_LEAN_NONE, '0', "without a lean the ink decides" },
+		{ "0O", { -0.6f, -0.8f }, HW_LEAN_LETTERS, 'O', "unsure in a text field: the letter" },
+		{ "0O", { -0.05f, -3.5f }, HW_LEAN_LETTERS, '0', "a clear digit in a text field stays a digit" },
+		{ "1l", { -0.6f, -0.8f }, HW_LEAN_LETTERS, 'l', "1 or l in a text field: l" },
+		{ "6G", { -0.6f, -0.8f }, HW_LEAN_LETTERS, 'G', "6 or G in a text field: G" },
+		{ "O0", { -0.6f, -0.8f }, HW_LEAN_DIGITS, '0', "unsure in a number field: the digit" },
+		{ "I1", { -0.6f, -0.8f }, HW_LEAN_DIGITS, '1', "I or 1 in a number field: 1" },
+		{ "O0", { -0.05f, -3.5f }, HW_LEAN_DIGITS, 'O', "a clear letter in a number field stays a letter" },
+		{ "S5", { -0.6f, -0.8f }, HW_LEAN_LETTERS, 'S', "other pairs unchanged" },
+	};
+	for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+		run_of(&l, &r, 1, c[i].cps, c[i].v);
+		hw_lookalike_lean(&l, &r, c[i].lean, HW_LEAN_KEEP);
+		t = first_of(&l, &r, 3, all);
+		CHECK(t == c[i].want, "%s (%s)", c[i].what, all);
+	}
+	/* the frame's total stays one; the ink's own reading is kept for the fit */
+	run_of(&l, &r, 1, "0O", (const float[]){ -0.6f, -0.8f });
+	double before = 0, after = 0;
+	for (int k = 0; k < r.C; k++) before += exp(r.logp[2 * r.C + k]);
+	for (int k = 0; k < r.C; k++) r.logp[2 * r.C + k] -= (float)log(before);
+	hw_lookalike_lean(&l, &r, HW_LEAN_LETTERS, HW_LEAN_KEEP);
+	for (int k = 0; k < r.C; k++) after += exp(r.logp[2 * r.C + k]);
+	CHECK(fabs(after - 1) < 1e-4, "the frame keeps its total (%g)", after);
+	CHECK(r.logp0 && fabs(r.logp0[2 * r.C + hw_class_of(&l.model, '0')] - (-0.6 - log(before))) < 1e-5, "the ink's own reading kept");
+	hw_run_free(&r);
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -673,6 +722,7 @@ int main(int argc, char **argv)
 	test_head_grad();
 	test_words(tmp);
 	test_size();
+	test_lookalike();
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 	printf("test-engine: ok\n");
 	return 0;

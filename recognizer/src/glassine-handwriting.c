@@ -40,6 +40,7 @@
 #include "hw/neaten.h"
 #include "hw/recog.h"
 #include "hw/size.h"
+#include "hw/lookalike.h"
 #include "hw/sample.h"
 #include "hw/store.h"
 #include "hw/chars.h"
@@ -321,6 +322,7 @@ struct session {
 	double base;
 	int words;                      /* readings use the words (a prose field, the setting on) */
 	int chars;                      /* ... the character model (a prose, name or letters field, the setting on) */
+	int lean;                       /* look-alike letters and digits: HW_LEAN_* of the field */
 	char written[8], pair[17];      /* the marking its kept samples get (mark), "" none */
 	/* the last reply's candidates, for a pick: text, where each came from */
 	char *cand[MAX_CANDS];
@@ -525,6 +527,7 @@ static int candidates(struct hw_lang *l, struct session *s, int mode, int detail
 	*ncand = 0;
 	if (ret == 0 && r.rows > 0) {
 		r.npoints = np;
+		if (mode != READ_INK) hw_lookalike_lean(l, &r, s->lean, hw_lean_keep());
 		struct hw_reading rd;
 		struct hw_context x;
 		hw_read_words(l, &r, read_context(l, s, mode, &x), want, &rd);
@@ -1198,6 +1201,7 @@ static int read_text(struct hw_lang *l, const struct session *s, double **x, dou
 	struct hw_run r;
 	if (st && !hw_run_sized(l, st, m, ref, &r)) {
 		if (r.rows > 0) {
+			hw_lookalike_lean(l, &r, s->lean, hw_lean_keep());
 			r.npoints = np;
 			struct hw_reading rd;
 			struct hw_context c;
@@ -1279,6 +1283,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 			if (sw && !hw_run_sized(l, sw, m, &ref, &r)) {
 				if (r.rows > 0) {
 					r.npoints = np;
+					hw_lookalike_lean(l, &r, s->lean, hw_lean_keep());
 					if (!cp) {
 						struct hw_reading rd;
 						struct hw_context x;
@@ -1474,6 +1479,7 @@ static void request(char *line, int skip_read)
 		s->before = strdup(f[6]);
 		s->words = words_field(f[4]);
 		s->chars = chars_field(f[4]);
+		s->lean = hw_lean_of_field(f[4]);
 		s->pressure_all = 1;
 		s->tilt_all = 1;
 		reply("begin\t%s\tok", id);
@@ -1496,6 +1502,7 @@ static void request(char *line, int skip_read)
 		tmp.before = strdup(f[6]);
 		tmp.words = words_field(f[3]);
 		tmp.chars = chars_field(f[3]);
+		tmp.lean = hw_lean_of_field(f[3]);
 		tmp.pressure_all = 1;
 		tmp.tilt_all = 1;
 		char *save = NULL;

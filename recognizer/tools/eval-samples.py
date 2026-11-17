@@ -30,6 +30,11 @@ import time
 from pathlib import Path
 
 
+
+# the field a synthetic line's kind would be written in (the trainer's line kinds)
+KIND_FIELD = {"name": "name", "time": "time", "date": "date", "phone": "phone", "number": "number",
+              "email": "email", "web": "url"}
+
 def edit(a, b):
     d = list(range(len(b) + 1))
     for i in range(1, len(a) + 1):
@@ -101,6 +106,8 @@ def main():
     ap.add_argument("--adaptation")
     ap.add_argument("--split", default="all", choices=("held", "train", "all"))
     ap.add_argument("--field", default="normal")
+    ap.add_argument("--field-by-kind", action="store_true",
+                    help="each sample in the field its kind is written in (KIND_FIELD; else --field)")
     ap.add_argument("--before", default="")
     ap.add_argument("--count", type=int, default=3)
     ap.add_argument("--raw", action="store_true", help="ask for the ink's reading alone (read … raw)")
@@ -172,7 +179,8 @@ def main():
             units = "device:%s" % num(u["per_mm"]) if u.get("per_mm") else "em"
             if u.get("per_mm") and u.get("rate"):
                 units += ":%s" % num(u["rate"])
-            r = rec.ask("begin", "s", s.get("lang", "en"), a.field, units, esc(a.before))
+            field = KIND_FIELD.get(s.get("kind"), a.field) if a.field_by_kind else a.field
+            r = rec.ask("begin", "s", s.get("lang", "en"), field, units, esc(a.before))
             if r[0] != "ok":
                 print("begin:", r, file=sys.stderr)
                 continue
