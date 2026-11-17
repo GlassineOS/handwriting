@@ -270,14 +270,39 @@ size, spacing) and keep their shape.
 - **FR-013**: Neatening takes ink and returns ink: the same strokes in the same order, each
   point moved, with timing, pressure and tilt kept. The text it is read as comes from the
   recognizer (spec 001), which also tells which strokes form which character.
-- **FR-014**: Neatening applies line-level corrections (straight baseline, steady slant,
-  even letter size, and spacing: each pair of neighbouring letters moved so their gap goes
-  towards the letter model's spacing for that pair, without a letter model towards the
-  line's own median gap, and the gaps between words towards the word spacing, by a limited
-  step) and moves each covered character towards its nearest
-  variant in the letter model with the same strokes (a t written in one stroke towards a
-  one-stroke variant); a character none of whose variants has its strokes is not moved. A strength from 0 to 1 scales both; 0 returns the ink
-  unchanged, 1 the neatest version.
+- **FR-014**: Neatening has four levels, from the least to the most change, each doing
+  what the one before it does and more:
+  - **Light**: line-level corrections only: a straight baseline, a steady slant, even letter
+    size, and spacing (each pair of neighbouring letters moved so their gap goes towards the
+    letter model's spacing for that pair, without a letter model towards the line's own
+    median gap, and the gaps between words towards the word spacing, by a limited step).
+  - **Medium**: also pulls each covered character that is already close to its best version
+    (FR-035) towards it.
+  - **Strong**: pulls every covered character towards its best version, however far it is,
+    as long as a version has the same structure (stroke count and order; a t written in one
+    stroke goes towards a one-stroke version).
+  - **Neatest**: puts the best version itself in the character's place, at its position,
+    size and slant, keeping the timing and pressure of the person's strokes.
+
+  A character none of whose versions has its structure is not pulled. A strength from 0 to
+  1 runs through the levels (Light, Medium, Strong and Neatest at a quarter, a half, three
+  quarters and 1); 0 returns the ink unchanged, and a strength between two levels moves
+  part of the way to the next.
+- **FR-035**: The target of a pull is the person's best version of that way of writing the
+  character: built from the version's samples with the favourite mark (FR-031), careful
+  samples (written to "Write it your best", FR-001) and samples chosen in "Which one is
+  nicer?" (FR-003) weighted up, those left out weighted out; without any of these it is the
+  version as the letter model holds it.
+- **FR-036**: A pull follows the stroke: each point of the person's stroke goes to the place
+  on the version's stroke that matches it in shape (direction and curvature along the
+  stroke), in order, so no point moves backwards along the stroke and the ink never folds
+  over itself; a hook, loop or overshoot at a stroke's start or end that the version doesn't
+  have goes to the version's start or end. The moves vary smoothly along the stroke.
+  Letters joined in one stroke each get their own pull, blended smoothly across the joint.
+- **FR-037**: Each pulled or replaced character is checked on its own: when its new ink
+  reads as a different character than before, it stays as the line-level corrections left
+  it, while the rest of the line keeps its neatening; the line as a whole is also checked
+  as before (FR-017, SC-004).
 - **FR-015**: The same ink, letter model and strength always give the same result.
 - **FR-016**: Neatening is a request in the recognizer's interface (docs/recognizer.md), so
   every app gets the same result; apps reach it through the neat ink layer (FR-018), keep the
@@ -410,9 +435,11 @@ Host level:
   feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
   the word spacing, and the preview places letters where shaping does, and installs and is found by the system font cache in a test user;
   erasing the samples removes it;
-- neatening at strength 0 returns the input byte for byte; at strength 1 every covered
-  character is closer to its variant than before, unless the reading check gives its line
-  back; a character is pulled towards a variant with its own strokes; uneven gaps between
+- neatening at strength 0 returns the input byte for byte; at each level from Medium up,
+  covered characters are closer to their best version than at the level before (from Strong
+  up every one with a matching structure, however badly written), unless the reading check
+  keeps it or its line as it was; a character is pulled towards a version with its own
+  strokes; no point of a pulled stroke moves backwards along the stroke; uneven gaps between
   letters come out closer to the letter model's spacing; stroke count, order, timing and
   pressure are kept;
 - the recognizer reads neatened ink at least as well as the original on a held-back set;
