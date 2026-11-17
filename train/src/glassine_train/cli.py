@@ -581,7 +581,8 @@ def cmd_inkread(a):
         if a.prepare:
             continue
         kinds = [json.loads(ln)["kind"] for ln in smp.read_text().splitlines()]
-        extra = ["--base", R.GUIDE] + (["--chars"] if a.mode == "chars" else [])
+        extra = ["--base", R.GUIDE] + (["--chars"] if a.mode == "chars" else []) + \
+            (["--field-by-kind"] if a.field_by_kind else [])
         rs = R.read_samples(Path(a.models).resolve(), smp.resolve(), Path(a.predict).resolve(), a.mode == "raw",
                             None, extra, env)
         for r, k in zip(rs, kinds):
@@ -1021,6 +1022,9 @@ def main(argv=None):
     ir.add_argument("--limit", type=int)
     ir.add_argument("--samples", help="where the sets' sample files are kept (default --out), shared between runs")
     ir.add_argument("--prepare", action="store_true", help="only write the sample files")
+    ir.add_argument("--field-by-kind", action="store_true",
+                    help="each line in the field of its kind (a date in a date field; eval-samples.py KIND_FIELD), "
+                         "not all in a text field")
     ss = sub.add_parser("synthset", help="training ink of short lines with a measured preset")
     ss.add_argument("--name", default="train-f158-real1")
     ss.add_argument("--preset", default="real1")
