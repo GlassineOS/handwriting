@@ -732,8 +732,8 @@ real session (words + character model 2.4 % against 5.2 %, 95 % interval of the 
 versions of model 2's held-out fonts and texts, since model 2's own test ink is kept only as
 model 2's features). m4mref (below) passes it too (−4.8 to −0.7 points).
 
-**Released for a trial: model 4 = m4mref**, as `glassine-handwriting-model-en-4`, installed
-beside model 2 in its own directory (docs/recognizer.md, Base models; the setting `models`
+**Released for a trial: model 4 = m4mref**, as the release `model-en-4` and the package
+`glassine-handwriting-model4-en`, installed beside model 2 in its own directory (docs/recognizer.md, Base models; the setting `models`
 switches). Not the default: the device run (time, the samples app, a person writing) is
 still to do. Its costs: with the line alone, a lone `o` is read as `O` more often (57 % read
 right against 92 %, ink only, synthetic), and `make check-model` reads one of the three
