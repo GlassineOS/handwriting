@@ -42,15 +42,20 @@ def strokes_of(p):
 
 def area_of(p, strokes, units):
     """the request's writing area as the recognizer's AREA (FR-016): the one given, its
-    missing parts found from the writing (area.py); in em the line is 1 (the units say so)"""
+    missing parts found from the writing (area.py). None: no area, for em units without one
+    given (em says how high a line is) and for writing too little to find a line in"""
     a = p.get("area")
     if a is None:
+        if units == "em":
+            return None
         a = {}
     if not isinstance(a, dict):
         raise Fail("bad-request", "area: an object with box, line, base, rot")
     try:
         bx = [float(v) for v in a["box"]] if "box" in a else list(area.box(strokes))
         ln = float(a["line"]) if "line" in a else 1.0 if units == "em" else area.line(strokes)
+        if not ln and "line" not in a:
+            return None
         rot = int(a.get("rot", 0))
         if "base" in a:
             bs = float(a["base"])
@@ -82,11 +87,12 @@ class Api:
             return None
         for st in strokes:
             await self.engine.ask(app, "stroke", s, points(st))
-        try:
-            await self.engine.ask(app, "area", s, where)
-        except Error:
-            await self.engine.ask(app, "end", s)
-            raise
+        if where is not None:
+            try:
+                await self.engine.ask(app, "area", s, where)
+            except Error:
+                await self.engine.ask(app, "end", s)
+                raise
         return s
 
     async def call(self, app, sandboxed, method, p):

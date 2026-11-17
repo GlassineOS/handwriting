@@ -103,6 +103,7 @@ class Surface:
         self.units = "device"
         self.rate = 0               # the pen's points per second, once measured (area.rate)
         self.area_sent = None       # the area the main session has
+        self.line = 0.0             # the line found from this surface's writing, kept (area.line)
         self.guides, self.box = (0.0, 0.0), None
         self.strokes = {}           # stroke number -> points (as the compositor sent them)
         self.order = []             # stroke numbers in writing order
@@ -202,17 +203,22 @@ class Surface:
 
     def area_of(self, ks=None):
         """the area for a session holding strokes ks (None: all held): the app's box, else the
-        writing's; the app's line, else the writing's; the app's guide line, else that of the
-        session's line of writing (none when the session holds more than one line)"""
+        writing's; the app's line, else the writing's (the last one found on this surface
+        while the writing is too little to tell); the app's guide line, else that of the
+        session's line of writing (none when the session holds more than one line). None
+        while no line is known: the recognizer goes by the ink's own size."""
         held = self.ink()
         if not held:
             return None
         bx = self.box or area.box(held)
         if self.guides[0] > 0:
             return area.text(bx, self.guides[0], self.guides[1])
+        self.line = area.line(held) or self.line
+        if not self.line:
+            return None
         own = held if ks is None else [self.strokes[k] for k in ks]
         bs = area.base(own) if len(lines(dict(enumerate(own)))) == 1 else None
-        return area.text(bx, area.line(held), bs)
+        return area.text(bx, self.line, bs)
 
     async def begin(self, name):
         """a session for this surface's writing (its field and units; its area follows its
