@@ -11,12 +11,17 @@ until the app clears it or reports on it. A short pause after a stroke reads the
 the best reading is neatened on its own (a short request, under the 300 ms of SC-003 also
 for a long line), from its raw strokes, and only again when its strokes, its text or the
 strength change. The writing is neatened line by line: by the area's guides (set_guides), else
-by the lines found in it (lines())."""
+by the lines found in it (lines()).
+
+Every session has a writing area (area.py): the app's box and guides when it set them, else
+the box of the writing held with a line found from it; the guide line is the app's, else the
+one found from the line of writing the session holds. Its units are the compositor's
+(device:PER_MM when it knows the output's size) with the pen's rate added once measured."""
 import asyncio
 import json
 import math
 
-from . import ident, perms
+from . import area, ident, perms
 
 from .engine import Error, align_strokes, esc, map_align, parse_text, points
 
@@ -96,6 +101,8 @@ class Surface:
         self.neaten, self.strength, self.text = False, 0.0, False
         self.purpose, self.hints, self.before, self.langs = 0, 0, "", ""
         self.units = "device"
+        self.rate = 0               # the pen's points per second, once measured (area.rate)
+        self.area_sent = None       # the area the main session has
         self.guides, self.box = (0.0, 0.0), None
         self.strokes = {}           # stroke number -> points (as the compositor sent them)
         self.order = []             # stroke numbers in writing order
@@ -173,6 +180,7 @@ class Surface:
         self.reading = self.read_of = self.offered = None
         self.sent = {}
         self.line_read = {}
+        self.area_sent = None
 
     # ------------------------------------------------------------------ the work
 
@@ -183,18 +191,42 @@ class Surface:
         self.timers = [loop.call_later(ms / 1000, lambda: self.pen.spawn(self.update())),
                        loop.call_later(max(ms, PAUSE_MS) / 1000, lambda: self.pen.spawn(self.pause()))]
 
+    def ink(self):
+        """the writing held, gestures left out"""
+        return [self.strokes[k] for k in self.order if k not in self.gestures]
+
+    def session_units(self):
+        if not self.rate:
+            self.rate = area.rate(self.ink())
+        return area.with_rate(self.units, self.rate)
+
+    def area_of(self, ks=None):
+        """the area for a session holding strokes ks (None: all held): the app's box, else the
+        writing's; the app's line, else the writing's; the app's guide line, else that of the
+        session's line of writing (none when the session holds more than one line)"""
+        held = self.ink()
+        if not held:
+            return None
+        bx = self.box or area.box(held)
+        if self.guides[0] > 0:
+            return area.text(bx, self.guides[0], self.guides[1])
+        own = held if ks is None else [self.strokes[k] for k in ks]
+        bs = area.base(own) if len(lines(dict(enumerate(own)))) == 1 else None
+        return area.text(bx, area.line(held), bs)
+
     async def begin(self, name):
-        """a session for this surface's writing (its field, units and area)"""
+        """a session for this surface's writing (its field and units; its area follows its
+        strokes, set_area())"""
         e = self.pen.engine
-        r = await e.ask(self.app, "begin", name, self.langs or "-", field(self.purpose, self.hints), self.units,
-                        self.before)
-        if r[1] != "ok":
-            return False
-        if self.box and self.guides[0] > 0:
-            x0, y0, x1, y1 = self.box
-            await e.ask(self.app, "area", name, "%d,%d,%d,%d,%s,0,%s" % (x0, y0, x1, y1, repr(self.guides[0]),
-                                                                       repr(self.guides[1])))
-        return True
+        r = await e.ask(self.app, "begin", name, self.langs or "-", field(self.purpose, self.hints),
+                        self.session_units(), self.before)
+        return r[1] == "ok"
+
+    async def set_area(self, name, ks=None):
+        a = self.area_of(ks)
+        if a is not None:
+            await self.pen.engine.ask(self.app, "area", name, a)
+        return a
 
     async def ensure(self):
         """the session, begun with every stroke held (again after the recognizer restarted)"""
@@ -206,10 +238,13 @@ class Surface:
                 return False
             self.session = e.gen
             self.num = {}
+            self.area_sent = None
             missing = [k for k in self.order if k not in self.gestures]
         for k in missing:
             r = await e.ask(self.app, "stroke", self.name, points(self.strokes[k]))
             self.num[k] = int(r[2])
+        if self.area_of() != self.area_sent:
+            self.area_sent = await self.set_area(self.name)
         return True
 
     async def read(self, count):
@@ -286,6 +321,7 @@ class Surface:
                 try:
                     for k in ks:
                         await e.ask(self.app, "stroke", w, points(self.strokes[k]))
+                    await self.set_area(w, ks)
                     r = parse_text(await e.ask(self.app, "read", w, "1", "detail"))
                 finally:
                     await e.ask(self.app, "end", w)
@@ -295,11 +331,13 @@ class Surface:
             if tuple(self.order) != held or not self.neaten:
                 return
             lt, la = self.line_read[key]
-            await self.neaten_words(lt, la, held)
+            await self.neaten_words(lt, la, held, ks)
         keep = {(tuple(ks), tuple(len(self.strokes[k]) for k in ks)) for ks in ls}
         self.line_read = {k: v for k, v in self.line_read.items() if k in keep}
 
-    async def neaten_words(self, text, align, held):
+    async def neaten_words(self, text, align, held, line_ks=None):
+        """each word neatened in a session of its own, with the area of its line (line_ks: the
+        line's strokes; None: the whole writing is one line)"""
         e = self.pen.engine
         groups = words(text, align) if WORDS else [(text, set(k for k in held if k not in self.gestures))]
         for wt, ks in groups:
@@ -315,6 +353,7 @@ class Surface:
             try:
                 for k in ks:
                     await e.ask(self.app, "stroke", w, points(self.strokes[k]))
+                await self.set_area(w, line_ks)
                 r = await e.ask(self.app, "neaten", w, repr(self.strength), _esc(wt))
             finally:
                 await e.ask(self.app, "end", w)
@@ -425,5 +464,6 @@ class Pen:
             if isinstance(m, dict):
                 self.handle(m)
         for s in list(self.surfaces.values()):
+            s.session = None        # the recognizer goes with the service: nothing to end
             s.forget()
         self.surfaces.clear()

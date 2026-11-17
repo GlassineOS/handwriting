@@ -57,8 +57,8 @@ with the same `id` and either `"result": {…}` or `"error": {"code", "message"}
 | `status` | | `engine` (`running`, `pid`, `starts`), `surfaces` (pen interface surfaces held) |
 | `permission.get` | | the caller's `learn`, `samples` |
 | `permission.set` | `app`, `learn`, `samples` | that app's states; unsandboxed callers only |
-| `read` | `strokes`, `count` (1–8), `units`, `context` | `candidates`: `text`, `score`, `from`, `fit`, `chars`; or `private`, or `gesture` |
-| `neaten` | `strokes`, `strength` (0–1), `text`, `units`, `context` | `text`, `strokes`: `how`, `points` |
+| `read` | `strokes`, `count` (1–8), `units`, `area`, `context` | `candidates`: `text`, `score`, `from`, `fit`, `chars`; or `private`, or `gesture` |
+| `neaten` | `strokes`, `strength` (0–1), `text`, `units`, `area`, `context` | `text`, `strokes`: `how`, `points` |
 | `samples.list` | | `samples` kept through the caller: `id`, `time`, `source`, `language`, `text` (needs `samples`) |
 | `samples.delete` | `id` | `{}`, or `not-yours` (needs `samples`) |
 | `letters.status` | | `state`, `covered`, `font` (needs `samples`) |
@@ -66,7 +66,12 @@ with the same `id` and either `"result": {…}` or `"error": {"code", "message"}
 Strokes are lists of points `[x, y, t]`, `[x, y, t, pressure]` or
 `[x, y, t, pressure, tilt_x, tilt_y]`, with t in ms, pressure 0 to 1 and tilt in degrees.
 `context`: `purpose` and `hints` as in `zwp_text_input_v3`, plus `before` and `languages`.
-`units`: as the recognizer's (`device`, `device:PX_PER_MM`, `em`).
+`units`: as the recognizer's (`device`, `device:PX_PER_MM`, `device:PX_PER_MM:RATE`, `em`); with
+`device:PX_PER_MM` the service adds the rate it measures from the strokes. `area`: `box`
+([x0, y0, x1, y1]), `line`, `base` (the y of the first guide line) and `rot` (0, 90, 180 or
+270), in the strokes' units; a part left out is found from the writing (The writing's size,
+below), in `em` the line is 1. An area that is empty, a line of 0 or less or another turn is
+`bad-request`.
 
 Error codes: `bad-request`, `unknown-method`, `permission-needed`, `not-allowed`,
 `not-yours`, `unavailable`, `failed`.
@@ -75,6 +80,40 @@ Not in version 1, still owed for spec 004 FR-013 and FR-015: sample export and s
 learning control, letter model and font builds with progress notifications, and donation
 (through the samples app or Settings only). "Donation" is the internal name of what the
 person sees as a contribution.
+
+## The writing's size
+
+Every session the service begins in the recognizer, for either interface, has a writing area
+and units (spec 004 FR-016, FR-017), so a model that reads the ink's size (docs/recognizer.md,
+Size and Base models) has a reference: the person's letters in millimetres when the units have
+`PER_MM`, else the area's line.
+
+- **Box**: the app's ink area (`set_area`), else the bounding box of the writing held.
+- **Line**: the spacing of the app's ruled lines (`set_guides`), else six times the median
+  stroke size of the writing held, a stroke's size being the larger of its height and a
+  quarter of its width.
+- **Guide line**: the app's first ruled line, else the median of the strokes' lowest points,
+  for a session whose strokes are one line of writing (the lines found as for neatening). A
+  session holding more than one line has none.
+- **Units**: the compositor's, `device:PX_PER_MM` when it knows the size of the output the pen
+  writes on (its px over its millimetres, in logical px), with the pen's rate added once the
+  surface's writing has 8 time steps: 1000 / the median step in ms, as the keyboard measures it.
+  The rate is kept for the surface. Without a known output size the units stay `device`: no
+  size in millimetres is assumed.
+
+The words of a line and the lines of the writing are read and neatened in sessions of their
+own, with the surface's box and line and the guide line of their line. The main session's area
+follows the writing as it grows.
+
+A line found from the writing tells nothing of a lone character's size (a lone `o` from an
+`O`); the person's letters do, once there are enough of them in millimetres. On the recorded
+ink (recognizer/tests/data/ink.jsonl, written at 1.5 to 6 mm small letters), a version 2 model
+reads within a point of the keyboard's paper this way (2.9 % against 2.5 %, 11.2 % without an
+area), and a version 1 model as before (`make -C service check-model MODEL_DIR=…`). A fixed
+line in millimetres reads as well only for a person who writes the size it guesses, and far
+worse for one who writes smaller.
+
+A sample stored from such a session keeps that area, as every sample keeps its session's.
 
 ## The compositor's channel
 

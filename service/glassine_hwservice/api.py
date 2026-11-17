@@ -6,9 +6,9 @@ directory. Each request {"id", "method", "params"} gets {"id", "result"} or {"id
 import json
 import os
 
-from . import ident, perms
+from . import area, ident, perms
 from .engine import Error, esc, parse_text, points, unesc
-from .pen import field
+from .pen import field, lines
 
 VERSION = 1
 ERRORS = {"bad-request", "unknown-method", "permission-needed", "not-allowed", "not-yours", "unavailable",
@@ -40,6 +40,29 @@ def strokes_of(p):
     return st
 
 
+def area_of(p, strokes, units):
+    """the request's writing area as the recognizer's AREA (FR-016): the one given, its
+    missing parts found from the writing (area.py); in em the line is 1 (the units say so)"""
+    a = p.get("area")
+    if a is None:
+        a = {}
+    if not isinstance(a, dict):
+        raise Fail("bad-request", "area: an object with box, line, base, rot")
+    try:
+        bx = [float(v) for v in a["box"]] if "box" in a else list(area.box(strokes))
+        ln = float(a["line"]) if "line" in a else 1.0 if units == "em" else area.line(strokes)
+        rot = int(a.get("rot", 0))
+        if "base" in a:
+            bs = float(a["base"])
+        else:
+            bs = area.base(strokes) if len(lines(dict(enumerate(strokes)))) == 1 else None
+    except (TypeError, ValueError, KeyError):
+        raise Fail("bad-request", "area: box [x0, y0, x1, y1], line, base and rot are numbers")
+    if len(bx) != 4 or bx[2] <= bx[0] or bx[3] <= bx[1] or not ln > 0 or rot not in (0, 90, 180, 270):
+        raise Fail("bad-request", "area: a box that isn't empty, a line above 0, rot 0, 90, 180 or 270")
+    return area.text(bx, ln, bs, rot)
+
+
 class Api:
     def __init__(self, engine, pen, features):
         self.engine, self.pen, self.features = engine, pen, features
@@ -51,12 +74,19 @@ class Api:
         s = "a%d" % self.n
         ctx = p.get("context") or {}
         fld = field(int(ctx.get("purpose", 0)), int(ctx.get("hints", 0)))
+        units = str(p.get("units") or "device")
+        where = area_of(p, strokes, units)
         r = await self.engine.ask(app, "begin", s, str(ctx.get("languages") or "-"), fld,
-                                  str(p.get("units") or "device"), esc(str(ctx.get("before", ""))[-4000:]))
+                                  area.with_rate(units, area.rate(strokes)), esc(str(ctx.get("before", ""))[-4000:]))
         if r[1] == "private":
             return None
         for st in strokes:
             await self.engine.ask(app, "stroke", s, points(st))
+        try:
+            await self.engine.ask(app, "area", s, where)
+        except Error:
+            await self.engine.ask(app, "end", s)
+            raise
         return s
 
     async def call(self, app, sandboxed, method, p):

@@ -12,6 +12,11 @@ check:
 	$(PY) -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' glassine_hwservice/*.py glassine-handwriting-service examples/*.py tests/*.py
 	HW_BIN=$(HW_BIN) $(PY) tests/test_service.py
 
+# a trained model through the pen interface against the keyboard's path (tests/check_sizes.py)
+check-model:
+	@test -n "$(MODEL_DIR)" || { echo "make check-model MODEL_DIR=dir (with en/recognizer.ghm)"; exit 2; }
+	HW_BIN=$(HW_BIN) $(PY) tests/check_sizes.py $(MODEL_DIR)
+
 install:
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(LIB)/glassine_hwservice
 	sed 's|/usr/lib/glassine/handwriting-service|$(LIB)|' glassine-handwriting-service > $(DESTDIR)$(PREFIX)/bin/glassine-handwriting-service
@@ -19,4 +24,4 @@ install:
 	install -m644 glassine_hwservice/*.py $(DESTDIR)$(LIB)/glassine_hwservice/
 	install -Dm755 examples/hw-service-example.py $(DESTDIR)$(PREFIX)/share/doc/glassine-handwriting/examples/hw-service-example.py
 
-.PHONY: all check install
+.PHONY: all check check-model install
