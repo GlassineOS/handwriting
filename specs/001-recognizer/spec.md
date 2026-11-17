@@ -221,6 +221,13 @@ included unless they pick them one by one.
   - Its weight is bounded per character, so a code, a name, a number or a mix such as
     "4th" or "R2D2" written clearly still reads as written; the ink, not the character
     model, decides between readings the ink tells apart.
+  - Letters and digits that look alike (O and o against 0, I and l against 1, G against 6)
+    are decided by the field where the ink leaves them open: in a field for text (plain
+    text, names, letters) a reading leans to the letter, in a field for numbers (digits,
+    numbers, phone numbers, dates, times) to the digit; with no text field and in every
+    other field the ink and the character model decide alone. The lean is bounded per
+    character as the character model is, so a digit or a letter written clearly reads as
+    written (a code or "4th" in a text field, a letter in a number field).
   - A client can ask for the ink's reading alone (prompted writing's checks: how readable
     the ink itself is) or for the reading without words but with the character model
     (free writing that should not be bent towards the word list); the person can turn

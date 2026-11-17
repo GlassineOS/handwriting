@@ -227,6 +227,15 @@ without it.
   instead of 2.5. Either way the ink's best reading is then second.
 - `SCORE` stays the ink's log-probability of the text.
 
+**Look-alikes.** Letters and digits of one shape (`O` and `o` against `0`, `I` and `l` against
+`1`, `G` against `6`) are decided by the field where the ink leaves them open. In a field of
+purpose `normal`, `alpha` or `name` each frame's chance of `0`, `1` and `6` is halved, in one of
+purpose `digits`, `number`, `phone`, `date`, `time` or `datetime` that of their letters; the
+frame's other classes share what was taken, in proportion. So the field's side wins where the
+ink gave the other side less than twice its chance, and a character written clearly reads as
+written. Not a text field (`-`) and every other field don't lean, nor does `read … raw` or a
+fit (a fit takes the better of the leaned and the ink's own chance, as with the size).
+
 ## Size (FR-017)
 
 A version 1 model reads every piece of ink scaled to its own height, so on its own it can't tell a lone
@@ -878,6 +887,7 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` or `weigh` (alone or after the letters) the weighing off or on whatever the model (by default a version 1 model is weighed, a version 2 model not) |
+| `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check (comma-separated) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
