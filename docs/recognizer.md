@@ -426,6 +426,7 @@ letters, `_` and `,` is `bad-field`.
 | `readers` | client names, comma-separated, that may read every client's samples | none |
 | `words` | `off`: readings without words (Words) | on |
 | `chars` | `off`: readings without the character model (Characters) | on |
+| `models` | a full path: the base models' directory instead of `/usr/share/glassine/handwriting` (another set installed beside the default one, Base models); taken at the next request | unset |
 
 The keyboard's `predict.conf` (`learning`, `addresses`) counts too: learning is off when either
 file says so, so the keyboard's one learning switch covers handwriting (shell spec 006 FR-008).
@@ -813,13 +814,21 @@ none exists.
 ## Base models
 
 One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
-`$GLASSINE_HANDWRITING_MODELS/LANG/`) with `recognizer.ghm` (the model), `chars.gclm` (the
+`$GLASSINE_HANDWRITING_MODELS/LANG/`, else the setting `models`'s `LANG/`) with `recognizer.ghm` (the model), `chars.gclm` (the
 character model, optional; Characters) with `chars.json` (its recipe) and `CHARS-LICENSE`,
 `README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
 line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, one per line, and
 `SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
 `glassine-train release` makes the whole directory as a release tarball
 ([`models/README.md`](../models/README.md)).
+
+A model under trial is installed beside the default one in a directory of its own (for
+example `/usr/share/glassine/handwriting-model-4/LANG/`); the setting `models` switches to it
+and back. An adaptation belongs to one model file (Adaptation), so the adaptations made
+while the setting names another set are kept apart, in `adaptation/LANG@NAME/` (`NAME` the
+set's directory name); the default set's stay in `adaptation/LANG/`, untouched, and are used
+again when the setting goes back. Until the person's samples have trained the other set's
+own, it reads without one. An export carries those apart too; an import leaves them out.
 
 **ghm, version 1** (little-endian). A 64-byte header: `GHWM`, then fifteen 32-bit unsigned
 integers: version (1), header bytes (64), features per row `F`, first convolution's channels
