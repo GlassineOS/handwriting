@@ -571,12 +571,17 @@ def cmd_inkread(a):
     if a.size_env:
         env["GLASSINE_HANDWRITING_SIZE"] = a.size_env
     res = {}
+    ratios = None
+    if a.measured:  # the writers' small letters measured over all the sets (lone characters have none)
+        from .inkmeasure import writer_ratios
+        from .inkstore import InkStore
+        ratios = writer_ratios([InkStore(Path(s)) for s in a.sets])
     for ink in a.sets:
         name = Path(ink).name
         smp = Path(a.samples or out) / f"{name}{f'.first{a.limit}' if a.limit else ''}.samples.jsonl"
         if not smp.exists():
             tmp = smp.with_suffix(".tmp")
-            R.ink_samples(Path(ink), tmp, a.limit)
+            R.ink_samples(Path(ink), tmp, a.limit, ratios)
             tmp.rename(smp)
         if a.prepare:
             continue
@@ -820,8 +825,12 @@ def cmd_featurize(a):
     n = len(st) if not a.limit else min(a.limit, len(st))
     rng = np.random.default_rng(a.seed)
     use_line = rng.random(n) < (a.line_share if a.ref == "mix" else 1.0 if a.ref == "line" else 0.0)
+    ratios = None
+    if a.measured:
+        from .inkmeasure import writer_ratios
+        ratios = writer_ratios(st)
     global _FZ
-    _FZ = (st, a.ref, use_line)
+    _FZ = (st, a.ref, use_line, ratios)
     offsets = [0]
     tmp = out / "feat.f16.tmp"
     with open(tmp, "wb") as fh, mp.get_context("fork").Pool(a.workers) as pool:
@@ -832,7 +841,8 @@ def cmd_featurize(a):
     np.save(out / "offsets.npy", np.array(offsets, np.int64))
     (out / "texts.json").write_text(json.dumps([r["text"] for r in st.rows[:n]]))
     meta = {"n": n, "points": offsets[-1], "nfeat": NFEAT if a.ref == "none" else NFEAT_REF, "ref": a.ref,
-            "line_share": a.line_share if a.ref == "mix" else None, "from": str(src), "ink_meta": st.meta}
+            "line_share": a.line_share if a.ref == "mix" else None, "from": str(src), "ink_meta": st.meta,
+            "measured": ratios}
     (out / "meta.json").write_text(json.dumps(meta, indent=1, default=float))
     print(f"{out}: {n} lines, {offsets[-1]} points")
 
@@ -842,11 +852,12 @@ _FZ = None
 
 def _featurize_one(i):
     from .features import features, features_ref, ref_height
-    st, ref, use_line = _FZ
+    st, ref, use_line, ratios = _FZ
     strokes, row = st[i]
     if ref == "none":
         return features(strokes)
-    h = ref_height(None if use_line[i] else row["xh"], row["line"])
+    xh = row["xh"] * ratios.get(row["writer"], ratios["*"]) if ratios else row["xh"]
+    h = ref_height(None if use_line[i] else xh, row["line"])
     return features_ref(strokes, h, row["base"])
 
 
@@ -1025,6 +1036,9 @@ def main(argv=None):
     ir.add_argument("--field-by-kind", action="store_true",
                     help="each line in the field of its kind (a date in a date field; eval-samples.py KIND_FIELD), "
                          "not all in a text field")
+    ir.add_argument("--measured", action="store_true",
+                    help="scale each line by its writer's letter height as the recognizer measures it, not the "
+                         "generator's (keep these sample files apart: --samples)")
     ss = sub.add_parser("synthset", help="training ink of short lines with a measured preset")
     ss.add_argument("--name", default="train-f158-real1")
     ss.add_argument("--preset", default="real1")
@@ -1089,6 +1103,8 @@ def main(argv=None):
     fz.add_argument("--out", required=True)
     fz.add_argument("--ref", choices=["none", "xh", "line", "mix"], default="none")
     fz.add_argument("--line-share", type=float, default=0.3)
+    fz.add_argument("--measured", action="store_true",
+                    help="the letter height as the recognizer measures it (each writer's small letters), not the generator's")
     fz.add_argument("--limit", type=int)
     fz.add_argument("--seed", type=int, default=0)
     fz.add_argument("--workers", type=int, default=8)
