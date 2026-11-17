@@ -1270,10 +1270,47 @@ def hand_fit(model, text, xh, maxw, maxh):
     return xh
 
 
-def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
-    """text in the person's font as it will look (fontview.layout), wrapped at spaces; a
-    character the font lacks in the system's font. y: the first baseline. -> the last
-    baseline"""
+def styled_stroke(cr, model, var, j, pts, style, nib, xh):
+    """one stroke in Calligraphy or Brush as the font outlines it (ttf.c outline_styled):
+    pts in device units; the pieces filled one by one, so overlaps are one ink"""
+    if style == "calligraphy":
+        lo, hi = FV.nib_widths(model)
+        a = math.radians(nib)
+        hx, hy = (hi - lo) / 2 * xh * math.cos(a), -(hi - lo) / 2 * xh * math.sin(a)
+        cr.set_line_width(max(0.6, lo * xh))
+        segs = list(zip(pts, pts[1:])) or [(pts[0], pts[0])]
+        for (px, py), (nx, ny) in segs:
+            # the nib swept from one point to the next, rounded by the thinnest line
+            cr.move_to(px + hx, py + hy)
+            cr.line_to(nx + hx, ny + hy)
+            cr.line_to(nx - hx, ny - hy)
+            cr.line_to(px - hx, py - hy)
+            cr.close_path()
+            cr.fill_preserve()
+            cr.stroke()
+        return
+    r = [max(0.3, w * xh / 2) for w in FV.widths(model, var, j, style, nib)]
+    for i, (px, py) in enumerate(pts):
+        cr.arc(px, py, r[i], 0, 2 * math.pi)
+        cr.fill()
+        if i + 1 < len(pts):
+            # the hull of this point's disc and the next one's (ttf.c disc_pair)
+            nx, ny = pts[i + 1]
+            d = math.hypot(nx - px, ny - py)
+            if d <= abs(r[i] - r[i + 1]):
+                continue
+            f, be = math.atan2(ny - py, nx - px), math.acos((r[i] - r[i + 1]) / d)
+            for (cx, cy, rr, an) in ((px, py, r[i], f + be), (nx, ny, r[i + 1], f + be), (nx, ny, r[i + 1], f - be),
+                                     (px, py, r[i], f - be)):
+                cr.line_to(cx + rr * math.cos(an), cy + rr * math.sin(an))
+            cr.close_path()
+            cr.fill()
+
+
+def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None, style="regular", nib=FV.NIB):
+    """text in the person's font as it will look (fontview.layout), wrapped at spaces, in one
+    of the font's styles (FR-034); a character the font lacks in the system's font. y: the
+    first baseline. -> the last baseline"""
     m = model["metrics"]
     lines, line_h = hand_lines(model, text, xh, maxw)
     ink = max(1.5, m.get("ink_width", 0.07) * xh)
@@ -1283,12 +1320,19 @@ def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None):
     cr.set_line_join(cairo.LINE_JOIN_ROUND)
     for i, ln in enumerate(lines):
         by = y + i * line_h
-        for c, strokes, cx, adv in FV.layout(model, ln.rstrip()):
+        for c, strokes, cx, adv, var in FV.layout(model, ln.rstrip()):
             if strokes is None:
                 PT.text(cr, c, "400 %dpx/1 sans-serif" % max(8, int(xh * 1.5)), x + cx * xh, by - xh * 1.25,
                         k.soft)
                 continue
             cr.set_source_rgba(*PT.color(col or k.pen))
+            if style != "regular" and var:
+                for j, st in enumerate(strokes):
+                    if st:
+                        styled_stroke(cr, model, var, j, [(x + (cx + px) * xh, by - py * xh) for px, py in st], style,
+                                      nib, xh)
+                cr.set_line_width(ink)
+                continue
             for st in strokes:
                 if not st:
                     continue
@@ -1319,8 +1363,9 @@ def font_mode(ui):
     return "current"
 
 
-def segs(cr, k, hits, x, y, w, items, cur, h=BTN_H):
-    """a row of equal segments [(key, label, fn or None)]"""
+def segs(cr, k, hits, x, y, w, items, cur, h=BTN_H, flat=False):
+    """a row of equal segments [(key, label, fn or None)]; flat: the others see-through on a
+    shaded card, a thin rule round each"""
     gap = 6
     n = len(items)
     sw = (w - gap * (n - 1)) / n
@@ -1332,12 +1377,14 @@ def segs(cr, k, hits, x, y, w, items, cur, h=BTN_H):
             PT.box(cr, sx, y, sw, h, k["segR"], bg=st["bg"], shadow=st["sh"])
             col = st["fg"]
         else:
-            PT.box(cr, sx, y, sw, h, k["segR"], bg=k.paper, shadow="inset 0 0 0 1.5px " + (k.rule if fn else k.dim))
+            PT.box(cr, sx, y, sw, h, k["segR"], bg=None if flat else k.paper,
+                   shadow="inset 0 0 0 %spx " % ("1" if flat else "1.5") + (k.rule if fn else k.dim))
             col = k.ink if fn else k.dim
-        f = k["row"] if PT.measure(cr, label, k["row"])[0] <= sw - 16 else k["sub"]
+        f = k["row"] if PT.measure(cr, label, k["row"], weight=600 if on else None)[0] <= sw - (4 if flat else 16) \
+            else k["sub"]
         tw, th = PT.measure(cr, label, f)
         PT.text(cr, label, f, sx + sw / 2, y + (h - th) / 2, col, align=1, weight=600 if on else None,
-                maxw=sw - 8)
+                maxw=sw - (4 if flat else 8))
         if fn and not on:
             hits.add(sx, y, sw, h, fn)
 
@@ -1425,13 +1472,34 @@ def font_keys(cr, ui, hits, x, y, w, cols, kh, cov):
     return y + ((len(cov) + cols - 1) // cols) * (kh + KEY_GAP) - KEY_GAP
 
 
+def styles_shown(ui, mode):
+    """the font's styles can be picked (FR-034): while the preview shows letters"""
+    f = ui.font or {}
+    model = f.get("model")
+    return bool(model and mode not in ("none", "learning") and
+                any(ok for _, _, ok in FV.coverage(model, status=f.get("status"))))
+
+
+STYLE_W = 350                   # the style control's width: the design's, with room for "Calligraphy" in every voice
+
+
+def style_segs(cr, ui, hits, x, y, w):
+    """Regular / Calligraphy / Brush: the style the preview is drawn in"""
+    segs(cr, ui.theme, hits, x, y, w, [(key, label, lambda key=key: ui.set_font_style(key)) for key, label in FV.STYLES],
+         ui.font_style, flat=True)
+
+
 def preview_card(cr, ui, hits, x, y, w, mode, land=False):
-    """the preview of the font with where the letter model stands -> its height"""
+    """the preview of the font with where the letter model stands -> its height. Upright, the
+    styles take the head row's middle (an Update letters moves into it, its note under the
+    preview); turned, they sit above the keys (best_font)"""
     k = ui.theme
     f = ui.font or {}
     model = f.get("model")
     cov = FV.coverage(model, status=f.get("status"))
     have = any(ok for _, _, ok in cov)
+    st_card = styles_shown(ui, mode) and not land
+    act_head = st_card and mode == "outdated"
     rel = ui.relearn[0] if ui.relearn else ""
     if mode == "learning":
         note_ = "Learning your letters… %d%%" % round(100 * ui.letters_progress())
@@ -1459,39 +1527,54 @@ def preview_card(cr, ui, hits, x, y, w, mode, land=False):
              if mode == "learning" else "Write a few words with care first: once letters have 3 samples, they show here.")
         _, body = PT.measure(cr, t, k["sub"], maxw=iw, wrap=True)
     extra = 0
-    if mode in ("none", "outdated"):
+    if mode == "none" or (mode == "outdated" and not act_head):
         extra = BTN_H + 12
     elif mode in ("learning", "relearn"):
         extra = 22
     tail = ""
     if mode == "relearn":
-        tail = ("The preview shows the new %s when this is done. Your installed font stays as it is until you update "
-                "it." % rel)
-    elif mode == "learning":
-        tail = ""
+        tail = "The preview shows the new %s when this is done." % rel
+        if land and (f.get("status") or {}).get("font"):
+            tail += " Your installed font stays as it is until you update it."
+    elif act_head:
+        tail = "You wrote more since. Update letters, or it does this on its own while the tablet charges."
     th_ = PT.measure(cr, tail, k["sub"], maxw=iw, wrap=True)[1] + 8 if tail else 0
-    ph = 14 + 22 + 10 + body + (12 + extra if extra else 0) + th_ + 16
+    hh = BTN_H if st_card else 22
+    ph = 14 + hh + 10 + body + (12 + extra if extra else 0) + th_ + 16
     soft_box(cr, k, x, y, w, ph)
-    lw, _ = lbl(cr, k, "Preview", x + 18, y + 16)
-    if note_:
-        PT.text(cr, note_, k["sub"], x + w - 18, y + 12, k.ink, maxw=w - lw - 50, align=2)
-    yy = y + 14 + 22 + 10
+    lw, _ = lbl(cr, k, "Preview", x + 18, y + 16 + (hh - 22) / 2)
+    nx = x + 18 + lw + 12
+    if st_card:
+        style_segs(cr, ui, hits, nx, y + 14, STYLE_W)
+        nx += STYLE_W + 12
+    if act_head:
+        bw = btn_w(cr, k, "Update letters")
+        btn(cr, k, hits, x + w - 18 - bw, y + 14, "Update letters", ui.build_letters, w=bw)
+    elif note_:
+        PT.text(cr, note_, k["sub"], x + w - 18, y + 12 + (hh - 22) / 2, k.ink, maxw=x + w - 18 - nx, align=2)
+    yy = y + 14 + hh + 10
+    # a character learned again: its progress above the preview it changes
+    bar_top = mode == "relearn" and show
+    if bar_top:
+        bar(cr, k, x + 18, yy, iw, 10, int(10 * (ui.relearn_progress() or 0)), h=10)
+        yy += 22
     if show:
         cr.save()
         cr.rectangle(x, yy - 8, w, body + 16)
         cr.clip()
-        draw_hand(cr, k, model, FV.PREVIEW, x + 18, yy + xh * model["metrics"].get("ascender", 1.5), xh, iw)
+        draw_hand(cr, k, model, FV.PREVIEW, x + 18, yy + xh * model["metrics"].get("ascender", 1.5), xh, iw,
+                  style=ui.font_style if styles_shown(ui, mode) else "regular", nib=ui.nib_value())
         cr.restore()
     else:
         PT.text(cr, t, k["sub"], x + 18, yy, k.ink, maxw=iw, wrap=True)
     yy += body + 12
-    if mode in ("none", "outdated"):
+    if mode == "none" or (mode == "outdated" and not act_head):
         label = "Learn letters now" if mode == "none" else "Update letters"
         bw = btn(cr, k, hits, x + 18, yy, label, ui.build_letters)
         PT.text(cr, "Or it does this on its own while the tablet charges.", k["sub"], x + 18 + bw + 12,
                 yy + 14, k.soft, maxw=iw - bw - 12)
         yy += BTN_H + 12
-    elif mode in ("learning", "relearn"):
+    elif mode in ("learning", "relearn") and not bar_top:
         p_ = ui.letters_progress() if mode == "learning" else ui.relearn_progress()
         bar(cr, k, x + 18, yy, iw, 10, int(10 * (p_ or 0)), h=10)
         yy += 22
@@ -1507,13 +1590,18 @@ def font_status_line(ui, mode):
         return "Making your font… The tablet stays usable meanwhile."
     if ui.font_busy == "waiting":
         return "Your font is made once %s is learned again." % (ui.relearn[0] if ui.relearn else "the letter")
+    # the three styles go in together, under one name (FR-034)
     if not inst:
+        if mode == "current":
+            return "Not installed. Install puts in all three styles, under this one name. Only you have it; it is never contributed."
         return "Not installed. Only you have it, on this tablet. It is never contributed."
     if mode == "outdated":
-        return "Installed, version %d. Update makes it again, under the same name." % inst[1]
+        return "Installed, version %d. Update makes all three styles again, under the same name." % inst[1]
     if mode in ("relearn", "relearned"):
-        return "Installed, version %d. Update puts the new letters in it." % inst[1]
-    return "Installed, version %d. Apps show it in their font lists." % inst[1]
+        return "Installed, version %d. Update puts the new letters in all three styles." % inst[1]
+    if ui.nib_changed():
+        return "Installed, version %d. Update puts the new nib angle in it." % inst[1]
+    return "Installed, version %d. Apps list it under this one name, in all three styles." % inst[1]
 
 
 def font_name_block(cr, ui, hits, x, y, w, mode, stacked=False):
@@ -1548,15 +1636,39 @@ def font_buttons(cr, ui, hits, w, by, mode, land):
     miss = FV.missing(f.get("model"), status=st)
     x = PAD + btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back") + 10
     if land and miss:
-        btn(cr, k, hits, x, by, "Write these now", ui.write_missing, icon_name="edit")
+        x += btn(cr, k, hits, x, by, "Write these now", ui.write_missing, icon_name="edit") + 10
     busy = bool(ui.font_busy)
     if not inst:
         can = have and mode in ("current", "outdated", "relearned", "relearn") and not busy
-        btns_right(cr, k, hits, w - PAD, by, [("Install", ui.make_font if can else None, True)])
+        right = btns_right(cr, k, hits, w - PAD, by, [("Install", ui.make_font if can else None, True)])
     else:
-        stale = mode in ("outdated", "relearned", "relearn") or bool(ui.font_name)
-        btns_right(cr, k, hits, w - PAD, by, [("Remove", ui.ask_remove_font if not busy else None, False),
-                                              ("Update", ui.make_font if stale and not busy else None, True)])
+        stale = mode in ("outdated", "relearned", "relearn") or bool(ui.font_name) or ui.nib_changed()
+        right = btns_right(cr, k, hits, w - PAD, by, [("Remove", ui.ask_remove_font if not busy else None, False),
+                                                      ("Update", ui.make_font if stale and not busy else None, True)])
+    if ui.font_style == "calligraphy" and styles_shown(ui, mode):
+        nib_stepper(cr, ui, hits, x, right - 10, by)
+
+
+def nib_stepper(cr, ui, hits, x0, x1, y):
+    """Calligraphy's nib angle (FR-034), centred between x0 and x1: Nib angle, −, the angle, +"""
+    k = ui.theme
+    n = ui.nib_value()
+    t = "%d°" % n
+    lw_, lh = PT.measure(cr, "Nib angle", k["sub"])
+    tw, th = PT.measure(cr, t, k["row"])
+    tw = max(tw, PT.measure(cr, "60°", k["row"])[0])
+    total = lw_ + 12 + BTN_H + 14 + tw + 14 + BTN_H
+    x = x0 + max(0, (x1 - x0 - total) / 2)
+    PT.text(cr, "Nib angle", k["sub"], x, y + (BTN_H - lh) / 2, k.soft)
+    x += lw_ + 12
+    for d, ic in ((-1, "remove"), (1, "add")):
+        on = FV.NIB_MIN <= n + d * FV.NIB_STEP <= FV.NIB_MAX and not ui.font_busy
+        btn(cr, k, hits, x, y, "", (lambda d=d: ui.nib_step(d)) if on else None, w=BTN_H)
+        icon(cr, ic, 22, x + BTN_H / 2, y + BTN_H / 2, k.ink if on else k.dim)
+        if d < 0:
+            x += BTN_H + 14
+            PT.text(cr, t, k["row"], x + tw / 2, y + (BTN_H - th) / 2, k.ink, align=1, weight=600)
+            x += tw + 14
 
 
 def best_font(cr, ui, hits, w, h):
@@ -1588,15 +1700,21 @@ def best_font(cr, ui, hits, w, h):
     have = sum(1 for c in cov if c[2])
     miss = [c for c, _, ok in cov if not ok]
     head = ("Enough samples: %d of %d" if mode in ("none", "learning") else "In your font: %d of %d") % (have, len(cov))
-    sub = ("%d not in it yet; shaded ones have a sample or two" % len(miss)) if miss else "Every one is in it."
+    # turned, the styles take the count line's room: it drops the shaded keys' note
+    sub = ("%d not in it yet" % len(miss) + ("" if land else "; shaded ones have a sample or two")) if miss \
+        else "Every one is in it."
     if land:
         lw_ = int(cw * 0.32)
         rx, rw = PAD + lw_ + 24, cw - lw_ - 24
         ph = preview_card(cr, ui, hits, PAD, y, lw_, mode, land=True)
         font_name_block(cr, ui, hits, PAD, y + ph + 14, lw_, mode, stacked=True)
-        lbl(cr, k, head, rx, y)
-        PT.text(cr, sub, k["sub"], rx, y + 20, k.ink, maxw=rw)
-        font_keys(cr, ui, hits, rx, y + 48, rw, 12, 44, cov)
+        sh = styles_shown(ui, mode)
+        sw = min(STYLE_W, int(rw * 0.55))
+        lbl(cr, k, head, rx, y + (6 if sh else 0))
+        PT.text(cr, sub, k["sub"], rx, y + (26 if sh else 20), k.ink, maxw=rw - (sw + 12 if sh else 0))
+        if sh:
+            style_segs(cr, ui, hits, rx + rw - sw, y, sw)
+        font_keys(cr, ui, hits, rx, y + (BTN_H + 8 if sh else 48), rw, 12, 44, cov)
     else:
         ph = preview_card(cr, ui, hits, PAD, y, cw, mode)
         y += ph + 14

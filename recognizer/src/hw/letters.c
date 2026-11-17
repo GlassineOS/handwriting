@@ -71,6 +71,7 @@ static void variant_free(struct hw_variant *v)
 	for (size_t j = 0; j < v->nstrokes; j++) { free(v->s[j].x); free(v->s[j].y); }
 	free(v->s);
 	free(v->ids);
+	free(v->pres); free(v->speed);
 	memset(v, 0, sizeof *v);
 }
 
@@ -134,11 +135,11 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 	     HW_LETTERS_FORMAT, HW_LETTERS_VERSION, L->inputs, L->samples, L->built);
 	const struct hw_metrics *m = &L->m;
 	const char *names[] = { "cap_height", "ascender", "descender", "slant", "letter_spacing", "word_spacing", "ink_width",
-				"x_height_per_line", "base_below_guide", "x_height_mm" };
+				"x_height_per_line", "base_below_guide", "x_height_mm", "pressure_median", "speed_median" };
 	double vals[] = { m->cap, m->asc, m->desc, m->slant, m->letter_gap, m->word_gap, m->ink, m->xh_line, m->base_guide,
-			  m->xh_mm };
+			  m->xh_mm, m->pres_mid, m->speed_mid };
 	sput(&b, "{\"metrics\":{\"x_height\":1");
-	for (int i = 0; i < 10; i++) { sput(&b, ",\"%s\":", names[i]); num(&b, vals[i]); }
+	for (int i = 0; i < 12; i++) { sput(&b, ",\"%s\":", names[i]); num(&b, vals[i]); }
 	sput(&b, "}}\n");
 	/* the spacing */
 	{
@@ -243,7 +244,20 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 				}
 				sput(&b, "]");
 			}
-			sput(&b, "]}");
+			sput(&b, "]");
+			/* how it was written (FR-006): the profiles, per stroke */
+			for (int pk = 0; pk < 2; pk++) {
+				const double *pv = pk ? x->speed : x->pres;
+				if (!pv) continue;
+				sput(&b, pk ? ",\"speed\":[" : ",\"pressure\":[");
+				for (size_t j = 0; j < x->nstrokes; j++) {
+					sput(&b, "%s[", j ? "," : "");
+					for (int q = 0; q < HW_LETTERS_PROFILE; q++) { if (q) sput(&b, ","); num(&b, pv[j * HW_LETTERS_PROFILE + (size_t)q]); }
+					sput(&b, "]");
+				}
+				sput(&b, "]");
+			}
+			sput(&b, "}");
 		}
 		sput(&b, "]");
 		if (l->nvar) {
@@ -306,7 +320,8 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			L->m = (struct hw_metrics){ jnum(v, "cap_height", 1.4), jnum(v, "ascender", 1.5), jnum(v, "descender", -0.5),
 						    jnum(v, "slant", 0), jnum(v, "letter_spacing", 0.15), jnum(v, "word_spacing", 0.7),
 						    jnum(v, "ink_width", 0.07), jnum(v, "x_height_per_line", 0),
-						    jnum(v, "base_below_guide", 0), jnum(v, "x_height_mm", 0) };
+						    jnum(v, "base_below_guide", 0), jnum(v, "x_height_mm", 0),
+						    jnum(v, "pressure_median", 0), jnum(v, "speed_median", 0) };
 		} else if (json_object_object_get_ex(o, "spacing", &v)) {
 			struct hw_spacing *sp = &L->sp;
 			sp->letter = jnum(v, "letter", L->m.letter_gap);
@@ -417,6 +432,22 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 							w->s[j].x[p] = json_object_get_double(json_object_array_get_idx(pt, 0));
 							w->s[j].y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
 						}
+					}
+					/* how it was written: one profile of HW_LETTERS_PROFILE points per stroke */
+					for (int pk = 0; pk < 2 && w->s; pk++) {
+						json_object *pa;
+						if (!json_object_object_get_ex(x, pk ? "speed" : "pressure", &pa) || !json_object_is_type(pa, json_type_array) ||
+						    json_object_array_length(pa) != w->nstrokes) continue;
+						double *pv = malloc((w->nstrokes + 1) * HW_LETTERS_PROFILE * sizeof *pv);
+						int good = pv != NULL;
+						for (size_t j = 0; good && j < w->nstrokes; j++) {
+							json_object *e = json_object_array_get_idx(pa, j);
+							if (!json_object_is_type(e, json_type_array) || json_object_array_length(e) != HW_LETTERS_PROFILE) { good = 0; break; }
+							for (int q = 0; q < HW_LETTERS_PROFILE; q++)
+								pv[j * HW_LETTERS_PROFILE + (size_t)q] = json_object_get_double(json_object_array_get_idx(e, (size_t)q));
+						}
+						if (!good) { free(pv); continue; }
+						if (pk) w->speed = pv; else w->pres = pv;
 					}
 					/* its profiles and middle, from its strokes as the build makes them */
 					variant_measure(w);
@@ -533,6 +564,10 @@ struct inst {
 	int var;                        /* the variant it is written like, -1 none */
 	int occ;                        /* its occurrence record (one character's build), -1 none */
 	double *rs;                     /* resampled, centred: 2 * total points (per group) */
+	/* how it was written: per stroke HW_LETTERS_PROFILE points along its arc length, the
+	 * pressure and the speed (sample units, then x-heights per second, then relative to the
+	 * person's median); NAN where the pen gave none */
+	double *pp, *pv;
 };
 
 struct smp {
@@ -544,6 +579,7 @@ struct smp {
 	int ninst, first;               /* its instances */
 	double guide;                   /* the area guide's baseline, NAN when none */
 	double read[512];               /* readability per character (first 512) */
+	int pressure;                   /* its pen gave pressure that varies (not one value throughout) */
 };
 
 static int cmp_smp(const void *a, const void *b) { return strcmp(((const struct smp *)a)->id, ((const struct smp *)b)->id); }
@@ -606,6 +642,85 @@ static void resample(const struct hw_lstroke *s, size_t n, double *out)
 	}
 }
 
+/* A stroke's pressure and speed along its normalised arc length (FR-006): HW_LETTERS_PROFILE
+ * points, linear between the pen's points; the speed over the PROF_WIN points to either side
+ * (the pen's own steps are uneven), sample units per second. NAN where there is none: a pen
+ * without pressure (pres 0), a stroke without length or without rising times. */
+#define PROF_WIN 2
+static void stroke_profile(const struct hw_ink *k, int pres, double *pp, double *pv)
+{
+	enum { K = HW_LETTERS_PROFILE };
+	for (int q = 0; q < K; q++) pp[q] = pv[q] = NAN;
+	size_t n = k->n;
+	if (!n) return;
+	double *s = malloc(n * sizeof *s), *sp = malloc(n * sizeof *sp);
+	if (!s || !sp) { free(s); free(sp); return; }
+	s[0] = 0;
+	int timed = n > 1 && k->t[n - 1] > k->t[0];
+	for (size_t i = 1; i < n; i++) {
+		s[i] = s[i - 1] + hypot(k->x[i] - k->x[i - 1], k->y[i] - k->y[i - 1]);
+		if (!(k->t[i] >= k->t[i - 1])) timed = 0;
+	}
+	double L = s[n - 1];
+	for (size_t i = 0; i < n; i++) {
+		size_t lo = i > PROF_WIN ? i - PROF_WIN : 0, hi = i + PROF_WIN < n ? i + PROF_WIN : n - 1;
+		double dt = k->t[hi] - k->t[lo];
+		sp[i] = timed && dt > 0 ? (s[hi] - s[lo]) / dt : NAN;
+	}
+	if (L <= 0) {
+		/* a dot: its mean pressure, no speed */
+		double a = 0;
+		for (size_t i = 0; i < n; i++) a += k->p[i];
+		if (pres) for (int q = 0; q < K; q++) pp[q] = a / (double)n;
+		free(s); free(sp);
+		return;
+	}
+	size_t i = 0;
+	for (int q = 0; q < K; q++) {
+		double want = L * q / (K - 1);
+		while (i + 2 < n && s[i + 1] < want) i++;
+		double l = s[i + 1] - s[i], f = l > 0 ? clampd((want - s[i]) / l, 0, 1) : 0;
+		if (pres) pp[q] = k->p[i] + f * (k->p[i + 1] - k->p[i]);
+		pv[q] = sp[i] + f * (sp[i + 1] - sp[i]);
+	}
+	free(s); free(sp);
+}
+
+/* a pen's pressure that tells something: there, and not one value throughout */
+static int varied_pressure(const struct hw_sample *s)
+{
+	if (!s->pressure) return 0;
+	double lo = INFINITY, hi = -INFINITY;
+	for (size_t j = 0; j < s->nstrokes; j++)
+		for (size_t i = 0; i < s->strokes[j].n; i++) {
+			double p = s->strokes[j].p[i];
+			if (isnan(p)) return 0;
+			if (p < lo) lo = p;
+			if (p > hi) hi = p;
+		}
+	return hi - lo > 1e-3;
+}
+
+/* the averaged profile of the members of a variant (make_variant): acc and wt per point;
+ * NULL when no member had one, smoothed by one pass of [1 2 1] / 4 per stroke */
+static double *profile_mean(const double *acc, const double *wt, size_t nstrokes)
+{
+	enum { K = HW_LETTERS_PROFILE };
+	size_t n = nstrokes * K;
+	int any = 0;
+	for (size_t i = 0; i < n; i++) any |= wt[i] > 0;
+	if (!any) return NULL;
+	double *o = malloc((n + 1) * sizeof *o);
+	if (!o) return NULL;
+	for (size_t i = 0; i < n; i++) o[i] = wt[i] > 0 ? acc[i] / wt[i] : 1;
+	for (size_t j = 0; j < nstrokes; j++) {
+		double *r = o + j * K, prev = r[0];
+		for (int q = 1; q < K - 1; q++) { double c = (prev + 2 * r[q] + r[q + 1]) / 4; prev = r[q]; r[q] = c; }
+	}
+	for (size_t i = 0; i < n; i++) o[i] = round(clampd(o[i], 0.05, 20) * 1e3) / 1e3;
+	return o;
+}
+
 static double slen(const struct hw_lstroke *s)
 {
 	double t = 0;
@@ -645,15 +760,27 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 	double *acc = calloc((size_t)g->total * 2, sizeof *acc), wsum = 0;
 	if (!acc) return -1;
 	int members = 0;
+	/* how it was written: the members' profiles with the same weights, each point over the
+	 * members that have one there (a pen without pressure gives speed alone) */
+	size_t np = g->nstrokes * HW_LETTERS_PROFILE;
+	double *pa = calloc(4 * np + 1, sizeof *pa), *pw = pa + np, *va = pa + 2 * np, *vw = pa + 3 * np;
+	if (!pa) { free(acc); return -1; }
 	for (int k = 0; k < g->n; k++) {
 		struct inst *x = &in[g->members[k]];
 		double d = rdist(x->rs, sr, g->total);
 		if (d > 2 * SIGMA) continue;
 		double kw = x->w * exp(-(d / SIGMA) * (d / SIGMA));
 		for (int i = 0; i < 2 * g->total; i++) acc[i] += kw * x->rs[i];
+		for (size_t i = 0; x->pp && x->pv && i < np; i++) {
+			if (!isnan(x->pp[i])) { pa[i] += kw * x->pp[i]; pw[i] += kw; }
+			if (!isnan(x->pv[i])) { va[i] += kw * x->pv[i]; vw[i] += kw; }
+		}
 		wsum += kw;
 		members++;
 	}
+	v->pres = profile_mean(pa, pw, g->nstrokes);
+	v->speed = profile_mean(va, vw, g->nstrokes);
+	free(pa);
 	if (wsum <= 0) { free(acc); return -1; }
 	for (int i = 0; i < 2 * g->total; i++) acc[i] /= wsum;
 	/* back on the line where its versions sit: the centred average plus their centres'
@@ -1309,6 +1436,7 @@ int hw_letters_build(struct hw_letters *L)
 		if (nc > 4096) nc = 4096;
 		readability(m, cps, nc);
 		m->guide = guide_base(&m->s);
+		m->pressure = varied_pressure(&m->s);
 		m->first = (int)nin;
 		char *own = malloc(nc + 1);
 		if (!own || own_chars(&m->s, cps, nc, own)) { free(own); continue; }
@@ -1344,6 +1472,8 @@ int hw_letters_build(struct hw_letters *L)
 			x->x0 = x->y0 = INFINITY; x->x1 = x->y1 = -INFINITY;
 			x->s = calloc((size_t)np, sizeof *x->s);
 			if (!x->s) break;
+			x->pp = malloc(((size_t)np + 1) * HW_LETTERS_PROFILE * sizeof *x->pp);
+			x->pv = malloc(((size_t)np + 1) * HW_LETTERS_PROFILE * sizeof *x->pv);
 			/* strokes in writing order (spans list them as the sample does) */
 			int ord[256], no = 0;
 			for (int *p = sp; *p >= 0 && no < 256; p++) ord[no++] = *p;
@@ -1356,6 +1486,9 @@ int hw_letters_build(struct hw_letters *L)
 				t->x = malloc(k2->n * sizeof(double)); t->y = malloc(k2->n * sizeof(double));
 				if (!t->x || !t->y) { x->nstrokes--; continue; }
 				memcpy(t->x, k2->x, k2->n * sizeof(double)); memcpy(t->y, k2->y, k2->n * sizeof(double));
+				if (x->pp && x->pv)
+					stroke_profile(k2, m->pressure, x->pp + (x->nstrokes - 1) * HW_LETTERS_PROFILE,
+						       x->pv + (x->nstrokes - 1) * HW_LETTERS_PROFILE);
 				for (size_t q = 0; q < k2->n; q++) {
 					if (k2->x[q] < x->x0) x->x0 = k2->x[q];
 					if (k2->x[q] > x->x1) x->x1 = k2->x[q];
@@ -1363,7 +1496,7 @@ int hw_letters_build(struct hw_letters *L)
 					if (k2->y[q] > x->y1) x->y1 = k2->y[q];
 				}
 			}
-			if (!x->nstrokes) { free(x->s); if (occ >= 0) { build_occ[occ].state = HW_OCC_UNREAD; build_occ[occ].inst = -1; } continue; }
+			if (!x->nstrokes) { free(x->s); free(x->pp); free(x->pv); if (occ >= 0) { build_occ[occ].state = HW_OCC_UNREAD; build_occ[occ].inst = -1; } continue; }
 			/* weight: careful marking, readability, preferences (consistency comes later) */
 			double w = !strcmp(m->s.written, "careful") ? 1.5 : !strcmp(m->s.written, "quick") ? 0.6 : 1.0;
 			w *= 0.25 + (k < 512 ? m->read[k] : 0.6);
@@ -1428,11 +1561,38 @@ int hw_letters_build(struct hw_letters *L)
 				x->s[j].x[q] = (x->s[j].x[q] - x->x0) / m->xh;
 				x->s[j].y[q] = (m->base - x->s[j].y[q]) / m->xh;
 			}
+		for (size_t q = 0; x->pv && q < x->nstrokes * HW_LETTERS_PROFILE; q++) x->pv[q] /= m->xh;
 		double X0 = x->x0, Y0 = x->y0, Y1 = x->y1;
 		x->x1 = (x->x1 - X0) / m->xh; x->x0 = 0;
 		x->y0 = (m->base - Y1) / m->xh;       /* bottom */
 		x->y1 = (m->base - Y0) / m->xh;       /* top */
 		if (x->x1 > 6 || x->y1 - x->y0 > 6) x->dropped = 1;
+	}
+
+	/* how the person writes (FR-006): their median pressure and speed, which the profiles are
+	 * relative to (one character's build takes the model's) */
+	{
+		struct dvec mp = { 0 }, mv = { 0 };
+		for (size_t k = 0; k < nin; k++) {
+			const struct inst *x = &in[k];
+			if (x->dropped || !x->pp || !x->pv) continue;
+			for (size_t q = 0; q < x->nstrokes * HW_LETTERS_PROFILE; q++) {
+				if (!isnan(x->pp[q])) dpush(&mp, x->pp[q]);
+				if (!isnan(x->pv[q]) && x->pv[q] > 0) dpush(&mv, x->pv[q]);
+			}
+		}
+		double pm = round(median(mp.v, mp.n, 0) * 1e4) / 1e4, vm = round(median(mv.v, mv.n, 0) * 1e4) / 1e4;
+		free(mp.v); free(mv.v);
+		if (build_only && (build_m.pres_mid > 0 || build_m.speed_mid > 0)) { pm = build_m.pres_mid; vm = build_m.speed_mid; }
+		L->m.pres_mid = pm; L->m.speed_mid = vm;
+		for (size_t k = 0; k < nin; k++) {
+			struct inst *x = &in[k];
+			if (!x->pp || !x->pv) continue;
+			for (size_t q = 0; q < x->nstrokes * HW_LETTERS_PROFILE; q++) {
+				x->pp[q] = pm > 0 ? x->pp[q] / pm : NAN;
+				x->pv[q] = vm > 0 ? x->pv[q] / vm : NAN;
+			}
+		}
 	}
 
 	/* the line metrics, from words and sentences (the pen's width from every sample) */
@@ -1786,7 +1946,7 @@ measured:
 	for (size_t si = 0; si < ns; si++) if (S[si].ninst > 0) L->samples++;
 	for (size_t k = 0; k < nin; k++) {
 		for (size_t j = 0; j < in[k].nstrokes; j++) { free(in[k].s[j].x); free(in[k].s[j].y); }
-		free(in[k].s); free(in[k].rs);
+		free(in[k].s); free(in[k].rs); free(in[k].pp); free(in[k].pv);
 	}
 	free(in);
 	for (size_t si = 0; si < ns; si++) hw_sample_free(&S[si].s);
@@ -1795,7 +1955,7 @@ measured:
 fail:
 	for (size_t k = 0; k < nin; k++) {
 		for (size_t j = 0; j < in[k].nstrokes; j++) { free(in[k].s[j].x); free(in[k].s[j].y); }
-		free(in[k].s); free(in[k].rs);
+		free(in[k].s); free(in[k].rs); free(in[k].pp); free(in[k].pv);
 	}
 	free(in);
 	for (size_t si = 0; si < ns; si++) hw_sample_free(&S[si].s);
@@ -2059,6 +2219,33 @@ int hw_font_record(char *name, size_t nn, unsigned *version, char *path, size_t 
 	return 1;
 }
 
+int hw_font_styles(char paths[HW_STYLES][4096], int *nib)
+{
+	char p[4096], line[4600];
+	for (int k = 0; k < HW_STYLES; k++) paths[k][0] = 0;
+	if (nib) *nib = -1;
+	if (hw_store_path(p, sizeof p, "letters/font")) return -1;
+	FILE *f = fopen(p, "re");
+	if (!f) return errno == ENOENT ? 0 : -1;
+	int first = 1, got = 0;
+	while (fgets(line, sizeof line, f)) {
+		line[strcspn(line, "\n")] = 0;
+		char *a = strtok(line, "\t"), *b = strtok(NULL, "\t"), *c = strtok(NULL, "\t");
+		if (first) {
+			first = 0;
+			if (!a || !b || !c) break;
+			snprintf(paths[HW_STYLE_REGULAR], 4096, "%s", c);
+			got = 1;
+		} else if (a && b && c && !strcmp(a, "style")) {
+			for (int k = 1; k < HW_STYLES; k++) if (!strcmp(b, hw_font_style_names[k])) snprintf(paths[k], 4096, "%s", c);
+		} else if (a && b && !strcmp(a, "nib") && nib) {
+			*nib = atoi(b);
+		}
+	}
+	fclose(f);
+	return got;
+}
+
 static unsigned last_version(void)
 {
 	char p[4096], b[64] = "";
@@ -2098,6 +2285,10 @@ int hw_letters_fingerprint(const struct hw_letters *L, char out[17])
 int hw_font_current(const struct hw_letters *L)
 {
 	char p[4096], want[17], have[24] = "";
+	/* a font installed before the styles (FR-034) is made again with all three */
+	char sp[HW_STYLES][4096];
+	if (hw_font_styles(sp, NULL) == 1)
+		for (int k = 0; k < HW_STYLES; k++) if (!sp[k][0]) return 0;
 	if (hw_letters_fingerprint(L, want) || hw_store_path(p, sizeof p, "letters/font-model")) return 0;
 	FILE *f = fopen(p, "re");
 	if (!f) return 0;
@@ -2106,7 +2297,17 @@ int hw_font_current(const struct hw_letters *L)
 	return ok && !strncmp(have, want, 16);
 }
 
-int hw_font_install(const char *name, int verbose)
+/* the file of a style: handwriting-VERSION.ttf (Regular), handwriting-VERSION-STYLE.ttf */
+static void style_path(char *out, size_t n, const char *dir, unsigned v, int style)
+{
+	char low[16];
+	snprintf(low, sizeof low, "%s", hw_font_style_names[style]);
+	for (char *c = low; *c; c++) if (*c >= 'A' && *c <= 'Z') *c = (char)(*c - 'A' + 'a');
+	if (style == HW_STYLE_REGULAR) snprintf(out, n, "%s/handwriting-%u.ttf", dir, v);
+	else snprintf(out, n, "%s/handwriting-%u-%s.ttf", dir, v, low);
+}
+
+int hw_font_install(const char *name, int nib, int verbose)
 {
 	struct hw_letters L;
 	int r = hw_letters_load(&L);
@@ -2115,55 +2316,66 @@ int hw_font_install(const char *name, int verbose)
 	int covered = 0;
 	for (size_t i = 0; i < L.n; i++) covered += L.l[i].covered;
 	if (!covered) { hw_letters_free(&L); if (verbose) puts("skip\tnothing-covered"); return 1; }
-	char oname[256] = HW_FONT_NAME_DEFAULT, opath[4096] = "";
+	char oname[256] = HW_FONT_NAME_DEFAULT, opath[HW_STYLES][4096];
 	unsigned ov;
-	int had = hw_font_record(oname, sizeof oname, &ov, opath, sizeof opath) == 1;
+	int had = hw_font_record(oname, sizeof oname, &ov, NULL, 0) == 1, onib = -1;
 	if (!had) snprintf(oname, sizeof oname, "%s", HW_FONT_NAME_DEFAULT);
+	if (hw_font_styles(opath, &onib) != 1) for (int k = 0; k < HW_STYLES; k++) opath[k][0] = 0;
 	if (name && !valid_name(name)) { hw_letters_free(&L); return -2; }
+	/* the nib angle: asked for, else the one the font has, else the default (FR-034) */
+	if (nib < 0) nib = onib >= HW_FONT_NIB_MIN && onib <= HW_FONT_NIB_MAX ? onib : HW_FONT_NIB_DEFAULT;
 	const char *nm = name ? name : oname;
-	char dir[4096], path[4200], tmp[4300];
+	char dir[4096], path[HW_STYLES][4200], tmp[sizeof path + 8];
 	if (fonts_dir(dir, sizeof dir)) { hw_letters_free(&L); return -1; }
 	int fd = hw_store_lock();
 	if (fd < 0) { hw_letters_free(&L); return -1; }
 	unsigned v = last_version() + 1;
-	size_t len;
-	unsigned char *ttf = hw_font_build(&L, nm, v, &len);
 	char fp[18] = "";
 	if (!hw_letters_fingerprint(&L, fp)) strcat(fp, "\n");
-	hw_letters_free(&L);
-	int ret = -1;
-	if (!ttf) goto out;
+	int ret = -1, made = 0;
 	mkdirs(dir);
-	snprintf(path, sizeof path, "%s/handwriting-%u.ttf", dir, v);
-	snprintf(tmp, sizeof tmp, "%s.tmp", path);
-	FILE *f = fopen(tmp, "we");
-	if (!f) goto out;
-	int bad = fwrite(ttf, 1, len, f) != len;
-	if (fclose(f) || bad || rename(tmp, path)) { unlink(tmp); goto out; }
-	char rec[4600], vs[32];
-	int k = snprintf(rec, sizeof rec, "%s\t%u\t%s\n", nm, v, path);
+	/* all three styles, or none (FR-034) */
+	for (int k = 0; k < HW_STYLES; k++, made++) {
+		size_t len;
+		unsigned char *ttf = hw_font_build_style(&L, nm, v, k, nib, &len);
+		if (!ttf) break;
+		style_path(path[k], sizeof path[k], dir, v, k);
+		snprintf(tmp, sizeof tmp, "%s.tmp", path[k]);
+		FILE *f = fopen(tmp, "we");
+		int bad = !f || fwrite(ttf, 1, len, f) != len;
+		free(ttf);
+		if ((f && fclose(f)) || bad || rename(tmp, path[k])) { unlink(tmp); break; }
+	}
+	hw_letters_free(&L);
+	if (made < HW_STYLES) { for (int k = 0; k < made; k++) unlink(path[k]); goto out; }
+	char rec[13000], vs[32];
+	int n = snprintf(rec, sizeof rec, "%s\t%u\t%s\n", nm, v, path[HW_STYLE_REGULAR]);
+	for (int k = 1; k < HW_STYLES && n > 0 && (size_t)n < sizeof rec; k++)
+		n += snprintf(rec + n, sizeof rec - (size_t)n, "style\t%s\t%s\n", hw_font_style_names[k], path[k]);
+	if (n > 0 && (size_t)n < sizeof rec) n += snprintf(rec + n, sizeof rec - (size_t)n, "nib\t%d\n", nib);
 	snprintf(vs, sizeof vs, "%u\n", v);
-	if (hw_store_mkdir("letters") || hw_store_replace("letters/font-version", vs, strlen(vs)) ||
-	    hw_store_replace("letters/font", rec, (size_t)k) || hw_store_replace("letters/font-model", fp, strlen(fp))) {
-		unlink(path);
+	if (n <= 0 || (size_t)n >= sizeof rec || hw_store_mkdir("letters") || hw_store_replace("letters/font-version", vs, strlen(vs)) ||
+	    hw_store_replace("letters/font", rec, (size_t)n) || hw_store_replace("letters/font-model", fp, strlen(fp))) {
+		for (int k = 0; k < HW_STYLES; k++) unlink(path[k]);
 		goto out;
 	}
-	if (had && strcmp(opath, path)) unlink(opath);
+	for (int k = 0; had && k < HW_STYLES; k++)
+		if (opath[k][0] && strcmp(opath[k], path[0]) && strcmp(opath[k], path[1]) && strcmp(opath[k], path[2])) unlink(opath[k]);
 	ret = 0;
 out:
 	hw_store_unlock(fd);
-	free(ttf);
 	if (!ret) {
 		fc_cache(dir);
-		if (verbose) printf("installed\t%s\t%u\t%s\n", nm, v, path);
+		if (verbose) printf("installed\t%s\t%u\t%s\n", nm, v, path[HW_STYLE_REGULAR]);
 	}
 	return ret;
 }
 
 static void remove_font_locked(void)
 {
-	char path[4096], dir[4096];
-	if (hw_font_record(NULL, 0, NULL, path, sizeof path) == 1) unlink(path);
+	char path[HW_STYLES][4096], dir[4096];
+	if (hw_font_styles(path, NULL) == 1)
+		for (int k = 0; k < HW_STYLES; k++) if (path[k][0]) unlink(path[k]);
 	hw_store_replace("letters/font", NULL, 0);
 	if (!fonts_dir(dir, sizeof dir)) { rmdir(dir); fc_cache(dir); }
 }
