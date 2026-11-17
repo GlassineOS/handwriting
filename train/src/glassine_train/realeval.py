@@ -129,12 +129,14 @@ XH_EM = 0.1  # the letter height synthetic samples are scaled to (GLASSINE_HANDW
 GUIDE = 2 / 3  # the area's guides: two thirds down each line, as real.reference assumes
 
 
-def ink_samples(ink: Path, out: Path, limit: int | None = None) -> int:
+def ink_samples(ink: Path, out: Path, limit: int | None = None, ratios: dict | None = None) -> int:
     """An ink set (inkstore.py) as sample-format lines, so the recognizer program reads it as
     it reads a person's: each line scaled so its letter height is XH_EM em, in a writing
     area of its own line height whose guide (GUIDE of a line below the box's top) is the
     line's baseline. With $GLASSINE_HANDWRITING_SIZE=XH_EM,2.5·XH_EM the letter height is
-    known; without it the recognizer has the area's line alone."""
+    known; without it the recognizer has the area's line alone. ratios: the letter height is
+    the writer's small letters as the recognizer measures them (inkmeasure.writer_ratios), as
+    it is for a person, instead of the generator's."""
     from .inkstore import InkStore
     st = InkStore(ink)
     n = len(st) if limit is None else min(limit, len(st))
@@ -144,7 +146,7 @@ def ink_samples(ink: Path, out: Path, limit: int | None = None) -> int:
             strokes = [q for q in strokes if len(q)]
             if not strokes:  # a mark too small to keep any ink (a few lone dots): nothing to read
                 continue
-            k = XH_EM / row["xh"]
+            k = XH_EM / (row["xh"] * (ratios.get(row["writer"], ratios["*"]) if ratios else 1.0))
             line, base = row["line"] * k, row["base"] * k
             pts = np.concatenate(strokes)
             x0, x1 = float(pts[:, 0].min()) * k - line, float(pts[:, 0].max()) * k + line

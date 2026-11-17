@@ -242,6 +242,9 @@ uv run glassine-train gen4-letters LETTERS/model --out PRIVATE/letters4 --fit bu
 uv run glassine-train gen4 --only train-fix --train-name train-fix --kinds uniform lone --lines 54000 --seed 43
 uv run glassine-train featurize build/ink4/train-fix --out build/data/train-fix-ref --ref mix
 uv run glassine-train mergeset --base train4-ref --drop-kinds uniform lone --add train-fix-ref --out train4-fix
+# the letter height measured as the recognizer measures a person's (model 4 as released):
+uv run glassine-train featurize build/ink4/train --out build/data/train4-mref --ref mix --measured
+uv run glassine-train inkread SETS... --models DIR --measured --samples build/eval/samples-m ...
 ```
 
 `train --init CKPT` goes on from a checkpoint (its architecture, inputs and characters) with
@@ -259,7 +262,13 @@ height, or 0.2 lines when only the line is known; `mix` uses the line alone for 
 lines), y above the baseline, and a sixth input, the ink's height in reference heights. A
 real sample's references come from `real.reference` (the writer's letter height measured on
 the training sessions, the area's line and guide). `InkSet` reads the number of inputs from
-the dataset.
+the dataset. With `--measured` a line's letter height is its writer's small letters as the
+recognizer measures a person's (`inkmeasure.small_height`, `recognizer/src/hw/size.c`: the
+median height of the small letters drawn with strokes of their own), the median over up to
+400 of the writer's lines (`writer_ratios`), not the generator's x-height: over the 159
+training writers 0.64 to 1.17 of it, median 0.90. `inkread --measured` scales synthetic test
+lines the same way, the ratios measured over all the sets read together (lone characters
+have no words of their own).
 
 **Generator** (`gen.py`): the fonts' glyphs with the synth's per-letter jitter and
 variation, laid out by writers drawn per line:
@@ -547,7 +556,8 @@ and test words are about as large as the training sessions' (0.86 and 0.91 of th
 not the size drifting. On synthetic ink the recognizer's way of measuring the small letters
 gives 0.74 to 0.94 of the generator's x-height, so the two definitions differ. The fix belongs
 in training (references measured the way the recognizer measures them, then featurize and
-train again), not in a factor tuned on one writer. Not done.
+train again), not in a factor tuned on one writer: done in `m4mref` (below), which halves
+the gap but does not close it.
 
 The `s20` fine-tune (Fine-tuning, above; trained on this writer's ink) reads the same session
 at 4.0 % without a head and 2.1 % with a fresh one (model 4: 2.4 %, difference −1.1 to +1.8):
@@ -657,6 +667,45 @@ With a fresh head m4fix is worse on this writer and does not pass the release ga
 model 2 (−4.1 to +0.3 points), so m4long stays the candidate. The head is trained with one
 seed; the bootstrap covers the words, not the head's training. What is left of `O` against `0`
 is probably for the field's context or the decoder rather than more rebalancing of the text.
+
+**The letter height measured as the recognizer measures it** (`m4mref`). The training
+references are each writer's small letters measured as the recognizer measures a person's
+(`featurize --measured`, Data above; the line references unchanged), and m4long went on
+for 8 k steps (one-cycle to 1e-3), as the control above did on the old references. Read in
+the same condition as a person (synthetic lines scaled by their writer's measured small
+letters, `inkread --measured`), every set is lower than m4long's with the letter height
+known (95 %: test book −0.5 to −0.1, random words −0.8 to −0.3, numbers and punctuation −1.7
+to −0.7, random letters −3.1 to −1.8, line kinds −1.3 to −0.9, lone characters −6.0 to −1.8,
+words + character model), and against the control too (lone characters −6.9 to −2.3, line
+kinds −0.7 to −0.3). With the line alone it is lower than m4long on the texts (test book −0.7
+to −0.1, numbers and punctuation −1.9 to −0.7) but worse on lone characters (+1.6 to +5.0,
+mostly a lone `o` read as `O`), and slightly worse than the control (line kinds +0.0 to +0.5,
+random letters +0.3 to +1.6, lone characters +1.6 to +5.2).
+Letters read as digits inside words: 57 of 3897 with the letter height (m4long 65), 65 with
+the line alone (72); a lone `O` read as `0` about as often (88 and 48 of 120; m4long 92 and 49). On real ink:
+
+| real test session (116 words) | m4long | m4mref | m4mref − m4long (95 %) |
+|---|---|---|---|
+| fresh head, words + character model | 2.4 % | 2.6 % | −0.8 to +1.1 |
+| fresh head, words | 4.4 % | 4.1 % | −1.8 to +1.0 |
+| no head, the person's letters, words + character model | 29.7 % | 27.4 % | −4.6 to −0.2 |
+| … character model | 30.3 % | 27.3 % | −5.4 to −0.8 |
+| new person, words + character model | 21.1 % | 19.9 % | −4.0 to +1.3 |
+| the other writer (19 words), words + character model | 27.7 % | 24.8 % | −9.0 to +2.6 |
+
+(chosen on the dev session: fresh head 1.9 % both, the person's letters 24.5 % against
+30.1 %, new person 20.1 % against 22.0 %.) With a fresh head it passes the release gate as
+m4long did (against model 2 −4.8 to −0.7 points); a new person −17.6 to −8.6, the other
+writer −42.1 to −21.1. Letters read as digits in words on the test session: 1 of 116. The
+person's letters still read worse than the line alone (27.4 % against 19.9 %), so the two
+definitions meet only part of the way; probably a real hand's small letters, measured this
+way, sit differently against the rest of its writing than the fonts' do.
+
+**Look-alikes by the field** (recognizer, docs/recognizer.md Characters). In a text field a
+digit that looks like a letter keeps half its chance, in a number field the letter. With
+m4long, each synthetic line in its kind's field, letter height known: a lone `O` read as `0`
+87 → 59 of 120, letters read as digits in words 90 → 77 of 6086, part numbers +0.03 to +0.67
+points, the other kinds level or lower (lone characters −2.5 to −1.0, times −0.5 to −0.0).
 
 **A head with letter-model lines.** Adding 400 lines written in the person's letter model
 (`gen4-letters`) to the training sessions of the fresh head makes it worse (real dev, words +
