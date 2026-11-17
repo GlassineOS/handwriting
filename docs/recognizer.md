@@ -480,7 +480,8 @@ Nothing in it leaves the device except by export or a donation the person writes
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
 - `letters/model`: the letter model (below); `letters/usable` (its usable samples, below); `letters/font` (`NAME VERSION PATH`, tab-separated:
-  the installed font) and `letters/font-version` (the last version made, so a removed and
+  the installed font, PATH its Regular style's file; then `style STYLE PATH` for Calligraphy and Brush and `nib DEG`,
+  the nib angle it was made with; a font installed before the styles has the first line alone) and `letters/font-version` (the last version made, so a removed and
   remade font doesn't reuse one) and `letters/font-model` (a hash of the letters the installed
   font was made from). An erase of all samples or of a client's takes out the letter
   model, the installed font and these files (the erased samples' preferences go with them).
@@ -617,6 +618,17 @@ versions are stored most used first. Sizes are in x-heights from the baseline of
 own letters); the line metrics (cap height, ascender, descender, slant, ink width as the app's
 pen draws) come from all usable samples.
 
+**How it was written** (FR-006, for the font's Brush style): each version keeps, per stroke, its
+samples' pressure and speed at 16 points along the stroke's arc length (from its start to its
+end, each sample's stroke stretched to the same length), averaged with the weights that make its
+shape and smoothed once by [1 2 1] / 4, each relative to the person's median over all their usable
+samples (1 = their median; stored in the metrics as `pressure_median`, the pen's own units, and
+`speed_median`, x-heights per second). The speed at a point is the distance over the time of the
+pen's points 2 to either side of it. A sample whose pen gave no pressure (points of 3 values) or
+one pressure throughout counts for speed only; a version none of whose samples gave pressure has
+no pressure profile (and one without times, none of speed). One character's build takes the
+medians from the model.
+
 **Spacing** (spec 003 FR-007; `spacing.c`), one for the font and neatening. A version's ink
 profile is, per height band (8 bands from −0.6 to 1.6 x-heights, the outer two open-ended), the
 leftmost and rightmost x of its strokes' centre lines, every band a segment crosses. The gap
@@ -646,8 +658,9 @@ running up or down in the x-height band) is set at its gap. A version sits on th
 samples it is made from sit on average (with the weights that make its shape). The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
 
-It is made again when its inputs (the prompted samples and the picks, and the way it is built)
-changed: after a background adaptation (the same conditions: charging and idle), or when asked
+It is made again when its inputs (the prompted samples and the picks, and the way it is built: a
+revision of the build, `HW_LETTERS_BUILD` in `letters.h`, counted on when the model changes, as
+for the profiles) changed: after a background adaptation (the same conditions: charging and idle), or when asked
 (`-r`, any power; at the lowest priority, so the device stays usable; a client asks while it
 shows a page about the letters, spec 003 FR-008). `-f` makes it even when nothing changed.
 
@@ -688,16 +701,20 @@ make them now, at once.
 `{"format":"glassine-handwriting-letters","version":1,"inputs":"HASH","samples":N,"built":TIME}`,
 then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"slant":…,
 "letter_spacing":…,"word_spacing":…,"ink_width":…,"x_height_per_line":…,"base_below_guide":…,
-"x_height_mm":…}}` (the spacing's typical and word gaps; the last three what a sample without
-letters to measure its x-height or baseline from takes, which a one-character build reuses), then
+"x_height_mm":…,"pressure_median":…,"speed_median":…}}` (the spacing's typical and word gaps;
+`x_height_per_line`, `base_below_guide` and `x_height_mm` what a sample without letters to measure
+its x-height or baseline from takes, which a one-character build reuses, as it does the two
+medians, 0 when none), then
 `{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
 "sides":[[RIGHT,LEFT,GAP,N],…],"reach":[["a",RIGHT,LEFT,NR,NL],…],"left_shapes":[[…8],…],
 "right_shapes":[[…8],…]}}` (`DISTANCE`, `RIGHT` and `LEFT` null when not learned), then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
 "members":N,"use":N,"lc":L,"rc":R,"left_out":true,"favourite":true,"ids":["ID",…],"left":[…8],
-"right":[…8],"middle":…,"strokes":[[[x,y],…],…]}],"slots":[V,…]}` (x from the version's left
+"right":[…8],"middle":…,"strokes":[[[x,y],…],…],"pressure":[[…16],…],"speed":[[…16],…]}],
+"slots":[V,…]}` (x from the version's left
 edge, y up from the baseline, in x-heights; `left` and `right` its profile, null for a band
-without ink, `middle` its middle (null without one),
+without ink, `middle` its middle (null without one), `pressure` and `speed` how it was written,
+16 values per stroke (above; each left out when the version has none),
 `lc` and `rc` its side shapes; `left_out` and `favourite` only when so; `ids` the samples written
 this way, those its `use` counts, sorted; no versions when not covered). A character with marks
 has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the
@@ -705,11 +722,13 @@ font's cycle (10 steps): the version the character shows at each step, each abou
 is used (a favourite twice as often, a left-out one never), spread out (smooth weighted round
 robin); a model without it shows its versions in turn.
 
-**The font:** `font install` makes a TrueType font of the covered characters (a stroke outlined
-at the ink width; everything else falls back to the system's fonts) and installs it as
-`$XDG_DATA_HOME/fonts/glassine-handwriting/handwriting-VERSION.ttf`, replacing the one before, then
-runs `fc-cache` on that directory. Its family name is the person's (`-n`; first `My handwriting`,
-later the name it has), the version counts on with every install, so apps see a new font. Along the
+**The font:** `font install` makes a TrueType font of the covered characters (everything else
+falls back to the system's fonts) in three styles (FR-034) and installs them together as
+`$XDG_DATA_HOME/fonts/glassine-handwriting/handwriting-VERSION.ttf` (Regular),
+`handwriting-VERSION-calligraphy.ttf` and `handwriting-VERSION-brush.ttf`, replacing the ones before
+(all three, or none when one can't be made), then runs `fc-cache` on that directory. Its family
+name is the person's (`-n`; first `My handwriting`, later the name it has), the version counts on
+with every install, so apps see a new font. Along the
 text the font steps through a cycle of 10, the same way every time: a run starts at step 0, and
 after a character or space at step s the next one is at step s + 1 (after 9, 0; after a character
 the font lacks, 0 again); a character shows the version its `slots` give for that step. Each
@@ -721,6 +740,38 @@ with a class per version, every step glyph in its version's class) moves every p
 to where the spacing places it; the space is the word spacing less the typical gap. A preview that lays text
 out from the model (the samples app) spaces it the same way. The font is made only on the device and is
 never donated or exported.
+
+**The styles** (FR-034) differ only in their outlines: the glyphs and their order, `cmap`, `GSUB`,
+`GPOS`, the advances and the line metrics (`hhea`, the OS/2 typographic ones: the Regular style's)
+are the same in all three, so text shapes to the same places in each; each style's bounding boxes,
+side bearings (its glyphs' left edges) and OS/2 clipping box (`usWinAscent`, `usWinDescent`) are its
+own. Each stroke is outlined as convex pieces that all turn the same way, so the non-zero fill
+makes one ink of them where strokes overlap. Names: Regular has the family as name ID 1 and
+`Regular` as ID 2; Calligraphy and Brush have `NAME STYLE` as ID 1 and 4, `Regular` as ID 2, and
+the family and the style as the typographic family and subfamily (IDs 16, 17); PostScript names
+`NAME-Regular`, `NAME-Calligraphy`, `NAME-Brush` (NAME's letters and digits). Calligraphy's and
+Brush's `head` revision is a step below the version (Regular's is the version), so where nothing
+asks for a style the family's face is Regular. Widths (x-heights; `ink` the model's ink width):
+- **Regular**: `ink` throughout (a quadrilateral per segment, a disc at the ends, a wedge or a
+  disc where it turns), at least 0.024.
+- **Calligraphy**: a broad nib at the nib angle (degrees from the horizontal, rising to the
+  right; 35 unless set) swept along the stroke, rounded by its thinnest line: across a stroke
+  running in direction θ it is `w_min + (w_max - w_min) · |sin(θ - nib)|`, with `w_min` = 0.4 ·
+  `ink` within 0.015 to 0.05 and `w_max` = 2.2 · `ink` within 0.12 to 0.26; a piece per segment,
+  the hull of the nib at both its ends.
+- **Brush**: per point `ink · max(0.12, clamp(1.3 · fp · fv · fa, 0.35, 2.4) · ts · te)`: `fp =
+  P^0.8` (P the pressure profile there, within 0.25 to 3), `fv = V^-0.3` (V the speed profile,
+  within 0.25 to 4; `V^-0.55` without a pressure profile), `fa = 1 - 0.12 · tanh(dV/ds / 3)` (the
+  acceleration, s in x-heights), each 1 without its profile; the start tapers, `ts = 0.25 + 0.75 ·
+  sqrt(min(1, s / t0))` with `t0 = min(0.22, 0.3 · L)` (L the stroke's length, s from its start),
+  and the end more, `te = 0.12 + 0.88 · min(1, (L - s) / t1)^0.7` with `t1 = min(0.3, 0.4 · L)`
+  times the mean speed of its last 4 profile points (within 1 to 2: a quick flick thins out
+  longer); a stroke shorter than 0.15 has no taper. A piece per segment, the hull of the discs at
+  both ends.
+
+The nib angle is a setting of the installed font: `font install --nib DEG` (0 to 90) makes the font
+with it and keeps it in `letters/font`; an install without `--nib` keeps the font's angle (35 the
+first time).
 
 ## Command line
 
@@ -741,7 +792,7 @@ glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
 glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show
 glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | marks | samples CHAR
-glassine-handwriting font install [-n NAME] | remove | status | build [-n NAME] FILE
+glassine-handwriting font install [-n NAME] [--nib DEG] | remove | status | build [-n NAME] [--style S] [--nib DEG] FILE | widths [--style S] [--nib DEG]
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
@@ -786,7 +837,9 @@ model or not: `samples N` (usable), `covered K` (characters with 3 usable sample
 SAMPLES VERSIONS` per character seen (C escaped like a text field; VERSIONS the versions it has
 in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`; with a font,
 `font-letters same|changed`: whether it was made from the letters as the model has them now
-(changed after a build or a one-character build since; Update makes it again).
+(changed after a build or a one-character build since, or a font installed before the styles;
+Update makes it again), then `font-nib DEG`, the nib angle it was made with (none for a font from
+before the styles).
 
 `letters mark KIND CHAR ID...` sets the samples' mark for that character (`clear` takes it
 away; a `favourite` first clears the character's other favourites) and prints `marked`, or
@@ -799,11 +852,19 @@ version), `unread` (the writing wasn't read clearly: no exact strokes per charac
 `joined-before` or `joined-after` (a stroke shared with the neighbour), `odd` (too far from its
 other versions in size to count).
 
-`font install` makes the font from the letter model as it is and prints `installed NAME VERSION PATH`,
-or `skip no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control
-characters is a usage error. `font status` prints `NAME VERSION PATH` or `none`; `font remove`
-takes the installed font out; `font build FILE` writes the font to FILE without installing it
-(testing).
+`font install` makes the font in its three styles from the letter model as it is and prints
+`installed NAME VERSION PATH` (PATH the Regular style's file), or `skip
+no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control characters,
+or a nib angle that isn't a whole number from 0 to 90, is a usage error. `font status` prints
+`NAME VERSION PATH` or `none`, then for a font `style STYLE PATH` per style it has (Regular,
+Calligraphy, Brush; a font from before the styles: Regular alone) and `nib DEG` (as `letters
+status`); `font remove` takes out all of its files; `font build FILE` writes one style (`--style
+regular|calligraphy|brush`, Regular unless given; the installed font's nib angle unless `--nib`) to
+FILE without installing it, and `font widths` prints the width rules' output as JSON lines: first
+`{"style":…,"nib":…,"ink_width":…,"nib_min":…,"nib_max":…}`, then per stroke of every version
+`{"char":…,"variant":V,"stroke":J,"widths":[…]}`, the width at each of its points (for
+Calligraphy from the stroke's direction there; testing, and the samples app's preview checks
+against it).
 
 **Export file:** JSON lines. The first `{"format":"glassine-handwriting-export","version":1}`;
 then one `{"sample":{…},"client":"…","confirmed":TIME,"source":"…"}` per sample and one
