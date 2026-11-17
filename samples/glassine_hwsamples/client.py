@@ -298,7 +298,7 @@ class Cli:
 
     def letters(self):
         """{"state": none|current|outdated, "samples": N, "covered": K, "chars": {c: (usable,
-        versions)}, "font": (name, version) or None}: the counts from the samples as they are
+        versions)}, "font": (name, version) or None, "font_nib": its nib angle}: the counts from the samples as they are
         now, built model or not (spec 003 FR-030); the versions from the model as built"""
         d = {"state": "none", "samples": 0, "covered": 0, "chars": {}, "font": None}
         for line in self.run("letters", "status").splitlines():
@@ -313,6 +313,8 @@ class Cli:
                 d["font"] = (unesc(f[1]), int(f[2]))
             elif f[0] == "font-letters":
                 d["font_same"] = f[1] == "same"
+            elif f[0] == "font-nib":
+                d["font_nib"] = int(f[1])
         return d
 
     def letters_model(self):
@@ -363,9 +365,11 @@ class Cli:
             raise Error("letters build failed")
         return last
 
-    def font_install(self, name=None):
-        """builds and installs the font (under its name, or this one): its (name, version)"""
-        f = self.run("font", "install", *(["-n", name] if name else [])).strip().split("\t")
+    def font_install(self, name=None, nib=None):
+        """builds and installs the font in its three styles (under its name, or this one; at
+        its nib angle, or this one): its (name, version)"""
+        f = self.run("font", "install", *(["-n", name] if name else []),
+                     *(["--nib", str(nib)] if nib is not None else [])).strip().split("\t")
         if f[0] != "installed":
             raise Error("no font: " + (f[1] if len(f) > 1 else "?"))
         return f[1], int(f[2])
