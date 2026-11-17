@@ -6,7 +6,9 @@ order; a character needs 3 usable samples; the font passes fontTools with checks
 exactly the covered characters and the space, alternates the same way every time when
 shaped with no feature asked for (and as hw_letters_step says); installed, the font cache
 finds it in a test user; a rebuild keeps the name and changes the version and the file;
-erasing the samples takes the model and the font.
+erasing the samples takes the model and the font. The three styles (FR-034): the profiles
+of how each version was written, Calligraphy's and Brush's widths on made-up strokes, the
+same shaping in all three, installed, updated and removed together.
 
     HW_BIN=path/to/glassine-handwriting python3 tests/test_letters.py
 
@@ -1096,11 +1098,11 @@ class Font(unittest.TestCase):
             out = e.run("font", "install").stdout.strip().split("\t")
             self.assertEqual(out[:3], ["installed", "Ünïcode hand", "3"])
             path = Path(out[3])
-            self.assertEqual(e.run("font", "status").stdout.strip().split("\t"), ["Ünïcode hand", "3", str(path)])
+            self.assertEqual(e.run("font", "status").stdout.splitlines()[0].split("\t"), ["Ünïcode hand", "3", str(path)])
             lst = subprocess.run(["fc-list", ":", "family", "file"], env=e.env, capture_output=True, text=True,
                                  check=True).stdout
             self.assertIn(str(path), lst)
-            self.assertEqual(len(list(e.fonts.iterdir())), 1)
+            self.assertEqual(len(list(e.fonts.iterdir())), 3)     # the three styles
             self.assertEqual(e.run("font", "install", "-n", "bad\tname", check=False).returncode, 2)
             # erasing the samples takes the letter model and the font
             e.run("samples", "erase")
@@ -1131,6 +1133,446 @@ class Font(unittest.TestCase):
         e = Env()
         try:
             self.assertEqual(e.run("font", "install").stdout.strip(), "skip\tno-letters")
+            self.assertFalse(e.fonts.exists())
+        finally:
+            e.close()
+
+
+# ---------------------------------------------------------------- the styles (FR-034, FR-006)
+
+K = 16          # letters.h HW_LETTERS_PROFILE
+STYLES = ("Regular", "Calligraphy", "Brush")
+
+
+def written_sample(text, rnd, pres=lambda u: 0.2 + 0.6 * u, speed=lambda u: 0.5 + u, line=150.0, xh=30.0):
+    """a sample as sample() makes it, its pen's pressure and speed given along each stroke's
+    arc length (u from 0 to 1): pres None, points without pressure (x, y, t)"""
+    s = sample(text, rnd, line=line, xh=xh)
+    t = 0.0
+    for st in s["strokes"]:
+        d = [0.0]
+        for a, b in zip(st, st[1:]):
+            d.append(d[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        total = d[-1] or 1.0
+        for i, pt in enumerate(st):
+            if i:
+                # dt = ds / v at the step's middle
+                t += (d[i] - d[i - 1]) / (40.0 * speed((d[i] + d[i - 1]) / 2 / total))
+            pt[2] = round(t, 5)
+            if pres is None:
+                del pt[3]
+            else:
+                pt[3] = round(pres(d[i] / total), 5)
+        t += 0.2
+    return s
+
+
+def hw_inputs(ids, rev):
+    """letters.c hw_letters_inputs: FNV-1a over the build revision and the prompted samples
+    (none written or paired here, no preferences)"""
+    h = 1469598103934665603
+
+    def fnv(h, b):
+        for x in b:
+            h = ((h ^ x) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        return h
+    h = fnv(h, b"letters 1 %d\n" % rev)
+    for k in sorted("%s  " % i for i in ids):
+        h = fnv(h, k.encode() + b"\0")
+    h = fnv(h, b"\npreferences\n")
+    return "%016x" % h
+
+
+class Profiles(unittest.TestCase):
+    """how each version was written (FR-006): averaged pressure and speed along its strokes,
+    relative to the person's median"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(21)
+        cls.e.put([written_sample("".join(ALNUM[i:i + 5]), rnd) for _ in range(3) for i in range(0, 20, 5)])
+        cls.e.run("letters", "build", "-r")
+        cls.lines = [json.loads(x) for x in cls.e.model().splitlines()]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def variants(self):
+        return [v for d in self.lines if d.get("covered") for v in d["variants"]]
+
+    def test_averaged_along_the_strokes(self):
+        m = self.lines[1]["metrics"]
+        self.assertAlmostEqual(m["pressure_median"], 0.5, delta=0.01)
+        self.assertGreater(m["speed_median"], 0)
+        vs = self.variants()
+        self.assertTrue(vs)
+        for v in vs:
+            self.assertEqual(len(v["pressure"]), len(v["strokes"]))
+            self.assertEqual(len(v["speed"]), len(v["strokes"]))
+            for pr, sp in zip(v["pressure"], v["speed"]):
+                self.assertEqual((len(pr), len(sp)), (K, K))
+                for q in range(K):
+                    # 0.2 + 0.6u over its median 0.5
+                    self.assertAlmostEqual(pr[q], 0.4 + 1.2 * q / (K - 1), delta=0.03)
+                # the speed 0.5 + u over its median: rising throughout (over a window of the
+                # pen's points, so a little flatter than written on these 12-point strokes)
+                self.assertTrue(all(b >= a - 0.01 for a, b in zip(sp, sp[1:])), sp)
+                self.assertGreater(sp[K - 3] / sp[2], 1.6)
+        # relative to the person's median: about 1 in the middle of the strokes
+        mids = sorted(sp[K // 2] for v in vs for sp in v["speed"])
+        self.assertAlmostEqual(mids[len(mids) // 2], 1.0, delta=0.15)
+
+    def test_speed_alone_without_pressure(self):
+        """a pen without pressure (points of three values) or with one pressure throughout
+        gives a speed profile and none of pressure"""
+        e = Env()
+        try:
+            rnd = random.Random(22)
+            ss = [written_sample("".join(ALNUM[i:i + 5]), rnd, pres=None) for _ in range(3) for i in range(0, 10, 5)]
+            ss += [written_sample("".join(ALNUM[i:i + 5]), rnd, pres=lambda u: 0.5) for _ in range(3) for i in range(10, 20, 5)]
+            e.put(ss)
+            e.run("letters", "build", "-r")
+            lines = [json.loads(x) for x in e.model().splitlines()]
+            self.assertEqual(lines[1]["metrics"]["pressure_median"], 0)
+            vs = [v for d in lines if d.get("covered") for v in d["variants"]]
+            self.assertTrue(vs)
+            for v in vs:
+                self.assertNotIn("pressure", v)
+                self.assertEqual(len(v["speed"]), len(v["strokes"]))
+        finally:
+            e.close()
+
+    def test_mixed_pens(self):
+        """a version whose samples are partly without pressure averages pressure over those with it"""
+        e = Env()
+        try:
+            rnd = random.Random(23)
+            ss = [written_sample("abcde", rnd) for _ in range(2)] + [written_sample("abcde", rnd, pres=None) for _ in range(2)]
+            e.put(ss)
+            e.run("letters", "build", "-r")
+            for d in (json.loads(x) for x in e.model().splitlines()):
+                for v in d.get("variants", []):
+                    for pr in v["pressure"]:
+                        self.assertAlmostEqual(pr[K // 2], 0.4 + 1.2 * (K // 2) / (K - 1), delta=0.05)
+        finally:
+            e.close()
+
+    def test_relearn_keeps_the_medians(self):
+        """one character learned again is relative to the whole model's medians"""
+        before = [x for x in self.e.model().splitlines() if x.startswith('{"char":"c"')]
+        self.e.run("letters", "build", "-c", "c")
+        after = [x for x in self.e.model().splitlines() if x.startswith('{"char":"c"')]
+        self.assertEqual(before, after)
+
+    def test_revision_outdates_an_older_model(self):
+        """the build revision is part of the inputs: a model of the revision before is out of
+        date and made again"""
+        e = Env()
+        try:
+            rnd = random.Random(24)
+            e.put([written_sample("abc", rnd) for _ in range(3)])
+            e.run("letters", "build", "-r")
+            ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
+            head = json.loads(e.model().splitlines()[0])
+            self.assertEqual(head["inputs"], hw_inputs(ids, 9))
+            old = dict(head, inputs=hw_inputs(ids, 8))
+            text = e.model().split("\n", 1)
+            (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
+            self.assertEqual(e.status()["state"], ["outdated"])
+            self.assertTrue(e.run("letters", "build").stdout.startswith("built"))
+            self.assertEqual(e.status()["state"], ["current"])
+        finally:
+            e.close()
+
+
+def made_model(chars, ink=0.07):
+    """a letter model written by hand: chars {c: [(points, pressure or None, speed or None)]},
+    one variant each (x-heights)"""
+    lines = [{"format": "glassine-handwriting-letters", "version": 1, "inputs": "0" * 16, "samples": 3, "built": 0},
+             {"metrics": {"x_height": 1, "cap_height": 1.4, "ascender": 1.5, "descender": -0.5, "slant": 0,
+                          "letter_spacing": 0.15, "word_spacing": 0.7, "ink_width": ink, "x_height_per_line": 0,
+                          "base_below_guide": 0, "x_height_mm": 0, "pressure_median": 0.5, "speed_median": 4}},
+             {"spacing": {"letter": 0.15, "word": 0.7, "open": 0, "open0": 0, "pairs": [], "sides": [], "reach": [],
+                          "left_shapes": [], "right_shapes": []}}]
+    for c in sorted(chars):
+        sts = chars[c]
+        xs = [p[0] for st in sts for p in st[0]]
+        v = {"width": max(xs) - min(xs), "weight": 3, "members": 3, "use": 3, "lc": -1, "rc": -1, "ids": [],
+             "strokes": [[[round(x - min(xs), 4), round(y, 4)] for x, y in st[0]] for st in sts]}
+        if all(st[1] for st in sts):
+            v["pressure"] = [st[1] for st in sts]
+        if all(st[2] for st in sts):
+            v["speed"] = [st[2] for st in sts]
+        lines.append({"char": c, "samples": 3, "covered": True, "variants": [v], "slots": [0] * SLOTS})
+    return "\n".join(json.dumps(x) for x in lines) + "\n"
+
+
+def line_pts(angle, length=1.0, n=26, y0=0.5):
+    a = math.radians(angle)
+    return [(0.1 + length * i / (n - 1) * math.cos(a) + (length * math.cos(a) < 0) * length * -math.cos(a),
+             y0 + length * i / (n - 1) * math.sin(a)) for i in range(n)]
+
+
+def ramp(a, b):
+    return [round(a + (b - a) * q / (K - 1), 3) for q in range(K)]
+
+
+class StyleWidths(unittest.TestCase):
+    """Calligraphy and Brush on strokes made up for it (docs/recognizer.md, the font's styles)"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        (cls.e.store / "letters").mkdir(parents=True)
+        cls.e.run("samples", "stats")
+        (cls.e.store / "letters" / "model").write_text(made_model({
+            "-": [(line_pts(0), None, None)], "/": [(line_pts(35), None, None)], "\\": [(line_pts(125), None, None)],
+            "p": [(line_pts(0), ramp(0.5, 2.0), ramp(1, 1))], "s": [(line_pts(0), ramp(1, 1), ramp(0.5, 2.0))],
+            "n": [(line_pts(0), None, ramp(1, 1))]}))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def widths(self, style, nib=None):
+        out = self.e.run("font", "widths", "--style", style, *(["--nib", str(nib)] if nib is not None else [])).stdout
+        lines = [json.loads(x) for x in out.splitlines()]
+        return lines[0], {d["char"]: d["widths"] for d in lines[1:]}
+
+    def test_calligraphy_follows_direction(self):
+        head, w = self.widths("calligraphy")
+        lo, hi = head["nib_min"], head["nib_max"]
+        self.assertEqual(head["nib"], 35)
+        self.assertAlmostEqual(lo, 0.4 * 0.07, places=6)
+        self.assertAlmostEqual(hi, 0.154, places=6)
+        mid = len(w["-"]) // 2
+        self.assertAlmostEqual(w["/"][mid], lo, places=3)           # along the nib: the thinnest
+        self.assertAlmostEqual(w["\\"][mid], hi, places=3)          # across it: the widest
+        self.assertAlmostEqual(w["-"][mid], lo + (hi - lo) * math.sin(math.radians(35)), places=4)
+        _, w2 = self.widths("calligraphy", 0)
+        self.assertAlmostEqual(w2["-"][mid], lo, places=4)           # a level nib: thin across
+
+    def test_calligraphy_outlines(self):
+        """the outline's thickness across each stroke is the width the rule gives"""
+        from fontTools.ttLib import TTFont
+        ttf = self.e.dir / "c.ttf"
+        self.e.run("font", "build", "--style", "calligraphy", str(ttf))
+        f = TTFont(str(ttf))
+        head, w = self.widths("calligraphy")
+        cmap, glyf = f.getBestCmap(), f["glyf"]
+        for c, ang in (("-", 0), ("/", 35), ("\\", 125)):
+            g = glyf[glyf[cmap[ord(c)]].components[0].glyphName]
+            coords, _, flags = g.getCoordinates(glyf)
+            nx, ny = -math.sin(math.radians(ang)), math.cos(math.radians(ang))
+            on = [x * nx + y * ny for (x, y), fl in zip(coords, flags) if fl & 1]
+            self.assertAlmostEqual((max(on) - min(on)) / 500, w[c][len(w[c]) // 2], delta=0.008, msg=c)
+
+    def test_brush_follows_pressure_and_speed(self):
+        _, w = self.widths("brush")
+        n = len(w["p"])
+        a, b = n * 3 // 10, n * 6 // 10            # inside the tapers
+        self.assertGreater(w["p"][b], 1.2 * w["p"][a])              # pressed harder: wider
+        self.assertLess(w["s"][b], 0.85 * w["s"][a])                 # faster: thinner
+        self.assertAlmostEqual(w["n"][a], 1.3 * 0.07, delta=0.004)   # speed 1, no pressure
+        for c in "psn":
+            self.assertLess(w[c][0], 0.5 * w[c][a], c)              # the start tapers
+            self.assertLess(w[c][-1], 0.3 * w[c][a], c)             # the end more
+        _, r = self.widths("regular")
+        self.assertEqual(set(r["p"]), {0.07})
+
+    def test_brush_outlines(self):
+        """wider in the outline where the stroke was pressed harder"""
+        from fontTools.ttLib import TTFont
+        ttf = self.e.dir / "b.ttf"
+        self.e.run("font", "build", "--style", "brush", str(ttf))
+        f = TTFont(str(ttf))
+        glyf = f["glyf"]
+        g = glyf[glyf[f.getBestCmap()[ord("p")]].components[0].glyphName]
+        coords, _, flags = g.getCoordinates(glyf)
+        x0 = min(x for x, _ in coords)
+
+        def thick(u):
+            ys = [y for (x, y), fl in zip(coords, flags) if fl & 1 and abs(x - x0 - 500 * u) < 25]
+            return max(ys) - min(ys)
+        self.assertGreater(thick(0.62), 1.2 * thick(0.32))
+
+
+def signed_areas(f, gname):
+    """each contour's signed area (on- and off-curve points as a polygon; y up)"""
+    glyf = f["glyf"]
+    coords, ends, _ = glyf[gname].getCoordinates(glyf)
+    out, s = [], 0
+    for e in ends:
+        pts = coords[s:e + 1]
+        out.append(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1]
+                       for i in range(len(pts))) / 2)
+        s = e + 1
+    return out
+
+
+class Styles(unittest.TestCase):
+    """one family in three styles: everything but the outlines is the same (FR-034)"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(31)
+        ss = [written_sample("".join(ALNUM[i:i + 5]), rnd) for _ in range(3) for i in range(0, len(ALNUM), 5)]
+        ss += [written_sample("l", rnd) for _ in range(6)]
+        ss += [spaced_sample(w, rnd) for w in ("hello world", "lol ok", "the cat") * 3]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.out = cls.e.run("font", "install", "-n", "Test hand").stdout.strip().split("\t")
+        cls.status = cls.e.run("font", "status").stdout.splitlines()
+        cls.files = {f[1]: Path(f[2]) for f in (ln.split("\t") for ln in cls.status[1:]) if f[0] == "style"}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_installed_together(self):
+        self.assertEqual(self.out[:3], ["installed", "Test hand", "1"])
+        self.assertEqual(self.status[0].split("\t"), ["Test hand", "1", self.out[3]])
+        self.assertEqual(set(self.files), set(STYLES))
+        self.assertEqual(str(self.files["Regular"]), self.out[3])
+        self.assertEqual(self.status[-1], "nib\t35")
+        self.assertEqual(sorted(p.name for p in self.e.fonts.iterdir()),
+                         ["handwriting-1-brush.ttf", "handwriting-1-calligraphy.ttf", "handwriting-1.ttf"])
+
+    def test_valid_and_named(self):
+        from fontTools.ttLib import TTFont
+        ps = set()
+        for st, path in self.files.items():
+            f = TTFont(str(path), checkChecksums=2)
+            for t in f.keys():
+                if t != "GlyphOrder":
+                    f[t].compile(f)
+            n = f["name"]
+            ps.add(n.getDebugName(6))
+            if st == "Regular":
+                self.assertEqual((n.getDebugName(1), n.getDebugName(2), n.getDebugName(16)), ("Test hand", "Regular", None))
+            else:
+                self.assertEqual((n.getDebugName(1), n.getDebugName(2), n.getDebugName(16), n.getDebugName(17)),
+                                 ("Test hand " + st, "Regular", "Test hand", st))
+            self.assertEqual(n.getDebugName(6), "Testhand-" + st)
+            # every contour turns the same way, so overlapping pieces fill as one ink
+            for g in f.getGlyphOrder():
+                if f["glyf"][g].numberOfContours > 0:
+                    self.assertTrue(all(a < 0 for a in signed_areas(f, g)), (st, g))
+        self.assertEqual(len(ps), 3)
+
+    def test_same_but_the_outlines(self):
+        from fontTools.ttLib import TTFont
+        fs = {st: TTFont(str(p)) for st, p in self.files.items()}
+        r = fs["Regular"]
+        for st in ("Calligraphy", "Brush"):
+            f = fs[st]
+            self.assertEqual(f.getGlyphOrder(), r.getGlyphOrder())
+            for t in ("GPOS", "GSUB", "cmap"):
+                self.assertEqual(f.getTableData(t), r.getTableData(t), (st, t))
+            self.assertEqual({g: m[0] for g, m in f["hmtx"].metrics.items()}, {g: m[0] for g, m in r["hmtx"].metrics.items()})
+            for a in ("ascent", "descent", "lineGap"):
+                self.assertEqual(getattr(f["hhea"], a), getattr(r["hhea"], a))
+            for a in ("sTypoAscender", "sTypoDescender", "sTypoLineGap"):
+                self.assertEqual(getattr(f["OS/2"], a), getattr(r["OS/2"], a))
+            self.assertNotEqual(f.getTableData("glyf"), r.getTableData("glyf"))
+
+    def test_shaped_alike(self):
+        text = "lllll hello world, the cat lol ok"
+        out = {st: subprocess.run(["hb-shape", "--no-glyph-names", str(p), text], capture_output=True, text=True,
+                                  check=True).stdout for st, p in self.files.items()}
+        self.assertEqual(out["Calligraphy"], out["Regular"])
+        self.assertEqual(out["Brush"], out["Regular"])
+        # kerned: some advances aren't the glyphs' own
+        from fontTools.ttLib import TTFont
+        f = TTFont(str(self.files["Regular"]))
+        order = f.getGlyphOrder()
+        got = [tuple(int(v) for v in g.replace("=", " ").replace("+", " ").split()) for g in out["Regular"].strip()[1:-1].split("|")]
+        self.assertTrue(any(adv != f["hmtx"][order[gid]][0] for gid, _, adv in got))
+        self.assertGreater(len({gid for gid, _, _ in got[:5]}), 1)         # lllll: alternates
+
+    def test_regular_ignores_how_it_was_written(self):
+        """Regular's outlines are the pen's width alone: the profiles change nothing in it"""
+        model = self.e.model()
+        a = self.e.dir / "a.ttf"
+        self.e.run("font", "build", "-n", "Test hand", str(a))
+        lines = [json.loads(x) for x in model.splitlines()]
+        for d in lines:
+            for v in d.get("variants", []):
+                v.pop("pressure", None)
+                v.pop("speed", None)
+        (self.e.store / "letters" / "model").write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n")
+        try:
+            b = self.e.dir / "b.ttf"
+            self.e.run("font", "build", "-n", "Test hand", str(b))
+            self.assertEqual(a.read_bytes(), b.read_bytes())
+            c = self.e.dir / "c.ttf"
+            self.e.run("font", "build", "-n", "Test hand", "--style", "brush", str(c))
+            self.assertNotEqual(c.read_bytes(), self.files["Brush"].read_bytes())    # Brush does use them
+        finally:
+            (self.e.store / "letters" / "model").write_text(model)
+
+    def test_fontconfig_finds_the_family(self):
+        m = subprocess.run(["fc-match", "-f", "%{file}\n", "Test hand"], env=self.e.env, capture_output=True,
+                           text=True, check=True).stdout.strip()
+        self.assertEqual(m, str(self.files["Regular"]))
+        for st in ("Calligraphy", "Brush"):
+            m = subprocess.run(["fc-match", "-f", "%{file}\n", "Test hand:style=" + st], env=self.e.env,
+                               capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(m, str(self.files[st]))
+
+    def test_nib_update_remove(self):
+        e = Env()
+        try:
+            e.put(alphabet_samples(seed=32, per=3))
+            e.run("letters", "build", "-r")
+            e.run("font", "install", "--nib", "50")
+            st = e.run("font", "status").stdout.splitlines()
+            self.assertEqual(st[-1], "nib\t50")
+            self.assertEqual(e.status()["font-nib"], ["50"])
+            old = [Path(ln.split("\t")[2]) for ln in st[1:] if ln.startswith("style")]
+            c50 = old[1].read_bytes()
+            # an update keeps the angle; the files are new and the old ones gone
+            e.run("font", "install")
+            st = e.run("font", "status").stdout.splitlines()
+            self.assertEqual(st[-1], "nib\t50")
+            self.assertTrue(all(not p.exists() for p in old))
+            self.assertEqual(len(list(e.fonts.iterdir())), 3)
+            e.run("font", "install", "--nib", "20")
+            new = [Path(ln.split("\t")[2]) for ln in e.run("font", "status").stdout.splitlines()[1:] if ln.startswith("style")]
+            self.assertNotEqual(new[1].read_bytes()[200:], c50[200:])
+            for bad in ("91", "-1", "x"):
+                self.assertEqual(e.run("font", "install", "--nib", bad, check=False).returncode, 2)
+            self.assertEqual(e.run("font", "status", "--nib", "30", check=False).returncode, 2)
+            e.run("font", "remove")
+            self.assertTrue(all(not p.exists() for p in new))
+            self.assertFalse(e.fonts.exists())
+            self.assertEqual(e.run("font", "status").stdout.strip(), "none")
+        finally:
+            e.close()
+
+    def test_font_from_before_the_styles(self):
+        """a font installed before the styles (Regular alone) counts as changed; Update makes
+        all three and takes the old file"""
+        e = Env()
+        try:
+            e.put(alphabet_samples(seed=33, per=3))
+            e.run("letters", "build", "-r")
+            e.run("font", "install")
+            self.assertEqual(e.status()["font-letters"], ["same"])
+            rec = e.store / "letters" / "font"
+            first = rec.read_text().splitlines()[0]
+            for p in e.fonts.iterdir():
+                if p.name != "handwriting-1.ttf":
+                    p.unlink()
+            rec.write_text(first + "\n")
+            self.assertEqual(e.run("font", "status").stdout.splitlines(), [first, "style\tRegular\t" + first.split("\t")[2]])
+            self.assertEqual(e.status()["font-letters"], ["changed"])
+            self.assertNotIn("font-nib", e.status())
+            e.run("font", "install")
+            self.assertEqual(sorted(p.name for p in e.fonts.iterdir()),
+                             ["handwriting-2-brush.ttf", "handwriting-2-calligraphy.ttf", "handwriting-2.ttf"])
+            self.assertEqual(e.status()["font-letters"], ["same"])
+            e.run("samples", "erase")
             self.assertFalse(e.fonts.exists())
         finally:
             e.close()

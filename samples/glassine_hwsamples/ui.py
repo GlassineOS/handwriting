@@ -221,6 +221,8 @@ class UI:
         self.font = None                # the font page: {"status": cli.letters(), "model": fontview.parse()}
         self.font_busy = None           # "making" while the letter model and the font are built
         self.font_name = None           # a name chosen before the font is installed
+        self.font_style = "regular"     # the style the preview is drawn in (spec 003 FR-034)
+        self.font_nib = None            # a nib angle chosen before Install or Update (None: the font's)
         self.letters_job = None         # (done, total) while the letter model is built
         self.letters_loading = 0        # letters status reads running (off the worker)
         self.letters_then = []          # what waits for the build running now
@@ -1064,7 +1066,7 @@ class UI:
             return
         self.font_busy = "making"
         self.msg = ""
-        name, cli = self.font_name, self.cli
+        name, nib, cli = self.font_name, self.font_nib, self.cli
 
         def fin(r, err):
             self.busy -= 1
@@ -1073,7 +1075,7 @@ class UI:
                 print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
                 self.msg = "The font couldn’t be made: %s" % err
             else:
-                self.font_name = None
+                self.font_name = self.font_nib = None
                 self.msg = "Installed as %s. It is in the font lists of your apps." % r[0]
                 self.load_font()
             self.redraw()
@@ -1083,7 +1085,7 @@ class UI:
                 self.font_busy = None
                 return
             self.busy += 1
-            self.work.do(lambda: cli.font_install(name), fin)
+            self.work.do(lambda: cli.font_install(name, nib), fin)
         self.build_letters(then=built)
         self.redraw()
 
@@ -1095,6 +1097,32 @@ class UI:
     def remove_font(self):
         self.confirm = None
         self.run(self.cli.font_remove, lambda _: (setattr(self, "msg", "Your font was removed."), self.load_font()))
+
+    def set_font_style(self, style):
+        """the style the preview is drawn in (FR-034): only the preview changes"""
+        self.font_style = style
+        self.redraw()
+
+    def nib_installed(self):
+        """the nib angle the installed font was made with (the default without one)"""
+        st = (self.font or {}).get("status") or {}
+        return st.get("font_nib", fontview.NIB)
+
+    def nib_value(self):
+        """the nib angle the preview shows and Install or Update puts in"""
+        return self.font_nib if self.font_nib is not None else self.nib_installed()
+
+    def nib_step(self, d):
+        """the nib angle a step (5 degrees) smaller or larger, from 10 to 60"""
+        n = self.nib_value() + d * fontview.NIB_STEP
+        if fontview.NIB_MIN <= n <= fontview.NIB_MAX:
+            self.font_nib = n
+            self.redraw()
+
+    def nib_changed(self):
+        """an installed font whose nib angle the person changed: Update puts the new one in"""
+        st = (self.font or {}).get("status") or {}
+        return bool(st.get("font")) and self.font_nib is not None and self.font_nib != self.nib_installed()
 
     def font_shown_name(self):
         st = (self.font or {}).get("status") or {}
@@ -2374,7 +2402,7 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
            "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
            "best.pick", "font.none", "font.learning", "font.current", "font.installed", "font.outdated",
-           "font.rename", "font.relearn", "char.versions", "char.samples", "char.write", "char.pick", "char.missing",
+           "font.rename", "font.relearn", "font.style-calligraphy", "font.style-brush", "char.versions", "char.samples", "char.write", "char.pick", "char.missing",
            "char.sample", "char.redo", "char.delete", "char.version-samples",
            "neat.write", "neat.original", "neat.unlearned", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved",
            "others.list", "others.empty", "others.add", "others.rename", "others.taken", "others.long", "others.remove",
@@ -2431,12 +2459,18 @@ def demo_font(installed, state="current"):
                     (1.5 if tall else 1.0) * (0.5 - 0.5 * math.cos(i / 18 * 2 * math.pi)) + rnd.uniform(-.01, .01)]
                    for i in range(19)]
             k = (13, 6, 3)[v] if c == "t" else 2
+            # made-up pressure and speed along the stroke (Brush, FR-006): pressed harder on its
+            # way down, quicker on its way up
+            q = [i / 15 for i in range(16)]
             vs.append({"width": 0.6, "weight": 1, "members": 2, "use": k, "strokes": [pts],
-                       "ids": ["%016x" % (100 * (v + 1) + j) for j in range(k)]})
+                       "ids": ["%016x" % (100 * (v + 1) + j) for j in range(k)],
+                       "pressure": [[round(0.75 + 0.55 * math.sin(math.pi * u) + rnd.uniform(-.05, .05), 3) for u in q]],
+                       "speed": [[round(1.0 + 0.5 * math.cos(math.pi * u), 3) for u in q]]})
         d = {"char": c, "samples": n, "covered": n >= 3, "variants": vs}
         if c == "t":
             vs[0]["favourite"] = True
             vs[1]["strokes"] = [vs[1]["strokes"][0][:10], vs[1]["strokes"][0][9:]]
+            vs[1]["pressure"] = vs[1]["speed"] = [[1.0] * 16, [1.0] * 16]
             vs[2]["left_out"] = True
             d["slots"] = [0, 1, 0, 0, 1, 0, 0, 1, 0, 0]
         chars[c] = d
@@ -2446,6 +2480,8 @@ def demo_font(installed, state="current"):
     status = {"state": state, "covered": sum(1 for d in chars.values() if d["covered"]),
               "samples": 160, "chars": counts, "font": ("My handwriting", 3) if installed else None,
               "font_same": True}
+    if installed:
+        status["font_nib"] = fontview.NIB
     if state == "none":
         model = None
     return {"status": status, "model": model}
@@ -2584,8 +2620,10 @@ def demo(screen, voice="white"):
     elif sec == "font":
         ui.page = ui.tab = "learn"
         ui.best = "font"
-        ui.font = demo_font(sub in ("installed", "outdated", "rename", "relearn"),
+        ui.font = demo_font(sub in ("installed", "outdated", "rename", "relearn") or sub.startswith("style-"),
                             {"none": "none", "learning": "none", "outdated": "outdated"}.get(sub, "current"))
+        if sub.startswith("style-"):
+            ui.font_style = sub[6:]
         if sub == "learning":
             ui.letters_job = (36, 60)
         elif sub == "relearn":

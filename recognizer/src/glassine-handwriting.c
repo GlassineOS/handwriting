@@ -11,7 +11,7 @@
 //   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
 //   glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR]|status|show|marks|mark KIND CHAR ID...|samples CHAR
 //                                                                  the letter model (spec 003)
-//   glassine-handwriting font build [-n NAME] FILE|install [-n NAME]|remove|status
+//   glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] FILE|install [-n NAME] [--nib DEG]|remove|status|widths
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -1769,7 +1770,7 @@ static void usage(void)
 	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
 	      "       glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show | marks\n"
 	      "       glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | samples CHAR\n"
-	      "       glassine-handwriting font build [-n NAME] FILE | install [-n NAME] | remove | status\n"
+	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] FILE | install [-n NAME] [--nib DEG] | remove | status | widths [--style S] [--nib DEG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
 }
@@ -2131,6 +2132,10 @@ static int cmd_letters(int argc, char **argv)
 			free(b.s);
 			/* whether it was made from the letters as they are in the model now */
 			printf("font-letters\t%s\n", fcur ? "same" : "changed");
+			/* the nib angle its Calligraphy style was made with (FR-034) */
+			char sp[HW_STYLES][4096];
+			int nib;
+			if (hw_font_styles(sp, &nib) == 1 && nib >= 0) printf("font-nib\t%d\n", nib);
 		} else {
 			puts("font\t-");
 		}
@@ -2140,44 +2145,103 @@ static int cmd_letters(int argc, char **argv)
 	return 2;
 }
 
+/* a style by its name, in any case; -1 none */
+static int style_of(const char *s)
+{
+	for (int k = 0; k < HW_STYLES; k++) if (!strcasecmp(s, hw_font_style_names[k])) return k;
+	return -1;
+}
+
 static int cmd_font(int argc, char **argv)
 {
 	const char *sub = argc > 0 ? argv[0] : "status", *name = NULL, *file = NULL;
+	int style = -1, nib = -1;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) name = argv[++i];
+		else if (!strcmp(argv[i], "--style") && i + 1 < argc) { if ((style = style_of(argv[++i])) < 0) { usage(); return 2; } }
+		else if (!strcmp(argv[i], "--nib") && i + 1 < argc) {
+			char *e;
+			long d = strtol(argv[++i], &e, 10);
+			if (*e || e == argv[i] || d < HW_FONT_NIB_MIN || d > HW_FONT_NIB_MAX) { usage(); return 2; }
+			nib = (int)d;
+		}
 		else if (!file && !strcmp(sub, "build")) file = argv[i];
 		else { usage(); return 2; }
 	}
+	if (style >= 0 && strcmp(sub, "build") && strcmp(sub, "widths")) { usage(); return 2; }
+	if (nib >= 0 && strcmp(sub, "build") && strcmp(sub, "widths") && strcmp(sub, "install")) { usage(); return 2; }
 	if (!strcmp(sub, "install")) {
-		int r = hw_font_install(name, 1);
+		int r = hw_font_install(name, nib, 1);
 		if (r == -2) { fputs("glassine-handwriting: a font name is 1 to 63 bytes of UTF-8 without control characters\n", stderr); return 2; }
 		return r < 0 ? 1 : 0;
 	}
 	if (name && strcmp(sub, "build")) { usage(); return 2; }
 	if (!strcmp(sub, "remove")) return hw_font_remove() < 0 ? 1 : 0;
 	if (!strcmp(sub, "status")) {
-		char nm[256], path[4096];
+		char nm[256], path[4096], sp[HW_STYLES][4096];
 		unsigned v;
-		int f = hw_font_record(nm, sizeof nm, &v, path, sizeof path);
-		if (f < 0) return 1;
+		int f = hw_font_record(nm, sizeof nm, &v, path, sizeof path), fnib;
+		if (f < 0 || hw_font_styles(sp, &fnib) < 0) return 1;
 		if (!f) { puts("none"); return 0; }
 		struct buf b = { 0 };
 		besc(&b, nm);
 		bfmt(&b, "\t%u\t", v);
 		besc(&b, path);
+		/* then each style's file and the nib angle (FR-034) */
+		for (int k = 0; k < HW_STYLES; k++) {
+			if (!sp[k][0]) continue;
+			bfmt(&b, "\nstyle\t%s\t", hw_font_style_names[k]);
+			besc(&b, sp[k]);
+		}
+		if (fnib >= 0) bfmt(&b, "\nnib\t%d", fnib);
 		puts(b.s);
 		free(b.s);
 		return 0;
 	}
-	if (!strcmp(sub, "build") && file) {
+	if ((!strcmp(sub, "build") && file) || !strcmp(sub, "widths")) {
 		struct hw_letters L;
 		int r = hw_letters_load(&L);
 		if (r < 0) return 1;
 		if (!r) { fputs("glassine-handwriting: no letter model (letters build)\n", stderr); return 1; }
+		if (style < 0) style = HW_STYLE_REGULAR;
+		if (nib < 0) {
+			char sp[HW_STYLES][4096];
+			if (hw_font_styles(sp, &nib) != 1 || nib < 0) nib = HW_FONT_NIB_DEFAULT;
+		}
+		if (!strcmp(sub, "widths")) {
+			/* testing: the ink's width at each point of every variant's strokes, as the font
+			 * outlines them (docs/recognizer.md) */
+			double lo, hi;
+			hw_font_nib_widths(&L, &lo, &hi);
+			printf("{\"style\":\"%s\",\"nib\":%d,\"ink_width\":%.6g,\"nib_min\":%.6g,\"nib_max\":%.6g}\n",
+			       hw_font_style_names[style], nib, L.m.ink, lo, hi);
+			for (size_t i = 0; i < L.n; i++)
+				for (int k = 0; k < L.l[i].nvar; k++) {
+					const struct hw_variant *x = &L.l[i].var[k];
+					for (size_t j = 0; j < x->nstrokes; j++) {
+						double *w = malloc((x->s[j].n + 1) * sizeof *w);
+						if (!w) continue;
+						hw_font_widths(&L, x, j, style, nib, w);
+						char u[8];
+						u[hw_utf8_encode(L.l[i].cp, u)] = 0;
+						struct buf b = { 0 };
+						bstr(&b, "{\"char\":\"");
+						for (const char *c = u; *c; c++) bfmt(&b, *c == '"' || *c == '\\' ? "\\%c" : "%c", *c);
+						bfmt(&b, "\",\"variant\":%d,\"stroke\":%zu,\"widths\":[", k, j);
+						for (size_t q = 0; q < x->s[j].n; q++) bfmt(&b, "%s%.6g", q ? "," : "", w[q]);
+						bstr(&b, "]}");
+						puts(b.s);
+						free(b.s);
+						free(w);
+					}
+				}
+			hw_letters_free(&L);
+			return 0;
+		}
 		unsigned v = 0;
 		if (hw_font_record(NULL, 0, &v, NULL, 0) != 1) v = 0;
 		size_t len;
-		unsigned char *t = hw_font_build(&L, name ? name : HW_FONT_NAME_DEFAULT, v + 1, &len);
+		unsigned char *t = hw_font_build_style(&L, name ? name : HW_FONT_NAME_DEFAULT, v + 1, style, nib, &len);
 		hw_letters_free(&L);
 		if (!t) return 1;
 		FILE *f = fopen(file, "we");

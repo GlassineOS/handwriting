@@ -814,7 +814,7 @@ class Pages(Case):
                 x += g["ax"]
             lay = fontview.layout(model, text)
             self.assertEqual(len(lay), len(xs))
-            for (c, _, lx, _), hx in zip(lay, xs):
+            for (c, _, lx, _, _), hx in zip(lay, xs):
                 self.assertAlmostEqual(lx * fontview.XH, hx, delta=1.01, msg=(text, c))
         # Write these now: the first missing one's sheet, on Write more, written with care
         u.write_missing()
@@ -833,6 +833,80 @@ class Pages(Case):
         self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Notes hand", 2))
         u.remove_font()
         self.settle(u, lambda: u.font["status"]["font"] is None)
+
+    def test_font_styles(self):
+        """FR-034: the preview draws each style with the font's widths (the same numbers as
+        `font widths`); a changed nib angle turns Update on and goes into the font"""
+        from glassine_hwsamples import fontview
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
+        rnd = random.Random(5)
+        # written with a pressure and speed that change along each stroke (Brush follows them)
+        ss = [TL.written_sample(t, rnd) for t in ["abcde", "fghij"] * 3]
+        f = self.e.dir / "in.jsonl"
+        f.write_text("\n".join([json.dumps({"format": "glassine-handwriting-export", "version": 1})] +
+                               [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
+                                            "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
+        self.e.cli.run("samples", "import", str(f))
+        self.e.cli.run("letters", "build")
+        u = self.make()
+        u.wizard_done()
+        u.open_font()
+        self.settle(u, lambda: u.font is not None and not u.letters_loading and u.font["model"])
+        model = u.font["model"]
+        # the widths the preview draws are the font's, point for point
+        for style, nib in (("regular", 35), ("calligraphy", 35), ("calligraphy", 50), ("brush", 35)):
+            out = self.e.cli.run("font", "widths", "--style", style, "--nib", str(nib)).splitlines()
+            head = json.loads(out[0])
+            self.assertEqual((head["style"].lower(), head["nib"]), (style, nib))
+            if style == "calligraphy":
+                lo, hi = fontview.nib_widths(model)
+                self.assertAlmostEqual(lo, head["nib_min"], delta=1e-4)
+                self.assertAlmostEqual(hi, head["nib_max"], delta=1e-4)
+            n = 0
+            for ln in out[1:]:
+                r = json.loads(ln)
+                var = model["chars"][r["char"]]["variants"][r["variant"]]
+                got = fontview.widths(model, var, r["stroke"], style, nib)
+                self.assertEqual(len(got), len(r["widths"]), (style, r))
+                for a, b in zip(got, r["widths"]):
+                    self.assertAlmostEqual(a, b, delta=1e-4, msg=(style, nib, r["char"]))
+                n += 1
+            self.assertGreater(n, 10, style)
+        var = next(v for d in model["chars"].values() if d["covered"] for v in d["variants"])
+        self.assertTrue(var.get("pressure") and var.get("speed"))
+        self.assertGreater(len({round(w, 4) for w in fontview.widths(model, var, 0, "brush")}), 3)
+        # Install puts the chosen nib angle in; the status says which
+        self.assertEqual((u.font_style, u.nib_value()), ("regular", fontview.NIB))
+        u.set_font_style("calligraphy")
+        u.nib_step(1)
+        self.assertEqual(u.nib_value(), 40)
+        self.assertFalse(u.nib_changed())                    # nothing installed yet
+        u.make_font()
+        self.settle(u, lambda: not u.font_busy and u.font and u.font["status"]["font"])
+        self.assertEqual(u.font["status"]["font_nib"], 40)
+        self.assertIsNone(u.font_nib)
+        self.assertEqual(u.nib_value(), 40)
+        self.assertEqual(u.font_style, "calligraphy")        # the preview stays in it
+        # an installed, current font: Update waits for a change of the angle
+        self.assertFalse(u.nib_changed())
+        u.nib_step(-1)
+        u.nib_step(-1)
+        self.assertEqual(u.nib_value(), 30)
+        self.assertTrue(u.nib_changed())
+        u.nib_step(1)
+        u.nib_step(1)
+        self.assertFalse(u.nib_changed())                    # back where it is
+        for _ in range(20):
+            u.nib_step(1)
+        self.assertEqual(u.nib_value(), fontview.NIB_MAX)
+        for _ in range(20):
+            u.nib_step(-1)
+        self.assertEqual(u.nib_value(), fontview.NIB_MIN)
+        u.make_font()
+        self.settle(u, lambda: not u.font_busy and u.font["status"]["font"][1] == 2)
+        self.assertEqual(u.font["status"]["font_nib"], fontview.NIB_MIN)
+        self.assertFalse(u.nib_changed())
 
     def test_character_sheet(self):
         """spec 003 FR-031/FR-032 in the app: a key opens its sheet; a favourite, a version left
@@ -1656,6 +1730,50 @@ class Drawn(unittest.TestCase):
             self.assertEqual(drawn(u, size), usable)            # Put back
             self.assertIn(("In your font", "Left out"), pages.opened_rows(u))
             self.assertTrue(pages.opened_note(u.opened()[2]).startswith("Left out"))
+
+    def test_font_style_controls(self):
+        """FR-034: the style control where the design puts it (upright in the preview's head
+        row, turned above the keys), the nib stepper only for Calligraphy, Update on once the
+        angle of an installed font changes"""
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from glassine_hwsamples import pages, ui
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        import cairo
+
+        def taps(u, size):
+            return ui.paint(cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, *size)), u, *size)
+        for size in ((702, 936), (1248, 702)):
+            u = ui.demo("font.installed")
+            self.assertEqual(u.font_style, "regular")
+            self.assertIn("in all three styles", pages.font_status_line(u, pages.font_mode(u)))
+            hits = taps(u, size)
+            n = len(hits.boxes)
+            # the two styles not chosen are targets of one width, one segment apart, upper half
+            row = {}
+            for b in hits.boxes:
+                if b[3] == pages.BTN_H and b[1] < size[1] / 2 and b[2] < pages.STYLE_W / 2:
+                    row.setdefault(round(b[1]), []).append(b)
+            two = next(r for r in row.values() if len(r) == 2 and abs(r[0][2] - r[1][2]) < 1)
+            max(two, key=lambda b: b[0])[4]()
+            self.assertEqual(u.font_style, "brush")
+            # Brush: no stepper; Calligraphy: − and + (two more targets)
+            u.set_font_style("brush")
+            self.assertEqual(len(taps(u, size).boxes), n)
+            u.set_font_style("calligraphy")
+            self.assertEqual(len(taps(u, size).boxes), n + 2)
+            self.assertFalse(u.nib_changed())
+            upd = len(taps(u, size).boxes)
+            u.nib_step(1)
+            self.assertTrue(u.nib_changed())
+            self.assertEqual(len(taps(u, size).boxes), upd + 1)      # Update is on
+            self.assertEqual(pages.font_status_line(u, pages.font_mode(u)),
+                             "Installed, version 3. Update puts the new nib angle in it.")
+        # the demo screens of the styles
+        for s, st in (("font.style-calligraphy", "calligraphy"), ("font.style-brush", "brush")):
+            self.assertEqual(ui.demo(s).font_style, st)
 
     def test_font_preview_fits_its_box(self):
         """the font page's preview, in a hand with wide letters, stays inside its box"""
