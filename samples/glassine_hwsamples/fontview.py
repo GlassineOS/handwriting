@@ -5,6 +5,7 @@ variants and the spacing the font has, so the preview shows what the installed f
 Toolkit-free; pages.py draws the result."""
 
 import json
+import math
 
 TARGET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 MIN = 3                                  # usable samples for a character to be in the font
@@ -213,8 +214,9 @@ def strokes_desc(var):
 
 
 def layout(model, text):
-    """[(char, strokes or None, x, advance)] in x-heights, x from the left of the text, y up
-    from the baseline; strokes None: the system font draws the character. Spaced as the font
+    """[(char, strokes or None, x, advance, variant or None)] in x-heights, x from the left of
+    the text, y up from the baseline; strokes None: the system font draws the character
+    (variant: the model's, for its widths in a style). Spaced as the font
     spaces it (ttf.c): half the typical gap each side, each pair of neighbouring letters
     kerned to where the spacing places it, the space the word gap less the two sides beside it."""
     model = font_view(model)
@@ -225,23 +227,23 @@ def layout(model, text):
     for c, v in zip(text, variants(model, text)):
         if c == " ":
             adv = max(_round((word - gap) * XH), XH // 10)
-            out.append((c, [], x / XH, adv / XH))
+            out.append((c, [], x / XH, adv / XH, None))
             prev = None
         elif v is None:
             adv = round(0.7 * XH)
-            out.append((c, None, x / XH, adv / XH))
+            out.append((c, None, x / XH, adv / XH, None))
             prev = None
         else:
             var = model["chars"][c]["variants"][v]
             if prev is not None:
                 k = _kern(sp, prev[0], prev[1], c, var, gap)
                 x += k
-                pc, ps, px, pa = out[-1]
-                out[-1] = (pc, ps, px, pa + k / XH)
+                pc, ps, px, pa, pv = out[-1]
+                out[-1] = (pc, ps, px, pa + k / XH, pv)
             ox = gap / 2
             strokes = [[(ox + p[0], p[1]) for p in s] for s in var["strokes"]]
             adv = _round((var["width"] + gap) * XH)
-            out.append((c, strokes, x / XH, adv / XH))
+            out.append((c, strokes, x / XH, adv / XH, var))
             prev = (c, var)
         x += adv
     return out
@@ -268,3 +270,83 @@ def missing(model, chars=TARGET, status=None):
 def pending(model, chars=TARGET, status=None):
     """the characters written often enough that the next build puts them in"""
     return [c for c, n, ok in coverage(model, chars, status) if n >= MIN and not ok]
+
+
+# ---------------------------------------------------------------- the styles (FR-034)
+# The rules of ttf.c (hw_font_widths and the outlines; docs/recognizer.md), so the preview
+# draws a style as the font has it.
+
+STYLES = (("regular", "Regular"), ("calligraphy", "Calligraphy"), ("brush", "Brush"))
+NIB, NIB_MIN, NIB_MAX, NIB_STEP = 35, 10, 60, 5         # the nib angle's stepper, degrees
+PROFILE = 16                    # letters.h HW_LETTERS_PROFILE
+
+
+def nib_widths(model):
+    """Calligraphy's thinnest and widest line (x-heights; ttf.c hw_font_nib_widths)"""
+    ink = model["metrics"].get("ink_width", 0.07)
+    return min(max(0.4 * ink, 0.015), 0.05), min(max(2.2 * ink, 0.12), 0.26)
+
+
+def _prof_at(p, u):
+    f = u * (PROFILE - 1)
+    if f <= 0:
+        return p[0]
+    if f >= PROFILE - 1:
+        return p[PROFILE - 1]
+    i = int(f)
+    return p[i] + (f - i) * (p[i + 1] - p[i])
+
+
+def _profile(var, key, j):
+    p = var.get(key)
+    if isinstance(p, list) and len(p) == len(var.get("strokes") or []) and isinstance(p[j], list) and len(p[j]) == PROFILE:
+        return [float(v) for v in p[j]]
+    return None
+
+
+def _brush(model, var, j):
+    """ttf.c brush_widths"""
+    st = var["strokes"][j]
+    P, V = _profile(var, "pressure", j), _profile(var, "speed", j)
+    ink, h = model["metrics"].get("ink_width", 0.07), 1.0 / (PROFILE - 1)
+    ln = 0.0
+    for a, b in zip(st, st[1:]):        # summed as ttf.c does (sum() would round otherwise)
+        ln += math.hypot(b[0] - a[0], b[1] - a[1])
+    vend = sum(V[PROFILE - 1 - q] for q in range(4)) / 4 if V else 1
+    t0, t1 = min(0.22, 0.3 * ln), min(0.3, 0.4 * ln) * min(max(vend, 1), 2)
+    out, at = [], 0.0
+    for i, p in enumerate(st):
+        if i:
+            at += math.hypot(p[0] - st[i - 1][0], p[1] - st[i - 1][1])
+        u, f = (at / ln if ln > 0 else 0), 1.3
+        if P:
+            f *= min(max(_prof_at(P, u), 0.25), 3) ** 0.8
+        if V:
+            f *= min(max(_prof_at(V, u), 0.25), 4) ** (-0.3 if P else -0.55)
+            a, b = max(u - h, 0), min(u + h, 1)
+            dv = (_prof_at(V, b) - _prof_at(V, a)) / ((b - a) * ln) if ln > 0 else 0
+            f *= 1 - 0.12 * math.tanh(dv / 3)
+        f = min(max(f, 0.35), 2.4)
+        if ln >= 0.15:
+            f *= 0.25 + 0.75 * math.sqrt(min(1, at / t0))
+            f *= 0.12 + 0.88 * max(0.0, min(1, (ln - at) / t1)) ** 0.7
+        out.append(ink * max(f, 0.12))
+    return out
+
+
+def widths(model, var, j, style, nib=NIB):
+    """the ink's width (x-heights) at each point of the variant's stroke j in a style (ttf.c
+    hw_font_widths; Calligraphy from the stroke's direction at each point)"""
+    st = var["strokes"][j]
+    if style == "brush":
+        return _brush(model, var, j)
+    ink = model["metrics"].get("ink_width", 0.07)
+    if style != "calligraphy":
+        return [ink] * len(st)
+    lo, hi = nib_widths(model)
+    a, out = math.radians(nib), []
+    for i in range(len(st)):
+        p, q = st[max(i - 1, 0)], st[min(i + 1, len(st) - 1)]
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        out.append(lo + (hi - lo) * abs(math.sin(math.atan2(dy, dx) - a)) if dx or dy else lo + (hi - lo) * abs(math.sin(a)))
+    return out
