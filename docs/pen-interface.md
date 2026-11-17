@@ -27,6 +27,11 @@ line by line on them. Without them the lines are found from the writing. Each li
 then neatened word by word, so a long line costs a few short requests rather than one long
 one.
 
+Every reading has a writing area and the units with the output's px per millimetre: the app's
+area and guides when it set them, else ones found from the writing (docs/service.md, The
+writing's size), so a model that reads the ink's size reads an app's writing as it reads the
+keyboard's.
+
 **Privacy (FR-010).** Nothing reaches the service for a surface with neatening and text both
 off, nor for a private field: a purpose of `password` or `pin`, or the hints
 `sensitive_data` or `hidden_text`. A surface that becomes private is forgotten by the

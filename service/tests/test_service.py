@@ -57,6 +57,28 @@ def ink(n=4, seed=1, x0=10.0, y0=40.0, t0=1000):
     return out
 
 
+class AreaRules(unittest.TestCase):
+    """the area and units found from the writing (docs/service.md, The writing's size)"""
+
+    def test_rules(self):
+        from glassine_hwservice import area as A
+        # three strokes 10, 20 and 40 high (one 80 wide: its size is 20), one dipping below
+        st = [[[0, 50, 0], [2, 40, 10]], [[10, 30, 20], [90, 50, 30]], [[100, 20, 40], [101, 60, 50]]]
+        self.assertEqual(A.box(st), (0, 20, 101, 60))
+        self.assertEqual(A.line(st), 120)
+        self.assertEqual(A.base(st), 50)
+        self.assertEqual(A.text(A.box(st), A.line(st), A.base(st)), "0,20,101,60,120,0,50")
+        self.assertEqual(A.text((0, 0, 1, 1), 1.23456), "0,0,1,1,1.235,0")
+        self.assertEqual(A.box([[[5, 5, 0]]]), (5, 5, 6, 6))      # a dot: never an empty box
+        self.assertEqual(A.rate(st), 0)                            # too few steps
+        self.assertEqual(A.rate([[[i, 0, 5 * i] for i in range(9)]]), 200)
+        self.assertEqual(A.with_rate("device:6.25", 200), "device:6.25:200")
+        self.assertEqual(A.with_rate("device:6.25:120", 200), "device:6.25:120")
+        self.assertEqual(A.with_rate("device", 200), "device")
+        self.assertEqual(A.with_rate("em", 200), "em")
+        self.assertEqual(A.with_rate("device:6.25", 0), "device:6.25")
+
+
 class Service(unittest.TestCase):
     def setUp(self):
         self.e = TR.Env()
@@ -64,7 +86,12 @@ class Service(unittest.TestCase):
         self.proc = self.dir / "proc"
         self.sock = str(self.dir / "service")
         self.fake(os.getpid(), "/usr/bin/settings-test")
-        env = dict(self.e.env, GLASSINE_HANDWRITING_BIN=BIN, GLASSINE_HANDWRITING_FIT_OK="0",
+        # the recognizer behind a tee: the requests the service makes, for the tests to read
+        self.log = self.dir / "requests"
+        rec = self.dir / "recognizer"
+        rec.write_text('#!/bin/sh\ntee -a "%s" | exec "%s" "$@"\n' % (self.log, BIN))
+        rec.chmod(0o755)
+        env = dict(self.e.env, GLASSINE_HANDWRITING_BIN=str(rec), GLASSINE_HANDWRITING_FIT_OK="0",
                    GLASSINE_HWSERVICE_PROC=str(self.proc), PYTHONPATH=str(ROOT))
         self.env = env
         a, b = socket.socketpair()
@@ -221,15 +248,90 @@ class Service(unittest.TestCase):
         d.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
         c = d.start()
         c.ask("hello", "1", "org.example.Notes")
-        c.ask("begin", "s", "-", "normal", "device:6.25", "")
+        # the units with the pen's rate and the area the service documents (docs/service.md,
+        # The writing's size): the box of the writing, six median stroke sizes a line, the
+        # guide line at the median of the strokes' lowest points
+        from glassine_hwservice import area as A
         from glassine_hwservice.engine import points
+        from glassine_hwservice.pen import lines
+        self.assertEqual(len(lines(dict(enumerate(st)))), 1)
+        c.ask("begin", "s", "-", "normal", "device:6.25:143", "")
         for s in st:
             c.ask("stroke", "s", points(s))
+        c.ask("area", "s", A.text(A.box(st), A.line(st), A.base(st)))
         c.ask("read", "s", "5")
         r = c.ask("confirm", "s", "picked", TR.esc(text))
         c.close()
         self.assertEqual(r[2], "ok")
         self.assertEqual(r[3], mine[0]["id"])
+
+    def requests(self):
+        return [ln.split("\t") for ln in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def sessions(self):
+        """per session begun: its units and the requests on it, in order"""
+        out = []
+        for f in self.requests():
+            if f[0] == "begin":
+                out.append({"name": f[2], "units": f[5], "asks": []})
+            elif len(f) > 2 and out and f[0] in ("stroke", "area", "read", "neaten", "confirm"):
+                cur = [x for x in out if x["name"] == f[2]][-1]
+                cur["asks"].append(f[0] if f[0] != "area" else ("area", f[3]))
+        return out
+
+    def assert_every_read_has_an_area(self, units):
+        ss = self.sessions()
+        self.assertTrue(ss)
+        for x in ss:
+            self.assertEqual(x["units"], units, x["name"])
+            for i, a in enumerate(x["asks"]):
+                if a in ("read", "neaten", "confirm"):
+                    self.assertTrue(any(isinstance(b, tuple) for b in x["asks"][:i]), "%s: %s before an area" % (x["name"], a))
+        return [b[1] for x in ss for b in x["asks"] if isinstance(b, tuple)]
+
+    def test_area_and_units_without_an_ink_area(self):
+        """no ink area: every session gets an area found from the writing, and the units
+        with the px per mm and the pen's rate (7 ms a point: 143 points a second)"""
+        self.pen_send(op="surface", s=11, sandbox="org.example.Notes", pid=0)
+        self.pen_send(op="set", s=11, neaten=True, strength=0.5, text=True, units="device:6.25")
+        st = ink(4, seed=3)
+        self.write(11, st)
+        self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
+        from glassine_hwservice import area as A
+        areas = self.assert_every_read_has_an_area("device:6.25:143")
+        self.assertIn(A.text(A.box(st), A.line(st), A.base(st)), areas)
+        for a in areas:
+            f = [float(v) for v in a.split(",")]
+            self.assertTrue(f[2] > f[0] and f[3] > f[1] and f[4] > 0 and f[5] == 0, a)
+
+    def test_area_of_the_ink_area(self):
+        """an ink area with ruled lines: that box, its line and its first guide line"""
+        self.pen_send(op="surface", s=12, sandbox="org.example.Notes", pid=0)
+        self.pen_send(op="set", s=12, neaten=True, strength=0.5, text=True, units="device:6.25",
+                      box=[0, 0, 600, 400], guides=[60.5, 45])
+        self.write(12, ink(4, seed=4))
+        self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
+        self.assertEqual(set(self.assert_every_read_has_an_area("device:6.25:143")), {"0,0,600,400,60.5,0,45"})
+        # an ink area without ruled lines: that box, a line found from the writing
+        self.pen_send(op="surface", s=13, sandbox="org.example.Notes", pid=0)
+        self.pen_send(op="set", s=13, text=True, units="device:6.25", box=[10, 20, 700, 500])
+        self.write(13, ink(3, seed=6))
+        self.pen_events(lambda o: any(m["op"] == "candidates" and m["s"] == 13 for m in o))
+        a13 = [b[1] for x in self.sessions() if x["name"] == "p13" for b in x["asks"] if isinstance(b, tuple)]
+        self.assertTrue(a13 and all(a.startswith("10,20,700,500,") for a in a13), a13)
+
+    def test_service_read_has_an_area(self):
+        """the service interface: an area found from the writing, else the one given"""
+        a = self.app("org.example.A")
+        st = ink(3, seed=7)
+        self.assertIn("candidates", a("read", strokes=st, count=1, units="device:6.25")["result"])
+        from glassine_hwservice import area as A
+        self.assertEqual(self.assert_every_read_has_an_area("device:6.25:143"),
+                         [A.text(A.box(st), A.line(st), A.base(st))])
+        self.log.write_text("")
+        a("read", strokes=st, count=1, units="device:6.25", area={"box": [0, 0, 400, 200], "line": 80, "base": 60})
+        self.assertEqual(self.assert_every_read_has_an_area("device:6.25:143"), ["0,0,400,200,80,0,60"])
+        self.assertEqual(a("read", strokes=st, area={"box": [0, 0, 0, 0], "line": 80})["error"]["code"], "bad-request")
 
     def test_nothing_sent_when_off_or_private(self):
         self.pen_send(op="surface", s=3, sandbox="org.example.Draw", pid=0)
