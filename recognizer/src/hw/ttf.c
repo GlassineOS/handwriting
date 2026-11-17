@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The handwriting font (spec 003 FR-009 to FR-011): the letter model as a TrueType font.
-// Every stroke is outlined in the pen's width as pieces of one direction (a quadrilateral
-// per segment, a disc at the ends, a wedge or a disc where it turns) that overlap; the
-// non-zero fill makes their union. Variants are unencoded glyphs a contextual-alternates
+// The handwriting font (spec 003 FR-009 to FR-011, FR-034): the letter model as a TrueType
+// font, in three styles. Every stroke is outlined as convex pieces of one direction that
+// overlap, so the non-zero fill makes their union and overlapping strokes draw as one ink:
+// Regular in the pen's width (a quadrilateral per segment, a disc at the ends, a wedge or a
+// disc where it turns), Calligraphy as a broad nib swept along it (per segment the hull of the
+// nib at both ends, rounded by the thinnest line), Brush with a width per point (per segment
+// the hull of the discs at both ends). Variants are unencoded glyphs a contextual-alternates
 // lookup ('calt', on by default in text shaping) picks along the text (letters.h,
-// hw_letters_step).
+// hw_letters_step); everything but the outlines is the same in the three styles.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -161,7 +164,213 @@ static void outline_stroke(struct glyph *g, const struct hw_lstroke *s, double o
 	free(x); free(y);
 }
 
-static void glyph_of(struct glyph *g, const struct hw_variant *v, double gap, double ink)
+/* ---------------------------------------------------------------- the styles (FR-034) */
+
+const char *const hw_font_style_names[HW_STYLES] = { "Regular", "Calligraphy", "Brush" };
+
+/* Calligraphy: a broad nib at one angle, its line between CAL_MIN and CAL_MAX times the ink
+ * width (within the x-height bounds), the widest across the nib, the thinnest along it */
+#define CAL_MIN 0.4
+#define CAL_MAX 2.2
+void hw_font_nib_widths(const struct hw_letters *L, double *wmin, double *wmax)
+{
+	double ink = L->m.ink;
+	*wmin = fmin(fmax(CAL_MIN * ink, 0.015), 0.05);
+	*wmax = fmin(fmax(CAL_MAX * ink, 0.12), 0.26);
+}
+
+/* Brush: w = ink * clamp(GAIN * fp * fv * fa, LO, HI) * taper (docs/recognizer.md):
+ * fp = P^0.8 the pressure, fv = V^-0.3 the speed (V^-0.55 with no pressure), fa = 1 -
+ * 0.12 tanh(dV/ds / 3) the acceleration (ds in x-heights), P and V relative to the person's
+ * median (1 where the variant has no profile); the taper at the start over min(0.22, 0.3 L)
+ * x-heights to 0.25, at the end over min(0.3, 0.4 L) times the speed there (1 to 2: a quick
+ * flick tapers longer) to 0.12; a stroke shorter than BR_DOT keeps its body; never below
+ * BR_FLOOR times the ink. */
+#define BR_GAIN 1.3
+#define BR_LO 0.35
+#define BR_HI 2.4
+#define BR_DOT 0.15
+#define BR_FLOOR 0.12
+
+static double prof_at(const double *p, double u)
+{
+	enum { K = HW_LETTERS_PROFILE };
+	double f = u * (K - 1);
+	if (f <= 0) return p[0];
+	if (f >= K - 1) return p[K - 1];
+	int i = (int)f;
+	return p[i] + (f - i) * (p[i + 1] - p[i]);
+}
+
+static void brush_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, double *w)
+{
+	enum { K = HW_LETTERS_PROFILE };
+	const struct hw_lstroke *s = &v->s[j];
+	const double *P = v->pres ? v->pres + j * K : NULL, *V = v->speed ? v->speed + j * K : NULL;
+	double ink = L->m.ink, len = 0, h = 1.0 / (K - 1);
+	for (size_t i = 1; i < s->n; i++) len += hypot(s->x[i] - s->x[i - 1], s->y[i] - s->y[i - 1]);
+	double vend = 1;
+	if (V) { vend = 0; for (int q = 0; q < 4; q++) vend += V[K - 1 - q] / 4; }
+	double t0 = fmin(0.22, 0.3 * len), t1 = fmin(0.3, 0.4 * len) * fmin(fmax(vend, 1), 2);
+	double at = 0;
+	for (size_t i = 0; i < s->n; i++) {
+		if (i) at += hypot(s->x[i] - s->x[i - 1], s->y[i] - s->y[i - 1]);
+		double u = len > 0 ? at / len : 0, f = BR_GAIN;
+		if (P) f *= pow(fmin(fmax(prof_at(P, u), 0.25), 3), 0.8);
+		if (V) {
+			f *= pow(fmin(fmax(prof_at(V, u), 0.25), 4), P ? -0.3 : -0.55);
+			double dv = len > 0 ? (prof_at(V, fmin(u + h, 1)) - prof_at(V, fmax(u - h, 0))) / ((fmin(u + h, 1) - fmax(u - h, 0)) * len) : 0;
+			f *= 1 - 0.12 * tanh(dv / 3);
+		}
+		f = fmin(fmax(f, BR_LO), BR_HI);
+		if (len >= BR_DOT) {
+			f *= 0.25 + 0.75 * sqrt(fmin(1, at / t0));
+			f *= 0.12 + 0.88 * pow(fmin(1, (len - at) / t1), 0.7);
+		}
+		w[i] = ink * fmax(f, BR_FLOOR);
+	}
+}
+
+void hw_font_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, int style, double nib, double *w)
+{
+	const struct hw_lstroke *s = &v->s[j];
+	if (style == HW_STYLE_BRUSH) { brush_widths(L, v, j, w); return; }
+	if (style != HW_STYLE_CALLIGRAPHY) { for (size_t i = 0; i < s->n; i++) w[i] = L->m.ink; return; }
+	double lo, hi, a = nib * M_PI / 180;
+	hw_font_nib_widths(L, &lo, &hi);
+	for (size_t i = 0; i < s->n; i++) {
+		size_t i0 = i ? i - 1 : 0, i1 = i + 1 < s->n ? i + 1 : i;
+		double dx = s->x[i1] - s->x[i0], dy = s->y[i1] - s->y[i0];
+		w[i] = dx || dy ? lo + (hi - lo) * fabs(sin(atan2(dy, dx) - a)) : lo + (hi - lo) * fabs(sin(a));
+	}
+}
+
+/* an arc of radius r around (cx, cy) from angle a0 to a1 (a1 >= a0, counter-clockwise):
+ * its on-curve ends with quadratic pieces of at most 45 degrees between (one point when it
+ * has no sweep) */
+static void arc(struct glyph *g, double cx, double cy, double r, double a0, double a1)
+{
+	gpt(g, cx + r * cos(a0), cy + r * sin(a0), 1);
+	int k = (int)ceil((a1 - a0) / (M_PI / 4) - 1e-9);
+	if (k < 1) return;
+	double st = (a1 - a0) / k, ro = r / cos(st / 2);
+	for (int i = 0; i < k; i++) {
+		double m = a0 + (i + 0.5) * st;
+		gpt(g, cx + ro * cos(m), cy + ro * sin(m), 0);
+		gpt(g, cx + r * cos(a0 + (i + 1) * st), cy + r * sin(a0 + (i + 1) * st), 1);
+	}
+}
+
+/* the convex hull of up to 4 points, rounded by r (their discs' hull): one contour */
+static void round_hull(struct glyph *g, double (*c)[2], int n, double r)
+{
+	/* the hull, counter-clockwise (monotone chain), points closer than half a unit as one */
+	for (int a = 1; a < n; a++)
+		for (int b = a; b > 0 && (c[b][0] < c[b - 1][0] || (c[b][0] == c[b - 1][0] && c[b][1] < c[b - 1][1])); b--) {
+			double t0 = c[b][0], t1 = c[b][1]; c[b][0] = c[b - 1][0]; c[b][1] = c[b - 1][1]; c[b - 1][0] = t0; c[b - 1][1] = t1;
+		}
+	double h[10][2];
+	int m = 0;
+	for (int pass = 0; pass < 2; pass++) {
+		int base = m;
+		for (int q = 0; q < n; q++) {
+			const double *p = pass ? c[n - 1 - q] : c[q];
+			while (m - base >= 2) {
+				double *o = h[m - 2], *a = h[m - 1];
+				if ((a[0] - o[0]) * (p[1] - o[1]) - (a[1] - o[1]) * (p[0] - o[0]) > 1e-9) break;
+				m--;
+			}
+			h[m][0] = p[0]; h[m][1] = p[1]; m++;
+		}
+		m--;    /* its last point is the other half's first */
+	}
+	int k = 0;
+	for (int i = 0; i < m; i++) if (!k || hypot(h[i][0] - h[k - 1][0], h[i][1] - h[k - 1][1]) > 0.5) { h[k][0] = h[i][0]; h[k][1] = h[i][1]; k++; }
+	if (k > 1 && hypot(h[0][0] - h[k - 1][0], h[0][1] - h[k - 1][1]) <= 0.5) k--;
+	if (k < 2) { disc(g, c[0][0], c[0][1], r); return; }
+	int s = g->np;
+	for (int i = 0; i < k; i++) {
+		const double *p = h[(i + k - 1) % k], *q = h[i], *nx = h[(i + 1) % k];
+		/* outward normals of the edge into q and out of it (a counter-clockwise hull: to the right) */
+		double ai = atan2(-(q[0] - p[0]), q[1] - p[1]), ao = atan2(-(nx[0] - q[0]), nx[1] - q[1]);
+		while (ao < ai - 1e-9) ao += 2 * M_PI;
+		arc(g, q[0], q[1], r, ai, ao);
+	}
+	gclose(g, s);
+}
+
+/* the hull of two discs (a, ra) and (b, rb): one contour */
+static void disc_pair(struct glyph *g, double ax, double ay, double ra, double bx, double by, double rb)
+{
+	double d = hypot(bx - ax, by - ay);
+	if (d <= fabs(ra - rb) + 0.5) { if (ra >= rb) disc(g, ax, ay, ra); else disc(g, bx, by, rb); return; }
+	double f = atan2(by - ay, bx - ax), be = acos((ra - rb) / d);
+	int s = g->np;
+	/* a's far side from f + be round to f - be + 2 pi, then b's near side from f - be to f + be */
+	arc(g, ax, ay, ra, f + be, f - be + 2 * M_PI);
+	arc(g, bx, by, rb, f - be, f + be);
+	gclose(g, s);
+}
+
+/* Douglas-Peucker on font units with the radius as a third coordinate */
+static void simplify3(const double *x, const double *y, const double *r, size_t a, size_t b, double tol, char *keep)
+{
+	if (b <= a + 1) return;
+	double dx = x[b] - x[a], dy = y[b] - y[a], l = hypot(dx, dy), best = -1, la = 0, lt = 0;
+	size_t bi = a;
+	for (size_t i = a + 1; i <= b; i++) lt += hypot(x[i] - x[i - 1], y[i] - y[i - 1]);
+	for (size_t i = a + 1; i < b; i++) {
+		la += hypot(x[i] - x[i - 1], y[i] - y[i - 1]);
+		double d = l > 0 ? fabs(dy * (x[i] - x[a]) - dx * (y[i] - y[a])) / l : hypot(x[i] - x[a], y[i] - y[a]);
+		double dr = fabs(r[i] - (r[a] + (lt > 0 ? la / lt : 0) * (r[b] - r[a])));
+		if (dr > d) d = dr;
+		if (d > best) { best = d; bi = i; }
+	}
+	if (best > tol) { keep[bi] = 1; simplify3(x, y, r, a, bi, tol, keep); simplify3(x, y, r, bi, b, tol, keep); }
+}
+
+/* a stroke in Calligraphy or Brush: its points in font units, the radius per point (Brush)
+ * or the thinnest line's (Calligraphy, with the nib's half span hx, hy) */
+static void outline_styled(struct glyph *g, const struct hw_letters *L, const struct hw_variant *v, size_t j, double ox,
+			   int style, double nib)
+{
+	const struct hw_lstroke *s = &v->s[j];
+	if (!s->n) return;
+	double *x = malloc(s->n * sizeof *x), *y = malloc(s->n * sizeof *y), *r = malloc(s->n * sizeof *r);
+	char *keep = calloc(s->n, 1);
+	if (!x || !y || !r || !keep) { free(x); free(y); free(r); free(keep); return; }
+	double lo = 0, hi = 0, a = nib * M_PI / 180;
+	if (style == HW_STYLE_CALLIGRAPHY) {
+		hw_font_nib_widths(L, &lo, &hi);
+		for (size_t i = 0; i < s->n; i++) r[i] = 0;
+	} else {
+		hw_font_widths(L, v, j, style, nib, r);
+		for (size_t i = 0; i < s->n; i++) r[i] = fmax(r[i] * XH / 2, 3);
+	}
+	for (size_t i = 0; i < s->n; i++) { x[i] = ox + s->x[i] * XH; y[i] = s->y[i] * XH; }
+	keep[0] = keep[s->n - 1] = 1;
+	simplify3(x, y, r, 0, s->n - 1, 2.5, keep);
+	size_t m = 0;
+	for (size_t i = 0; i < s->n; i++)
+		if (keep[i] && (!m || hypot(x[i] - x[m - 1], y[i] - y[m - 1]) > 0.5)) { x[m] = x[i]; y[m] = y[i]; r[m] = r[i]; m++; }
+	free(keep);
+	if (style == HW_STYLE_CALLIGRAPHY) {
+		/* the nib from its centre: half its span along the nib's angle, rounded by the thinnest line */
+		double hx = (hi - lo) / 2 * XH * cos(a), hy = (hi - lo) / 2 * XH * sin(a), rr = fmax(lo * XH / 2, 3);
+		for (size_t i = 0; i < (m > 1 ? m - 1 : 1); i++) {
+			size_t k = m > 1 ? i + 1 : i;
+			double c[4][2] = { { x[i] + hx, y[i] + hy }, { x[i] - hx, y[i] - hy }, { x[k] + hx, y[k] + hy }, { x[k] - hx, y[k] - hy } };
+			round_hull(g, c, 4, rr);
+		}
+	} else {
+		if (m == 1) disc(g, x[0], y[0], r[0]);
+		for (size_t i = 0; i + 1 < m; i++) disc_pair(g, x[i], y[i], r[i], x[i + 1], y[i + 1], r[i + 1]);
+	}
+	free(x); free(y); free(r);
+}
+
+static void glyph_of(struct glyph *g, const struct hw_letters *L, const struct hw_variant *v, double gap, double ink,
+		     int style, double nib)
 {
 	memset(g, 0, sizeof *g);
 	double r = ink * XH / 2;
@@ -169,7 +378,9 @@ static void glyph_of(struct glyph *g, const struct hw_variant *v, double gap, do
 	/* the side bearings: half the person's typical gap each side, between the pen's centre
 	 * lines as the spacing measures it (GPOS kerns each pair to where the spacing places it) */
 	double ox = gap / 2 * XH;
-	for (size_t j = 0; j < v->nstrokes; j++) outline_stroke(g, &v->s[j], ox, r);
+	for (size_t j = 0; j < v->nstrokes; j++)
+		if (style == HW_STYLE_REGULAR) outline_stroke(g, &v->s[j], ox, r);
+		else outline_styled(g, L, v, j, ox, style, nib);
 	g->adv = (int)lround((v->width + gap) * XH);
 }
 
@@ -437,19 +648,27 @@ static int gl_at(int i, int s, void *ctx)
 	return 1 + i * HW_LETTERS_SLOTS + s;
 }
 
-static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len);
+static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, int style, double nib,
+				 size_t *len);
 
 /* the font of the letters as the person marked them: variants left out are not in it */
-unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len)
+unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name, unsigned version, int style,
+				   double nib, size_t *len)
 {
 	struct hw_letters V;
-	if (hw_letters_view(L, &V)) return NULL;
-	unsigned char *r = font_build(&V, name, version, len);
+	if (style < 0 || style >= HW_STYLES || hw_letters_view(L, &V)) return NULL;
+	unsigned char *r = font_build(&V, name, version, style, nib, len);
 	hw_letters_view_free(&V);
 	return r;
 }
 
-static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len)
+unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len)
+{
+	return hw_font_build_style(L, name, version, HW_STYLE_REGULAR, HW_FONT_NIB_DEFAULT, len);
+}
+
+static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, int style, double nib,
+				 size_t *len)
 {
 	enum { S = HW_LETTERS_SLOTS };
 	int nl = 0;
@@ -473,7 +692,7 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	if (sp < XH / 10) sp = XH / 10;
 	for (int s2 = 0; s2 < S; s2++) G[gl_at(0, s2, NULL)].adv = sp;
 	for (int i = 0; i < nl; i++) {
-		for (int v = 0; v < ls[i]->nvar; v++) glyph_of(&G[outl[i] + v], &ls[i]->var[v], gap, ink);
+		for (int v = 0; v < ls[i]->nvar; v++) glyph_of(&G[outl[i] + v], L, &ls[i]->var[v], gap, ink, style, nib);
 		for (int s2 = 0; s2 < S; s2++) ref[gl_at(i + 1, s2, NULL)] = outl[i] + (ls[i]->slot[s2] < ls[i]->nvar ? ls[i]->slot[s2] : 0);
 	}
 	for (int i = 0; i < ngl; i++) if (ref[i] < 0) glyph_box(&G[i]);
@@ -501,9 +720,25 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	if (fxmin > fxmax) fxmin = fymin = fxmax = fymax = 0;
 	if (minlsb == 0x7fff) minlsb = minrsb = xmaxext = 0;
 	double r = ink * XH / 2;
+	/* the line's metrics are the Regular style's in all three, so lines stand the same in each
+	 * (FR-034); the clipping box (OS/2 win) is each style's own */
+	int rymin = fymin, rymax = fymax;
+	if (style != HW_STYLE_REGULAR) {
+		rymin = 0x7fff; rymax = -0x7fff;
+		for (int i = 0; i < nl; i++)
+			for (int v = 0; v < ls[i]->nvar; v++) {
+				struct glyph q;
+				glyph_of(&q, L, &ls[i]->var[v], gap, ink, HW_STYLE_REGULAR, nib);
+				glyph_box(&q);
+				if (q.nc && q.ymin < rymin) rymin = q.ymin;
+				if (q.nc && q.ymax > rymax) rymax = q.ymax;
+				free(q.p); free(q.ends);
+			}
+		if (rymin > rymax) rymin = rymax = 0;
+	}
 	int asc = (int)lround(fmax(L->m.asc, L->m.cap) * XH + r), desc = (int)lround(L->m.desc * XH - r);
-	if (asc < fymax) asc = fymax;
-	if (desc > fymin) desc = fymin;
+	if (asc < rymax) asc = rymax;
+	if (desc > rymin) desc = rymin;
 	int gapline = (int)lround(0.15 * (asc - desc));
 
 	struct bb t[12] = { 0 }, f = { 0 };
@@ -591,7 +826,9 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	/* head */
 	{
 		struct bb *h = &t[HEAD];
-		u32(h, 0x00010000); u32(h, (uint32_t)version << 16); u32(h, 0); u32(h, 0x5F0F3CF5);
+		/* the revision: the version, a step lower in Calligraphy and Brush, so Regular is the
+		 * family's face where nothing asks for a style (fontconfig prefers the newest) */
+		u32(h, 0x00010000); u32(h, ((uint32_t)version << 16) - (style != HW_STYLE_REGULAR)); u32(h, 0); u32(h, 0x5F0F3CF5);
 		u16(h, 0x000B); u16(h, UPEM);
 		/* created, modified: the newest sample's time (seconds since 1904) */
 		uint64_t t1904 = (uint64_t)(L->built > 0 ? L->built : 0) + 2082844800ULL;
@@ -645,25 +882,33 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	}
 	/* name */
 	{
-		char ps[64], uniq[160], ver[32], full[128];
+		/* Regular: the family alone; Calligraphy and Brush, styles beyond the four a family
+		 * of name ID 1 and 2 holds, as their own family "NAME STYLE" (Regular) and in the
+		 * typographic family NAME (IDs 16, 17), with a PostScript name of their own */
+		const char *sty = hw_font_style_names[style];
+		char ps[64], uniq[160], ver[32], full[160], fam[160];
 		int pn = 0;
 		for (const char *p = name; *p && pn < 40; p++)
 			if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9')) ps[pn++] = *p;
 		ps[pn] = 0;
 		if (!pn) snprintf(ps, sizeof ps, "Handwriting");
-		snprintf(ps + strlen(ps), sizeof ps - strlen(ps), "-Regular");
+		snprintf(ps + strlen(ps), sizeof ps - strlen(ps), "-%s", sty);
 		snprintf(ver, sizeof ver, "Version %u.000", version);
 		snprintf(uniq, sizeof uniq, "%s;%u;%s", ps, version, L->inputs);
-		snprintf(full, sizeof full, "%s", name);
+		if (style == HW_STYLE_REGULAR) snprintf(fam, sizeof fam, "%s", name);
+		else snprintf(fam, sizeof fam, "%s %s", name, sty);
+		snprintf(full, sizeof full, "%s", fam);
 		struct bb recs = { 0 }, str = { 0 };
-		name_rec(&recs, &str, 1, name);
+		name_rec(&recs, &str, 1, fam);
 		name_rec(&recs, &str, 2, "Regular");
 		name_rec(&recs, &str, 3, uniq);
 		name_rec(&recs, &str, 4, full);
 		name_rec(&recs, &str, 5, ver);
 		name_rec(&recs, &str, 6, ps);
+		int nrec = 6;
+		if (style != HW_STYLE_REGULAR) { name_rec(&recs, &str, 16, name); name_rec(&recs, &str, 17, sty); nrec = 8; }
 		struct bb *h = &t[NAME];
-		u16(h, 0); u16(h, 6); u16(h, (unsigned)(6 + recs.n));
+		u16(h, 0); u16(h, (unsigned)nrec); u16(h, (unsigned)(6 + recs.n));
 		bgrow(h, recs.n + str.n);
 		if (!h->bad && recs.d && str.d) { memcpy(h->d + h->n, recs.d, recs.n); h->n += recs.n; memcpy(h->d + h->n, str.d, str.n); h->n += str.n; }
 		free(recs.d); free(str.d);

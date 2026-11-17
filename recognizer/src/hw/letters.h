@@ -10,13 +10,14 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 8      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 9      /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
 #define HW_LETTERS_VARIANTS 5   /* variants per character at most (FR-006) */
 #define HW_LETTERS_SLOTS 10     /* the font's cycle of variants along the text (FR-010): a tenth each */
 #define HW_LETTERS_WAY_SHARE 10 /* a way of writing a character gives a variant from 1/this of its samples */
+#define HW_LETTERS_PROFILE 16   /* points per stroke of a variant's pressure and speed profiles (FR-006) */
 #define HW_FONT_NAME_DEFAULT "My handwriting"
 #define HW_FONT_NAME_MAX 63     /* bytes of UTF-8 */
 
@@ -70,6 +71,10 @@ struct hw_variant {
 	char (*ids)[17];
 	size_t nstrokes;
 	struct hw_lstroke *s;
+	/* how its samples were written (FR-006, the Brush style FR-034): per stroke
+	 * HW_LETTERS_PROFILE values along its normalised arc length, the averaged pressure and
+	 * speed, 1 the person's median; NULL when none of its samples gave one */
+	double *pres, *speed;
 };
 
 struct hw_letter {
@@ -92,6 +97,9 @@ struct hw_metrics {
 	 * takes them from the model): x-height per area line, baseline below the area's guide
 	 * (x-heights), x-height in mm; 0 none */
 	double xh_line, base_guide, xh_mm;
+	/* the person's median pressure (as the pen gives it) and speed (x-heights per second)
+	 * the profiles are relative to (one character's build takes them from the model); 0 none */
+	double pres_mid, speed_mid;
 };
 
 /* The spacing (FR-007): where a pair goes is the distance between the letters' middles
@@ -220,13 +228,34 @@ void hw_letters_view_free(struct hw_letters *v);
  * character the font lacks. The character shows its variant slot[step]. */
 int hw_letters_step(int prev);
 
-/* The installed font (letters/font: NAME VERSION PATH): 1 there, 0 none, -1 error. */
+/* The font's styles (FR-034): one family, the same letters, spacing and kerning; only the
+ * ink's width along each stroke differs. */
+enum hw_font_style { HW_STYLE_REGULAR, HW_STYLE_CALLIGRAPHY, HW_STYLE_BRUSH, HW_STYLES };
+extern const char *const hw_font_style_names[HW_STYLES];        /* "Regular", "Calligraphy", "Brush" */
+#define HW_FONT_NIB_DEFAULT 35  /* the broad nib's angle, degrees from the horizontal */
+#define HW_FONT_NIB_MIN 0
+#define HW_FONT_NIB_MAX 90
+
+/* The installed font (letters/font: NAME VERSION PATH, PATH the Regular style's file):
+ * 1 there, 0 none, -1 error. */
 int hw_font_record(char *name, size_t nn, unsigned *version, char *path, size_t np);
-/* The font file's bytes for a model, malloc'd (ttf.c). */
+/* Its styles' files (paths[s], "" when the record has none: a font installed before the
+ * styles has Regular alone) and the nib angle it was made with (-1 none). 1, 0 none, -1. */
+int hw_font_styles(char paths[HW_STYLES][4096], int *nib);
+/* The font file's bytes for a model, malloc'd (ttf.c): the Regular style, or one style at
+ * a nib angle (degrees, Calligraphy only). */
 unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len);
-/* Builds and installs (replacing the one there, name kept when NULL); prints the path.
- * 0, 1 no letter model or nothing covered, -1 error. */
-int hw_font_install(const char *name, int verbose);
+unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name, unsigned version, int style,
+				   double nib, size_t *len);
+/* The ink's width (x-heights) at each point of a variant's stroke j in a style (ttf.c, the
+ * rules in docs/recognizer.md); Calligraphy: from the stroke's direction at each point. */
+void hw_font_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, int style, double nib, double *w);
+/* Calligraphy's thinnest and widest line (x-heights) for the model's ink width */
+void hw_font_nib_widths(const struct hw_letters *L, double *wmin, double *wmax);
+/* Builds and installs all three styles (replacing the font there, name kept when NULL, the
+ * nib angle kept when < 0); prints the Regular file's path. 0, 1 no letter model or nothing
+ * covered, -1 error, -2 a bad name. */
+int hw_font_install(const char *name, int nib, int verbose);
 /* removes the installed font: 1 removed, 0 none, -1 error */
 int hw_font_remove(void);
 /* The store's lock held: removes the letter model and the installed font (an erase). */
