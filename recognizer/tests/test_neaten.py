@@ -699,12 +699,15 @@ class Neaten(unittest.TestCase):
         self.assertEqual(new, 0, where)
 
     def test_joined_words_keep_every_letter(self):
-        """joined words of three to five letters (one stroke through them, as written in a
+        """joined words of two to five letters (one stroke through them, as written in a
         hand), with ALIGN by points, with ALIGN that lists the joined stroke whole for each of
         its letters (it holds them, but not where one ends), and with the text alone: at every
-        level every letter keeps its ink at about its own size (its box at least half its
-        glyph's), and in its own place (the letters' middles in the order written, none on a
-        neighbour's)"""
+        level no new step back or kink (at the joints or elsewhere), every letter keeps its ink
+        at about its own size (its box at least half its glyph's) and in its own place (the
+        letters' middles in the order written, none on a neighbour's); at Strong and Neatest
+        the letters of joined words (ALIGN by points) are pulled about as often as the same
+        letters written apart (FR-036: the joining stroke is drawn anew, a joint holds no
+        letter back)"""
         self.letters()
         rnd = random.Random(31)
         xh = 30.0
@@ -745,11 +748,12 @@ class Neaten(unittest.TestCase):
             for z, st in enumerate(strokes):
                 for i, p in enumerate(st):
                     p[2] = round(z * 1.0 + 0.01 * i, 3)
-            return dict(s, strokes=strokes), at
+            return dict(s, strokes=strokes), at, s
 
-        lines = [line(["".join(rnd.choice(small) for _ in range(rnd.randint(3, 5))) for _ in range(4)]) for _ in range(6)]
-        checked = 0
-        for s, at in lines:
+        lines = [line(["".join(rnd.choice(small) for _ in range(rnd.randint(2, 5))) for _ in range(4)]) for _ in range(8)]
+        checked, new, where = 0, 0, {}
+        rate = {}
+        for s, at, apart in lines:
             text = s["text"]
             by_points = ";".join(",".join(f"{j}:{a}-{b}" for j, a, b in m) for m in at)
             whole = ";".join(",".join(sorted({str(j) for j, _, _ in m}, key=int)) for m in at)
@@ -763,6 +767,16 @@ class Neaten(unittest.TestCase):
                     c.close()
                     self.assertEqual(len(why), len(text))
                     xy = [EV.to_xy(o[2]) for o in out]
+                    form = "points" if align == by_points else "whole" if align else "none"
+                    for j, st in enumerate(s["strokes"]):
+                        b, k = flow([(p[0], p[1]) for p in st], xy[j], xh)
+                        new += b + k
+                        if b + k:
+                            where[(lv, form)] = where.get((lv, form), 0) + b + k
+                    if lv >= 0.75:
+                        r = rate.setdefault((lv, form), [0, 0])
+                        r[0] += sum(w == "pulled" for w in why)
+                        r[1] += sum(w != "space" for w in why)
                     mids, word = [], []
                     for k, m in enumerate(at):
                         if not m:
@@ -788,7 +802,23 @@ class Neaten(unittest.TestCase):
                     mids.append(word)
                     for wm in mids:
                         self.assertEqual(wm, sorted(wm), (lv, align is None))
+            # the same letters written apart
+            for lv in (0.75, 1):
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                c = self.e.start()
+                self.begin(c, apart)
+                _, out, why = parse(c.ask("neaten", "s", str(lv), TR.esc(text), ";".join(",".join(map(str, sp)) for sp in apart["spans"])), why=True)
+                c.close()
+                r = rate.setdefault((lv, "apart"), [0, 0])
+                r[0] += sum(w == "pulled" for w in why)
+                r[1] += sum(w != "space" for w in why)
         self.assertGreater(checked, 1000)
+        self.assertEqual(new, 0, where)
+        share = {key: p / n for key, (p, n) in rate.items()}
+        # (with ALIGN by points: whole or without ALIGN the strokes are cut by the
+        # recognizer's alignment, of a model with random weights here)
+        for lv in (0.75, 1):
+            self.assertGreaterEqual(share[(lv, "points")], share[(lv, "apart")] - 0.05, share)
 
     def test_flow_where_ink_and_versions_differ(self):
         """at every level, no new step back and no new kink where the versions have a part the
