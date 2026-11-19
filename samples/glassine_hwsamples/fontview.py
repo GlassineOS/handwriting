@@ -7,6 +7,7 @@ Toolkit-free; pages.py draws the result."""
 
 import json
 import math
+import sys
 
 TARGET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 MIN = 3                                  # usable samples for a character to be in the font
@@ -14,26 +15,66 @@ DEFAULT_NAME = "My handwriting"
 PREVIEW = "The quick brown fox jumps over the lazy dog."
 
 
+def _chars(s, n):
+    """s is n real characters (no replacement character from bytes that weren't UTF-8)"""
+    return (isinstance(s, str) and len(s) == n
+            and all(c != "\ufffd" and not 0xD800 <= ord(c) <= 0xDFFF for c in s))
+
+
+def _skip(at, field):
+    print("glassine-handwriting-samples: letter model line %d: %s isn't valid, left out" % (at, field),
+          file=sys.stderr, flush=True)
+
+
 def parse(text):
     """the model file's lines -> {"metrics": {...}, "chars": {c: {"samples", "covered",
-    "variants"}}}; None when it isn't a letter model"""
+    "variants"}}}; None when it isn't a letter model. An entry that isn't valid (a line that
+    isn't JSON, a character that isn't one) is left out with a warning"""
     out = {"metrics": {}, "chars": {}}
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+    lines = [(i + 1, ln) for i, ln in enumerate(text.splitlines()) if ln.strip()]
     if not lines:
         return None
-    head = json.loads(lines[0])
-    if head.get("format") != "glassine-handwriting-letters" or head.get("version") != 1:
+    try:
+        head = json.loads(lines[0][1])
+    except ValueError:
+        return None
+    if not isinstance(head, dict) or head.get("format") != "glassine-handwriting-letters" or head.get("version") != 1:
         return None
     out["head"] = head
-    for ln in lines[1:]:
-        d = json.loads(ln)
-        if "metrics" in d:
+    for at, ln in lines[1:]:
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            _skip(at, "the line")
+            continue
+        if not isinstance(d, dict):
+            _skip(at, "the line")
+        elif "metrics" in d:
             out["metrics"] = d["metrics"]
         elif "spacing" in d:
-            out["spacing"] = d["spacing"]
+            sp = d["spacing"] if isinstance(d["spacing"], dict) else {}
+            for key, n in (("pairs", 2), ("reach", 1)):
+                good = [e for e in sp.get(key) or [] if isinstance(e, list) and len(e) >= n
+                        and all(_chars(c, 1) for c in e[:n])]
+                if len(good) != len(sp.get(key) or []):
+                    _skip(at, "a character in " + key)
+                if key in sp:
+                    sp[key] = good
+            out["spacing"] = sp
         elif "char" in d:
+            if not _chars(d["char"], 1):
+                _skip(at, "its character")
+                continue
+            rules = d.get("rules") or []
+            good = [r for r in rules if isinstance(r, dict) and _chars(r.get("prev", r.get("next")), 1)]
+            if len(good) != len(rules):
+                _skip(at, "a rule's neighbour")
+                d["rules"] = good
             out["chars"][d["char"]] = d
         elif "joined" in d:
+            if not _chars(d["joined"], 2):
+                _skip(at, "its pair")
+                continue
             out.setdefault("joined", {})[d["joined"]] = d
     return out
 
