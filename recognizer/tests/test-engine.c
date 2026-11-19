@@ -865,6 +865,43 @@ static void test_neaten_match(void)
 	CHECK(ends_off == 0, "neaten match: %d hooks or overshoots not at the target's ends", ends_off);
 }
 
+/* the glyphs the font draws for a text (hw_letters_glyphs, as fontview.py glyphs()): the
+ * cycle along each run (a space takes a step, a character the font lacks starts it again),
+ * the joined pairs left to right, a neighbour rule before the cycle */
+static void test_letters_glyphs(void)
+{
+	const char *v1 = "{\"width\":0.5,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[[0,0],[0.5,1]]]}";
+	char model[4096];
+	snprintf(model, sizeof model,
+		 "{\"format\":\"%s\",\"version\":%d,\"inputs\":\"0000000000000000\",\"samples\":3,\"built\":0}\n"
+		 "{\"metrics\":{\"x_height\":1}}\n"
+		 "{\"char\":\"a\",\"samples\":6,\"covered\":true,\"variants\":[%s,%s,%s],\"slots\":[0,1,2,0,1,2,0,1,2,0],"
+		 "\"rules\":[{\"prev\":\"b\",\"variant\":2}]}\n"
+		 "{\"char\":\"b\",\"samples\":3,\"covered\":true,\"variants\":[%s]}\n"
+		 "{\"char\":\"c\",\"samples\":3,\"covered\":true,\"variants\":[%s]}\n"
+		 "{\"joined\":\"bc\",\"samples\":3,\"written\":3,\"of\":3,\"variant\":%s}\n",
+		 HW_LETTERS_FORMAT, HW_LETTERS_VERSION, v1, v1, v1, v1, v1, v1);
+	struct hw_letters L = { 0 }, V;
+	if (hw_letters_parse(model, &L) || hw_letters_view(&L, &V)) { CHECK(0, "glyphs: model"); return; }
+	/* a a  a b a bc a x a: steps 0 1 (2) 3 4 5 6 7 8 9, x lacking restarts at 0 */
+	const char *text = "aa abaabcaxa";
+	unsigned cp[16];
+	size_t n = strlen(text);
+	for (size_t k = 0; k < n; k++) cp[k] = (unsigned char)text[k];
+	int var[16];
+	long jo[16];
+	hw_letters_glyphs(&V, cp, n, var, jo);
+	/* a at step 0 -> 0, step 1 -> 1, (space 2), step 3 -> 0, b, a after b -> rule 2, a step 6
+	 * -> 0, b c joined, a step 9 -> 0, x lacking, a at step 0 -> 0 */
+	const int want[] = { 0, 1, -1, 0, 0, 2, 0, -1, -1, 0, -1, 0 };
+	int ok = 1;
+	for (size_t k = 0; k < n; k++) ok &= var[k] == want[k];
+	CHECK(ok, "glyphs: variants");
+	CHECK(jo[7] == 0 && jo[8] == 0 && jo[6] < 0 && jo[9] < 0, "glyphs: the joined pair");
+	hw_letters_view_free(&V);
+	hw_letters_free(&L);
+}
+
 /* two letters joined in one stroke (FR-036): each part pulled to its own letter, the
  * stroke's points as many, in order, and no jump where the parts meet; strength 0 gives
  * the ink back as it was */
@@ -928,6 +965,33 @@ static void test_neaten_joined(void)
 		}
 		hw_neat_free(&q);
 	}
+	hw_letters_free(&L);
+	/* the same with the pair joined in the font (FR-039): both letters go to its one glyph */
+	char ps[4096];
+	o = 0;
+	for (int i = 0; i < NP; i++) {
+		double x, y;
+		if (i < 24) { double a = 0.9 + 4.5 * i / 23; x = 0.3 + 0.3 * cos(a); y = 0.5 + 0.5 * sin(a); }
+		else if (i < 27) { double t = (i - 23) / 4.0, ex = 0.3 + 0.3 * cos(5.4), ey = 0.5 + 0.5 * sin(5.4); x = ex + t * (0.75 - ex); y = ey + t * (1 - ey); }
+		else { double a = 3.1416 * (i - 27) / 23; x = 0.75 + 0.3 - 0.3 * cos(a); y = 1 - sin(a); }
+		o += snprintf(ps + o, sizeof ps - o, "%s[%.4f,%.4f]", i ? "," : "", x, y);
+	}
+	char model2[16384];
+	int m1 = snprintf(model2, sizeof model2, "%s", model);
+	snprintf(model2 + m1, sizeof model2 - (size_t)m1,
+		 "{\"joined\":\"cu\",\"samples\":3,\"written\":3,\"of\":3,\"variant\":{\"width\":1.05,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}}\n", ps);
+	if (hw_letters_parse(model2, &L) || L.njoined != 1) { CHECK(0, "neaten joined pair: model"); hw_ink_free(&ink); return; }
+	struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = 1, .L = &L, .xh = xh };
+	if (!hw_neaten(&q)) {
+		CHECK(q.pulled && q.pulled[0] && q.pulled[1] && q.why[0] == HW_NEAT_WHY_PULLED && q.why[1] == HW_NEAT_WHY_PULLED,
+		      "neaten joined pair: not both pulled");
+		struct hw_ink out = { 0 };
+		for (int i = 0; i < NP; i++) hw_ink_add(&out, q.x[0][i], q.y[0][i], i * 0.01, 0.5);
+		double dr = hw_neat_variant_dist(&ink, 1, xh, &L.joined[0].v), dn = hw_neat_variant_dist(&out, 1, xh, &L.joined[0].v);
+		CHECK(dn < 0.5 * dr && dn < 0.03, "neaten joined pair: not its glyph (%.3f, written %.3f)", dn, dr);
+		hw_ink_free(&out);
+		hw_neat_free(&q);
+	} else CHECK(0, "neaten joined pair: memory");
 	hw_ink_free(&ink);
 	hw_letters_free(&L);
 }
@@ -1015,6 +1079,7 @@ int main(int argc, char **argv)
 	test_lookalike();
 	test_calib();
 	test_neaten_match();
+	test_letters_glyphs();
 	test_neaten_joined();
 	test_letters_context();
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }

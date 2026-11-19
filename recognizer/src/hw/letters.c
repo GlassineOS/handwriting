@@ -2620,6 +2620,61 @@ int hw_letters_step(int prev)
 	return prev < 0 ? 0 : (prev + 1) % HW_LETTERS_SLOTS;
 }
 
+static const struct hw_letter *in_font(const struct hw_letters *V, unsigned cp)
+{
+	size_t lo = 0, hi = V->n;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		if (V->l[mid].cp < cp) lo = mid + 1; else hi = mid;
+	}
+	const struct hw_letter *l = lo < V->n && V->l[lo].cp == cp ? &V->l[lo] : NULL;
+	return l && l->covered && l->nvar > 0 ? l : NULL;
+}
+
+static long joined_of(const struct hw_letters *V, unsigned a, unsigned b)
+{
+	for (size_t q = 0; q < V->njoined; q++)
+		if (V->joined[q].a == a && V->joined[q].b == b && V->joined[q].v.nstrokes) return (long)q;
+	return -1;
+}
+
+void hw_letters_glyphs(const struct hw_letters *V, const unsigned *cp, size_t n, int *var, long *jo)
+{
+	/* every character's step of the cycle (a space takes one, a character the font lacks
+	 * starts the run again) */
+	int prev = -1;
+	for (size_t k = 0; k < n; k++) {
+		jo[k] = -1;
+		var[k] = -1;
+		if (cp[k] == ' ') { prev = hw_letters_step(prev); continue; }
+		if (!in_font(V, cp[k])) { prev = -1; continue; }
+		prev = hw_letters_step(prev);
+		var[k] = prev;  /* the step, for now */
+	}
+	/* the joined pairs, left to right */
+	for (size_t k = 0; k + 1 < n; k++)
+		if (var[k] >= 0 && var[k + 1] >= 0 && jo[k] < 0) {
+			long q = joined_of(V, cp[k], cp[k + 1]);
+			if (q >= 0 && in_font(V, cp[k]) && in_font(V, cp[k + 1])) { jo[k] = jo[k + 1] = q; k++; }
+		}
+	/* each letter's variant: the first neighbour rule whose neighbour is beside it (a letter,
+	 * or a joined pair by its letter on that side), else its cycle's */
+	for (size_t k = 0; k < n; k++) {
+		if (var[k] < 0) continue;
+		if (jo[k] >= 0) { var[k] = -1; continue; }
+		const struct hw_letter *l = in_font(V, cp[k]);
+		int v = -1;
+		for (int r = 0; r < l->nrules && v < 0; r++) {
+			const struct hw_rule *ru = &l->rule[r];
+			if (ru->var < 0 || ru->var >= l->nvar || !in_font(V, ru->nb)) continue;
+			size_t j = ru->side == 0 ? k - 1 : k + 1;
+			if ((ru->side == 0 && k == 0) || j >= n || cp[j] == ' ' || !in_font(V, cp[j])) continue;
+			if (cp[j] == ru->nb) v = ru->var;
+		}
+		var[k] = v >= 0 ? v : l->slot[var[k]];
+	}
+}
+
 /* the cycle of a letter's variants, each as often as it is used, spread out (smooth
  * weighted round robin: the same uses give the same cycle) */
 /* how much a variant counts in the cycle: its use, a favourite's HW_LETTERS_FAVOURITE times,

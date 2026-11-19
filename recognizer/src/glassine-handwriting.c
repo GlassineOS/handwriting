@@ -1215,7 +1215,7 @@ static const char *neat_how(int h) { return h == HW_NEAT_PULLED ? "pulled" : h =
 /* a character's reason (FR-041), as the reply names it */
 static const char *neat_why(int w)
 {
-	static const char *const name[] = { "pulled", "level", "not-covered", "no-structure", "not-near", "shape-guard",
+	static const char *const name[] = { "pulled", "level", "not-covered", "no-structure", "shape-guard",
 					    "low-confidence", "drawing", "gesture", "no-ink" };
 	return w >= 0 && w < (int)(sizeof name / sizeof *name) ? name[w] : "level";
 }
