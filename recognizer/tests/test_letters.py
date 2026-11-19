@@ -1365,8 +1365,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 12))
-            old = dict(head, inputs=hw_inputs(ids, 11))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 13))
+            old = dict(head, inputs=hw_inputs(ids, 12))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
