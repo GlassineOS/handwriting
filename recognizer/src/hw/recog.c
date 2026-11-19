@@ -226,7 +226,7 @@ long hw_align(const struct hw_lang *l, const struct hw_run *r, const unsigned *c
 	long *last = first + n + 1, *from = last + n + 1, *to = from + n + 1;
 	int L = 0;
 	for (size_t k = 0; k < n; k++) {
-		c[k] = (struct hw_charspan){ cp[k], -1, -1, -1 };
+		c[k] = (struct hw_charspan){ cp[k], -1, -1, -1, 0 };
 		int cl = hw_class_of(&l->model, cp[k]);
 		if (cl && L < HW_MAX_LABELS) { lab[L] = cl; who[L] = (int)k; L++; }
 	}
@@ -237,8 +237,10 @@ long hw_align(const struct hw_lang *l, const struct hw_run *r, const unsigned *c
 		else
 			for (int j = 0; j < L; j++) {
 				struct hw_charspan *x = &c[who[j]];
-				double best = -INFINITY;
+				double best = -INFINITY, tb = -INFINITY;
 				for (long f = first[j]; f <= last[j]; f++) {
+					for (int k = 1; k < r->C; k++)
+						if (r->logp[(size_t)f * r->C + k] > tb) { tb = r->logp[(size_t)f * r->C + k]; x->top = k; }
 					double v = r->logp[(size_t)f * r->C + lab[j]];
 					if (v > best) best = v;
 					/* the size only ever helps a fit (FR-017) */

@@ -152,6 +152,168 @@ double hw_neat_variant_dist(const struct hw_ink *ink, size_t n, double xh, const
 	return d;
 }
 
+/* ---------------------------------------------------------------- the correspondence (FR-036) */
+
+#define M_STEP 0.04     /* x-heights between the points the strokes are matched at */
+#define M_MIN 8
+#define M_MAX 128
+#define M_SMOOTH 3      /* the matched places averaged over this many points to either side */
+#define M_SPREAD 2.5    /* the matched places move along the version at most this many times as fast as evenly */
+#define M_HOOK 0.25     /* share of a stroke's length an end hook may take */
+#define M_HOOK_MAX 0.6  /* x-heights */
+/* the cost of matching two points: place (squared, x-heights), direction (1 - cos), turn
+ * (radians per M_STEP); a point of a hook costs at most C_HOOK */
+#define W_POS 4.0
+#define W_DIR 1.0
+#define W_TURN 0.5
+#define C_HOOK 0.15
+/* where a stroke passes from one character to the next, their moves are blended over this
+ * many x-heights to either side (at most half of either character's run) */
+#define HW_NEAT_BLEND 0.15
+/* ink more than this many times as wide or tall as the version (and 0.35 x-heights) isn't
+ * written like it */
+#define HW_NEAT_SIZE 1.8
+/* nor a piece more than this many x-heights from where its stroke lies in the version */
+#define HW_NEAT_PLACE 0.45
+/* nor ink whose points, matched in shape, are further than this (x-heights, RMS) from theirs
+ * once the version is stretched, sheared and moved onto them at best (a letter written wider
+ * or leaning still has its structure; one written in another way doesn't) */
+#define HW_NEAT_MATCH 0.12
+/* nor one whose first or last matched point is further than this from its place so */
+#define HW_NEAT_ENDS 0.3
+/* how hard the stretch is held to none (per matched point) */
+#define HW_NEAT_RIGID 0.02
+
+/* unit direction (by the points to either side) and turn ([1 2 1] smoothed) along a resampled stroke */
+static void shape_feats(const double *x, const double *y, int n, double *ux, double *uy, double *tu)
+{
+	for (int i = 0; i < n; i++) {
+		int a = i ? i - 1 : 0, b = i < n - 1 ? i + 1 : n - 1;
+		double dx = x[b] - x[a], dy = y[b] - y[a], l = hypot(dx, dy);
+		ux[i] = l > 0 ? dx / l : 1;
+		uy[i] = l > 0 ? dy / l : 0;
+	}
+	double *t = tu;
+	for (int i = 0; i < n; i++) {
+		if (i == 0 || i == n - 1) { t[i] = 0; continue; }
+		double a1 = atan2(y[i] - y[i - 1], x[i] - x[i - 1]), a2 = atan2(y[i + 1] - y[i], x[i + 1] - x[i]), d = a2 - a1;
+		while (d > M_PI) d -= 2 * M_PI;
+		while (d < -M_PI) d += 2 * M_PI;
+		t[i] = d;
+	}
+	double prev = t[0];
+	for (int i = 1; i < n - 1; i++) { double c = (prev + 2 * t[i] + t[i + 1]) / 4; prev = t[i]; t[i] = c; }
+}
+
+static double arc(const double *x, const double *y, size_t n, double *cum)
+{
+	double L = 0;
+	if (cum && n) cum[0] = 0;
+	for (size_t i = 1; i < n; i++) { L += hypot(x[i] - x[i - 1], y[i] - y[i - 1]); if (cum) cum[i] = L; }
+	return L;
+}
+
+int hw_neat_match(const double *x, const double *y, size_t n, const double *tx, const double *ty, size_t tn,
+		  int joint0, int joint1, double *u)
+{
+	if (!n) return 0;
+	double *cum = malloc((n + 1) * sizeof *cum);
+	if (!cum) return -1;
+	double L = arc(x, y, n, cum), TL = arc(tx, ty, tn, NULL);
+	if (n == 1 || !(L > 1e-9) || tn < 2 || !(TL > 1e-9)) {
+		/* a dot, or onto one: in order along the target */
+		for (size_t i = 0; i < n; i++) u[i] = n > 1 ? (double)i / (double)(n - 1) : 0.5;
+		free(cum);
+		return 0;
+	}
+	int na = (int)clampd(round(L / M_STEP) + 1, M_MIN, M_MAX), nb = (int)clampd(round(TL / M_STEP) + 1, M_MIN, M_MAX);
+	size_t cells = (size_t)na * (size_t)nb;
+	double *buf = malloc(((size_t)(na + nb) * 5 + (size_t)na * 4 + cells + 1) * sizeof *buf);
+	unsigned char *from = malloc(cells + 1);
+	if (!buf || !from) { free(buf); free(from); free(cum); return -1; }
+	double *ax = buf, *ay = ax + na, *adx = ay + na, *ady = adx + na, *at = ady + na;
+	double *bx = at + na, *by = bx + nb, *bdx = by + nb, *bdy = bdx + nb, *bt = bdy + nb;
+	double *uj = bt + nb, *sm = uj + na, *kmin = sm + na, *kmax = kmin + na, *D = kmax + na;
+	resample(x, y, n, (size_t)na, ax, ay);
+	resample(tx, ty, tn, (size_t)nb, bx, by);
+	shape_feats(ax, ay, na, adx, ady, at);
+	shape_feats(bx, by, nb, bdx, bdy, bt);
+	/* the turns per M_STEP of either stroke */
+	double sa = M_STEP / (L / (na - 1)), sb = M_STEP / (TL / (nb - 1));
+	int hook = (int)floor(fmin(M_HOOK * L, M_HOOK_MAX) / (L / (na - 1)));
+	/* dynamic time warping: a path from both starts to both ends, each step on along either
+	 * stroke or both, so the order is kept */
+	for (int j = 0; j < na; j++)
+		for (int k = 0; k < nb; k++) {
+			double px = ax[j] - bx[k], py = ay[j] - by[k];
+			double c = W_POS * (px * px + py * py) + W_DIR * (1 - (adx[j] * bdx[k] + ady[j] * bdy[k])) +
+				   W_TURN * fabs(at[j] * sa - bt[k] * sb);
+			if ((k == 0 && j <= hook) || (k == nb - 1 && j >= na - 1 - hook)) c = fmin(c, C_HOOK);
+			size_t o = (size_t)j * (size_t)nb + (size_t)k;
+			if (!j && !k) { D[o] = c; from[o] = 0; continue; }
+			double best = INFINITY;
+			unsigned char f = 0;
+			if (j && k && D[o - (size_t)nb - 1] < best) { best = D[o - (size_t)nb - 1]; f = 3; }
+			if (j && D[o - (size_t)nb] < best) { best = D[o - (size_t)nb]; f = 1; }
+			if (k && D[o - 1] < best) { best = D[o - 1]; f = 2; }
+			D[o] = best + c;
+			from[o] = f;
+		}
+	/* the path back: per point of the stroke the target's points it met */
+	for (int j = 0; j < na; j++) { kmin[j] = INFINITY; kmax[j] = -INFINITY; uj[j] = 0; sm[j] = 0; }
+	for (int j = na - 1, k = nb - 1;;) {
+		if (k < kmin[j]) kmin[j] = k;
+		if (k > kmax[j]) kmax[j] = k;
+		uj[j] += k;
+		sm[j] += 1;
+		unsigned char f = from[(size_t)j * (size_t)nb + (size_t)k];
+		if (!f) break;
+		if (f & 1) j--;
+		if (f & 2) k--;
+	}
+	for (int j = 0; j < na; j++) uj[j] = (j == 0 ? kmin[j] : j == na - 1 ? kmax[j] : uj[j] / sm[j]) / (nb - 1);
+	/* the hooks: the points before the path leaves the target's start, after it reaches its end */
+	int j0 = 0, j1 = na - 1;
+	while (j0 + 1 < na && kmax[j0 + 1] == 0) j0++;
+	while (j1 - 1 > j0 && kmin[j1 - 1] == nb - 1) j1--;
+	/* the places smoothed between them (the average of places in order is in order), then
+	 * stretched back to where they began and ended */
+	for (int j = j0; j <= j1; j++) {
+		double a = 0;
+		for (int d = -M_SMOOTH; d <= M_SMOOTH; d++) {
+			int i = j + d;
+			a += uj[i < j0 ? j0 : i > j1 ? j1 : i];
+		}
+		sm[j] = a / (2 * M_SMOOTH + 1);
+	}
+	double r0 = uj[j0], r1 = uj[j1], s0 = sm[j0], s1 = sm[j1];
+	for (int j = j0; j <= j1; j++) uj[j] = s1 > s0 ? r0 + (sm[j] - s0) * (r1 - r0) / (s1 - s0) : uj[j];
+	/* no point a long way along the version from the one before: where the stroke lacks a
+	 * part of the version the points spread over it (at most M_SPREAD times as fast as
+	 * evenly), so the version is traced, not cut across; still in order both ways */
+	if (j1 > j0) {
+		double d = M_SPREAD * (r1 - r0) / (j1 - j0);
+		for (int j = j0 + 1; j <= j1; j++) if (uj[j] > uj[j - 1] + d) uj[j] = uj[j - 1] + d;
+		uj[j1] = r1;
+		for (int j = j1 - 1; j >= j0; j--) if (uj[j] < uj[j + 1] - d) uj[j] = uj[j + 1] - d;
+		uj[j0] = r0;
+		for (int j = j0 + 1; j <= j1; j++) if (uj[j] < uj[j - 1]) uj[j] = uj[j - 1];
+	}
+	for (int j = 0; j < j0; j++) uj[j] = 0;
+	for (int j = j1 + 1; j < na; j++) uj[j] = 1;
+	/* each of the stroke's own points by its place along it */
+	for (size_t i = 0; i < n; i++) {
+		double f = cum[i] / L * (na - 1);
+		if ((joint0 && f < j0) || (joint1 && f > j1)) { u[i] = NAN; continue; }
+		int a = (int)floor(f);
+		if (a >= na - 1) { u[i] = uj[na - 1]; continue; }
+		double t = f - a;
+		u[i] = clampd(uj[a] + t * (uj[a + 1] - uj[a]), 0, 1);
+	}
+	free(buf); free(from); free(cum);
+	return 0;
+}
+
 void hw_neat_drawing(const struct hw_ink *ink, size_t n, double xh, unsigned char *keep)
 {
 	if (xh <= 0 && n >= 3) {
@@ -178,22 +340,42 @@ void hw_neat_free(struct hw_neat *q)
 {
 	if (q->x) for (size_t j = 0; j < q->n; j++) free(q->x[j]);
 	if (q->y) for (size_t j = 0; j < q->n; j++) free(q->y[j]);
-	free(q->x); free(q->y); free(q->how);
+	free(q->x); free(q->y); free(q->how); free(q->pulled);
 	q->x = q->y = NULL;
 	q->how = NULL;
+	q->pulled = NULL;
 }
 
+/* how far a character goes towards its best version at strength s (FR-014): near it (near)
+ * from Medium on, else from Strong on, all the way at Neatest; part of the way between */
+static double pull_of(double s, int near)
+{
+	if (near && s <= HW_NEAT_MEDIUM) return clampd((s - HW_NEAT_LIGHT) / (HW_NEAT_MEDIUM - HW_NEAT_LIGHT), 0, 1) * HW_NEAT_PULL_MEDIUM;
+	if (s <= HW_NEAT_STRONG) {
+		double t = clampd((s - HW_NEAT_MEDIUM) / (HW_NEAT_STRONG - HW_NEAT_MEDIUM), 0, 1);
+		return (near ? HW_NEAT_PULL_MEDIUM : 0) + t * (HW_NEAT_PULL_STRONG - (near ? HW_NEAT_PULL_MEDIUM : 0));
+	}
+	return HW_NEAT_PULL_STRONG + clampd((s - HW_NEAT_STRONG) / (1 - HW_NEAT_STRONG), 0, 1) * (1 - HW_NEAT_PULL_STRONG);
+}
+
+/* a character's piece of ink: points a..b-1 of stroke j, its start or end a joint with
+ * another character in the stroke */
+struct piece { int j; size_t a, b; int joint0, joint1; };
+
 struct ch {
-	int npts, cls, ok, pull;
+	int npts, cls, ok;
 	double fit;
 	double x0, y0, x1, y1, cx;      /* the ink's box (y down) and middle */
 	double ax, ay;                  /* the anchor: its middle on the fitted baseline */
 	double f, shear, dx, dy;        /* the line-level map */
 	double tx0, tx1, ty1;           /* the box after scale and shear */
 	double snum, sden;              /* its downstrokes' lean */
-	int own;                        /* all its points are whole strokes of its own */
-	int ns, *st;                    /* those strokes, in writing order */
+	double pull;                    /* how far it goes towards its best version, 0 not pulled */
+	int np;                         /* its pieces, in writing order */
+	struct piece *pc;
 	const struct hw_variant *v;     /* the variant it goes to */
+	const struct hw_lstroke *t;     /* its best version (FR-035): v->best, else v->s */
+	double off;                     /* the target placed: its x (x-heights) less the variant's */
 };
 
 /* the line-level map of a point of character c */
@@ -203,6 +385,262 @@ static void line_map(const struct ch *c, double x, double y, double *ox, double 
 	double xs = x + c->shear * up;
 	*ox = c->ax + c->f * (xs - c->ax) + c->dx;
 	*oy = c->ay + c->f * (y - c->ay) + c->dy;
+}
+
+/* where the pull takes a point from where the line-level map puts it is kept per point of a
+ * stroke (ex, ey) */
+
+
+/* the affine map of n matched version points f onto ink points p at best (least squares,
+ * the stretch held towards none by HW_NEAT_RIGID): p = mp + M^T (f - mf), with fp the pairs
+ * (fx, fy, px, py); r the RMS distance left. Non-zero when it mirrors or has no fit. */
+static int affine_fit(const double *fp, size_t n, double *M, double *mf, double *mp, double *r)
+{
+	double F[4] = { 0 }, P[4] = { 0 };
+	mf[0] = mf[1] = mp[0] = mp[1] = 0;
+	for (size_t i = 0; i < n; i++)
+		for (int a = 0; a < 2; a++) { mf[a] += fp[4 * i + a] / (double)n; mp[a] += fp[4 * i + 2 + a] / (double)n; }
+	for (size_t i = 0; i < n; i++)
+		for (int a = 0; a < 2; a++)
+			for (int z = 0; z < 2; z++) {
+				F[2 * a + z] += (fp[4 * i + a] - mf[a]) * (fp[4 * i + z] - mf[z]);
+				P[2 * a + z] += (fp[4 * i + a] - mf[a]) * (fp[4 * i + 2 + z] - mp[z]);
+			}
+	F[0] += HW_NEAT_RIGID * (double)n; F[3] += HW_NEAT_RIGID * (double)n;
+	P[0] += HW_NEAT_RIGID * (double)n; P[3] += HW_NEAT_RIGID * (double)n;
+	double det = F[0] * F[3] - F[1] * F[2];
+	if (!n || !(fabs(det) > 1e-12)) return -1;
+	M[0] = (F[3] * P[0] - F[1] * P[2]) / det; M[1] = (F[3] * P[1] - F[1] * P[3]) / det;
+	M[2] = (F[0] * P[2] - F[2] * P[0]) / det; M[3] = (F[0] * P[3] - F[2] * P[1]) / det;
+	double e = 0;
+	for (size_t i = 0; i < n; i++) {
+		double dx = fp[4 * i] - mf[0], dy = fp[4 * i + 1] - mf[1];
+		double gx = mp[0] + M[0] * dx + M[2] * dy - fp[4 * i + 2], gy = mp[1] + M[1] * dx + M[3] * dy - fp[4 * i + 3];
+		e += gx * gx + gy * gy;
+	}
+	*r = sqrt(e / (double)n);
+	return M[0] * M[3] - M[1] * M[2] > 0 ? 0 : -1;
+}
+
+/* The pull of character k (FR-014, FR-035, FR-036): its pieces, the nearest of its versions
+ * with as many strokes, how far it goes (by the level, and whether it is near its best
+ * version), and for each of its points where the pull takes it: the place on the best
+ * version that matches it in shape (hw_neat_match), the version on the straight baseline at
+ * the line's x-height with its middle on the ink's (as the matched points have it), without a
+ * baseline its middle on the ink's. 0, -1 out of memory. */
+static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *nown, double xh, int hasbase,
+			double base, double s, double **ex, double **ey)
+{
+	struct ch *c = &C[k];
+	const struct hw_letter *le = NULL;
+	size_t lo = 0, hi = q->L->n;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		if (q->L->l[mid].cp < q->cp[k]) lo = mid + 1; else hi = mid;
+	}
+	if (lo < q->L->n && q->L->l[lo].cp == q->cp[k]) le = &q->L->l[lo];
+	int kept = 0;
+	for (int t = 0; le && t < le->nvar; t++) kept |= !le->var[t].out;
+	if (!le || !le->covered || !kept) return 0;
+	/* its pieces: the runs of its points along the strokes, in writing order */
+	int np = 0;
+	for (size_t j = 0; j < q->n; j++) {
+		if (!nown[j]) continue;
+		for (size_t i = 0; i < q->ink[j].n; i++) np += q->own[j][i] == (int)k && (!i || q->own[j][i - 1] != (int)k);
+	}
+	if (!np) return 0;
+	c->pc = malloc((size_t)np * sizeof *c->pc);
+	double **sx = calloc((size_t)np * 2 + 1, sizeof *sx);
+	size_t *sn = calloc((size_t)np + 1, sizeof *sn);
+	int ret = -1;
+	if (!c->pc || !sx || !sn) goto out;
+	c->np = 0;
+	for (size_t j = 0; j < q->n; j++) {
+		if (!nown[j]) continue;
+		const int *ow = q->own[j];
+		size_t m = q->ink[j].n;
+		for (size_t i = 0; i < m; i++) {
+			if (ow[i] != (int)k || (i && ow[i - 1] == (int)k)) continue;
+			struct piece *pc = &c->pc[c->np++];
+			pc->j = (int)j;
+			pc->a = i;
+			pc->b = i;
+			while (pc->b < m && ow[pc->b] == (int)k) pc->b++;
+			pc->joint0 = i > 0 && ow[i - 1] >= 0;
+			pc->joint1 = pc->b < m && ow[pc->b] >= 0;
+		}
+	}
+	/* the pieces as the line-level map leaves them */
+	for (int a = 0; a < np; a++) {
+		const struct piece *pc = &c->pc[a];
+		size_t m = pc->b - pc->a;
+		sx[a] = malloc((m + 1) * sizeof(double));
+		sx[np + a] = malloc((m + 1) * sizeof(double));
+		if (!sx[a] || !sx[np + a]) goto out;
+		sn[a] = m;
+		for (size_t i = 0; i < m; i++)
+			line_map(c, q->ink[pc->j].x[pc->a + i], q->ink[pc->j].y[pc->a + i], &sx[a][i], &sx[np + a][i]);
+	}
+	double best = INFINITY;
+	for (int t = 0; t < le->nvar; t++) {
+		/* a version made of one sample is that sample, jitter and all */
+		if (le->var[t].members < 2 || le->var[t].out) continue;
+		double d = dist_to(sx, sx + np, sn, (size_t)np, xh, &le->var[t], NULL, NULL);
+		if (d < best - 1e-12) { best = d; c->v = &le->var[t]; }
+	}
+	ret = 0;
+	if (!c->v || !isfinite(best)) { c->v = NULL; goto out; }
+	c->t = c->v->best ? c->v->best : c->v->s;
+	/* the structure (FR-014): each piece like its stroke of the version in size and in where
+	 * it lies in the character, so a stroke order or a cut of a joined stroke other than the
+	 * version's isn't pulled into it */
+	{
+		double icx = 0, icy = 0, tcx = 0, tcy = 0, pb[64][8];
+		long ni = 0, nt = 0;
+		int bad = np > 64;
+		for (int a = 0; !bad && a < np; a++) {
+			double *b = pb[a];
+			b[0] = b[2] = b[4] = b[6] = INFINITY;
+			b[1] = b[3] = b[5] = b[7] = -INFINITY;
+			for (size_t i = 0; i < sn[a]; i++) {
+				double x = sx[a][i] / xh, y = -sx[np + a][i] / xh;
+				b[0] = fmin(b[0], x); b[1] = fmax(b[1], x); b[2] = fmin(b[2], y); b[3] = fmax(b[3], y);
+				icx += x; icy += y; ni++;
+			}
+			for (size_t i = 0; i < c->t[a].n; i++) {
+				double x = c->t[a].x[i], y = c->t[a].y[i];
+				b[4] = fmin(b[4], x); b[5] = fmax(b[5], x); b[6] = fmin(b[6], y); b[7] = fmax(b[7], y);
+				tcx += x; tcy += y; nt++;
+			}
+		}
+		if (ni && nt) { icx /= ni; icy /= ni; tcx /= nt; tcy /= nt; }
+		for (int a = 0; !bad && a < np; a++) {
+			const double *b = pb[a];
+			double iw = b[1] - b[0], ih = b[3] - b[2], tw = b[5] - b[4], th = b[7] - b[6];
+			double dx = ((b[0] + b[1]) / 2 - icx) - ((b[4] + b[5]) / 2 - tcx), dy = ((b[2] + b[3]) / 2 - icy) - ((b[6] + b[7]) / 2 - tcy);
+			bad = iw > HW_NEAT_SIZE * tw + 0.35 || tw > HW_NEAT_SIZE * iw + 0.35 || ih > HW_NEAT_SIZE * th + 0.35 ||
+			      th > HW_NEAT_SIZE * ih + 0.35 || hypot(dx, dy) > HW_NEAT_PLACE;
+		}
+		if (bad) { c->v = NULL; goto out; }
+	}
+	struct hw_variant tv = *c->v;
+	tv.s = (struct hw_lstroke *)c->t;
+	c->pull = pull_of(s, dist_to(sx, sx + np, sn, (size_t)np, xh, &tv, NULL, NULL) <= HW_NEAT_NEAR);
+	if (!(c->pull > 0)) goto out;
+	/* the middles of the ink and of the version, both by arc length */
+	ret = -1;
+	double acx = 0, acy = 0, vcx = 0, vcy = 0;
+	size_t tot = 0;
+	for (int a = 0; a < np; a++) {
+		size_t r = c->t[a].n < 2 ? 2 : c->t[a].n;
+		double *rx = malloc((r + 1) * 2 * sizeof *rx);
+		if (!rx) goto out;
+		resample(sx[a], sx[np + a], sn[a], r, rx, rx + r + 1);
+		for (size_t i = 0; i < r; i++) { acx += rx[i]; acy += rx[r + 1 + i]; }
+		resample(c->t[a].x, c->t[a].y, c->t[a].n, r, rx, rx + r + 1);
+		for (size_t i = 0; i < r; i++) { vcx += rx[i]; vcy += rx[r + 1 + i]; }
+		tot += r;
+		free(rx);
+	}
+	acx /= (double)tot; acy /= (double)tot; vcx /= (double)tot; vcy /= (double)tot;
+	/* matched twice: the second time against the version mapped onto the ink as the first
+	 * matching gives it at best (moved, stretched, sheared: a hook or a joint's lead-in
+	 * moves the ink's middle, a letter written wider or leaning is still the letter; ink the
+	 * line left off the baseline is matched where it is, the version still goes on the line) */
+	double shy = hasbase ? (base - acy) / xh - vcy : 0, sh[2] = { 0, 0 }, M[4] = { 1, 0, 0, 1 }, mf[2] = { 0, 0 }, mp[2] = { 0, 0 }, r2 = 0;
+	double E[128][4];
+	int ne = 0;
+	size_t all = 0, nfp;
+	for (int a = 0; a < np; a++) all += sn[a];
+	double *fp = malloc((all + 1) * 4 * sizeof *fp);
+	if (!fp) goto out;
+	for (int pass = 0; pass < 2; pass++) {
+		nfp = 0;
+		ne = 0;
+		for (int a = 0; a < np; a++) {
+			const struct piece *pc = &c->pc[a];
+			const struct hw_lstroke *t = &c->t[a];
+			size_t m = sn[a], tn = t->n;
+			double *X = malloc((m + 1) * 3 * sizeof *X), *T = malloc((tn + 1) * 5 * sizeof *T);
+			if (!X || !T) { free(X); free(T); free(fp); goto out; }
+			double *Y = X + m + 1, *u = Y + m + 1, *TY = T + tn + 1, *tc = TY + tn + 1, *MX = tc + tn + 1, *MY = MX + tn + 1;
+			for (size_t i = 0; i < m; i++) {
+				X[i] = (sx[a][i] - acx) / xh;
+				Y[i] = hasbase ? (base - sx[np + a][i]) / xh : (acy - sx[np + a][i]) / xh + vcy;
+			}
+			for (size_t i = 0; i < tn; i++) {
+				T[i] = t->x[i] - vcx; TY[i] = t->y[i] + shy;
+				MX[i] = mp[0] + M[0] * (T[i] - mf[0]) + M[2] * (TY[i] - mf[1]);
+				MY[i] = mp[1] + M[1] * (T[i] - mf[0]) + M[3] * (TY[i] - mf[1]);
+			}
+			arc(T, TY, tn, tc);
+			if (hw_neat_match(X, Y, m, MX, MY, tn, pc->joint0, pc->joint1, u)) { free(X); free(T); free(fp); goto out; }
+			size_t first = 0, last = m ? m - 1 : 0;
+			while (first < last && isnan(u[first])) first++;
+			while (last > first && isnan(u[last])) last--;
+			for (size_t i = 0; i < m; i++) {
+				size_t pi = pc->a + i;
+				if (isnan(u[i])) { ex[pc->j][pi] = ey[pc->j][pi] = NAN; continue; }
+				double f2[2], p2[2] = { X[i], Y[i] };
+				/* (the version unmapped: the map only finds the places) */
+				at_fraction(T, TY, tn, tc, u[i], &f2[0], &f2[1]);
+				fp[4 * nfp] = f2[0]; fp[4 * nfp + 1] = f2[1]; fp[4 * nfp + 2] = p2[0]; fp[4 * nfp + 3] = p2[1];
+				nfp++;
+				/* its first and last matched points (a stroke cut short at a joint matches its
+				 * end to the middle of the version) */
+				if ((i == first || i == last) && ne < 128) { E[ne][0] = f2[0]; E[ne][1] = f2[1]; E[ne][2] = X[i]; E[ne][3] = Y[i]; ne++; }
+				if (!pass) continue;
+				double gx = acx + (f2[0] + sh[0]) * xh, fy = f2[1] + sh[1] - shy;
+				double gy = hasbase ? base - fy * xh : acy - (fy - vcy) * xh;
+				ex[pc->j][pi] = gx - sx[a][i];
+				ey[pc->j][pi] = gy - sx[np + a][i];
+			}
+			free(X); free(T);
+		}
+		if (affine_fit(fp, nfp, M, mf, mp, &r2)) { free(fp); c->pull = 0; ret = 0; goto out; }
+		if (!pass) for (int r = 0; r < 2; r++) sh[r] = clampd(mp[r] - mf[r], -0.5, 0.5);
+	}
+	free(fp);
+	/* matched in shape, its points stay near the version's once the version is mapped onto
+	 * them at best, its ends too: else it isn't written like it */
+	{
+		double ends = 0;
+		for (int e = 0; e < ne; e++) {
+			double gx = mp[0] + M[0] * (E[e][0] - mf[0]) + M[2] * (E[e][1] - mf[1]);
+			double gy = mp[1] + M[1] * (E[e][0] - mf[0]) + M[3] * (E[e][1] - mf[1]);
+			ends = fmax(ends, hypot(gx - E[e][2], gy - E[e][3]));
+		}
+		if (r2 > HW_NEAT_MATCH || ends > HW_NEAT_ENDS) { c->pull = 0; ret = 0; goto out; }
+	}
+	/* a joint's lead-in or lead-out the version doesn't have goes with the point next to it */
+	for (int a = 0; a < np; a++) {
+		const struct piece *pc = &c->pc[a];
+		double *px = ex[pc->j], *py = ey[pc->j];
+		size_t f = pc->a, l = pc->b;
+		while (f < pc->b && isnan(px[f])) f++;
+		while (l > f && isnan(px[l - 1])) l--;
+		for (size_t i = pc->a; i < f; i++) { px[i] = f < pc->b ? px[f] : 0; py[i] = f < pc->b ? py[f] : 0; }
+		for (size_t i = l; i < pc->b; i++) { px[i] = px[l - 1]; py[i] = py[l - 1]; }
+	}
+	c->off = acx / xh - vcx + sh[0];
+	ret = 0;
+out:
+	for (int a = 0; sx && a < np; a++) { free(sx[a]); free(sx[np + a]); }
+	free(sx); free(sn);
+	if (ret || !(c->pull > 0)) c->pull = 0;
+	return ret;
+}
+
+/* the move of point i of stroke j as character o's: the line-level map as far as la, and o's
+ * pull as at its point ie */
+static void move_of(const struct hw_neat *q, const struct ch *C, double **ex, double **ey, size_t j, size_t i, int o,
+		    size_t ie, double la, double *mx, double *my)
+{
+	double x, y;
+	line_map(&C[o], q->ink[j].x[i], q->ink[j].y[i], &x, &y);
+	*mx = la * (x - q->ink[j].x[i]);
+	*my = la * (y - q->ink[j].y[i]);
+	if (C[o].pull > 0 && q->own[j][ie] == o) { *mx += C[o].pull * ex[j][ie]; *my += C[o].pull * ey[j][ie]; }
 }
 
 int hw_neaten(struct hw_neat *q)
@@ -228,15 +666,13 @@ int hw_neaten(struct hw_neat *q)
 	size_t nc = q->nc;
 	struct ch *C = calloc(nc + 1, sizeof *C);
 	int *nown = calloc(n + 1, sizeof *nown);         /* characters per stroke */
-	int *sole = malloc((n + 1) * sizeof *sole);      /* its one character, -1 several or none */
-	if (!C || !nown || !sole) { free(C); free(nown); free(sole); return -1; }
+	if (!C || !nown) { free(C); free(nown); return -1; }
 	for (size_t k = 0; k < nc; k++) {
 		C[k].x0 = C[k].y0 = INFINITY;
 		C[k].x1 = C[k].y1 = -INFINITY;
 		C[k].fit = q->fit ? q->fit[k] : 1;
 		C[k].cls = cls_of(q->cp[k]);
 		C[k].f = 1;
-		C[k].own = 1;
 	}
 	/* a stroke mostly one character's is all its: the alignment's edges spill a few points
 	 * over to a neighbour */
@@ -281,7 +717,6 @@ int hw_neaten(struct hw_neat *q)
 	free(sp);
 	/* the characters' ink */
 	for (size_t j = 0; j < n; j++) {
-		sole[j] = -1;
 		if (q->keep && q->keep[j]) continue;
 		const struct hw_ink *k = &q->ink[j];
 		int first = -1, many = 0, any = 0;
@@ -303,21 +738,12 @@ int hw_neaten(struct hw_neat *q)
 		}
 		if (!any) { if (q->keep) q->keep[j] = 1; continue; }
 		nown[j] = many ? 2 : 1;
-		sole[j] = many ? -1 : first;
 		q->how[j] = HW_NEAT_LINE;
 		/* a stroke's points that no character has go with their neighbour's */
 		int last = -1;
 		for (size_t i = 0; i < k->n; i++) { if (q->own[j][i] >= 0 && (size_t)q->own[j][i] < nc) last = q->own[j][i]; else if (last >= 0) q->own[j][i] = last; }
 		last = -1;
 		for (size_t i = k->n; i-- > 0;) { if (q->own[j][i] >= 0) last = q->own[j][i]; else q->own[j][i] = last; }
-	}
-	/* which strokes each character has: whole and alone, or shared */
-	for (size_t j = 0; j < n; j++) {
-		if (!nown[j]) continue;
-		for (size_t i = 0; i < q->ink[j].n; i++) {
-			int o = q->own[j][i];
-			if (o >= 0 && sole[j] != o) C[o].own = 0;
-		}
 	}
 	double sumfit = 0;
 	int nwr = 0;
@@ -334,7 +760,15 @@ int hw_neaten(struct hw_neat *q)
 	}
 	int ret = 0;
 	double *v = malloc((nc + 1) * 3 * sizeof *v);
-	if (!v) { ret = -1; goto done; }
+	/* per point of a stroke: where the pull takes it from where the line-level map puts it */
+	double **ex = calloc(n + 1, sizeof *ex), **ey = calloc(n + 1, sizeof *ey);
+	q->pulled = calloc(nc + 1, 1);
+	if (!v || !ex || !ey || !q->pulled) { ret = -1; goto done; }
+	for (size_t j = 0; j < n; j++) {
+		ex[j] = calloc(q->ink[j].n + 1, sizeof **ex);
+		ey[j] = calloc(q->ink[j].n + 1, sizeof **ey);
+		if (!ex[j] || !ey[j]) { ret = -1; goto done; }
+	}
 	/* read with low confidence, or not at all: not writing */
 	if (!nwr || sumfit / nwr < HW_NEAT_FIT_READ) {
 		for (size_t j = 0; j < n; j++) if (q->how[j] == HW_NEAT_LINE) { q->how[j] = HW_NEAT_KEPT; if (q->keep) q->keep[j] = 1; }
@@ -430,50 +864,12 @@ int hw_neaten(struct hw_neat *q)
 		double off = target_base - c->ty1 - c->dy;
 		if (c->fit >= HW_NEAT_FIT_PULL && on_base(q->cp[k]) && fabs(off) <= 0.35 * xh) c->dy += off;
 	}
-	/* the pull: a character read well, covered, with strokes of its own, near a variant */
-	if (q->L && on.pull && !q->line_only) {
-		for (size_t k = 0; k < nc; k++) {
-			struct ch *c = &C[k];
-			if (!c->npts || !c->own || c->fit < HW_NEAT_FIT_PULL) continue;
-			const struct hw_letter *le = NULL;
-			size_t lo = 0, hi = q->L->n;
-			while (lo < hi) {
-				size_t mid = (lo + hi) / 2;
-				if (q->L->l[mid].cp < q->cp[k]) lo = mid + 1; else hi = mid;
-			}
-			if (lo < q->L->n && q->L->l[lo].cp == q->cp[k]) le = &q->L->l[lo];
-			int kept = 0;
-			for (int t = 0; le && t < le->nvar; t++) kept |= !le->var[t].out;
-			if (!le || !le->covered || !kept) continue;
-			int ns = 0;
-			for (size_t j = 0; j < n; j++) ns += sole[j] == (int)k;
-			c->st = malloc((size_t)(ns + 1) * sizeof *c->st);
-			double **sx = malloc((size_t)(ns + 1) * 2 * sizeof *sx);
-			size_t *sn = malloc((size_t)(ns + 1) * sizeof *sn);
-			if (!c->st || !sx || !sn) { free(sx); free(sn); continue; }
-			c->ns = 0;
-			for (size_t j = 0; j < n; j++) if (sole[j] == (int)k) c->st[c->ns++] = (int)j;
-			int bad = 0;
-			for (int a = 0; a < c->ns; a++) {
-				size_t j = (size_t)c->st[a], m = q->ink[j].n;
-				sx[a] = malloc((m + 1) * sizeof(double));
-				sx[ns + 1 + a] = malloc((m + 1) * sizeof(double));
-				sn[a] = m;
-				if (!sx[a] || !sx[ns + 1 + a]) { bad = 1; continue; }
-				for (size_t i = 0; i < m; i++) line_map(c, q->ink[j].x[i], q->ink[j].y[i], &sx[a][i], &sx[ns + 1 + a][i]);
-			}
-			double best = INFINITY;
-			for (int t = 0; !bad && t < le->nvar; t++) {
-				/* a version made of one sample is that sample, jitter and all */
-				if (le->var[t].members < 2 || le->var[t].out) continue;
-				double d = dist_to(sx, sx + ns + 1, sn, (size_t)ns, xh, &le->var[t], NULL, NULL);
-				if (d < best - 1e-12) { best = d; c->v = &le->var[t]; }
-			}
-			for (int a = 0; a < c->ns; a++) { free(sx[a]); free(sx[ns + 1 + a]); }
-			free(sx); free(sn);
-			c->pull = !bad && c->v && best <= HW_NEAT_NEAR;
-		}
-	}
+	/* the pull (FR-014, FR-035, FR-036): a character read well, covered, whose pieces are as
+	 * many as one of its versions has strokes; towards that version's best */
+	if (q->L && on.pull && !q->line_only && s > HW_NEAT_LIGHT)
+		for (size_t k = 0; k < nc; k++)
+			if (C[k].npts && C[k].fit >= HW_NEAT_FIT_PULL && !(q->nopull && q->nopull[k]))
+				if (pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey)) { ret = -1; goto done; }
 
 	/* spacing (FR-014): each pair of neighbouring letters towards the letter model's gap for
 	 * it (spacing.c: the narrowest distance between their ink profiles, taken from the ink
@@ -504,34 +900,30 @@ int hw_neaten(struct hw_neat *q)
 			}
 		}
 		for (size_t k = 0; k < nc; k++) mid[k] = hw_mid_of(&M[k]);
-		/* a character pulled to its variant: at full strength its variant's profile, about its
-		 * middle as the pull places it */
-		for (size_t k = 0; k < nc && hasbase; k++) {
+		/* a pulled character: its profile and middle part of the way to its best version's,
+		 * as far as it is pulled, about its middle as the pull places it */
+		for (size_t k = 0; k < nc; k++) {
 			struct ch *c = &C[k];
-			if (!c->pull) continue;
-			double acx = 0, vcx = 0;
-			size_t tot = 0, vt = 0;
-			for (int a = 0; a < c->ns; a++) {
-				size_t j = (size_t)c->st[a], m = q->ink[j].n, r = c->v->s[a].n < 2 ? 2 : c->v->s[a].n;
-				double *tx = malloc((m + 1) * 2 * sizeof *tx), *rx = malloc((r + 1) * 2 * sizeof *rx);
-				if (tx && rx) {
-					for (size_t i = 0; i < m; i++) line_map(c, q->ink[j].x[i], q->ink[j].y[i], &tx[i], &tx[m + 1 + i]);
-					resample(tx, tx + m + 1, m, r, rx, rx + r + 1);
-					for (size_t i = 0; i < r; i++) acx += rx[i];
-					tot += r;
-					resample(c->v->s[a].x, c->v->s[a].y, c->v->s[a].n, r, rx, rx + r + 1);
-					for (size_t i = 0; i < r; i++) vcx += rx[i];
-					vt += r;
+			if (!(c->pull > 0)) continue;
+			struct hw_profile tp;
+			struct hw_mid tm = { 0, 0 };
+			hw_profile_clear(&tp);
+			for (size_t a = 0; a < c->v->nstrokes; a++)
+				for (size_t i = 0; i < c->t[a].n; i++) {
+					size_t i0 = i ? i - 1 : 0;
+					hw_profile_seg(&tp, c->t[a].x[i0], c->t[a].y[i0], c->t[a].x[i], c->t[a].y[i]);
+					hw_mid_seg(&tm, c->t[a].x[i0], c->t[a].y[i0], c->t[a].x[i], c->t[a].y[i]);
 				}
-				free(tx); free(rx);
-			}
-			if (!tot || !vt) continue;
-			double off = acx / tot / xh - vcx / vt;
+			double p = c->pull;
 			for (int bnd = 0; bnd < HW_PROF_BANDS; bnd++) {
-				P[k].l[bnd] = c->v->prof.l[bnd] + off;
-				P[k].r[bnd] = c->v->prof.r[bnd] + off;
+				double *ink[2] = { &P[k].l[bnd], &P[k].r[bnd] }, tg[2] = { tp.l[bnd] + c->off, tp.r[bnd] + c->off };
+				for (int e = 0; e < 2; e++) {
+					if (isnan(tg[e])) { if (p >= 0.5) *ink[e] = NAN; }
+					else *ink[e] = isnan(*ink[e]) ? (p >= 0.5 ? tg[e] : NAN) : (1 - p) * *ink[e] + p * tg[e];
+				}
 			}
-			mid[k] = c->v->mid + off;
+			double tmid = hw_mid_of(&tm) + c->off;
+			if (isfinite(tmid)) mid[k] = isfinite(mid[k]) ? (1 - p) * mid[k] + p * tmid : tmid;
 		}
 		double *lg = v, *wg = v + nc + 1;
 		size_t nl = 0, nw = 0;
@@ -576,113 +968,64 @@ int hw_neaten(struct hw_neat *q)
 		free(P); free(M); free(mid);
 	}
 
-	/* the points */
+	/* the points (FR-014): the line-level map as far as the strength goes (all of it from
+	 * Light on), and a pulled character's points that far along the pull; where a stroke
+	 * passes from one character to the next, the two characters' moves blended (FR-036) */
+	double la = clampd(s / HW_NEAT_LIGHT, 0, 1);
 	for (size_t j = 0; j < n; j++) {
 		if (!nown[j]) continue;
 		const struct hw_ink *k = &q->ink[j];
-		for (size_t i = 0; i < k->n; i++) {
-			int o = k->n ? q->own[j][i] : -1;
-			if (o < 0) continue;
-			double x, y;
-			line_map(&C[o], k->x[i], k->y[i], &x, &y);
-			q->x[j][i] = k->x[i] + s * (x - k->x[i]);
-			q->y[j][i] = k->y[i] + s * (y - k->y[i]);
-		}
-	}
-	for (size_t ci = 0; ci < nc; ci++) {
-		struct ch *c = &C[ci];
-		if (!c->pull) continue;
-		const struct hw_variant *va = c->v;
-		/* the character's middle after the line-level map, both resampled by arc length */
-		double acx = 0;
-		size_t tot = 0;
-		for (int a = 0; a < c->ns; a++) {
-			size_t j = (size_t)c->st[a], m = q->ink[j].n, r = va->s[a].n < 2 ? 2 : va->s[a].n;
-			double *tx = malloc((m + 1) * 2 * sizeof *tx), *rx = malloc((r + 1) * 2 * sizeof *rx);
-			if (tx && rx) {
-				for (size_t i = 0; i < m; i++) line_map(c, q->ink[j].x[i], q->ink[j].y[i], &tx[i], &tx[m + 1 + i]);
-				resample(tx, tx + m + 1, m, r, rx, rx + r + 1);
-				for (size_t i = 0; i < r; i++) acx += rx[i];
-				tot += r;
-			}
-			free(tx); free(rx);
-		}
-		double vcx = 0, vcy = 0;
-		size_t vt = 0;
-		for (int a = 0; a < c->ns; a++) {
-			size_t r = va->s[a].n < 2 ? 2 : va->s[a].n;
-			double *rx = malloc((r + 1) * 2 * sizeof *rx);
-			if (rx) {
-				resample(va->s[a].x, va->s[a].y, va->s[a].n, r, rx, rx + r + 1);
-				for (size_t i = 0; i < r; i++) { vcx += rx[i]; vcy += rx[r + 1 + i]; }
-				vt += r;
-			}
-			free(rx);
-		}
-		if (!tot || !vt) continue;
-		acx /= tot; vcx /= vt; vcy /= vt;
-		for (int a = 0; a < c->ns; a++) {
-			size_t j = (size_t)c->st[a], m = q->ink[j].n, vn = va->s[a].n;
-			const struct hw_ink *k = &q->ink[j];
-			double *tx = malloc((m + 1) * 3 * sizeof *tx), *cum = malloc((vn + 1) * sizeof *cum);
-			if (!tx || !cum || !vn) { free(tx); free(cum); continue; }
-			double *ty = tx + m + 1, *u = ty + m + 1;
-			for (size_t i = 0; i < m; i++) line_map(c, k->x[i], k->y[i], &tx[i], &ty[i]);
-			u[0] = 0;
-			for (size_t i = 1; i < m; i++) u[i] = u[i - 1] + hypot(tx[i] - tx[i - 1], ty[i] - ty[i - 1]);
-			double L = m ? u[m - 1] : 0;
-			cum[0] = 0;
-			for (size_t i = 1; i < vn; i++) cum[i] = cum[i - 1] + hypot(va->s[a].x[i] - va->s[a].x[i - 1], va->s[a].y[i] - va->s[a].y[i - 1]);
-			double tcy = 0;
-			for (size_t z = 0; z < m; z++) tcy += ty[z];
-			tcy /= m ? (double)m : 1;
-			for (size_t i = 0; i < m; i++) {
-				double fx, fy;
-				at_fraction(va->s[a].x, va->s[a].y, vn, cum, L > 0 ? u[i] / L : (double)i / (m > 1 ? m - 1 : 1), &fx, &fy);
-				double gx = acx + (fx - vcx) * xh;
-				double gy;
-				if (hasbase) gy = target_base - fy * xh;
-				else gy = tcy - (fy - vcy) * xh;   /* no baseline: the variant's middle on the character's */
-				/* the line-level map and the pull together: at full pull the variant itself */
-				q->x[j][i] = k->x[i] + s * (gx - k->x[i]);
-				q->y[j][i] = k->y[i] + s * (gy - k->y[i]);
-			}
-			q->how[j] = HW_NEAT_PULLED;
-			free(tx); free(cum);
-		}
-	}
-	/* strokes shared by characters: the moves blended where one gives way to the next */
-	for (size_t j = 0; j < n; j++) {
-		if (nown[j] < 2) continue;
-		size_t m = q->ink[j].n;
-		int R = (int)clampd((double)m / 30, 2, 12);
-		double *dx = malloc((m + 1) * 2 * sizeof *dx);
-		if (!dx) continue;
-		double *dy = dx + m + 1;
-		for (size_t i = 0; i < m; i++) { dx[i] = q->x[j][i] - q->ink[j].x[i]; dy[i] = q->y[j][i] - q->ink[j].y[i]; }
+		size_t m = k->n;
+		double *cum = malloc((m + 1) * sizeof *cum);
+		if (!cum) { ret = -1; goto done; }
+		arc(k->x, k->y, m, cum);
 		for (size_t i = 0; i < m; i++) {
-			/* only near a change of character */
-			int near = 0;
-			for (int d = -R; d <= R && !near; d++) {
-				long a = (long)i + d;
-				if (a > 0 && (size_t)a < m && q->own[j][a] != q->own[j][a - 1]) near = 1;
+			int o = q->own[j][i];
+			if (o < 0) continue;
+			double mx, my;
+			move_of(q, C, ex, ey, j, i, o, i, la, &mx, &my);
+			if (nown[j] > 1) {
+				/* the characters' moves weighted by how much of the stroke around the point is
+				 * theirs (a tent of HW_NEAT_BLEND x-heights to either side, by arc length), each
+				 * as at its point nearest to it: smooth across the joints, a short run too */
+				double h = HW_NEAT_BLEND * xh, wsum = 0, sx2 = 0, sy2 = 0;
+				size_t lo2 = i, hi2 = i;
+				while (lo2 > 0 && cum[i] - cum[lo2 - 1] < h) lo2--;
+				while (hi2 + 1 < m && cum[hi2 + 1] - cum[i] < h) hi2++;
+				int who[8], nw = 0;
+				double ww[8];
+				size_t at[8];
+				for (size_t i2 = lo2; i2 <= hi2; i2++) {
+					int o2 = q->own[j][i2];
+					if (o2 < 0) continue;
+					double w = 1 - fabs(cum[i2] - cum[i]) / h;
+					if (!(w > 0)) w = i2 == i ? 1 : 0;
+					int z = 0;
+					while (z < nw && who[z] != o2) z++;
+					if (z == nw) { if (nw == 8) continue; who[nw] = o2; ww[nw] = 0; at[nw] = i2; nw++; }
+					if ((i2 > i ? i2 - i : i - i2) < (at[z] > i ? at[z] - i : i - at[z])) at[z] = i2;
+					ww[z] += w;
+				}
+				for (int z = 0; z < nw && nw > 1; z++) {
+					double ax2, ay2;
+					move_of(q, C, ex, ey, j, i, who[z], at[z], la, &ax2, &ay2);
+					sx2 += ww[z] * ax2; sy2 += ww[z] * ay2; wsum += ww[z];
+				}
+				if (nw > 1 && wsum > 0) { mx = sx2 / wsum; my = sy2 / wsum; }
 			}
-			if (!near) continue;
-			double sx = 0, sy = 0;
-			int cnt = 0;
-			for (int d = -R; d <= R; d++) {
-				long a = (long)i + d;
-				if (a < 0 || (size_t)a >= m) continue;
-				sx += dx[a]; sy += dy[a]; cnt++;
-			}
-			q->x[j][i] = q->ink[j].x[i] + sx / cnt;
-			q->y[j][i] = q->ink[j].y[i] + sy / cnt;
+			q->x[j][i] = k->x[i] + mx;
+			q->y[j][i] = k->y[i] + my;
+			if (C[o].pull > 0) q->how[j] = HW_NEAT_PULLED;
 		}
-		free(dx);
+		free(cum);
 	}
+	for (size_t k = 0; k < nc; k++) q->pulled[k] = C[k].pull > 0;
 done:
 	free(v);
-	for (size_t k = 0; k < nc; k++) free(C[k].st);
-	free(C); free(nown); free(sole);
+	for (size_t j = 0; j < n; j++) { if (ex) free(ex[j]); if (ey) free(ey[j]); }
+	free(ex); free(ey);
+	for (size_t k = 0; k < nc; k++) free(C[k].pc);
+	free(C); free(nown);
+	if (ret) hw_neat_free(q);
 	return ret;
 }

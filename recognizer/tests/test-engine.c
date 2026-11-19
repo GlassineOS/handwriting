@@ -13,8 +13,10 @@
 #include "../src/hw/chars.h"
 #include "../src/hw/ctc.h"
 #include "../src/hw/featurize.h"
+#include "../src/hw/letters.h"
 #include "../src/hw/lookalike.h"
 #include "../src/hw/model.h"
+#include "../src/hw/neaten.h"
 #include "../src/hw/recog.h"
 #include "../src/hw/sample.h"
 #include "../src/hw/size.h"
@@ -691,6 +693,155 @@ static void test_lookalike(void)
 	hw_run_free(&r);
 }
 
+/* neatening's correspondence (spec 003 FR-036), a property over many strokes: each point's
+ * place on the target never goes back along the stroke, stays on it (0..1), and hooks,
+ * loops and overshoots the target lacks go to its ends; joint ends leave NAN only at the
+ * ends, in one run each */
+static uint64_t rng_state = 88172645463325252ULL;
+static double urand(void)
+{
+	rng_state ^= rng_state << 13; rng_state ^= rng_state >> 7; rng_state ^= rng_state << 17;
+	return (double)(rng_state >> 11) / 9007199254740992.0;
+}
+
+/* a smooth random stroke of n points (x-heights): a few turns, sometimes a loop */
+static void random_stroke(double *x, double *y, int n, double scale)
+{
+	double a = urand() * 6.283, px = 0, py = 0, turn = (urand() - 0.5) * 0.6, loop = urand() < 0.3 ? 6.283 / (n * 0.4) : 0;
+	int l0 = (int)(urand() * n * 0.5);
+	for (int i = 0; i < n; i++) {
+		x[i] = px; y[i] = py;
+		a += turn + (urand() - 0.5) * 0.4 + (i >= l0 && i < l0 + (int)(n * 0.4) ? loop : 0);
+		if (urand() < 0.08) turn = (urand() - 0.5) * 0.6;
+		double step = scale * (0.02 + 0.03 * urand());
+		px += step * cos(a); py += step * sin(a);
+	}
+}
+
+static void test_neaten_match(void)
+{
+	enum { N = 220 };
+	double x[N], y[N], tx[N], ty[N], u[N];
+	int bad = 0, nan_mid = 0, ends_off = 0;
+	for (int it = 0; it < 4000; it++) {
+		int n = 2 + (int)(urand() * 150), tn = 2 + (int)(urand() * 100);
+		random_stroke(tx, ty, tn, 1);
+		int kind = it % 5;
+		if (kind == 0) {
+			/* the target itself, jittered */
+			n = tn;
+			for (int i = 0; i < n; i++) { x[i] = tx[i] + (urand() - 0.5) * 0.06; y[i] = ty[i] + (urand() - 0.5) * 0.06; }
+		} else if (kind == 1) {
+			/* the target with a hook at the start and an overshoot at the end */
+			int h = 6, o = 6, m = tn;
+			n = h + m + o;
+			for (int i = 0; i < h; i++) { x[i] = tx[0] + 0.12 * sin(i * 0.5); y[i] = ty[0] + 0.12 - 0.02 * i; }
+			for (int i = 0; i < m; i++) { x[h + i] = tx[i]; y[h + i] = ty[i]; }
+			double dx = tx[m - 1] - tx[m > 1 ? m - 2 : 0], dy = ty[m - 1] - ty[m > 1 ? m - 2 : 0];
+			for (int i = 0; i < o; i++) { x[h + m + i] = tx[m - 1] + dx * (i + 1); y[h + m + i] = ty[m - 1] + dy * (i + 1); }
+		} else if (kind == 2) {
+			/* the target with a loop in the middle */
+			int m = tn, a = m / 2, l = 12;
+			n = m + l;
+			for (int i = 0, o = 0; i < m; i++) {
+				x[o] = tx[i]; y[o] = ty[i]; o++;
+				if (i == a) for (int k = 1; k <= l; k++) { x[o] = tx[i] + 0.1 * sin(k * 6.283 / l); y[o] = ty[i] + 0.1 - 0.1 * cos(k * 6.283 / l); o++; }
+			}
+		} else {
+			/* anything */
+			random_stroke(x, y, n, 1 + urand());
+			if (kind == 4) for (int i = 0; i < n; i++) { x[i] = x[n / 2]; y[i] = y[n / 2]; }   /* a dot */
+		}
+		int j0 = urand() < 0.3, j1 = urand() < 0.3;
+		if (hw_neat_match(x, y, (size_t)n, tx, ty, (size_t)tn, j0, j1, u)) { CHECK(0, "neaten match: memory"); return; }
+		double last = -1;
+		int seen = 0, ended = 0;
+		for (int i = 0; i < n; i++) {
+			if (isnan(u[i])) {
+				/* only at a joint end, before any matched point or after them all */
+				if (!(j0 && !seen) && !j1) nan_mid++;
+				if (seen) ended = 1;
+				continue;
+			}
+			if (ended) nan_mid++;
+			seen = 1;
+			if (u[i] < last - 1e-12 || u[i] < 0 || u[i] > 1) bad++;
+			last = u[i];
+		}
+		if (kind == 1 && !j0 && !j1 && (u[0] != 0 || u[n - 1] != 1)) ends_off++;
+	}
+	CHECK(bad == 0, "neaten match: %d points went back along the stroke", bad);
+	CHECK(nan_mid == 0, "neaten match: %d unmatched points away from a joint end", nan_mid);
+	CHECK(ends_off == 0, "neaten match: %d hooks or overshoots not at the target's ends", ends_off);
+}
+
+/* two letters joined in one stroke (FR-036): each part pulled to its own letter, the
+ * stroke's points as many, in order, and no jump where the parts meet; strength 0 gives
+ * the ink back as it was */
+static void test_neaten_joined(void)
+{
+	/* a c (an arc open to the right) and a u, one variant each (x-heights, y up) */
+	char model[8192], cs[2048], us[2048];
+	int o = 0;
+	for (int i = 0; i < 24; i++) {
+		double a = 0.9 + 4.5 * i / 23;
+		o += snprintf(cs + o, sizeof cs - o, "%s[%.4f,%.4f]", i ? "," : "", 0.3 + 0.3 * cos(a), 0.5 + 0.5 * sin(a));
+	}
+	o = 0;
+	for (int i = 0; i < 24; i++) {
+		double a = 3.1416 * i / 23;
+		o += snprintf(us + o, sizeof us - o, "%s[%.4f,%.4f]", i ? "," : "", 0.3 - 0.3 * cos(a), 1 - sin(a));
+	}
+	snprintf(model, sizeof model,
+		 "{\"format\":\"%s\",\"version\":%d,\"inputs\":\"0000000000000000\",\"samples\":3,\"built\":0}\n"
+		 "{\"metrics\":{\"x_height\":1}}\n"
+		 "{\"char\":\"c\",\"samples\":3,\"covered\":true,\"variants\":[{\"width\":0.6,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}]}\n"
+		 "{\"char\":\"u\",\"samples\":3,\"covered\":true,\"variants\":[{\"width\":0.6,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}]}\n",
+		 HW_LETTERS_FORMAT, HW_LETTERS_VERSION, cs, us);
+	struct hw_letters L = { 0 };
+	if (hw_letters_parse(model, &L)) { CHECK(0, "neaten joined: model"); return; }
+	/* the ink: the c, a short bridge, the u; written a little off (wider, wobbling) */
+	enum { NP = 24 + 3 + 24 };
+	struct hw_ink ink = { 0 };
+	double xh = 30, base = 100, rx[NP], ry[NP];
+	int own[NP];
+	for (int i = 0; i < NP; i++) {
+		double x, y;
+		if (i < 24) { double a = 0.9 + 4.5 * i / 23; x = 0.3 + 0.36 * cos(a); y = 0.5 + 0.47 * sin(a); }
+		else if (i < 27) { double t = (i - 23) / 4.0, ex = 0.3 + 0.36 * cos(5.4), ey = 0.5 + 0.47 * sin(5.4); x = ex + t * (0.75 - ex); y = ey + t * (1 - ey); }
+		else { double a = 3.1416 * (i - 27) / 23; x = 0.75 + 0.32 - 0.32 * cos(a); y = 1 - 0.95 * sin(a); }
+		x += 0.03 * sin(i * 1.7); y += 0.03 * cos(i * 2.3);
+		rx[i] = 20 + x * xh; ry[i] = base - y * xh;
+		hw_ink_add(&ink, rx[i], ry[i], i * 0.01, 0.5);
+		own[i] = i < 26 ? 0 : 1;
+	}
+	int *ownp = own;
+	unsigned cp[2] = { 'c', 'u' };
+	for (int lv = 0; lv < 3; lv++) {
+		double st = lv == 0 ? 0 : lv == 1 ? 0.75 : 1;
+		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = st, .L = &L, .xh = xh };
+		if (hw_neaten(&q)) { CHECK(0, "neaten joined: memory"); break; }
+		double rs = 0, js = 0;
+		for (int i = 0; i + 1 < NP; i++) rs = fmax(rs, hypot(rx[i + 1] - rx[i], ry[i + 1] - ry[i]));
+		for (int i = 0; i + 1 < NP; i++) js = fmax(js, hypot(q.x[0][i + 1] - q.x[0][i], q.y[0][i + 1] - q.y[0][i]));
+		if (st == 0) {
+			int same = q.how[0] == HW_NEAT_KEPT;
+			for (int i = 0; i < NP; i++) same &= q.x[0][i] == rx[i] && q.y[0][i] == ry[i];
+			CHECK(same, "neaten joined: strength 0 changed the ink");
+		} else {
+			CHECK(q.how[0] == HW_NEAT_PULLED && q.pulled && q.pulled[0] && q.pulled[1],
+			      "neaten joined: %g: not both pulled (how %d)", st, q.how[0]);
+			CHECK(js < 1.6 * rs, "neaten joined: %g: a jump of %.2f (raw steps up to %.2f)", st, js, rs);
+			int fin = 1;
+			for (int i = 0; i < NP; i++) fin &= isfinite(q.x[0][i]) && isfinite(q.y[0][i]);
+			CHECK(fin, "neaten joined: %g: not finite", st);
+		}
+		hw_neat_free(&q);
+	}
+	hw_ink_free(&ink);
+	hw_letters_free(&L);
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -723,6 +874,8 @@ int main(int argc, char **argv)
 	test_words(tmp);
 	test_size();
 	test_lookalike();
+	test_neaten_match();
+	test_neaten_joined();
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 	printf("test-engine: ok\n");
 	return 0;

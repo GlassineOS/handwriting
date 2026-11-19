@@ -59,6 +59,8 @@ struct hw_charspan {
 	unsigned cp;
 	long r0, r1;                    /* feature rows, -1: none */
 	double fit;                     /* 0..1: how well the strokes fit (-1: not aligned) */
+	int top;                        /* the class read most surely over its own frames (spec 003
+					 * FR-037: neatening checks it), 0 none */
 };
 
 /* Aligns text (code points) to the run. Returns the number of characters, or -1 when

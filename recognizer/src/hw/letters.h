@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 9      /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 10     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -18,6 +18,11 @@
 #define HW_LETTERS_SLOTS 10     /* the font's cycle of variants along the text (FR-010): a tenth each */
 #define HW_LETTERS_WAY_SHARE 10 /* a way of writing a character gives a variant from 1/this of its samples */
 #define HW_LETTERS_PROFILE 16   /* points per stroke of a variant's pressure and speed profiles (FR-006) */
+/* the best version's weights (FR-035), times a sample's own weight: */
+#define HW_BEST_FAVOURITE 4.0   /* marked favourite */
+#define HW_BEST_CAREFUL 2.0     /* written to "Write it your best" (quick: 1 / this) */
+#define HW_BEST_CHOSEN 2.0      /* each time chosen in "Which one is nicer?" */
+#define HW_BEST_OTHER 0.3       /* each time not chosen there */
 #define HW_FONT_NAME_DEFAULT "My handwriting"
 #define HW_FONT_NAME_MAX 63     /* bytes of UTF-8 */
 
@@ -71,6 +76,11 @@ struct hw_variant {
 	char (*ids)[17];
 	size_t nstrokes;
 	struct hw_lstroke *s;
+	/* the person's best version of it (FR-035): its samples averaged with the favourite,
+	 * careful and chosen ones weighted up (HW_BEST_*), nstrokes strokes with the points of
+	 * s, x from the variant's left edge; NULL when nothing weighs its samples differently
+	 * (the variant itself is the best) */
+	struct hw_lstroke *best;
 	/* how its samples were written (FR-006, the Brush style FR-034): per stroke
 	 * HW_LETTERS_PROFILE values along its normalised arc length, the averaged pressure and
 	 * speed, 1 the person's median; NULL when none of its samples gave one */

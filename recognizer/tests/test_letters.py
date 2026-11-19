@@ -874,6 +874,48 @@ class Marks(unittest.TestCase):
         kinds = [ln.split("\t")[3] for ln in self.e.run("letters", "marks").stdout.splitlines()]
         self.assertEqual(kinds.count("favourite"), len(l["variants"][0]["ids"]))
 
+    def test_best_version(self):
+        """each version's best version (spec 003 FR-035): stored only where the samples it is
+        made of count unlike (no marks: none), leaned to the favourite sample, of the
+        version's strokes and points; a left-out version has none"""
+        l = self.chars()["l"]
+        self.assertFalse(any("best" in v for v in l["variants"]))
+        k = max(range(len(l["variants"])), key=lambda i: l["variants"][i]["members"])
+        ids = l["variants"][k]["ids"]
+        self.e.run("letters", "mark", "favourite", "l", ids[0])
+        self.e.run("letters", "build", "-c", "l")
+        v = self.chars()["l"]["variants"][k]
+        self.assertIn("best", v)
+        self.assertEqual([len(st) for st in v["best"]], [len(st) for st in v["strokes"]])
+        self.assertNotEqual(v["best"], v["strokes"])
+        # another favourite, another best version
+        self.e.run("letters", "mark", "favourite", "l", ids[-1])
+        self.e.run("letters", "build", "-c", "l")
+        self.assertNotEqual(self.chars()["l"]["variants"][k]["best"], v["best"])
+        self.e.run("letters", "mark", "way-out", "l", *self.chars()["l"]["variants"][k]["ids"])
+        self.e.run("letters", "build", "-c", "l")
+        self.assertNotIn("best", self.chars()["l"]["variants"][k])
+
+    def test_best_version_careful(self):
+        """samples written to "Write it your best" count more in the best version than quick ones"""
+        e = Env()
+        try:
+            rnd = random.Random(31)
+            careful = [sample("l", rnd, written="careful") for _ in range(4)]
+            for c in careful:
+                # written more upright than the quick ones
+                for st in c["strokes"]:
+                    for p in st:
+                        p[0] = round(p[0] + 0.05 * (p[1] - 100), 3)
+            e.put(alphabet_samples(seed=31, per=3) + careful + [sample("l", rnd, written="quick") for _ in range(4)])
+            e.run("letters", "build", "-r")
+            L = {d["char"]: d for d in map(json.loads, e.model().splitlines()) if "char" in d}
+            self.assertTrue(any("best" in v for v in L["l"]["variants"]))
+            # the other letters: all written alike, no best version
+            self.assertFalse(any("best" in v for c, d in L.items() if c != "l" for v in d["variants"]))
+        finally:
+            e.close()
+
     def test_variant_left_out_and_put_back(self):
         l = self.chars()["l"]
         ids = l["variants"][0]["ids"]
@@ -1275,8 +1317,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 9))
-            old = dict(head, inputs=hw_inputs(ids, 8))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 10))
+            old = dict(head, inputs=hw_inputs(ids, 9))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
