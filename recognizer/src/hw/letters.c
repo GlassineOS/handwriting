@@ -226,6 +226,8 @@ static char *format_model(const struct hw_letters *L, size_t *len, int with_best
 		num(&b, sp->open);
 		sput(&b, ",\"open0\":");
 		num(&b, sp->open0);
+		sput(&b, ",\"run\":");
+		num(&b, sp->run);
 		sput(&b, ",\"pairs\":[");
 		for (size_t i = 0; i < sp->npairs; i++) {
 			char u[16];
@@ -467,6 +469,7 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			sp->word = jnum(v, "word", L->m.word_gap);
 			sp->open = jnum(v, "open", 0);
 			sp->open0 = jnum(v, "open0", 0);
+			sp->run = jnum(v, "run", 1);
 			json_object *a;
 			if (json_object_object_get_ex(v, "pairs", &a) && json_object_is_type(a, json_type_array)) {
 				size_t na = json_object_array_length(a);
@@ -2543,7 +2546,8 @@ int hw_letters_build(struct hw_letters *L)
 	/* one character's build: no spacing (the model's stays) */
 	if (build_only) goto measured;
 	/* spacing (FR-007): the profile gaps of neighbouring own letters of one sample (their
-	 * strokes placed by where they lie), the box gaps between words */
+	 * strokes placed by where they lie), running text's (a sample of several words) told
+	 * apart, the box gaps between words */
 	struct hw_gap_obs *obs = NULL;
 	size_t nobs = 0, cobs = 0;
 	struct dvec wgs = { 0 };
@@ -2583,6 +2587,7 @@ int hw_letters_build(struct hw_letters *L)
 				g->mb = hw_mid_of(&md[1]);
 				if (hw_profile_empty(&g->pa) || hw_profile_empty(&g->pb)) continue;
 				g->gap = hw_profile_gap(&g->pa, &g->pb, 0);
+				g->run = strchr(m->s.text, ' ') != NULL;
 				nobs++;
 			} else if (b->pos == a->pos + 2 && b->pos - 1 < (int)nc && cps[b->pos - 1] == ' ') {
 				double axr = -INFINITY, bxl = INFINITY;
