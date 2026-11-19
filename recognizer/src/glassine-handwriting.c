@@ -1183,10 +1183,12 @@ static int parse_align(const struct session *s, const char *align, size_t nc, in
 }
 
 /* the best reading of all the strokes, as read gives it, with x and y replaced (NULL: as
- * they are) */
+ * they are); with top, from the same run, per character of cp (nc) the class read most
+ * surely over its own frames (spec 003 FR-037; 0 none) */
 static int read_text(struct hw_lang *l, const struct session *s, double **x, double **y,
-		     const struct hw_size_ref *ref, char *out, size_t max)
+		     const struct hw_size_ref *ref, char *out, size_t max, const unsigned *cp, size_t nc, int *top)
 {
+	for (size_t k = 0; top && k < nc; k++) top[k] = 0;
 	out[0] = 0;
 	struct hw_ink *ink = malloc((s->n + 1) * sizeof *ink);
 	if (!ink) return -1;
@@ -1207,6 +1209,10 @@ static int read_text(struct hw_lang *l, const struct session *s, double **x, dou
 			struct hw_reading rd;
 			struct hw_context c;
 			if (hw_read_words(l, &r, read_context(l, s, READ_FIELD, &c), 1, &rd) >= 1) text_of(rd.c[0].cp, rd.c[0].len, out, max);
+			struct hw_charspan *cs = NULL;
+			if (top && cp && nc && hw_align(l, &r, cp, nc, &cs) > 0)
+				for (size_t k = 0; k < nc; k++) top[k] = cs[k].top;
+			free(cs);
 		}
 		hw_run_free(&r);
 	} else if (m) ret = -1;
@@ -1327,41 +1333,70 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		q.L = letters_now();
 		q.xh = xh;
 		/* the neatened ink must read at least as well as the original (FR-016: the same
-		 * text in the same hand): else without the pull, then not at all */
+		 * text in the same hand): else without the pull, then not at all. Before that, each
+		 * pulled character on its own (FR-037): one that reads as another character than in
+		 * the original is not pulled, the rest keep their pull; one run of the model reads
+		 * the line and every character, a second only when one was put back. */
 		char orig[4 * HW_MAX_LABELS + 1], now[4 * HW_MAX_LABELS + 1];
 		const char *goal = text ? text : orig;
 		size_t d0 = 0;
 		orig[0] = 0;
-		if (l && q.nc) {
-			if (read_text(l, s, NULL, NULL, &ref_sz, orig, sizeof orig)) goto oom;
-			d0 = edit_utf8(orig, goal);
-		}
+		int *top0 = calloc(nc + 1, sizeof *top0), *top1 = calloc(nc + 1, sizeof *top1);
+		unsigned char *nopull = calloc(nc + 1, 1);
+		if (!top0 || !top1 || !nopull) { free(top0); free(top1); free(nopull); goto oom; }
 		const char *knob = getenv("GLASSINE_HANDWRITING_NEATEN");
 		int check = !(knob && strstr(knob, "check=0"));
+		/* (tests) misread=CHARS: those characters, pulled, read as another one */
+		const char *mis = knob ? strstr(knob, "misread=") : NULL;
+		size_t nmis = mis ? strcspn(mis += 8, ",") : 0;
+		if (l && q.nc && check) {
+			if (read_text(l, s, NULL, NULL, &ref_sz, orig, sizeof orig, cp, q.nc, top0)) goto oom_check;
+			d0 = edit_utf8(orig, goal);
+		}
 		int done = 0;
 		for (int step = 0; step < NEAT_STEPS && !done; step++) {
-			hw_neat_free(&q);
 			q.line_only = step > 0;
-			q.strength = st;
-			if (hw_neaten(&q)) goto oom;
-			/* as the reply writes them, so the check reads what the client gets */
-			for (size_t i = 0; i < s->n; i++)
-				for (size_t t = 0; t < s->ink[i].n; t++) {
-					q.x[i][t] = round(q.x[i][t] * 1000) / 1000;
-					q.y[i][t] = round(q.y[i][t] * 1000) / 1000;
+			q.nopull = nopull;
+			for (int again = 0; again < 2; again++) {
+				hw_neat_free(&q);
+				q.strength = st;
+				if (hw_neaten(&q)) goto oom_check;
+				/* as the reply writes them, so the check reads what the client gets */
+				for (size_t i = 0; i < s->n; i++)
+					for (size_t t = 0; t < s->ink[i].n; t++) {
+						q.x[i][t] = round(q.x[i][t] * 1000) / 1000;
+						q.y[i][t] = round(q.y[i][t] * 1000) / 1000;
+					}
+				if (!l || !q.nc || !check) { done = 1; break; }
+				int moved = 0;
+				for (size_t i = 0; i < s->n; i++) moved |= q.how[i] != HW_NEAT_KEPT;
+				if (!moved) { done = 1; break; }
+				if (read_text(l, s, q.x, q.y, &ref_sz, now, sizeof now, cp, q.nc, top1)) goto oom_check;
+				int back = 0;
+				for (size_t k = 0; !again && k < q.nc; k++) {
+					if (!q.pulled[k]) continue;
+					int other = top1[k] != top0[k] && top1[k] != hw_class_of(&l->model, cp[k]);
+					for (size_t z = 0; z < nmis; z++) other |= cp[k] == (unsigned char)mis[z];
+					if (other) { nopull[k] = 1; back = 1; }
 				}
-			if (!l || !q.nc || !check) { done = 1; break; }
-			int moved = 0;
-			for (size_t i = 0; i < s->n; i++) moved |= q.how[i] != HW_NEAT_KEPT;
-			if (!moved) { done = 1; break; }
-			if (read_text(l, s, q.x, q.y, &ref_sz, now, sizeof now)) goto oom;
+				if (!back) break;
+			}
+			if (done) break;
 			if (edit_utf8(now, goal) <= d0) done = 1;
+		}
+		free(top0); free(top1);
+		if (0) {
+		oom_check:
+			free(top0); free(top1); q.nopull = NULL; free(nopull);
+			goto oom;
 		}
 		if (!done) {
 			hw_neat_free(&q);
 			q.strength = 0;
-			if (hw_neaten(&q)) goto oom;
+			if (hw_neaten(&q)) { q.nopull = NULL; free(nopull); goto oom; }
 		}
+		q.nopull = NULL;
+		free(nopull);
 	}
 	bfmt(&b, "neaten\t%s\tok\t", id);
 	besc(&b, used);

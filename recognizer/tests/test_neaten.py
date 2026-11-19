@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Host acceptance for neatening (spec 003 FR-013 to FR-017, FR-020, FR-022, FR-023), with
-a random-weight model and synthetic samples: strength 0 gives the strokes back byte for
-byte; any strength keeps the strokes, their order, every point's time, pressure and tilt as
-sent; the same request gives the same ink; at strength 1 every covered character with
-strokes of its own is closer to its variant; without a letter model the baseline is
+"""Host acceptance for neatening (spec 003 FR-013 to FR-017, FR-020, FR-022, FR-023,
+FR-035 to FR-037), with a random-weight model and synthetic samples: strength 0 gives the
+strokes back byte for byte; any strength keeps the strokes, their order, every point's time,
+pressure and tilt as sent; the same request gives the same ink; the four levels do what they
+say (Light no letter's shape, Medium the close letters, Strong also a badly written one,
+Neatest the best version's shape); the best version is the target; a pulled letter read as
+another character is put back; at strength 1 the covered characters pulled are closer to
+their version (most of them are); without a letter model the baseline is
 straightened; drawing passes unchanged; the neatened ink reads as the original did (or
 is left as it was); the session is unchanged, so a confirm stores the same sample; a
 private field keeps nothing to neaten.
 
     HW_BIN=path/to/glassine-handwriting python3 tests/test_neaten.py
 
-The recognizer's reading of real ink against neatened ink is measured on a store of the
+The correspondence along the stroke (monotonic, hooks to the ends) and joined letters are
+tested in tests/test-engine.c. The recognizer's reading of real ink against neatened ink is measured on a store of the
 person's samples with tools/eval-neaten.py (only aggregate numbers).
 """
 import importlib.util
@@ -113,7 +117,7 @@ class Neaten(unittest.TestCase):
         c.ask("hello", "1")
         self.begin(c, s)
         sent = [points(st) for st in s["strokes"]]
-        for st in ("0.3", "1"):
+        for st in ("0.25", "0.3", "0.5", "0.75", "1"):
             for args in ((), ("abc de", ";".join(",".join(map(str, sp)) for sp in s["spans"]))):
                 _, out = parse(c.ask("neaten", "s", st, *args))
                 self.assertEqual([o[0] for o in out], list(range(len(sent))))
@@ -137,7 +141,7 @@ class Neaten(unittest.TestCase):
         L = self.letters()
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
         rnd = random.Random(11)
-        n = 0
+        n = m = 0
         for text in ("hello", "World", "q7x2b"):
             s = TL.sample(text, rnd)
             # hastier than the samples the letters were made from
@@ -160,12 +164,127 @@ class Neaten(unittest.TestCase):
                 db = min(shape_dist(before, v) for v in vs)
                 if not math.isfinite(db):
                     continue
+                m += 1
+                if not all(out[j][1] == "pulled" for j in s["spans"][k]):
+                    continue
                 after = [xy[j] for j in s["spans"][k]]
                 da = min(shape_dist(after, v) for v in vs)
                 self.assertLess(da, db, (text, ch))
-                self.assertTrue(all(out[j][1] == "pulled" for j in s["spans"][k]))
                 n += 1
+        # (a letter whose ink doesn't match its version's structure stays at the line level)
         self.assertGreater(n, 8)
+        self.assertGreaterEqual(n, 0.75 * m)
+
+    def neaten_letters(self, s, strength, text=None, align=True, knob="check=0"):
+        """the sample neatened at strength (with its text and spans), as (how, xy) per stroke"""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = knob
+        c = self.e.start()
+        self.begin(c, s)
+        text = text or s["text"]
+        args = (TR.esc(text), ";".join(",".join(map(str, sp)) for sp in s["spans"])) if align else (TR.esc(text),)
+        _, out = parse(c.ask("neaten", "s", str(strength), *args))
+        c.close()
+        return [o[1] for o in out], [EV.to_xy(o[2]) for o in out]
+
+    @staticmethod
+    def target(v):
+        return {"strokes": v.get("best") or v["strokes"]}
+
+    def test_levels(self):
+        """the four levels (FR-014): Light moves no letter's shape, only the line; Medium
+        pulls the letters already close to their best version; Strong every covered letter
+        whose strokes match its version, also a badly written one; Neatest gives each the
+        best version's shape"""
+        L = self.letters()
+        for ax, ay, lean in ((1.5, 1.8, 0.4), (1.4, 1.9, 0.5)):
+            rnd = random.Random(21)
+            s = TL.sample("World", rnd)
+            for st in s["strokes"]:
+                for p in st:
+                    p[0] += rnd.gauss(0, 0.5)
+                    p[1] += rnd.gauss(0, 0.5)
+            # the o written badly: larger, taller and leaning, its strokes still the o's
+            for j in s["spans"][1]:
+                pts = s["strokes"][j]
+                cx = sum(p[0] for p in pts) / len(pts)
+                cy = sum(p[1] for p in pts) / len(pts)
+                for p in pts:
+                    dx, dy = p[0] - cx, p[1] - cy
+                    p[0] = round(cx + ax * dx - lean * dy, 3)
+                    p[1] = round(cy + ay * dy, 3)
+            self.levels(L, s, 1)
+
+    def levels(self, L, s, bad):
+        raw = [[(p[0], p[1]) for p in st] for st in s["strokes"]]
+        res = {lv: self.neaten_letters(s, lv) for lv in (0.25, 0.5, 0.75, 1)}
+        ks = [k for k, ch in enumerate(s["text"]) if L.get(ch, {}).get("covered")]
+
+        def dist(xy, k, size=False):
+            """to its nearest best version: in shape, or (size) in x-heights, as written"""
+            vs = [v for v in L[s["text"][k]]["variants"] if v["members"] >= 2 and not v.get("left_out")]
+            ink = [xy[j] for j in s["spans"][k]]
+            return min(EV.vdist(ink, 30.0, self.target(v)) if size else shape_dist(ink, self.target(v)) for v in vs)
+
+        def pulled(how, k):
+            return all(how[j] == "pulled" for j in s["spans"][k])
+
+        before = {k: dist(raw, k) for k in ks}
+        how, xy = res[0.25]
+        self.assertNotIn("pulled", how)
+        for k in ks:
+            # the line only: each letter's ink keeps its shape (moved, scaled, sheared)
+            self.assertAlmostEqual(dist(xy, k), before[k], delta=0.05)
+        how5, _ = res[0.5]
+        self.assertFalse(pulled(how5, bad))
+        self.assertTrue(any(pulled(how5, k) for k in ks if k != bad))
+        how7, xy7 = res[0.75]
+        self.assertTrue(pulled(how7, bad))
+        self.assertLess(dist(xy7, bad, True), 0.6 * dist(raw, bad, True))
+        how1, xy1 = res[1]
+        n = 0
+        for k in ks:
+            if pulled(how1, k):
+                # (a letter already that near keeps its few points: on the version, chords between)
+                self.assertLess(dist(xy1, k), max(before[k], 0.08))
+                if pulled(how7, k):
+                    self.assertLessEqual(dist(xy1, k), dist(xy7, k) + 0.01)
+                n += 1
+        self.assertGreaterEqual(n, 4)
+
+    def test_best_version_is_the_target(self):
+        """the letters are pulled to the best version of their version (FR-035), the one
+        the favourite sample leans it to, not its plain average"""
+        L = self.letters()
+        model = self.e.store / "letters" / "model"
+        e = self.e
+        ids = L["o"]["variants"][0]["ids"]
+        e.run("letters", "mark", "favourite", "o", ids[0])
+        e.run("letters", "build", "-c", "o")
+        L = {m["char"]: m for m in map(json.loads, model.read_text().splitlines()) if "char" in m}
+        v = L["o"]["variants"][0]
+        self.assertIn("best", v)
+        rnd = random.Random(22)
+        s = TL.sample("oo", rnd)
+        _, xy = self.neaten_letters(s, 1)
+        for k in range(2):
+            ink = [xy[j] for j in s["spans"][k]]
+            self.assertLess(shape_dist(ink, {"strokes": v["best"]}), shape_dist(ink, v) + 1e-9)
+
+    def test_letter_check(self):
+        """a pulled letter that reads as another character is put back to the line level,
+        the other letters keep their pull (FR-037; the knob's misread= has those characters
+        read as another once pulled)"""
+        self.letters()
+        s = TL.sample("hello", random.Random(24))
+        others = 0
+        for mis in ("o", "hel", "lo"):
+            how, _ = self.neaten_letters(s, 1, knob="misread=" + mis)
+            for k, ch in enumerate(s["text"]):
+                if ch in mis:
+                    self.assertTrue(all(how[j] != "pulled" for j in s["spans"][k]), (mis, how))
+                else:
+                    others += all(how[j] == "pulled" for j in s["spans"][k])
+        self.assertGreater(others, 0)
 
     def test_same_strokes_variant(self):
         """a t written in one stroke goes to the one-stroke variant, one in two strokes to a
