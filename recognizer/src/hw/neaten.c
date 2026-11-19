@@ -996,6 +996,141 @@ static int guard_fails(const struct hw_neat *q, size_t k, double xh, unsigned ch
 	return rn > rr;
 }
 
+/* the shape cut: a stroke the alignment shares among several letters of a word (a joined
+ * word written in one go) is cut where its parts best match the letters' glyphs, each
+ * letter's part its glyph's stroke as its pieces come in writing order; the alignment's
+ * own edges come from its frames, which can fall a letter off or give a letter none */
+#define CUT_N 24                /* points a part and a glyph stroke are compared at */
+#define CUT_LEN 0.25
+
+static void cut_resample(const double *x, const double *y, size_t n, double *ox, double *oy)
+{
+	double tot = 0;
+	for (size_t i = 1; i < n; i++) tot += hypot(x[i] - x[i - 1], y[i] - y[i - 1]);
+	size_t i = 0;
+	double at = 0;
+	for (int z = 0; z < CUT_N; z++) {
+		double want = tot * z / (CUT_N - 1);
+		while (i + 1 < n && at + hypot(x[i + 1] - x[i], y[i + 1] - y[i]) < want) { at += hypot(x[i + 1] - x[i], y[i + 1] - y[i]); i++; }
+		if (i + 1 >= n) { ox[z] = x[n - 1]; oy[z] = y[n - 1]; continue; }
+		double l = hypot(x[i + 1] - x[i], y[i + 1] - y[i]), u = l > 0 ? (want - at) / l : 0;
+		ox[z] = x[i] + u * (x[i + 1] - x[i]);
+		oy[z] = y[i] + u * (y[i + 1] - y[i]);
+	}
+}
+
+/* how far part [a, b) of ink k (x-heights xh, y down) is from glyph stroke g (y up):
+ * centred RMS at the line's x-height, plus its length against the glyph's */
+static double cut_cost(const struct hw_ink *k, size_t a, size_t b, const double *cum, const double *gx, const double *gy,
+		       double glen, double xh)
+{
+	if (b - a < 2) return INFINITY;
+	double px[CUT_N], py[CUT_N], mx = 0, my = 0, gmx = 0, gmy = 0;
+	cut_resample(k->x + a, k->y + a, b - a, px, py);
+	for (int z = 0; z < CUT_N; z++) { px[z] /= xh; py[z] = -py[z] / xh; mx += px[z]; my += py[z]; gmx += gx[z]; gmy += gy[z]; }
+	mx /= CUT_N; my /= CUT_N; gmx /= CUT_N; gmy /= CUT_N;
+	double e = 0;
+	for (int z = 0; z < CUT_N; z++) {
+		double dx = px[z] - mx - (gx[z] - gmx), dy = py[z] - my - (gy[z] - gmy);
+		e += dx * dx + dy * dy;
+	}
+	double len = (cum[b - 1] - cum[a]) / xh;
+	return sqrt(e / CUT_N) + CUT_LEN * fabs(log(fmax(len, 0.02) / fmax(glen, 0.02)));
+}
+
+static int shape_cut(struct hw_neat *q, const struct hw_letters *V, const int *gvar, const long *gjo, double xh)
+{
+	size_t n = q->n, nc = q->nc;
+	if (!V || !gvar || !(xh > 0)) return 0;
+	for (size_t j = 0; j < n; j++) {
+		const struct hw_ink *k = &q->ink[j];
+		int *ow = q->own[j];
+		size_t m = k->n;
+		if ((q->keep && q->keep[j]) || m < 4) continue;
+		/* its letters: as ALIGN lists them, else those the alignment gave its points and
+		 * the ones between */
+		int c0 = -1, c1 = -1;
+		if (q->share)
+			for (size_t c = 0; c < nc; c++) { if (q->share[j * nc + c]) { if (c0 < 0) c0 = (int)c; c1 = (int)c; } }
+		else
+			for (size_t i = 0; i < m; i++)
+				if (ow[i] >= 0 && (size_t)ow[i] < nc) { if (c0 < 0 || ow[i] < c0) c0 = ow[i]; if (ow[i] > c1) c1 = ow[i]; }
+		/* (without ALIGN, a neighbour the alignment gave fewer pieces than its glyph has
+		 * strokes, its others after this stroke (or before, for one before): the piece it
+		 * lacks is here) */
+		for (int side = 0; !q->share && c0 >= 0 && side < 2; side++) {
+			int c = side ? c1 + 1 : c0 - 1;
+			if (c < 0 || (size_t)c >= nc || is_space(q->cp[c]) || gvar[c] < 0) continue;
+			const struct hw_letter *le = letter_of(V, q->cp[c]);
+			if (!le || gvar[c] >= le->nvar) continue;
+			int np = 0, wrong = 0;
+			for (size_t jj = 0; jj < n; jj++)
+				for (size_t i = 0; i < q->ink[jj].n; i++)
+					if (q->own[jj][i] == c && (!i || q->own[jj][i - 1] != c)) { np++; wrong |= side ? jj < j : jj > j; }
+			if (!wrong && (size_t)np < le->var[gvar[c]].nstrokes) { if (side) c1 = c; else c0 = c; }
+		}
+		if (c0 < 0 || c1 <= c0) continue;
+		/* one word, every letter with its glyph, no pair the font joins */
+		size_t R = (size_t)(c1 - c0 + 1);
+		int ok = 1;
+		for (int c = c0; c <= c1 && ok; c++)
+			ok = !is_space(q->cp[c]) && gvar[c] >= 0 && !(gjo && gjo[c] >= 0) && letter_of(V, q->cp[c]);
+		if (!ok) continue;
+		double *gx = malloc(R * CUT_N * 2 * sizeof *gx), *glen = malloc(R * sizeof *glen), *cum = malloc((m + 1) * sizeof *cum);
+		double *D = malloc((R + 1) * (m + 1) * sizeof *D);
+		size_t *P = malloc((R + 1) * (m + 1) * sizeof *P);
+		if (!gx || !glen || !cum || !D || !P) { free(gx); free(glen); free(cum); free(D); free(P); return -1; }
+		for (size_t r = 0; r < R && ok; r++) {
+			size_t c = (size_t)c0 + r;
+			const struct hw_letter *le = letter_of(V, q->cp[c]);
+			if (gvar[c] >= le->nvar) { ok = 0; break; }
+			const struct hw_variant *v = &le->var[gvar[c]];
+			/* its glyph stroke: as many as its pieces before this stroke */
+			size_t before = 0;
+			for (size_t jj = 0; jj < j; jj++)
+				for (size_t i = 0; i < q->ink[jj].n; i++)
+					if (q->own[jj][i] == (int)c && (!i || q->own[jj][i - 1] != (int)c)) before++;
+			if (!v->nstrokes) { ok = 0; break; }
+			const struct hw_lstroke *g = &v->s[before < v->nstrokes ? before : v->nstrokes - 1];
+			if (g->n < 2) { ok = 0; break; }
+			cut_resample(g->x, g->y, g->n, gx + 2 * r * CUT_N, gx + (2 * r + 1) * CUT_N);
+			glen[r] = 0;
+			for (size_t i = 1; i < g->n; i++) glen[r] += hypot(g->x[i] - g->x[i - 1], g->y[i] - g->y[i - 1]);
+		}
+		if (ok) {
+			arc(k->x, k->y, m, cum);
+			/* D[r][b]: the least cost of the first r letters over points [0, b) */
+			for (size_t i = 0; i < (R + 1) * (m + 1); i++) D[i] = INFINITY;
+			D[0] = 0;
+			for (size_t r = 1; r <= R; r++)
+				for (size_t b = 2 * r; b <= m; b++) {
+					if (r == R && b != m) continue;
+					for (size_t a = 2 * (r - 1); a + 2 <= b; a++) {
+						double d0 = D[(r - 1) * (m + 1) + a];
+						if (!isfinite(d0) || (r == 1 && a)) continue;
+						double d = d0 + cut_cost(k, a, b, cum, gx + 2 * (r - 1) * CUT_N, gx + (2 * r - 1) * CUT_N, glen[r - 1], xh);
+						if (d < D[r * (m + 1) + b]) { D[r * (m + 1) + b] = d; P[r * (m + 1) + b] = a; }
+					}
+				}
+			/* (without ALIGN, not where one letter's glyph alone takes the whole stroke as well as the
+			 * parts take theirs on the mean: that's one letter's stroke the alignment spread) */
+			double one = INFINITY;
+			for (size_t r = 0; r < R; r++)
+				one = fmin(one, cut_cost(k, 0, m, cum, gx + 2 * r * CUT_N, gx + (2 * r + 1) * CUT_N, glen[r], xh));
+			if (isfinite(D[R * (m + 1) + m]) && (q->share || !(one <= D[R * (m + 1) + m] / (double)R))) {
+				size_t b = m;
+				for (size_t r = R; r >= 1; r--) {
+					size_t a = P[r * (m + 1) + b];
+					for (size_t i = a; i < b; i++) ow[i] = c0 + (int)r - 1;
+					b = a;
+				}
+			}
+		}
+		free(gx); free(glen); free(cum); free(D); free(P);
+	}
+	return 0;
+}
+
 static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned char *fail, const struct hw_letters *V,
 		       const int *gvar, const long *gjo, unsigned char *doubt)
 {
@@ -1033,8 +1168,8 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 	 * stroke) goes to the run next to it (the longer one), the shortest first. A longer run
 	 * is a joint, where the stroke passes from one letter to the next: each keeps its part.
 	 * ALIGN is as given. */
+	double xh0 = q->xh;
 	{
-		double xh0 = q->xh;
 		if (!(xh0 > 0)) {
 			double *hs = malloc((n + 1) * sizeof *hs);
 			size_t nh = 0;
@@ -1046,6 +1181,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 			xh0 = hs ? 0.7 * median(hs, nh, 0) : 0;
 			free(hs);
 		}
+		if (q->fit && s > HW_NEAT_LIGHT && shape_cut(q, V, gvar, gjo, xh0)) { free(C); free(nown); hw_neat_free(q); return -1; }
 		for (size_t j = 0; q->fit && xh0 > 0 && j < n; j++) {
 			const struct hw_ink *k = &q->ink[j];
 			int *ow = q->own[j];

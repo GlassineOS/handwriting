@@ -52,6 +52,8 @@ struct hw_neat {
 	size_t nc;
 	const double *fit;              /* per character 0..1 (-1 not aligned); NULL: all trusted */
 	int **own;                      /* per stroke, per point: its character, -1 none */
+	const unsigned char *share;     /* per stroke, per character (n x nc): 1 the stroke holds some
+					 * of its ink (ALIGN of whole strokes); NULL unknown */
 	double strength;                /* 0..1 */
 	const struct hw_letters *L;     /* NULL: line-level corrections only */
 	double xh;                      /* the person's x-height in the ink's units, 0 unknown */

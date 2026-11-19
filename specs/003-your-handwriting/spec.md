@@ -322,7 +322,10 @@ size, spacing) and keep their shape.
 
 - **FR-013**: Neatening takes ink and returns ink: the same strokes in the same order, each
   point moved, with timing, pressure and tilt kept. The text it is read as comes from the
-  recognizer (spec 001), which also tells which strokes form which character.
+  recognizer (spec 001), which also tells which strokes form which character; where a
+  stroke holds several letters (a joined word), each letter's part of it is where the
+  stroke best matches that letter's glyph, so a joined letter reaches the pull with its own
+  ink.
 - **FR-014**: Neatening has four levels, from the least to the most change, each doing
   what the one before it does and more:
   - **Light**: line-level corrections only: a straight baseline, a steady slant, even letter

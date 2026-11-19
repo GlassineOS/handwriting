@@ -926,6 +926,36 @@ class Neaten(unittest.TestCase):
         self.assertGreater(drawn, 30)
         self.assertGreater(len(mark), 2)
 
+    def test_joined_pairs_whole_stroke_align(self):
+        """the same joined words with ALIGN of whole strokes (a joined stroke listed for each
+        of its letters, as the store has them): the letters reach the pull with their own ink
+        (the stroke cut where its parts match their glyphs), so at Strong and Neatest each
+        letter of a pair is pulled as with ALIGN by points, with no new kink or step back"""
+        sh = {"i": TL.dotted_i}
+        self.letters(shapes=sh)
+        words = ["past", "chin", "brim", "has", "rich", "cast", "arise", "chase", "first", "this"]
+        pairs = ("st", "ch", "ri", "as")
+        xh = 30.0
+        for seed in (33, 1):
+            rnd = random.Random(seed)
+            for i in range(0, len(words), 5):
+                s, at, _ = joined_line(rnd, words[i:i + 5], shapes=sh)
+                text = s["text"]
+                whole = ";".join(",".join(sorted({str(j) for j, _, _ in m})) for m in at)
+                for path, args in (("whole", [TR.esc(text), whole]),):
+                    for lv in ("0.75", "1"):
+                        c = self.e.start()
+                        self.begin(c, s)
+                        _, out, why = parse(c.ask("neaten", "s", lv, *args), why=True)
+                        c.close()
+                        xy = [EV.to_xy(o[2]) for o in out]
+                        for j, st in enumerate(s["strokes"]):
+                            self.assertEqual(len(xy[j]), len(st), (path, lv))
+                            self.assertEqual(sum(flow([(p[0], p[1]) for p in st], xy[j], xh)), 0, (path, lv, j))
+                        n = sum(why[z] == "pulled" for k in range(len(text) - 1) if text[k:k + 2] in pairs for z in (k, k + 1))
+                        m = sum(2 for k in range(len(text) - 1) if text[k:k + 2] in pairs)
+                        self.assertGreaterEqual(n, m - 1, (path, lv, why))
+
     def test_flow_where_ink_and_versions_differ(self):
         """at every level, no new step back and no new kink where the versions have a part the
         ink lacks (a loop: not traced with too few points, another version or none) or the ink
