@@ -195,6 +195,11 @@ double hw_neat_variant_dist(const struct hw_ink *ink, size_t n, double xh, const
 /* nor ink whose middle lies more than this many x-heights above or below the glyph's on the
  * line */
 #define HW_NEAT_PLACE_LINE 0.75
+/* nor ink more than this many times as wide as the glyph (at least half an x-height), nor
+ * ink whose larger side is less than this share of the glyph's: a letter's ink holds about
+ * one letter */
+#define HW_NEAT_WIDE 2.0
+#define HW_NEAT_SMALL 0.5
 /* a piece's matched places reach its glyph stroke's ends within this share of its length
  * (at a joint within the other), else it is traced by the length along it */
 #define HW_NEAT_COVER 0.1
@@ -606,6 +611,20 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 			const double *b = pb[a];
 			double dx = ((b[0] + b[1]) / 2 - icx) - ((b[4] + b[5]) / 2 - tcx), dy = ((b[2] + b[3]) / 2 - icy) - ((b[6] + b[7]) / 2 - tcy);
 			bad = hypot(dx, dy) > HW_NEAT_PLACE;
+		}
+		/* and about its glyph's size: ink far wider than the glyph holds more than this
+		 * letter (a joined word's stroke given whole to one of its letters), ink far smaller
+		 * is a cut of a joined stroke that left it a little of its own; pulled, the one
+		 * would shrink its neighbours' ink into this glyph, the other draw the glyph where
+		 * the neighbours' ink still holds the letter */
+		if (!bad) {
+			double i0 = INFINITY, i1 = -INFINITY, j0 = INFINITY, j1 = -INFINITY, t0 = INFINITY, t1 = -INFINITY, u0 = INFINITY, u1 = -INFINITY;
+			for (int a = 0; a < np; a++) {
+				i0 = fmin(i0, pb[a][0]); i1 = fmax(i1, pb[a][1]); j0 = fmin(j0, pb[a][2]); j1 = fmax(j1, pb[a][3]);
+				t0 = fmin(t0, pb[a][4]); t1 = fmax(t1, pb[a][5]); u0 = fmin(u0, pb[a][6]); u1 = fmax(u1, pb[a][7]);
+			}
+			double gw = t1 - t0, gs = fmax(gw, u1 - u0);
+			bad = i1 - i0 > HW_NEAT_WIDE * fmax(gw, 0.5) || fmax(i1 - i0, j1 - j0) < HW_NEAT_SMALL * gs;
 		}
 		if (bad) goto out;
 	}
@@ -1078,6 +1097,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 		k0 = k1 + 1;
 	}
 	int ret = 0;
+	unsigned char *hold = NULL;
 	double *v = malloc((nc + 1) * 3 * sizeof *v);
 	/* per point of a stroke: where the pull takes it from where the line-level map puts it */
 	double **ex = calloc(n + 1, sizeof *ex), **ey = calloc(n + 1, sizeof *ey);
@@ -1183,6 +1203,42 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 		double off = target_base - c->ty1 - c->dy;
 		if (c->fit >= HW_NEAT_FIT_PULL && on_base(q->cp[k]) && fabs(off) <= 0.35 * xh) c->dy += off;
 	}
+	/* a letter with no ink of its own in a word, or far less than its glyph's size, that
+	 * shares its strokes with its neighbours: its ink is in theirs (a joined stroke ALIGN
+	 * gave whole to one letter, or a joint the alignment put far along), so neither it nor
+	 * they are pulled; every letter keeps its ink at about its own size */
+	hold = calloc(nc + 1, 1);
+	if (!hold) { ret = -1; goto done; }
+	for (size_t k = 0; V && k < nc; k++) {
+		if (is_space(q->cp[k]) || gvar[k] < 0) continue;
+		const struct hw_letter *le = letter_of(V, q->cp[k]);
+		if (!le || gvar[k] >= le->nvar) continue;
+		const struct hw_variant *gv = &le->var[gvar[k]];
+		double g0 = INFINITY, g1 = -INFINITY, h0 = INFINITY, h1 = -INFINITY;
+		for (size_t a = 0; a < gv->nstrokes; a++)
+			for (size_t i = 0; i < gv->s[a].n; i++) {
+				g0 = fmin(g0, gv->s[a].x[i]); g1 = fmax(g1, gv->s[a].x[i]);
+				h0 = fmin(h0, gv->s[a].y[i]); h1 = fmax(h1, gv->s[a].y[i]);
+			}
+		double gs = fmax(g1 - g0, h1 - h0);
+		struct ch *c = &C[k];
+		double e = c->npts ? fmax(c->x1 - c->x0, c->y1 - c->y0) / xh : 0;
+		if (!(gs > 0) || e >= HW_NEAT_SMALL * gs) continue;
+		if (!c->npts) {
+			for (int d = -1; d <= 1; d += 2)
+				for (long z = (long)k + d; z >= 0 && z < (long)nc && !is_space(q->cp[z]); z += d)
+					if (C[z].npts) { hold[z] = 1; break; }
+			continue;
+		}
+		for (size_t j = 0; j < n; j++) {
+			if (nown[j] < 2) continue;
+			int mine = 0;
+			for (size_t i = 0; i < q->ink[j].n && !mine; i++) mine = q->own[j][i] == (int)k;
+			if (!mine) continue;
+			hold[k] = 1;
+			for (size_t i = 0; i < q->ink[j].n; i++) if (q->own[j][i] >= 0 && (size_t)q->own[j][i] < nc) hold[q->own[j][i]] = 1;
+		}
+	}
 	/* the pull (FR-014, FR-035, FR-036): a character read well whose glyph (the one the font
 	 * draws for it there: the cycle, the neighbour rules, a joined pair) has its structure,
 	 * towards that glyph; a joined pair's two letters together towards its one glyph */
@@ -1193,8 +1249,8 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 			if (!c->npts || c->why == HW_NEAT_WHY_LOW_CONFIDENCE) { k += pair; continue; }
 			int bad = c->fit < HW_NEAT_FIT_PULL || (pair && C[k + 1].npts && C[k + 1].fit < HW_NEAT_FIT_PULL);
 			int guard = (q->nopull && (q->nopull[k] || (pair && q->nopull[k + 1]))) || (mask && (mask[k] || (pair && mask[k + 1])));
-			int flow = mask && (mask[k] == 2 || (pair && mask[k + 1] == 2));
-			if (bad || guard) {
+			int flow = (mask && (mask[k] == 2 || (pair && mask[k + 1] == 2))) || hold[k] || (pair && hold[k + 1]);
+			if (bad || guard || flow) {
 				c->why = bad ? HW_NEAT_WHY_LOW_CONFIDENCE : flow ? HW_NEAT_WHY_NO_STRUCTURE : HW_NEAT_WHY_SHAPE_GUARD;
 				if (pair) { C[k + 1].why = c->why; k++; }
 				continue;
@@ -1433,6 +1489,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 		free(at); free(mv); free(cum);
 	}
 done:
+	free(hold);
 	free(v);
 	for (size_t j = 0; j < n; j++) { if (ex) free(ex[j]); if (ey) free(ey[j]); }
 	free(ex); free(ey);

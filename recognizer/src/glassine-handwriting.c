@@ -1173,8 +1173,9 @@ static void bcoord(struct buf *b, double v)
 	bstr(b, t);
 }
 
-/* ALIGN as read gives it, against the session's strokes: own[stroke][point] = character */
-static int parse_align(const struct session *s, const char *align, size_t nc, int **own)
+/* ALIGN as read gives it, against the session's strokes: own[stroke][point] = character;
+ * whole[stroke * nc + character]: the character lists the whole stroke */
+static int parse_align(const struct session *s, const char *align, size_t nc, int **own, unsigned char *whole)
 {
 	const char *p = align;
 	for (size_t k = 0; k < nc; k++) {
@@ -1201,6 +1202,7 @@ static int parse_align(const struct session *s, const char *align, size_t nc, in
 				if (s->ids[i] != sn) continue;
 				long lo = a < 0 ? 0 : a, hi = a < 0 ? (long)s->ink[i].n - 1 : b2;
 				for (long t = lo; t <= hi && t < (long)s->ink[i].n; t++) if (t >= 0) own[i][t] = (int)k;
+				if (a < 0) whole[i * nc + k] = 1;
 			}
 		}
 		p += len;
@@ -1208,6 +1210,66 @@ static int parse_align(const struct session *s, const char *align, size_t nc, in
 		else if (k + 1 < nc && *p == 0) break;
 	}
 	return 0;
+}
+
+/* ALIGN that lists a whole stroke for several characters (a joined word: the stroke passes
+ * from one letter to the next) says which letters it holds, not where one ends: the
+ * alignment of the text with the ink splits it, each point to the letter it aligns with
+ * when that is one of the stroke's, a point of another to none (it goes with its
+ * neighbours). 1 when a stroke was split, 0 when none needed it, -1 out of memory. */
+static int split_joined(struct hw_lang *l, const struct session *s, const unsigned char *keep,
+			const struct hw_size_ref *ref, const unsigned *cp, size_t nc, int **own, const unsigned char *whole)
+{
+	int any = 0;
+	for (size_t i = 0; i < s->n && !any; i++) {
+		int nk = 0;
+		for (size_t k = 0; k < nc; k++) nk += whole[i * nc + k];
+		any = nk > 1;
+	}
+	if (!any) return 0;
+	size_t m = 0, *np = NULL;
+	struct hw_ink *ink = malloc((s->n + 1) * sizeof *ink);
+	int *map = malloc((s->n + 1) * sizeof *map);
+	if (!ink || !map) { free(ink); free(map); return -1; }
+	for (size_t i = 0; i < s->n; i++) if (!keep[i]) { ink[m] = s->ink[i]; map[m] = (int)i; m++; }
+	struct hw_stroke *sw = m ? strokes_of(ink, m, &np) : NULL;
+	struct hw_run r;
+	int done = 0;
+	if (sw && !hw_run_sized(l, sw, m, ref, &r)) {
+		struct hw_charspan *cs = NULL;
+		long k = r.rows > 0 ? (r.npoints = np, hw_align(l, &r, cp, nc, &cs)) : -1;
+		if (k == (long)nc) {
+			for (size_t i = 0; i < s->n; i++) {
+				int nk = 0;
+				for (size_t c = 0; c < nc; c++) nk += whole[i * nc + c];
+				if (nk > 1) for (size_t t = 0; t < s->ink[i].n; t++) own[i][t] = -1;
+			}
+			for (long c = 0; c < k; c++) {
+				if (cs[c].r0 < 0) continue;
+				for (long row = cs[c].r0; row <= cs[c].r1; row++) {
+					int si = map[r.org[row].stroke], pt = r.org[row].point;
+					if (pt < 0 || (size_t)pt >= s->ink[si].n || !whole[(size_t)si * nc + (size_t)c]) continue;
+					int nk = 0;
+					for (size_t d = 0; d < nc; d++) nk += whole[(size_t)si * nc + d];
+					if (nk > 1) own[si][pt] = (int)c;
+				}
+			}
+			/* a split stroke none of whose points aligned: as ALIGN gave it */
+			for (size_t i = 0; i < s->n; i++) {
+				int nk = 0, last = -1, got = 0;
+				for (size_t c = 0; c < nc; c++) if (whole[i * nc + c]) { nk++; last = (int)c; }
+				if (nk < 2) continue;
+				for (size_t t = 0; t < s->ink[i].n; t++) got |= own[i][t] >= 0;
+				if (!got) for (size_t t = 0; t < s->ink[i].n; t++) own[i][t] = last;
+			}
+			done = 1;
+		}
+		free(cs);
+		hw_run_free(&r);
+	}
+	if (sw) { free(sw); free(np); }
+	free(ink); free(map);
+	return done;
 }
 
 static const char *neat_how(int h) { return h == HW_NEAT_PULLED ? "pulled" : h == HW_NEAT_LINE ? "line" : "kept"; }
@@ -1263,8 +1325,20 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		free(ge); free(all); free(np);
 		hw_neat_drawing(s->ink, s->n, xh, keep);
 		if (align && cp) {
-			if (parse_align(s, align, nc, own)) { reply("error\t%s\tbad-align", id); goto out; }
+			unsigned char *whole = calloc(s->n * nc + 1, 1);
+			if (!whole) goto oom;
+			if (parse_align(s, align, nc, own, whole)) { free(whole); reply("error\t%s\tbad-align", id); goto out; }
 			snprintf(used, sizeof used, "%s", text);
+			int r = l ? split_joined(l, s, keep, &ref, cp, nc, own, whole) : 0;
+			free(whole);
+			if (r < 0) goto oom;
+			/* split: the points of a joined stroke go to its letters as the alignment has
+			 * them, and neatening puts the joints' edges right as without ALIGN */
+			if (r > 0) {
+				fit = malloc(nc * sizeof *fit);
+				if (!fit) goto oom;
+				for (size_t c = 0; c < nc; c++) fit[c] = 1;
+			}
 		} else {
 			/* the reading of the writing: the strokes not kept */
 			size_t m = 0;
@@ -1316,7 +1390,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		q.keep = keep;
 		q.cp = cp;
 		q.nc = used[0] ? nc : 0;
-		q.fit = align ? NULL : fit;
+		q.fit = fit;
 		q.own = own;
 		q.strength = st;
 		q.L = letters_now();

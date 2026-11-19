@@ -255,7 +255,7 @@ class Neaten(unittest.TestCase):
         neighbour rules, a joined pair), None for none or a joined pair's letter"""
         model = FV.parse((self.e.store / "letters" / "model").read_text())
         view = FV.font_view(model)
-        return [view["chars"][c]["variants"][v] if v is not None and v >= 0 else None
+        return [view["chars"][c]["variants"][v] if v is not None and v >= 0 and c in view["chars"] else None
                 for c, v in zip(text, FV.variants(model, text))]
 
     def begin(self, c, sample, units="device:4.0:200"):
@@ -649,6 +649,98 @@ class Neaten(unittest.TestCase):
                         where[key] = where.get(key, 0) + b + k
         self.assertGreater(pulled, 1000)
         self.assertEqual(new, 0, where)
+
+    def test_joined_words_keep_every_letter(self):
+        """joined words of three to five letters (one stroke through them, as written in a
+        hand), with ALIGN by points, with ALIGN that lists the joined stroke whole for each of
+        its letters (it holds them, but not where one ends), and with the text alone: at every
+        level every letter keeps its ink at about its own size (its box at least half its
+        glyph's), and in its own place (the letters' middles in the order written, none on a
+        neighbour's)"""
+        self.letters()
+        rnd = random.Random(31)
+        xh = 30.0
+        small = "abcdefghijklmnopqrstuvwxyz"
+
+        def line(words):
+            # each word's letters joined into one stroke through them; per letter its points
+            # as (stroke, first, last)
+            text = " ".join(words)
+            s = TL.sample(text, rnd)
+            strokes, at, k = [], [], 0
+            for w in words:
+                prev = None
+                for i, ch in enumerate(w):
+                    sp = s["spans"][k]
+                    pts = [[list(p) for p in s["strokes"][z]] for z in sp]
+                    mine = []
+                    if prev is not None:
+                        a, b = prev[-1], pts[0][0]
+                        bridge = [[round(a[0] + (b[0] - a[0]) * z / 4, 3), round(a[1] + (b[1] - a[1]) * z / 4, 3), a[2], 0.5]
+                                  for z in range(1, 4)]
+                        j = len(strokes) - 1
+                        start = len(prev) + len(bridge)
+                        prev += bridge + pts[0]
+                        mine.append((j, start, len(prev) - 1))
+                        rest = pts[1:]
+                    else:
+                        rest = pts
+                    for st in rest:
+                        strokes.append(st)
+                        mine.append((len(strokes) - 1, 0, len(st) - 1))
+                    prev = strokes[-1]
+                    at.append(mine)
+                    k += 1
+                if k < len(text):
+                    at.append([])
+                    k += 1
+            for z, st in enumerate(strokes):
+                for i, p in enumerate(st):
+                    p[2] = round(z * 1.0 + 0.01 * i, 3)
+            return dict(s, strokes=strokes), at
+
+        lines = [line(["".join(rnd.choice(small) for _ in range(rnd.randint(3, 5))) for _ in range(4)]) for _ in range(6)]
+        checked = 0
+        for s, at in lines:
+            text = s["text"]
+            by_points = ";".join(",".join(f"{j}:{a}-{b}" for j, a, b in m) for m in at)
+            whole = ";".join(",".join(sorted({str(j) for j, _, _ in m}, key=int)) for m in at)
+            glyphs = self.glyphs(text)
+            for align in (by_points, whole, None):
+                for lv in (0.25, 0.5, 0.75, 1):
+                    self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                    c = self.e.start()
+                    self.begin(c, s)
+                    _, out, why = parse(c.ask("neaten", "s", str(lv), TR.esc(text), *([align] if align else [])), why=True)
+                    c.close()
+                    self.assertEqual(len(why), len(text))
+                    xy = [EV.to_xy(o[2]) for o in out]
+                    mids, word = [], []
+                    for k, m in enumerate(at):
+                        if not m:
+                            mids.append(word)
+                            word = []
+                            continue
+                        pts = [xy[j][i] for j, a, b in m for i in range(a, b + 1)]
+                        x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+                        y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+                        word.append((x0 + x1) / 2)
+                        g = glyphs[k]
+                        if g is None:
+                            continue
+                        gx = [p[0] for st in g["strokes"] for p in st]
+                        gy = [p[1] for st in g["strokes"] for p in st]
+                        gs = max(max(gx) - min(gx), max(gy) - min(gy))
+                        # (a letter written smaller than half its glyph: half its own size)
+                        raw = [s["strokes"][j][i] for j, a, b in m for i in range(a, b + 1)]
+                        rs = max(max(p[0] for p in raw) - min(p[0] for p in raw), max(p[1] for p in raw) - min(p[1] for p in raw)) / xh
+                        self.assertGreaterEqual(max(x1 - x0, y1 - y0) / xh, 0.5 * min(gs, rs),
+                                                (lv, "points" if align == by_points else "whole" if align else "none", k, why[k], rs, gs))
+                        checked += 1
+                    mids.append(word)
+                    for wm in mids:
+                        self.assertEqual(wm, sorted(wm), (lv, align is None))
+        self.assertGreater(checked, 1000)
 
     def test_flow_where_ink_and_versions_differ(self):
         """at every level, no new step back and no new kink where the versions have a part the
