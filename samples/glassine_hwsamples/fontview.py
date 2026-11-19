@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The handwriting font before it is installed (spec 003 Scenario 3, FR-010): text laid out
 from the letter model (`glassine-handwriting letters show`, docs/recognizer.md) with the
-variants and the spacing the font has, so the preview shows what the installed font shows.
+variants, the neighbour rules (FR-038), the joined pairs (FR-039) and the spacing the font
+has, so the preview shows what the installed font shows.
 Toolkit-free; pages.py draws the result."""
 
 import json
@@ -32,6 +33,8 @@ def parse(text):
             out["spacing"] = d["spacing"]
         elif "char" in d:
             out["chars"][d["char"]] = d
+        elif "joined" in d:
+            out.setdefault("joined", {})[d["joined"]] = d
     return out
 
 
@@ -55,21 +58,83 @@ def slots(d):
     return [k % n for k in range(SLOTS)]
 
 
-def variants(model, text):
-    """per character of text: the variant the font shows, None for one it lacks"""
-    out, prev = [], None
+def _in_font(model, c):
+    d = model["chars"].get(c) if model else None
+    return bool(d and d.get("covered") and d.get("variants"))
+
+
+def joined_pairs(model):
+    """the joined pairs the font draws as one glyph (FR-039): both letters in it"""
+    return {k: d for k, d in ((model or {}).get("joined") or {}).items()
+            if len(k) == 2 and isinstance(d.get("variant"), dict) and d["variant"].get("strokes")
+            and _in_font(model, k[0]) and _in_font(model, k[1])}
+
+
+def _rule_variant(model, d, out, k):
+    """a letter's neighbour rule that applies at glyph k (FR-038): the first of its rules
+    whose neighbour's glyph is beside it (a joined pair counts by its letter on that side),
+    its variant; None for none"""
+    n = len(d["variants"])
+    for r in d.get("rules") or []:
+        side = "prev" if "prev" in r else "next" if "next" in r else None
+        v = r.get("variant")
+        if side is None or not isinstance(v, int) or not 0 <= v < n or not _in_font(model, r[side]):
+            continue
+        j = k - 1 if side == "prev" else k + 1
+        if not 0 <= j < len(out):
+            continue
+        kind, t = out[j][0], out[j][1]
+        if (kind == "letter" and t == r[side]) or (kind == "joined" and t[-1 if side == "prev" else 0] == r[side]):
+            return v
+    return None
+
+
+def glyphs(model, text):
+    """the glyphs the font shapes text into, as its lookups do (ttf.c gsub), in their order:
+    every character's step of the cycle; then the joined pairs, left to right; then each
+    letter's variant, by the first neighbour rule that applies, else its cycle's step.
+    [(kind, text, variant index or None)]: kind "letter", "joined" (text its two letters),
+    "space" or "missing" (a character the font lacks)"""
+    model = font_view(model)
+    items, prev = [], None
     for c in text:
         if c == " ":
-            out.append(0)
             prev = step(prev)
-            continue
-        d = model["chars"].get(c) if model else None
-        if not d or not d.get("covered") or not d.get("variants"):
-            out.append(None)
+            items.append(("space", c, prev))
+        elif not _in_font(model, c):
             prev = None
-            continue
-        prev = step(prev)
-        out.append(slots(d)[prev])
+            items.append(("missing", c, None))
+        else:
+            prev = step(prev)
+            items.append(("letter", c, prev))
+    pairs, out, i = joined_pairs(model), [], 0
+    while i < len(items):
+        if items[i][0] == "letter" and i + 1 < len(items) and items[i + 1][0] == "letter" and \
+                items[i][1] + items[i + 1][1] in pairs:
+            out.append(("joined", items[i][1] + items[i + 1][1], None))
+            i += 2
+        else:
+            out.append(items[i])
+            i += 1
+    res = []
+    for k, (kind, t, st) in enumerate(out):
+        if kind == "letter":
+            d = model["chars"][t]
+            v = _rule_variant(model, d, out, k)
+            res.append((kind, t, slots(d)[st] if v is None else v))
+        elif kind == "space":
+            res.append((kind, t, 0))
+        else:
+            res.append((kind, t, None))
+    return res
+
+
+def variants(model, text):
+    """per character of text: the variant the font shows, None for one it lacks, -1 for a
+    letter of a joined pair"""
+    out = []
+    for kind, t, v in glyphs(model, text):
+        out += [-1, -1] if kind == "joined" else [v]
     return out
 
 
@@ -193,7 +258,9 @@ def font_view(model):
         keep = [i for i, x in enumerate(vs) if not x.get("left_out")]
         new = {i: k for k, i in enumerate(keep)}
         sl = [new.get(i, 0) for i in slots(d)] if vs else None
-        e = dict(d, variants=[vs[i] for i in keep], slots=sl)
+        # a rule for a variant left out is gone
+        rules = [dict(r, variant=new[r["variant"]]) for r in d.get("rules") or [] if r.get("variant") in new]
+        e = dict(d, variants=[vs[i] for i in keep], slots=sl, rules=rules)
         if not keep:
             e["covered"] = False
         chars[c] = e
@@ -214,29 +281,36 @@ def strokes_desc(var):
 
 
 def layout(model, text):
-    """[(char, strokes or None, x, advance, variant or None)] in x-heights, x from the left of
-    the text, y up from the baseline; strokes None: the system font draws the character
-    (variant: the model's, for its widths in a style). Spaced as the font
-    spaces it (ttf.c): half the typical gap each side, each pair of neighbouring letters
-    kerned to where the spacing places it, the space the word gap less the two sides beside it."""
+    """[(text, strokes or None, x, advance, variant or None)] per glyph (glyphs()), in x-heights,
+    x from the left of the text, y up from the baseline; text one character, or a joined pair's
+    two; strokes None: the system font draws the character (variant: the model's, for its
+    widths in a style). Spaced as the font spaces it (ttf.c): half the typical gap each side,
+    each pair of neighbouring glyphs kerned to where the spacing places it (a joined pair at
+    its letters' gaps: its first letter's on the left, its last one's on the right), the space
+    the word gap less the two sides beside it."""
     model = font_view(model)
     m = model["metrics"]
     sp = model.get("spacing") or {"letter": m.get("letter_spacing", 0.15), "word": m.get("word_spacing", 0.7)}
     gap, word = sp.get("letter", 0.15), sp.get("word", 0.7)
+    pairs = joined_pairs(model)
     out, x, prev = [], 0, None
-    for c, v in zip(text, variants(model, text)):
-        if c == " ":
+    for kind, c, v in glyphs(model, text):
+        if kind == "space":
             adv = max(_round((word - gap) * XH), XH // 10)
             out.append((c, [], x / XH, adv / XH, None))
             prev = None
-        elif v is None:
+        elif kind == "missing":
             adv = round(0.7 * XH)
             out.append((c, None, x / XH, adv / XH, None))
             prev = None
         else:
-            var = model["chars"][c]["variants"][v]
+            if kind == "joined":
+                # its parts have no middles of their own: set at the gap on both sides
+                var = dict(pairs[c]["variant"], middle=None)
+            else:
+                var = model["chars"][c]["variants"][v]
             if prev is not None:
-                k = _kern(sp, prev[0], prev[1], c, var, gap)
+                k = _kern(sp, prev[0], prev[1], c[0], var, gap)
                 x += k
                 pc, ps, px, pa, pv = out[-1]
                 out[-1] = (pc, ps, px, pa + k / XH, pv)
@@ -244,7 +318,7 @@ def layout(model, text):
             strokes = [[(ox + p[0], p[1]) for p in s] for s in var["strokes"]]
             adv = _round((var["width"] + gap) * XH)
             out.append((c, strokes, x / XH, adv / XH, var))
-            prev = (c, var)
+            prev = (c[-1], var)
         x += adv
     return out
 

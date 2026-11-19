@@ -635,6 +635,64 @@ class YourHandwriting(Case):
         self.assertTrue(flow.State().introduced)               # saved: never asked again
 
 
+class FontPreview(Case):
+    """spec 003 FR-010: the preview shows what shaping shows, with neighbour rules (FR-038) and
+    joined pairs (FR-039): the same glyphs (each letter's variant, each pair as one) at the
+    same pen positions as hb-shape on the font built from the same model"""
+
+    def test_preview_matches_shaping(self):
+        if not shutil.which("hb-shape"):
+            self.skipTest("no hb-shape")
+        from glassine_hwsamples import fontview
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
+        rnd = random.Random(71)
+        ss = TL.alphabet_samples(seed=71, per=3)
+        ss += [TL.sample("lo", rnd, styles={"o": 1}) for _ in range(8)]
+        ss += [TL.sample("zxo", rnd) for _ in range(8)]
+        ss += [TL.joined(TL.sample("th", rnd), [0]) for _ in range(5)]
+        ss += [TL.spaced_sample(w, rnd) for w in ("hot", "oh to", "tot") * 3]
+        f = self.e.dir / "in.jsonl"
+        f.write_text("\n".join([json.dumps({"format": "glassine-handwriting-export", "version": 1})] +
+                               [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
+                                            "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
+        self.e.cli.run("samples", "import", str(f))
+        self.e.cli.run("letters", "build", "-r")
+        text = self.e.cli.letters_model()
+        model = fontview.parse(text)
+        self.assertIn("th", fontview.joined_pairs(model))
+        self.assertTrue(any(r.get("prev") == "l" for r in model["chars"]["o"].get("rules", [])))
+        ttf = self.e.dir / "preview.ttf"
+        self.e.cli.run("font", "build", "-n", "Preview", str(ttf))
+        gl, view = TL.font_glyphs(text), fontview.font_view(model)
+        for t in ("lo lot the lot", "hello world lo", "othello lolo th", "the 'lot' Q", "Theo hath lots"):
+            sh = json.loads(subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(ttf), t],
+                                           capture_output=True, text=True, check=True).stdout)
+            got = []
+            for g in sh:
+                k = gl.get(g["g"], ("missing",))
+                if k[0] == "step":
+                    got.append(("letter", k[1], fontview.slots(view["chars"][k[1]])[k[2]]))
+                elif k[0] == "variant":
+                    got.append(("letter", k[1], k[2]))
+                elif k[0] == "joined":
+                    got.append(("joined", k[1], None))
+                else:
+                    got.append((k[0],))
+            want = [g if g[0] in ("letter", "joined") else (g[0],) for g in fontview.glyphs(model, t)]
+            self.assertEqual(got, want, t)
+            if ("missing",) in want:
+                continue                # another font sets those: no positions to compare
+            xs, x = [], 0
+            for g in sh:
+                xs.append(x + g["dx"])
+                x += g["ax"]
+            lay = fontview.layout(model, t)
+            self.assertEqual(len(lay), len(xs))
+            for (c, _, lx, _, _), hx in zip(lay, xs):
+                self.assertAlmostEqual(lx * fontview.XH, hx, delta=1.01, msg=(t, c))
+
+
 class Pages(Case):
     """the UI object on a real recognizer (no window): the first start, Your best, Which one
     is nicer?, deleting from the samples and the donation (needs GTK and glassine_ui)"""

@@ -842,6 +842,55 @@ static void test_neaten_joined(void)
 	hw_letters_free(&L);
 }
 
+/* the neighbour rules and joined pairs in the model file (FR-038, FR-039): read and written
+ * back the same; a rule for a version left out gone from the font's view, the others
+ * renumbered; the font with 'liga' and, only when asked, 'rand' (FR-040) */
+static void test_letters_context(void)
+{
+	char model[8192], st[1024];
+	int o = 0;
+	for (int i = 0; i < 12; i++) o += snprintf(st + o, sizeof st - o, "%s[%.4f,%.4f]", i ? "," : "", 0.05 * i, 0.5 + 0.4 * sin(i));
+	snprintf(model, sizeof model,
+		 "{\"format\":\"%s\",\"version\":%d,\"inputs\":\"0000000000000000\",\"samples\":3,\"built\":0}\n"
+		 "{\"metrics\":{\"x_height\":1}}\n"
+		 "{\"char\":\"l\",\"samples\":3,\"covered\":true,\"variants\":[{\"width\":0.55,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}],\"slots\":[0,0,0,0,0,0,0,0,0,0]}\n"
+		 "{\"char\":\"o\",\"samples\":9,\"covered\":true,\"variants\":[{\"width\":0.55,\"weight\":3,\"members\":3,\"use\":6,\"left_out\":true,\"strokes\":[[%s]]},"
+		 "{\"width\":0.55,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]},{\"width\":0.55,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}],"
+		 "\"slots\":[1,2,1,2,1,2,1,2,1,2],\"rules\":[{\"prev\":\"l\",\"variant\":2,\"n\":7,\"same\":7,\"hits\":7,\"cycle\":3.5},"
+		 "{\"next\":\"l\",\"variant\":0,\"n\":6,\"same\":6,\"hits\":6,\"cycle\":0}]}\n"
+		 "{\"joined\":\"lo\",\"samples\":4,\"written\":4,\"of\":5,\"variant\":{\"width\":1.1,\"weight\":4,\"members\":4,\"use\":4,\"strokes\":[[%s]]}}\n",
+		 HW_LETTERS_FORMAT, HW_LETTERS_VERSION, st, st, st, st, st);
+	struct hw_letters L = { 0 };
+	if (hw_letters_parse(model, &L)) { CHECK(0, "letters context: model"); return; }
+	CHECK(L.n == 2 && L.l[1].nrules == 2 && L.l[1].rule[0].side == 0 && L.l[1].rule[0].nb == 'l' && L.l[1].rule[0].var == 2 &&
+	      L.l[1].rule[1].side == 1, "letters context: the rules as read");
+	CHECK(L.njoined == 1 && L.joined[0].a == 'l' && L.joined[0].b == 'o' && L.joined[0].samples == 4 && L.joined[0].joined == 4 &&
+	      L.joined[0].of == 5 && L.joined[0].v.nstrokes == 1, "letters context: the joined pair as read");
+	size_t n1, n2;
+	char *t1 = hw_letters_format(&L, &n1);
+	struct hw_letters M = { 0 };
+	int r = t1 ? hw_letters_parse(t1, &M) : -1;
+	char *t2 = r ? NULL : hw_letters_format(&M, &n2);
+	CHECK(t1 && t2 && n1 == n2 && !memcmp(t1, t2, n1), "letters context: written back differently");
+	free(t1); free(t2);
+	hw_letters_free(&M);
+	struct hw_letters V;
+	if (!hw_letters_view(&L, &V)) {
+		CHECK(V.l[1].nvar == 2 && V.l[1].nrules == 1 && V.l[1].rule[0].var == 1, "letters context: the view's rules (%d)", V.l[1].nrules);
+		hw_letters_view_free(&V);
+	}
+	for (int rnd = 0; rnd < 2; rnd++) {
+		size_t len = 0;
+		unsigned char *f = hw_font_build_style(&L, "Test", 1, HW_STYLE_REGULAR, HW_FONT_NIB_DEFAULT, rnd, &len);
+		CHECK(f != NULL, "letters context: no font");
+		if (!f) continue;
+		CHECK(memmem(f, len, "liga", 4) != NULL, "letters context: no liga");
+		CHECK((memmem(f, len, "rand", 4) != NULL) == rnd, "letters context: rand %s", rnd ? "missing" : "unasked");
+		free(f);
+	}
+	hw_letters_free(&L);
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -876,6 +925,7 @@ int main(int argc, char **argv)
 	test_lookalike();
 	test_neaten_match();
 	test_neaten_joined();
+	test_letters_context();
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 	printf("test-engine: ok\n");
 	return 0;

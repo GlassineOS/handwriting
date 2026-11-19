@@ -8,7 +8,11 @@ shaped with no feature asked for (and as hw_letters_step says); installed, the f
 finds it in a test user; a rebuild keeps the name and changes the version and the file;
 erasing the samples takes the model and the font. The three styles (FR-034): the profiles
 of how each version was written, Calligraphy's and Brush's widths on made-up strokes, the
-same shaping in all three, installed, updated and removed together.
+same shaping in all three, installed, updated and removed together. Neighbour rules, joined
+pairs and random alternates (FR-038 to FR-040): a way written after a neighbour often enough
+is shaped there and nowhere else, too little support gives no rule, a pair written joined often
+enough is one glyph in every style at its letters' gaps with its neighbours as without it, and
+random alternates only when asked for.
 
     HW_BIN=path/to/glassine-handwriting python3 tests/test_letters.py
 
@@ -66,8 +70,9 @@ def shape(c, style, rnd):
     return out
 
 
-def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0):
-    """a prompted sample (sample format v1) of separate letters, device units"""
+def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0, shapes=None):
+    """a prompted sample (sample format v1) of separate letters, device units; shapes: per
+    character a function in place of shape()"""
     strokes, spans = [], []
     x = 20.0
     base = line * 2 / 3
@@ -78,7 +83,7 @@ def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0):
             x += 0.9 * xh
             continue
         sp = []
-        for st in shape(c, (styles or {}).get(c, 0), rnd):
+        for st in (shapes or {}).get(c, shape)(c, (styles or {}).get(c, 0), rnd):
             pts = []
             for px, py in st:
                 pts.append([round(x + px * xh, 3), round(base - py * xh, 3), round(t, 3), 0.5])
@@ -311,11 +316,11 @@ class Env:
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
-def alphabet_samples(seed=1, per=4, careful=None, styles=None):
+def alphabet_samples(seed=1, per=4, careful=None, styles=None, shapes=None):
     """samples of separate letters that hold every letter and digit `per` times"""
     rnd = random.Random(seed)
     chars = list(ALNUM) * per
-    return [sample("".join(chars[i:i + 5]), rnd, styles=styles, written=careful) for i in range(0, len(chars), 5)]
+    return [sample("".join(chars[i:i + 5]), rnd, styles=styles, written=careful, shapes=shapes) for i in range(0, len(chars), 5)]
 
 
 class LetterModel(unittest.TestCase):
@@ -734,12 +739,13 @@ class Spacing(unittest.TestCase):
             self.skipTest("no hb-shape")
         p = subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(self.ttf), text], capture_output=True, text=True,
                            check=True)
-        cov = sorted(c for c, d in self.chars.items() if d.get("covered") and d.get("variants"))
+        gl = font_glyphs(self.e.model())
         out, x = [], 0
         for g in json.loads(p.stdout):
-            i, st = (g["g"] - 1) // SLOTS - 1, (g["g"] - 1) % SLOTS
-            c = cov[i] if i >= 0 else " "
-            v = self.chars[c]["variants"][self.chars[c]["slots"][st]] if c != " " else None
+            k = gl[g["g"]]
+            # a step's variant by the cycle, or the variant a neighbour rule shows (FR-038)
+            c = " " if k[0] == "space" else k[1]
+            v = None if c == " " else self.chars[c]["variants"][self.chars[c]["slots"][k[2]] if k[0] == "step" else k[2]]
             out.append((c, v, (x + g["dx"]) / 500))
             x += g["ax"]
         return out
@@ -811,6 +817,11 @@ class Overhangs(Spacing):
         # the variants alone carry their long overhang
         self.assertTrue(any(max(p[0] for st in v["strokes"] for p in st) > 2 for v in self.chars["T"]["variants"]))
         self.assertTrue(any(min(p[1] for p in v["strokes"][1]) > 1 for v in self.chars["f"]["variants"]))
+        # in words before their neighbour the way written there, by a rule (FR-038)
+        for c, nb in (("T", "l"), ("f", "o")):
+            r = [r for r in self.chars[c].get("rules", []) if r.get("next") == nb]
+            self.assertEqual(len(r), 1, c)
+            self.assertEqual((r[0]["n"], r[0]["same"]), (6, 6))
 
     def test_font_places_the_pairs(self):
         r = self.scale()
@@ -1317,8 +1328,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 10))
-            old = dict(head, inputs=hw_inputs(ids, 9))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 11))
+            old = dict(head, inputs=hw_inputs(ids, 10))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
@@ -1618,6 +1629,448 @@ class Styles(unittest.TestCase):
             self.assertFalse(e.fonts.exists())
         finally:
             e.close()
+
+
+# ---------------------------------------------------------------- neighbours (FR-038 to FR-040)
+
+def join_strokes(s, a, bridge=True):
+    """the sample s with strokes a and a + 1 written as one: the first, the pen's way across
+    (points as densely as along a stroke) and the second, in the spans of both"""
+    s = json.loads(json.dumps(s))
+    b = a + 1
+    p, q = s["strokes"][a][-1], s["strokes"][b][0]
+    d = math.hypot(*(p[i] - s["strokes"][a][-2][i] for i in (0, 1))) or 1
+    n = int(math.hypot(q[0] - p[0], q[1] - p[1]) / d) if bridge else 0
+    way = [[round(p[0] + (q[0] - p[0]) * i / (n + 1), 3), round(p[1] + (q[1] - p[1]) * i / (n + 1), 3),
+            round(p[2] + (q[2] - p[2]) * i / (n + 1), 3), 0.5] for i in range(1, n + 1)]
+    s["strokes"][a] = s["strokes"][a] + way + s["strokes"][b]
+    del s["strokes"][b]
+    s["spans"] = [sorted({a if j == b else j - (j > b) for j in sp}) for sp in s["spans"]]
+    return s
+
+
+def joined(s, at, bridge=True):
+    """the sample s written with each pair of characters at k, k + 1 (k in at) joined: the
+    first's last stroke and the second's first one as one stroke (join_strokes)"""
+    for k in sorted(at, reverse=True):
+        a, b = s["spans"][k][-1], s["spans"][k + 1][0]
+        assert b == a + 1
+        s = join_strokes(s, a, bridge)
+    return s
+
+
+def font_glyphs(model):
+    """glyph id -> ("space", step), ("step", char, step), ("variant", char, variant) or
+    ("joined", pair), as ttf.c orders the glyphs (the variants left out not in it)"""
+    lines = [json.loads(x) for x in model.splitlines()]
+    chars = sorted((d for d in lines if "char" in d and d["char"] != " " and d.get("covered")
+                    and any(not v.get("left_out") for v in d["variants"])), key=lambda d: d["char"])
+    out = {1 + s: ("space", s) for s in range(SLOTS)}
+    for i, d in enumerate(chars):
+        for s in range(SLOTS):
+            out[1 + (i + 1) * SLOTS + s] = ("step", d["char"], s)
+    g = 1 + (len(chars) + 1) * SLOTS
+    for d in chars:
+        for v in range(sum(not x.get("left_out") for x in d["variants"])):
+            out[g] = ("variant", d["char"], v)
+            g += 1
+    have = {d["char"] for d in chars}
+    for d in lines:
+        if "joined" in d and d["joined"][0] in have and d["joined"][1] in have:
+            out[g] = ("joined", d["joined"])
+            g += 1
+    return out
+
+
+def hb(ttf, text, features=None):
+    """hb-shape's glyphs: [{"g", "cl", "ax", "dx", ...}]"""
+    args = ["hb-shape", "--no-glyph-names", "--output-format=json", str(ttf), text]
+    if features is not None:
+        args.insert(1, "--features=" + features)
+    return json.loads(subprocess.run(args, capture_output=True, text=True, check=True).stdout)
+
+
+def gsub_features(ttf):
+    from fontTools.ttLib import TTFont
+    return sorted({r.FeatureTag for r in TTFont(str(ttf))["GSUB"].table.FeatureList.FeatureRecord})
+
+
+def valid_font(test, ttf):
+    """fontTools reads every table with its checksums and compiles it again"""
+    from fontTools.ttLib import TTFont
+    f = TTFont(str(ttf), checkChecksums=2)
+    for t in f.keys():
+        if t != "GlyphOrder":
+            f[t].compile(f)
+    test.assertEqual(f.getBestCmap().get(32) is not None, True)
+    return f
+
+
+def text_ids(e):
+    """sample id -> its text"""
+    return {f[0]: f[5] for f in (ln.split("\t") for ln in e.run("samples", "list").stdout.splitlines())}
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class NeighbourRules(unittest.TestCase):
+    """spec 003 FR-038: an o written its second way after an l (8 times) gets a rule: after
+    an l the font shows that way, elsewhere the cycle; an e written its own way after a k only
+    5 times, a u after an m 5 times one way and 3 the other, and an a after a q 6 times in a
+    single sample (no rule left when that sample is held back) get none"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(41)
+        ss = alphabet_samples(seed=41, per=3)
+        ss += [sample("lo", rnd, styles={"o": 1}) for _ in range(8)]
+        ss += [sample("zxo", rnd) for _ in range(8)]
+        ss += [sample("ke", rnd, styles={"e": 1}) for _ in range(5)]
+        ss += [sample("mu", rnd, styles={"u": int(k < 5)}) for k in range(8)]
+        ss.append(sample("qa" * 6, rnd, styles={"a": 1}))
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.model = cls.e.model()
+        cls.chars = {d["char"]: d for d in map(json.loads, cls.model.splitlines()) if "char" in d}
+        cls.gl = font_glyphs(cls.model)
+        cls.ttf = {}
+        for st in ("Regular", "Calligraphy", "Brush"):
+            cls.ttf[st] = cls.e.dir / ("rules-%s.ttf" % st)
+            cls.e.run("font", "build", "-n", "Rules", "--style", st, str(cls.ttf[st]))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def way(self, c, texts):
+        """the variant of c whose samples are those with one of texts"""
+        ids = text_ids(self.e)
+        for k, v in enumerate(self.chars[c]["variants"]):
+            if v["ids"] and all(ids[i] in texts for i in v["ids"]):
+                return k
+        self.fail("no variant of %s from %s" % (c, texts))
+
+    def test_rule_learned(self):
+        o = self.chars["o"]
+        lo = self.way("o", ("lo",))
+        rules = {(("prev", r["prev"]) if "prev" in r else ("next", r["next"])): r for r in o.get("rules", [])}
+        self.assertIn(("prev", "l"), rules)
+        r = rules[("prev", "l")]
+        self.assertEqual((r["variant"], r["n"], r["same"]), (lo, 8, 8))
+        self.assertGreater(r["hits"], r["cycle"])
+        # the character page keeps the cycle's share: the rule's way is in it as before
+        self.assertGreater(o["slots"].count(lo), 0)
+        self.assertLess(o["slots"].count(lo), SLOTS)
+
+    def test_no_rule_without_support(self):
+        def has(c, nb):
+            return any(r.get("prev") == nb for r in self.chars[c].get("rules", []))
+        self.assertGreaterEqual(len(self.chars["e"]["variants"]), 2)
+        self.assertFalse(has("e", "k"))         # 5 times: too few
+        self.assertFalse(has("u", "m"))         # 5 of 8 one way: too mixed
+        self.assertFalse(has("a", "q"))         # all in one sample: loses held back
+        # a way written nearly everywhere is no way of writing it beside one neighbour: an l
+        # before an o, an x after a z, all in their most common way, get none
+        self.assertFalse(any(r.get("next") == "o" for r in self.chars["l"].get("rules", [])))
+        self.assertFalse(any(r.get("prev") == "z" for r in self.chars["x"].get("rules", [])))
+        # each of them has the way it would rule
+        for c, texts in (("e", ("ke",)), ("a", ("qa" * 6,))):
+            self.way(c, texts)
+
+    def shown(self, ttf, text):
+        return [self.gl[g["g"]] for g in hb(ttf, text)]
+
+    def test_shaped_after_the_neighbour(self):
+        lo = self.way("o", ("lo",))
+        cov = sorted(c for c, d in self.chars.items() if d.get("covered") and d.get("variants"))
+        for st, ttf in self.ttf.items():
+            # after an l: its rule's way, as an o of its own glyph; the l and the rest keep the cycle
+            text = "lo ao lolo"
+            got, prev = self.shown(ttf, text), None
+            for k, (c, g) in enumerate(zip(text, got)):
+                prev = step(prev)
+                if c == "o" and k and text[k - 1] == "l":
+                    self.assertEqual(g, ("variant", "o", lo), (st, k))
+                else:
+                    # the cycle: the step it has without the rule, which counts on through it
+                    self.assertEqual(g, ("space", prev) if c == " " else ("step", c, prev), (st, k))
+            # before its neighbour: an m before a u (the m's first way, 8 of 8) is that way
+            # wherever the cycle is, the u after it its step
+            mu = next(r["variant"] for r in self.chars["m"]["rules"] if r.get("next") == "u")
+            for text in ("mu", "a mu", "aa mu"):
+                got = self.shown(ttf, text)
+                self.assertEqual(got[-2], ("variant", "m", mu), (st, text))
+                self.assertEqual(got[-1], ("step", "u", len(text) - 1), (st, text))
+            self.assertEqual(self.shown(ttf, "ma")[0], ("step", "m", 0))
+            # the same text, the same glyphs
+            self.assertEqual(hb(ttf, text), hb(ttf, text))
+        self.assertIn("o", cov)
+
+    def test_valid(self):
+        for ttf in self.ttf.values():
+            f = valid_font(self, ttf)
+            self.assertIn("calt", gsub_features(ttf))
+            self.assertEqual(len(f.getGlyphOrder()), len(self.gl) + 1)
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class JoinedPairs(unittest.TestCase):
+    """spec 003 FR-039: t and h written joined in 5 samples of 6 are one glyph in each style,
+    a ligature shaped with no feature asked for, set at its letters' gaps, its neighbours at
+    the steps they have without it, mapping back to its two characters; a and b joined 3
+    times and c and d joined in half of their samples stay two glyphs"""
+    GAPS = {"ot": 0.4, "ho": 0.25}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(51)
+        ss = alphabet_samples(seed=51, per=3)
+        ss += [joined(sample("th", rnd), [0]) for _ in range(5)] + [sample("th", rnd)]
+        ss += [joined(sample("ab", rnd), [0]) for _ in range(3)]
+        ss += [joined(sample("cd", rnd), [0]) for _ in range(4)] + [sample("cd", rnd) for _ in range(4)]
+        ss += [spaced_sample("ot ho", rnd, cls.GAPS) for _ in range(4)]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.model = cls.e.model()
+        lines = [json.loads(x) for x in cls.model.splitlines()]
+        cls.chars = {d["char"]: d for d in lines if "char" in d}
+        cls.pairs = {d["joined"]: d for d in lines if "joined" in d}
+        cls.sp = next(d["spacing"] for d in lines if "spacing" in d)
+        cls.gl = font_glyphs(cls.model)
+        cls.ttf = {}
+        for st in ("Regular", "Calligraphy", "Brush"):
+            cls.ttf[st] = cls.e.dir / ("joined-%s.ttf" % st)
+            cls.e.run("font", "build", "-n", "Joined", "--style", st, str(cls.ttf[st]))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_learned(self):
+        self.assertEqual(sorted(self.pairs), ["th"])
+        th = self.pairs["th"]
+        self.assertEqual((th["samples"], th["written"], th["of"]), (5, 5, 6))
+        v = th["variant"]
+        # one stroke more than t's and h's own less the one they share, on the line
+        self.assertEqual(len(v["strokes"]), len(shape("t", 0, random.Random(0))) + len(shape("h", 0, random.Random(0))) - 1)
+        self.assertAlmostEqual(min(p[1] for st in v["strokes"] for p in st), 0, delta=0.1)
+        self.assertEqual(len(v["ids"]), 5)
+
+    def test_one_glyph_in_each_style(self):
+        lig = next(g for g, x in self.gl.items() if x == ("joined", "th"))
+        for st, ttf in self.ttf.items():
+            f = valid_font(self, ttf)
+            self.assertEqual(gsub_features(ttf), ["calt", "liga"])
+            self.assertGreater(f["glyf"][f.getGlyphOrder()[lig]].numberOfContours, 0, st)
+            got = hb(ttf, "th")
+            self.assertEqual([g["g"] for g in got], [lig], st)
+            # it reads as its two characters: one cluster for both
+            got = hb(ttf, "otho")
+            self.assertEqual([self.gl[g["g"]][0] for g in got], ["step", "joined", "step"])
+            self.assertEqual([g["cl"] for g in got], [0, 1, 3])
+            # turned off, two letters again
+            self.assertEqual(len(hb(ttf, "th", "-liga")), 2)
+
+    def test_too_rare_stays_two(self):
+        for ttf in self.ttf.values():
+            for text in ("ab", "cd"):
+                self.assertEqual([self.gl[g["g"]][0] for g in hb(ttf, text)], ["step", "step"], text)
+
+    def test_neighbours_unchanged(self):
+        """the letters around it show what they show without it: the cycle goes on through it"""
+        text = "otho abc th"
+        for ttf in self.ttf.values():
+            got = [self.gl[g["g"]] for g in hb(ttf, text)]
+            want, prev = [], None
+            for k, c in enumerate(text):
+                prev = step(prev)
+                if text[k:k + 2] == "th":
+                    want.append(("joined", "th"))
+                elif k and text[k - 1:k + 1] == "th":
+                    continue
+                else:
+                    want.append(("space", prev) if c == " " else ("step", c, prev))
+            self.assertEqual(got, want)
+
+    def prof(self, v):
+        nan = float("nan")
+        return ([nan if x is None else x for x in v["left"]], [nan if x is None else x for x in v["right"]])
+
+    def test_spaced_at_its_letters_gaps(self):
+        pairs = {p[0] + p[1]: p[2] for p in self.sp["pairs"]}
+        self.assertIn("ot", pairs)
+        self.assertIn("ho", pairs)
+        for ttf in self.ttf.values():
+            got = hb(ttf, "otho")
+            x, pos = 0, []
+            for g in got:
+                pos.append((x + g["dx"]) / 500)
+                x += g["ax"]
+            kinds = [self.gl[g["g"]] for g in got]
+            o1 = self.chars["o"]["variants"][self.chars["o"]["slots"][kinds[0][2]]]
+            o2 = self.chars["o"]["variants"][self.chars["o"]["slots"][kinds[2][2]]]
+            th = self.pairs["th"]["variant"]
+            self.assertAlmostEqual(profile_gap(self.prof(o1), self.prof(th), pos[1] - pos[0]), pairs["ot"], delta=0.02)
+            self.assertAlmostEqual(profile_gap(self.prof(th), self.prof(o2), pos[2] - pos[1]), pairs["ho"], delta=0.02)
+
+
+def dotted_i(c, style, rnd):
+    """an i as print writes it: a stem down from the x-height, then a dot above it"""
+    stem = [(0.3 + rnd.gauss(0, 0.01), 1.0 - i / 11 + rnd.gauss(0, 0.01)) for i in range(12)]
+    dot = [(0.32 + 0.03 * math.cos(a) + rnd.gauss(0, 0.005), 1.4 + 0.03 * math.sin(a)) for a in (0, 2, 4, 6)]
+    return [stem, dot]
+
+
+def shared(s, k, j):
+    """the sample s with stroke j in character k's span as well (an alignment that gives a
+    neighbour's stroke to both)"""
+    s = json.loads(json.dumps(s))
+    s["spans"][k] = sorted(s["spans"][k] + [j])
+    return s
+
+
+def tail(s, j, dx, xh=30.0):
+    """the sample s with stroke j run on dx x-heights to the right, level, from its end (a
+    descender's tail under the next letter)"""
+    s = json.loads(json.dumps(s))
+    p = s["strokes"][j][-1]
+    s["strokes"][j] += [[round(p[0] + dx * xh * i / 12, 3), p[1], round(p[2] + 0.01 * i, 3), 0.5] for i in range(1, 13)]
+    return s
+
+
+def late(s, j):
+    """the sample s with stroke j written last (a dot or a bar set after the word)"""
+    s = json.loads(json.dumps(s))
+    n = len(s["strokes"])
+    order = [x for x in range(n) if x != j] + [j]
+    t = s["strokes"][order[-2]][-1][2]
+    st = s["strokes"][j]
+    st = [[p[0], p[1], round(t + 0.1 + p[2] - st[0][2], 3), p[3]] for p in st]
+    s["strokes"] = [s["strokes"][x] for x in order[:-1]] + [st]
+    new = {x: i for i, x in enumerate(order)}
+    s["spans"] = [sorted(new[x] for x in sp) for sp in s["spans"]]
+    return s
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class JoinedPlainly(unittest.TestCase):
+    """spec 003 FR-039, a joint only where the ink runs on: print letters whose alignment
+    gives a stroke to both (the i's stem to the p before it, the g's tail run on under the r
+    to the r after it) are no joined pair however often; an i joined to the n after it, its dot set after
+    the word, is one glyph with the dot; a letter joined to a full stop or a digit never is"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(57)
+        sh = {"i": dotted_i}
+        ss = alphabet_samples(seed=57, per=4, shapes=sh)
+        for _ in range(8):
+            s = sample("pi", rnd, shapes=sh)
+            ss.append(shared(s, 0, s["spans"][1][0]))
+            s = sample("gr", rnd)
+            ss.append(shared(tail(s, s["spans"][0][-1], 1.2), 1, s["spans"][0][-1]))
+            ss.append(joined(sample("y.", rnd), [0]))
+            ss.append(joined(sample("a1", rnd), [0]))
+        for _ in range(6):
+            s = sample("in", rnd, shapes=sh)
+            s = late(s, s["spans"][0][1])           # stem, the n, the dot
+            ss.append(join_strokes(s, 0))
+        cls.ss = ss
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.lines = [json.loads(x) for x in cls.e.model().splitlines()]
+        cls.pairs = {d["joined"]: d for d in cls.lines if "joined" in d}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+
+    def test_only_the_real_joint(self):
+        self.assertEqual(sorted(self.pairs), ["in"])
+
+    def test_alignment_shares_are_no_joint(self):
+        """the shared strokes are there as written: 8 times each, all usable otherwise"""
+        n = sum(1 for s in self.ss if s["text"] in ("pi", "gr") and set(s["spans"][0]) & set(s["spans"][1]))
+        self.assertEqual(n, 16)
+        self.assertNotIn("pi", sorted(self.pairs))
+        self.assertNotIn("gr", sorted(self.pairs))
+
+    def test_no_marks_or_digits(self):
+        self.assertEqual([p for p in self.pairs if not all(c.isalpha() for c in p)], [])
+
+    def test_late_dot_in_the_glyph(self):
+        v = self.pairs["in"]["variant"]
+        n = len(shape("n", 0, random.Random(0)))
+        self.assertEqual(len(v["strokes"]), 2 + n - 1)          # the joined stroke, the dot, the n's rest
+        dot = v["strokes"][-1]
+        self.assertGreater(min(p[1] for p in dot), 1.2)
+        self.assertLess(max(p[0] for p in dot) - min(p[0] for p in dot), 0.15)
+        # it is a ligature in the font like any other
+        ttf = self.e.dir / "plain.ttf"
+        self.e.run("font", "build", str(ttf))
+        gl = font_glyphs(self.e.model())
+        self.assertEqual([gl[g["g"]] for g in hb(ttf, "in")], [("joined", "in")])
+        f = valid_font(self, ttf)
+        lig = next(g for g, x in gl.items() if x == ("joined", "in"))
+        self.assertGreaterEqual(f["glyf"][f.getGlyphOrder()[lig]].numberOfContours, 2)
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class RandomAlternates(unittest.TestCase):
+    """spec 003 FR-040: without asking, no random alternates (no 'rand', the same shaping with
+    it requested); built with them, 'rand' picks each letter's variant along a long text in
+    about the cycle's proportions, the same each time, the rules and joined pairs still on"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(61)
+        ss = alphabet_samples(seed=61, per=3)
+        ss += [sample("l", rnd, styles={"l": k % 3}) for k in range(9)]
+        ss += [sample("lo", rnd, styles={"o": 1}) for _ in range(8)]
+        ss += [sample("zxo", rnd) for _ in range(8)]
+        ss += [joined(sample("th", rnd), [0]) for _ in range(5)]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.model = cls.e.model()
+        cls.chars = {d["char"]: d for d in map(json.loads, cls.model.splitlines()) if "char" in d}
+        cls.gl = font_glyphs(cls.model)
+        cls.plain = cls.e.dir / "plain.ttf"
+        cls.e.run("font", "build", str(cls.plain))
+        cls.rand = {}
+        for st in ("Regular", "Calligraphy", "Brush"):
+            cls.rand[st] = cls.e.dir / ("rand-%s.ttf" % st)
+            cls.e.run("font", "build", "--random", "--style", st, str(cls.rand[st]))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_off_by_default(self):
+        self.assertNotIn("rand", gsub_features(self.plain))
+        text = "lllll hello lol " * 8
+        self.assertEqual(hb(self.plain, text), hb(self.plain, text, "rand"))
+
+    def test_random_in_proportion(self):
+        lo = next(k for k, r in enumerate(self.chars["o"].get("rules", [])) if r.get("prev") == "l")
+        lo = self.chars["o"]["rules"][lo]["variant"]
+        text = " ".join(["hello world"] * 60) + " lo th"
+        for st, ttf in self.rand.items():
+            f = valid_font(self, ttf)
+            self.assertEqual(gsub_features(ttf), ["calt", "liga", "rand"])
+            a = hb(ttf, text)
+            self.assertEqual(a, hb(ttf, text), st)
+            got = [self.gl[g["g"]] for g in a]
+            ls = [g[2] for g in got if g[:2] == ("variant", "l")]
+            self.assertEqual(len(ls), text.count("l"))              # each l a variant of its own
+            slots = self.chars["l"]["slots"]
+            for v in set(slots):
+                self.assertAlmostEqual(ls.count(v) / len(ls), slots.count(v) / SLOTS, delta=0.1, msg=(st, v))
+            # not the cycle: the steps don't decide it
+            self.assertNotEqual(got, [self.gl[g["g"]] for g in hb(self.plain, text)])
+            # the rule and the joined pair apply all the same
+            self.assertEqual(got[-4:], [("variant", "l", got[-4][2]), ("variant", "o", lo), ("space", got[-2][1]), ("joined", "th")])
+            self.assertTrue(f)
 
 
 if __name__ == "__main__":
