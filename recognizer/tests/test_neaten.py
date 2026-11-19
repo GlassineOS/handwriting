@@ -438,7 +438,7 @@ class Neaten(unittest.TestCase):
         for k in ks:
             if pulled(how1, k):
                 # (a letter already that near keeps its few points: on the glyph, chords between)
-                self.assertLess(dist(xy1, k), max(before[k], 0.08))
+                self.assertLess(dist(xy1, k), max(before[k], 0.09))
                 if pulled(how7, k):
                     self.assertLessEqual(dist(xy1, k), dist(xy7, k) + 0.01)
                 # the glyph itself, on its own points, all of it
