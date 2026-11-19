@@ -55,7 +55,6 @@
 #define MAX_STROKES 4096
 #define MAX_POINTS 100000
 #define MAX_CANDS 8
-#define NEAT_STEPS 2             /* neaten: tries before it gives the ink back as it was */
 #define IDLE_DEFAULT 300
 #define FIT_OK 0.6              /* a prompted alignment's score from which it passes the check */
 
@@ -1211,55 +1210,15 @@ static int parse_align(const struct session *s, const char *align, size_t nc, in
 	return 0;
 }
 
-/* the best reading of all the strokes, as read gives it, with x and y replaced (NULL: as
- * they are); with top, from the same run, per character of cp (nc) the class read most
- * surely over its own frames (spec 003 FR-037; 0 none) */
-static int read_text(struct hw_lang *l, const struct session *s, double **x, double **y,
-		     const struct hw_size_ref *ref, char *out, size_t max, const unsigned *cp, size_t nc, int *top)
-{
-	for (size_t k = 0; top && k < nc; k++) top[k] = 0;
-	out[0] = 0;
-	struct hw_ink *ink = malloc((s->n + 1) * sizeof *ink);
-	if (!ink) return -1;
-	size_t m = 0;
-	for (size_t i = 0; i < s->n; i++) {
-		ink[m] = s->ink[i];
-		if (x) { ink[m].x = x[i]; ink[m].y = y[i]; }
-		m++;
-	}
-	size_t *np;
-	struct hw_stroke *st = m ? strokes_of(ink, m, &np) : NULL;
-	int ret = 0;
-	struct hw_run r;
-	if (st && !hw_run_sized(l, st, m, ref, &r)) {
-		if (r.rows > 0) {
-			hw_lookalike_lean(l, &r, s->lean, hw_lean_keep());
-			r.npoints = np;
-			struct hw_reading rd;
-			struct hw_context c;
-			if (hw_read_words(l, &r, read_context(l, s, READ_FIELD, &c), 1, &rd) >= 1) text_of(rd.c[0].cp, rd.c[0].len, out, max);
-			struct hw_charspan *cs = NULL;
-			if (top && cp && nc && hw_align(l, &r, cp, nc, &cs) > 0)
-				for (size_t k = 0; k < nc; k++) top[k] = cs[k].top;
-			free(cs);
-		}
-		hw_run_free(&r);
-	} else if (m) ret = -1;
-	if (st) { free(st); free(np); }
-	free(ink);
-	return ret;
-}
-
-static size_t edit_utf8(const char *a, const char *b)
-{
-	unsigned x[HW_MAX_LABELS], y[HW_MAX_LABELS];
-	size_t na = hw_utf8_decode(a, x, HW_MAX_LABELS), nb = hw_utf8_decode(b, y, HW_MAX_LABELS);
-	if (na > HW_MAX_LABELS) na = HW_MAX_LABELS;
-	if (nb > HW_MAX_LABELS) nb = HW_MAX_LABELS;
-	return hw_edit(x, na, y, nb);
-}
-
 static const char *neat_how(int h) { return h == HW_NEAT_PULLED ? "pulled" : h == HW_NEAT_LINE ? "line" : "kept"; }
+
+/* a character's reason (FR-041), as the reply names it */
+static const char *neat_why(int w)
+{
+	static const char *const name[] = { "pulled", "level", "not-covered", "no-structure", "not-near", "shape-guard",
+					    "low-confidence", "drawing", "gesture", "no-ink" };
+	return w >= 0 && w < (int)(sizeof name / sizeof *name) ? name[w] : "level";
+}
 
 static void do_neaten(const char *id, struct session *s, const char *strength, const char *text, const char *align)
 {
@@ -1293,7 +1252,6 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		if (!l && !align) { reply("error\t%s\tno-model", id); goto out; }
 		struct hw_size_ref ref = { 0 };
 		if (l) size_ref(l, s, &ref);
-		struct hw_size_ref ref_sz = ref;
 		double xh = ref.kind != HW_SIZE_NONE ? ref.x : 0;
 		/* a gesture (the newest stroke, as read sees it) and drawing stay as they are */
 		size_t *np;
@@ -1333,7 +1291,9 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 					if (k > 0) {
 						fit = malloc((size_t)k * sizeof *fit);
 						for (long c = 0; fit && c < k; c++) {
-							fit[c] = cs[c].fit;
+							/* with the confirmed text the characters are known: only one the
+							 * alignment gives no ink of its own is in doubt (FR-017) */
+							fit[c] = !text ? cs[c].fit : cs[c].r0 < 0 ? -1 : 1;
 							if (cs[c].r0 < 0) continue;
 							for (long row = cs[c].r0; row <= cs[c].r1; row++) {
 								int si = map[r.org[row].stroke], pt = r.org[row].point;
@@ -1361,71 +1321,26 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		q.strength = st;
 		q.L = letters_now();
 		q.xh = xh;
-		/* the neatened ink must read at least as well as the original (FR-016: the same
-		 * text in the same hand): else without the pull, then not at all. Before that, each
-		 * pulled character on its own (FR-037): one that reads as another character than in
-		 * the original is not pulled, the rest keep their pull; one run of the model reads
-		 * the line and every character, a second only when one was put back. */
-		char orig[4 * HW_MAX_LABELS + 1], now[4 * HW_MAX_LABELS + 1];
-		const char *goal = text ? text : orig;
-		size_t d0 = 0;
-		orig[0] = 0;
-		int *top0 = calloc(nc + 1, sizeof *top0), *top1 = calloc(nc + 1, sizeof *top1);
-		unsigned char *nopull = calloc(nc + 1, 1);
-		if (!top0 || !top1 || !nopull) { free(top0); free(top1); free(nopull); goto oom; }
+		/* nothing is read again after neatening (FR-037): each pulled character's shape is
+		 * checked in hw_neaten. (tests) guard=CHARS: those characters fail the check. */
 		const char *knob = getenv("GLASSINE_HANDWRITING_NEATEN");
-		int check = !(knob && strstr(knob, "check=0"));
-		/* (tests) misread=CHARS: those characters, pulled, read as another one */
-		const char *mis = knob ? strstr(knob, "misread=") : NULL;
-		size_t nmis = mis ? strcspn(mis += 8, ",") : 0;
-		if (l && q.nc && check) {
-			if (read_text(l, s, NULL, NULL, &ref_sz, orig, sizeof orig, cp, q.nc, top0)) goto oom_check;
-			d0 = edit_utf8(orig, goal);
+		const char *gk = knob ? strstr(knob, "guard=") : NULL;
+		size_t ng = gk ? strcspn(gk += 6, ",") : 0;
+		unsigned char *guard = ng ? calloc(q.nc + 1, 1) : NULL;
+		for (size_t k = 0; guard && k < q.nc; k++)
+			for (size_t z = 0; z < ng; z++) guard[k] |= cp[k] == (unsigned char)gk[z];
+		q.guard = guard;
+		int r = hw_neaten(&q);
+		q.guard = NULL;
+		free(guard);
+		if (r) goto oom;
+		/* drawing and a gesture among a character's strokes (with ALIGN) */
+		for (size_t k = 0; q.why && k < q.nc; k++) {
+			if (q.why[k] != HW_NEAT_WHY_NO_INK) continue;
+			for (size_t i = 0; i < s->n; i++)
+				for (size_t t = 0; keep[i] && t < s->ink[i].n; t++)
+					if (own[i][t] == (int)k) { q.why[k] = i == g ? HW_NEAT_WHY_GESTURE : HW_NEAT_WHY_DRAWING; break; }
 		}
-		int done = 0;
-		for (int step = 0; step < NEAT_STEPS && !done; step++) {
-			q.line_only = step > 0;
-			q.nopull = nopull;
-			for (int again = 0; again < 2; again++) {
-				hw_neat_free(&q);
-				q.strength = st;
-				if (hw_neaten(&q)) goto oom_check;
-				/* as the reply writes them, so the check reads what the client gets */
-				for (size_t i = 0; i < s->n; i++)
-					for (size_t t = 0; t < s->ink[i].n; t++) {
-						q.x[i][t] = round(q.x[i][t] * 1000) / 1000;
-						q.y[i][t] = round(q.y[i][t] * 1000) / 1000;
-					}
-				if (!l || !q.nc || !check) { done = 1; break; }
-				int moved = 0;
-				for (size_t i = 0; i < s->n; i++) moved |= q.how[i] != HW_NEAT_KEPT;
-				if (!moved) { done = 1; break; }
-				if (read_text(l, s, q.x, q.y, &ref_sz, now, sizeof now, cp, q.nc, top1)) goto oom_check;
-				int back = 0;
-				for (size_t k = 0; !again && k < q.nc; k++) {
-					if (!q.pulled[k]) continue;
-					int other = top1[k] != top0[k] && top1[k] != hw_class_of(&l->model, cp[k]);
-					for (size_t z = 0; z < nmis; z++) other |= cp[k] == (unsigned char)mis[z];
-					if (other) { nopull[k] = 1; back = 1; }
-				}
-				if (!back) break;
-			}
-			if (done) break;
-			if (edit_utf8(now, goal) <= d0) done = 1;
-		}
-		free(top0); free(top1);
-		if (0) {
-		oom_check:
-			free(top0); free(top1); q.nopull = NULL; free(nopull);
-			goto oom;
-		}
-		if (!done) {
-			hw_neat_free(&q);
-			q.strength = 0;
-			if (hw_neaten(&q)) { q.nopull = NULL; free(nopull); goto oom; }
-		}
-		q.nopull = NULL;
-		free(nopull);
 	}
 	bfmt(&b, "neaten\t%s\tok\t", id);
 	besc(&b, used);
@@ -1448,6 +1363,12 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 			else bfmt(&b, ",%.6g", s->ink[i].t[t] * 1000);
 			p = end;
 		}
+	}
+	/* per character of the reading followed: pulled, or why not (FR-041; contract 1.5) */
+	bstr(&b, "\t");
+	for (size_t k = 0; k < q.nc; k++) {
+		if (k) bstr(&b, " ");
+		bstr(&b, cp[k] == ' ' ? "space" : neat_why(q.why ? q.why[k] : HW_NEAT_WHY_LEVEL));
 	}
 	bstr(&out, b.s);
 	bput(&out, "\n", 1);

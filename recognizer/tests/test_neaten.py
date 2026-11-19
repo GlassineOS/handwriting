@@ -5,12 +5,13 @@ FR-035 to FR-037), with a random-weight model and synthetic samples: strength 0 
 strokes back byte for byte; any strength keeps the strokes, their order, every point's time,
 pressure and tilt as sent; the same request gives the same ink; the four levels do what they
 say (Light no letter's shape, Medium the close letters, Strong also a badly written one,
-Neatest the best version's shape); the best version is the target; a pulled letter read as
-another character is put back; at strength 1 the covered characters pulled are closer to
-their version (most of them are); without a letter model the baseline is
-straightened; drawing passes unchanged; the neatened ink reads as the original did (or
-is left as it was); the session is unchanged, so a confirm stores the same sample; a
-private field keeps nothing to neaten.
+Neatest the best version's shape); the best version is the target; a pulled letter whose
+new ink comes nearer another character's versions is put back, the others stay pulled, and
+the reply names each character's reason; a word the dictionary lacks doesn't hold back the
+line; at strength 1 the covered characters pulled are closer to their version (most of
+them are); no new step back or kink where strokes start or letters join; without a letter
+model the baseline is straightened; drawing passes unchanged; the session is unchanged, so
+a confirm stores the same sample; a private field keeps nothing to neaten.
 
     HW_BIN=path/to/glassine-handwriting python3 tests/test_neaten.py
 
@@ -55,11 +56,48 @@ def shape_dist(strokes, v):
     return EV.vdist(strokes, radius(strokes) / rv if rv > 0 else 1, v)
 
 
-def parse(r):
+def flow(raw, out, xh):
+    """new steps back and new kinks of a stroke: where the raw ink has none within 5 points
+    (a step back at a cusp of the raw ink isn't new either)"""
+    n, w = len(out), 3
+
+    def back(p, i):
+        d = (p[i + w][0] - p[i - w][0], p[i + w][1] - p[i - w][1])
+        st = (p[i + 1][0] - p[i][0], p[i + 1][1] - p[i][1])
+        nd, ns = math.hypot(*d), math.hypot(*st)
+        return nd > 0.15 * xh and ns > 0.01 * xh and d[0] * st[0] + d[1] * st[1] < -0.5 * nd * ns
+
+    def turn(p, i):
+        a = (p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
+        b = (p[i + 1][0] - p[i][0], p[i + 1][1] - p[i][1])
+        na, nb = math.hypot(*a), math.hypot(*b)
+        if na < 0.01 * xh or nb < 0.01 * xh:
+            return 0
+        return math.degrees(math.acos(max(-1, min(1, (a[0] * b[0] + a[1] * b[1]) / (na * nb)))))
+
+    rb = [w <= i < n - 1 - w and back(raw, i) for i in range(n)]
+    ra = [0 < i < n - 1 and turn(raw, i) > 45 for i in range(n)]
+    near = lambda f, i: any(f[max(0, i - 5):i + 6])
+    nb = sum(back(out, i) and not near(rb, i) and not near(ra, i) for i in range(w, n - 1 - w))
+    nk = sum(turn(out, i) > 90 and not near(ra, i) for i in range(1, n - 1))
+    return nb, nk
+
+
+WHY = {"pulled", "level", "not-covered", "no-structure", "not-near", "shape-guard", "low-confidence", "drawing",
+       "gesture", "no-ink", "space"}
+
+
+def parse(r, why=False):
+    """(text, [(stroke, how, POINTS)]), and with why the characters' reasons (FR-041)"""
     assert r[0] == "neaten" and r[2] == "ok", r
     k = int(r[4])
-    assert len(r) == 5 + 3 * k, r
-    return TR.unesc(r[3]), [(int(r[5 + 3 * i]), r[6 + 3 * i], r[7 + 3 * i]) for i in range(k)]
+    assert len(r) == 6 + 3 * k, r
+    text = TR.unesc(r[3])
+    reasons = r[5 + 3 * k].split(" ") if r[5 + 3 * k] else []
+    assert len(reasons) == (len(text) if text else 0), (text, reasons)
+    assert all(w in WHY for w in reasons), reasons
+    out = [(int(r[5 + 3 * i]), r[6 + 3 * i], r[7 + 3 * i]) for i in range(k)]
+    return (text, out, reasons) if why else (text, out)
 
 
 class Neaten(unittest.TestCase):
@@ -106,7 +144,7 @@ class Neaten(unittest.TestCase):
             self.assertTrue(all(o[1] == "kept" for o in out))
         # an empty session
         c.ask("begin", "e", "en", "-", "device", "")
-        self.assertEqual(c.ask("neaten", "e", "1")[2:], ["ok", "", "0"])
+        self.assertEqual(c.ask("neaten", "e", "1")[2:], ["ok", "", "0", ""])
         c.close()
 
     def test_keeps_strokes_order_time_pressure(self):
@@ -139,7 +177,7 @@ class Neaten(unittest.TestCase):
 
     def test_closer_to_the_variant(self):
         L = self.letters()
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         rnd = random.Random(11)
         n = m = 0
         for text in ("hello", "World", "q7x2b"):
@@ -175,14 +213,14 @@ class Neaten(unittest.TestCase):
         self.assertGreater(n, 8)
         self.assertGreaterEqual(n, 0.75 * m)
 
-    def neaten_letters(self, s, strength, text=None, align=True, knob="check=0"):
+    def neaten_letters(self, s, strength, text=None, align=True, knob=""):
         """the sample neatened at strength (with its text and spans), as (how, xy) per stroke"""
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = knob
         c = self.e.start()
         self.begin(c, s)
         text = text or s["text"]
         args = (TR.esc(text), ";".join(",".join(map(str, sp)) for sp in s["spans"])) if align else (TR.esc(text),)
-        _, out = parse(c.ask("neaten", "s", str(strength), *args))
+        _, out, self.why = parse(c.ask("neaten", "s", str(strength), *args), why=True)
         c.close()
         return [o[1] for o in out], [EV.to_xy(o[2]) for o in out]
 
@@ -271,20 +309,169 @@ class Neaten(unittest.TestCase):
             self.assertLess(shape_dist(ink, {"strokes": v["best"]}), shape_dist(ink, v) + 1e-9)
 
     def test_letter_check(self):
-        """a pulled letter that reads as another character is put back to the line level,
-        the other letters keep their pull (FR-037; the knob's misread= has those characters
-        read as another once pulled)"""
+        """a pulled letter whose new ink would come closer to another character is put back
+        to the line level, the other letters keep their pull, and the reply says why
+        (FR-037, FR-041; the knob's guard= has those characters fail the check)"""
         self.letters()
         s = TL.sample("hello", random.Random(24))
-        others = 0
+        how0, _ = self.neaten_letters(s, 1)
+        why0 = self.why
         for mis in ("o", "hel", "lo"):
-            how, _ = self.neaten_letters(s, 1, knob="misread=" + mis)
+            how, _ = self.neaten_letters(s, 1, knob="guard=" + mis)
             for k, ch in enumerate(s["text"]):
                 if ch in mis:
                     self.assertTrue(all(how[j] != "pulled" for j in s["spans"][k]), (mis, how))
+                    if why0[k] == "pulled":
+                        self.assertEqual(self.why[k], "shape-guard")
+                elif why0[k] == "pulled":
+                    self.assertEqual(self.why[k], "pulled")
+                    self.assertTrue(all(how[j] == "pulled" for j in s["spans"][k]))
+        self.assertGreater(why0.count("pulled"), 2)
+
+    def test_shape_guard(self):
+        """no pulled character comes out nearer another character's versions than its own
+        (SC-004), at every level"""
+        L = self.letters()
+        rnd = random.Random(25)
+        n = 0
+        for text in ("hello world", "quick brown", "Zz9 jump"):
+            s = TL.sample(text, rnd)
+            for st in s["strokes"]:
+                for p in st:
+                    p[0] += rnd.gauss(0, 1.5)
+                    p[1] += rnd.gauss(0, 1.5)
+            for lv in (0.5, 0.75, 1):
+                how, xy = self.neaten_letters(s, lv)
+                # the guard measures at the line's x-height: the neatened small letters' height
+                xh = EV.line_xh(dict(s, strokes=[[list(p) for p in st] for st in xy])) or 30.0
+                for k, ch in enumerate(text):
+                    if self.why[k] != "pulled":
+                        continue
+                    ink = [xy[j] for j in s["spans"][k]]
+                    ln = len(ink)
+                    mine = min((EV.vdist(ink, xh, w) for v in L[ch]["variants"] if not v.get("left_out")
+                                for w in (v, {"strokes": v.get("best") or v["strokes"]}) if len(v["strokes"]) == ln),
+                               default=math.inf)
+                    other = min((EV.vdist(ink, xh, v) for c2, le in L.items() if c2 != ch for v in le["variants"]
+                                 if not v.get("left_out") and len(v["strokes"]) == ln), default=math.inf)
+                    self.assertLess(mine, other + 0.01, (text, ch, lv))
+                    n += 1
+        self.assertGreater(n, 20)
+
+    def test_word_left_out_of_the_dictionary(self):
+        """a word the dictionary lacks (a name) doesn't hold back the line: the other words
+        are neatened; only a word read with low confidence gets the line level (FR-017)"""
+        self.letters()
+        s = TL.sample("hello my name is Qxzvk", random.Random(26))
+        # with the text and its spans: the name and the other words are pulled
+        how, _ = self.neaten_letters(s, 1)
+        words = "".join(" " if w == "space" else "p" if w == "pulled" else "-" for w in self.why).split(" ")
+        self.assertTrue(all("p" in w for w in words), self.why)
+        # without it (the reading of this random-weight model is low confidence throughout):
+        # a reason for every character read
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        c = self.e.start()
+        self.begin(c, s)
+        parse(c.ask("neaten", "s", "1"), why=True)
+        c.close()
+
+    def test_flow_at_starts_and_joins(self):
+        """at every level, no new step back and no new kink where a stroke starts (with an
+        entry stroke or a hook the version lacks) or where it passes from one letter to the
+        next (FR-036), over every character and every joined pair of small letters"""
+        self.letters()
+        rnd = random.Random(27)
+        xh = 30.0
+
+        def lead_in(st, kind):
+            # an entry stroke from below left, or a short hook back into the start
+            (x0, y0), (x1, y1) = st[0][:2], st[1][:2]
+            d = math.hypot(x1 - x0, y1 - y0) or 1
+            ux, uy = (x1 - x0) / d, (y1 - y0) / d
+            if kind == 0:
+                pts = [(x0 - 0.45 * xh * (1 - i / 6) * 0.7 - 0.1 * xh * (1 - i / 6), y0 + 0.4 * xh * (1 - i / 6))
+                       for i in range(6)]
+            else:
+                pts = [(x0 - ux * 0.12 * xh * math.sin(math.pi * i / 6) + uy * 0.06 * xh * (1 - i / 6),
+                        y0 - uy * 0.12 * xh * math.sin(math.pi * i / 6) - ux * 0.06 * xh * (1 - i / 6)) for i in range(6)]
+            t = st[0][2]
+            return [[round(x, 3), round(y, 3), round(t - 0.01 * (6 - i), 3), 0.5] for i, (x, y) in enumerate(pts)] + st
+
+        def joined(text):
+            # the words' letters joined: the last stroke of one and the first of the next one
+            # stroke, a short bridge between them; ALIGN with the points of each
+            s = TL.sample(text, rnd)
+            # each letter written a little off its versions (taller or wider, higher or
+            # lower), so that the two letters' pulls differ where they meet
+            for k, sp in enumerate(s["spans"]):
+                pts = [p for z in sp for p in s["strokes"][z]]
+                if not pts:
+                    continue
+                cx = sum(p[0] for p in pts) / len(pts)
+                cy = sum(p[1] for p in pts) / len(pts)
+                sx, sy, dy = (1.4, 1.0, 0.35 * xh) if k % 3 == 0 else (1.0, 1.4, -0.35 * xh) if k % 3 == 1 else (1, 1, 0)
+                for p in pts:
+                    p[0] = round(cx + (p[0] - cx) * sx, 3)
+                    p[1] = round(cy + (p[1] - cy) * sy + dy, 3)
+            strokes, align = [], []
+            for k, ch in enumerate(text):
+                if ch == " ":
+                    align.append([])
+                    continue
+                own = [str(len(strokes) + z) for z in range(len(s["spans"][k]))]
+                if k and text[k - 1] != " ":
+                    prev = strokes.pop()
+                    first = [list(p) for p in s["strokes"][s["spans"][k][0]]]
+                    a, b = prev[-1], first[0]
+                    bridge = [[round(a[0] + (b[0] - a[0]) * i / 4, 3), round(a[1] + (b[1] - a[1]) * i / 4, 3), a[2], 0.5]
+                              for i in range(1, 4)]
+                    j = len(strokes)
+                    cut = len(prev) + 1
+                    align[-1][-1] = f"{j}:0-{cut}"
+                    strokes.append(prev + bridge + first)
+                    own = [f"{j}:{cut + 1}-{len(strokes[-1]) - 1}"] + [str(j + z) for z in range(1, len(s["spans"][k]))]
+                    for z in range(1, len(s["spans"][k])):
+                        strokes.append([list(p) for p in s["strokes"][s["spans"][k][z]]])
                 else:
-                    others += all(how[j] == "pulled" for j in s["spans"][k])
-        self.assertGreater(others, 0)
+                    for z in s["spans"][k]:
+                        strokes.append([list(p) for p in s["strokes"][z]])
+                align.append(own)
+            for z, st in enumerate(strokes):
+                t0 = z * 1.0
+                for i, p in enumerate(st):
+                    p[2] = round(t0 + 0.01 * i, 3)
+            return dict(s, strokes=strokes), ";".join(",".join(a) for a in align)
+
+        lines = []
+        for i in range(0, len(TL.ALNUM), 8):
+            s = TL.sample(" ".join(TL.ALNUM[i:i + 8]), rnd)
+            for k in range(len(s["text"])):
+                if s["spans"][k]:
+                    j = s["spans"][k][0]
+                    s["strokes"][j] = lead_in(s["strokes"][j], (i + k) % 2)
+            lines.append((s, ";".join(",".join(map(str, sp)) for sp in s["spans"])))
+        small = "abcdefghijklmnopqrstuvwxyz"
+        pairs = [a + b for a in small for b in small]
+        for i in range(0, len(pairs), 12):
+            lines.append(joined(" ".join(pairs[i:i + 12])))
+        new, pulled, where = 0, 0, {}
+        for li, (s, align) in enumerate(lines):
+            for lv in (0.25, 0.5, 0.75, 1):
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                c = self.e.start()
+                self.begin(c, s)
+                _, out, why = parse(c.ask("neaten", "s", str(lv), TR.esc(s["text"]), align), why=True)
+                c.close()
+                pulled += why.count("pulled")
+                for j, o in enumerate(out):
+                    raw = [(p[0], p[1]) for p in s["strokes"][j]]
+                    b, k = flow(raw, EV.to_xy(o[2]), xh)
+                    new += b + k
+                    if b + k:
+                        key = (lv, "single" if li < 8 else "joined")
+                        where[key] = where.get(key, 0) + b + k
+        self.assertGreater(pulled, 1000)
+        self.assertEqual(new, 0, where)
 
     def test_same_strokes_variant(self):
         """a t written in one stroke goes to the one-stroke variant, one in two strokes to a
@@ -304,7 +491,7 @@ class Neaten(unittest.TestCase):
              if "char" in m}
         vt = L["t"]["variants"]
         self.assertEqual({len(v["strokes"]) for v in vt}, {1, 2})
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         for forms, n in ((None, 2), ({"t": (TL.ONE_T, [])}, 1)):
             s = TL.late_sample("ato", random.Random(41), "next", forms=forms)
             for st in s["strokes"]:
@@ -344,7 +531,7 @@ class Neaten(unittest.TestCase):
         sp = next(m["spacing"] for m in map(json.loads, (self.e.store / "letters" / "model").read_text().splitlines())
                   if "spacing" in m)
         learned = {(p[0], p[1]): p[2] for p in sp["pairs"]}
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         s = TL.spaced_sample("lol abc", random.Random(51), {"lo": 0.3, "ol": 0.5, "ab": 0.3, "bc": 0.5})
         c = self.e.start()
         self.begin(c, s)
@@ -381,7 +568,7 @@ class Neaten(unittest.TestCase):
         f.write_text("\n".join(lines) + "\n")
         self.e.run("samples", "import", str(f))
         self.e.run("letters", "build", "-r")
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         # written with the bar above the x-height, as alone: the gap would set the o at the stem
         s = TL.overhang_word("fo", random.Random(53), {"fo": 0.75}, "alone")
         c = self.e.start()
@@ -403,7 +590,7 @@ class Neaten(unittest.TestCase):
 
     def test_line_level_without_letter_model(self):
         # letters on a slanted baseline: straight after (FR-014, FR-022)
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         rnd = random.Random(12)
         s = TL.sample("aceoun", rnd)
         for j, st in enumerate(s["strokes"]):
@@ -431,7 +618,7 @@ class Neaten(unittest.TestCase):
 
     def test_drawing_stays(self):
         self.letters()
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "check=0"
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         rnd = random.Random(13)
         s = TL.sample("abc", rnd)
         circle = [[200 + 120 * math.cos(a / 20 * 2 * math.pi), 100 + 120 * math.sin(a / 20 * 2 * math.pi), 5 + a * 0.01, 0.5]
@@ -445,25 +632,6 @@ class Neaten(unittest.TestCase):
         c.close()
         self.assertEqual(out[-1][1], "kept")
         self.assertEqual(out[-1][2], points(circle))
-
-    def test_reads_as_the_original(self):
-        # with the check on, the neatened ink reads as the original (or comes back as it was)
-        self.letters()
-        rnd = random.Random(14)
-        for text in ("hello", "abc de", "Zz9"):
-            s = TL.sample(text, rnd)
-            c = self.e.start()
-            self.begin(c, s)
-            want = TR.parse_text(c.ask("read", "s", "1"))[0][0]
-            used, out = parse(c.ask("neaten", "s", "1"))
-            self.assertEqual(used, want)
-            c.ask("begin", "n", "en", "-", "device:4.0:200", "")
-            a = s["area"]["box"]
-            c.ask("area", "n", f"{a[0]},{a[1]},{a[2]},{a[3]},{s['area']['line']},0")
-            for o in out:
-                c.ask("stroke", "n", o[2])
-            self.assertEqual(TR.parse_text(c.ask("read", "n", "1"))[0][0], want)
-            c.close()
 
     def test_session_unchanged_and_private(self):
         self.letters()

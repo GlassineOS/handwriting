@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Neatening (see neaten.h and docs/recognizer.md, "Neatening").
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "neaten.h"
@@ -170,6 +171,13 @@ double hw_neat_variant_dist(const struct hw_ink *ink, size_t n, double xh, const
 /* where a stroke passes from one character to the next, their moves are blended over this
  * many x-heights to either side (at most half of either character's run) */
 #define HW_NEAT_BLEND 0.15
+/* ... wider where the two characters' moves differ more: the move changes by at most this
+ * much per unit of the stroke's length (half of a tent's slope; below 1 no step goes back) */
+#define HW_NEAT_BLEND_SLOPE 0.5
+#define HW_NEAT_BLEND_MAX 0.8
+/* a run of a stroke's points of one character shorter than this (x-heights along the
+ * stroke) is the alignment's spill, not a joint */
+#define HW_NEAT_SPILL 0.35
 /* ink more than this many times as wide or tall as the version (and 0.35 x-heights) isn't
  * written like it */
 #define HW_NEAT_SIZE 1.8
@@ -336,14 +344,26 @@ void hw_neat_drawing(const struct hw_ink *ink, size_t n, double xh, unsigned cha
 	}
 }
 
+static int is_space(unsigned c) { return c == ' ' || c == '\t' || c == 0xa0 || c == 0x3000; }
+
+static const struct hw_letter *letter_of(const struct hw_letters *L, unsigned cp)
+{
+	size_t lo = 0, hi = L ? L->n : 0;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		if (L->l[mid].cp < cp) lo = mid + 1; else hi = mid;
+	}
+	return L && lo < L->n && L->l[lo].cp == cp ? &L->l[lo] : NULL;
+}
+
 void hw_neat_free(struct hw_neat *q)
 {
 	if (q->x) for (size_t j = 0; j < q->n; j++) free(q->x[j]);
 	if (q->y) for (size_t j = 0; j < q->n; j++) free(q->y[j]);
-	free(q->x); free(q->y); free(q->how); free(q->pulled);
+	free(q->x); free(q->y); free(q->how); free(q->pulled); free(q->why);
 	q->x = q->y = NULL;
 	q->how = NULL;
-	q->pulled = NULL;
+	q->pulled = q->why = NULL;
 }
 
 /* how far a character goes towards its best version at strength s (FR-014): near it (near)
@@ -364,6 +384,7 @@ struct piece { int j; size_t a, b; int joint0, joint1; };
 
 struct ch {
 	int npts, cls, ok;
+	int why;                        /* HW_NEAT_WHY_*: pulled, or why not */
 	double fit;
 	double x0, y0, x1, y1, cx;      /* the ink's box (y down) and middle */
 	double ax, ay;                  /* the anchor: its middle on the fitted baseline */
@@ -441,7 +462,8 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	if (lo < q->L->n && q->L->l[lo].cp == q->cp[k]) le = &q->L->l[lo];
 	int kept = 0;
 	for (int t = 0; le && t < le->nvar; t++) kept |= !le->var[t].out;
-	if (!le || !le->covered || !kept) return 0;
+	if (!le || !le->covered || !kept) { c->why = HW_NEAT_WHY_NOT_COVERED; return 0; }
+	c->why = HW_NEAT_WHY_NO_STRUCTURE;
 	/* its pieces: the runs of its points along the strokes, in writing order */
 	int np = 0;
 	for (size_t j = 0; j < q->n; j++) {
@@ -526,7 +548,7 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	struct hw_variant tv = *c->v;
 	tv.s = (struct hw_lstroke *)c->t;
 	c->pull = pull_of(s, dist_to(sx, sx + np, sn, (size_t)np, xh, &tv, NULL, NULL) <= HW_NEAT_NEAR);
-	if (!(c->pull > 0)) goto out;
+	if (!(c->pull > 0)) { c->why = HW_NEAT_WHY_NOT_NEAR; goto out; }
 	/* the middles of the ink and of the version, both by arc length */
 	ret = -1;
 	double acx = 0, acy = 0, vcx = 0, vcy = 0;
@@ -623,6 +645,7 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 		for (size_t i = l; i < pc->b; i++) { px[i] = px[l - 1]; py[i] = py[l - 1]; }
 	}
 	c->off = acx / xh - vcx + sh[0];
+	c->why = HW_NEAT_WHY_PULLED;
 	ret = 0;
 out:
 	for (int a = 0; sx && a < np; a++) { free(sx[a]); free(sx[np + a]); }
@@ -643,7 +666,77 @@ static void move_of(const struct hw_neat *q, const struct ch *C, double **ex, do
 	if (C[o].pull > 0 && q->own[j][ie] == o) { *mx += C[o].pull * ex[j][ie]; *my += C[o].pull * ey[j][ie]; }
 }
 
-int hw_neaten(struct hw_neat *q)
+/* the runs of character k's points along the strokes */
+static int pieces_of(const struct hw_neat *q, size_t k)
+{
+	int np = 0;
+	for (size_t j = 0; j < q->n; j++)
+		for (size_t i = 0; i < q->ink[j].n; i++) np += q->own[j][i] == (int)k && (!i || q->own[j][i - 1] != (int)k);
+	return np;
+}
+
+/* a version of cp (not left out) with ns strokes */
+static int has_version(const struct hw_letters *L, unsigned cp, int ns)
+{
+	const struct hw_letter *le = letter_of(L, cp);
+	for (int t = 0; le && t < le->nvar; t++) if (!le->var[t].out && le->var[t].nstrokes == (size_t)ns) return 1;
+	return 0;
+}
+
+/* a version of cp (not left out) with fewer than ns strokes */
+static int fewer_version(const struct hw_letters *L, unsigned cp, int ns)
+{
+	const struct hw_letter *le = letter_of(L, cp);
+	for (int t = 0; le && t < le->nvar; t++) if (!le->var[t].out && le->var[t].nstrokes < (size_t)ns) return 1;
+	return 0;
+}
+
+/* the shape guard of character k (FR-037): 1 when its neatened ink (q->x, q->y) is no
+ * nearer its own versions (or their best) than some version of another character with as
+ * many strokes, 0 when it is, -1 out of memory */
+static int guard_fails(const struct hw_neat *q, size_t k, double xh)
+{
+	const struct hw_letter *own = letter_of(q->L, q->cp[k]);
+	if (!own || !(xh > 0)) return 0;
+	size_t np = 0;
+	for (size_t j = 0; j < q->n; j++)
+		for (size_t i = 0; i < q->ink[j].n; i++) np += q->own[j][i] == (int)k && (!i || q->own[j][i - 1] != (int)k);
+	if (!np) return 0;
+	double **sx = calloc(np * 2 + 1, sizeof *sx);
+	size_t *sn = calloc(np + 1, sizeof *sn);
+	if (!sx || !sn) { free(sx); free(sn); return -1; }
+	size_t a = 0;
+	for (size_t j = 0; j < q->n; j++)
+		for (size_t i = 0; i < q->ink[j].n; i++) {
+			if (q->own[j][i] != (int)k || (i && q->own[j][i - 1] == (int)k)) continue;
+			size_t b = i;
+			while (b < q->ink[j].n && q->own[j][b] == (int)k) b++;
+			sx[a] = q->x[j] + i; sx[np + a] = q->y[j] + i; sn[a] = b - i;
+			a++;
+		}
+	double mine = INFINITY, other = INFINITY;
+	for (int t = 0; t < own->nvar; t++) {
+		const struct hw_variant *v = &own->var[t];
+		if (v->out || v->nstrokes != np) continue;
+		mine = fmin(mine, dist_to(sx, sx + np, sn, np, xh, v, NULL, NULL));
+		if (v->best) {
+			struct hw_variant bv = *v;
+			bv.s = v->best;
+			mine = fmin(mine, dist_to(sx, sx + np, sn, np, xh, &bv, NULL, NULL));
+		}
+	}
+	for (size_t l = 0; isfinite(mine) && l < q->L->n; l++) {
+		const struct hw_letter *le = &q->L->l[l];
+		if (le == own) continue;
+		for (int t = 0; t < le->nvar; t++)
+			if (!le->var[t].out && le->var[t].nstrokes == np)
+				other = fmin(other, dist_to(sx, sx + np, sn, np, xh, &le->var[t], NULL, NULL));
+	}
+	free(sx); free(sn);
+	return isfinite(mine) && !(mine < other);
+}
+
+static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned char *fail)
 {
 	size_t n = q->n;
 	q->x = calloc(n + 1, sizeof *q->x);
@@ -674,22 +767,90 @@ int hw_neaten(struct hw_neat *q)
 		C[k].cls = cls_of(q->cp[k]);
 		C[k].f = 1;
 	}
-	/* a stroke mostly one character's is all its: the alignment's edges spill a few points
-	 * over to a neighbour */
-	for (size_t j = 0; j < n; j++) {
-		const struct hw_ink *k = &q->ink[j];
-		int who[16], cnt[16], nw = 0, tot = 0, best = -1, bn = 0;
-		for (size_t i = 0; i < k->n; i++) {
-			int o = q->own[j][i], w = 0;
-			if (o < 0 || (size_t)o >= nc) continue;
-			tot++;
-			while (w < nw && who[w] != o) w++;
-			if (w == nw) { if (nw == 16) continue; who[nw] = o; cnt[nw++] = 0; }
-			cnt[w]++;
+	/* the alignment's edges spill a few points of a stroke over to a neighbour: a run of a
+	 * stroke's points of one character shorter than HW_NEAT_SPILL x-heights (along the
+	 * stroke) goes to the run next to it (the longer one), the shortest first. A longer run
+	 * is a joint, where the stroke passes from one letter to the next: each keeps its part.
+	 * ALIGN is as given. */
+	{
+		double xh0 = q->xh;
+		if (!(xh0 > 0)) {
+			double *hs = malloc((n + 1) * sizeof *hs);
+			size_t nh = 0;
+			for (size_t j = 0; hs && j < n; j++) {
+				double lo = INFINITY, hi = -INFINITY;
+				for (size_t i = 0; i < q->ink[j].n; i++) { lo = fmin(lo, q->ink[j].y[i]); hi = fmax(hi, q->ink[j].y[i]); }
+				if (q->ink[j].n >= 5 && hi > lo) hs[nh++] = hi - lo;
+			}
+			xh0 = hs ? 0.7 * median(hs, nh, 0) : 0;
+			free(hs);
 		}
-		for (int w = 0; w < nw; w++) if (cnt[w] > bn) { bn = cnt[w]; best = who[w]; }
-		if (best >= 0 && bn < tot && bn * 4 >= tot * 3)
-			for (size_t i = 0; i < k->n; i++) if (q->own[j][i] >= 0) q->own[j][i] = best;
+		for (size_t j = 0; q->fit && xh0 > 0 && j < n; j++) {
+			const struct hw_ink *k = &q->ink[j];
+			int *ow = q->own[j];
+			/* points of no character go with their neighbours' first */
+			int last = -1;
+			for (size_t i = 0; i < k->n; i++) { if (ow[i] >= 0 && (size_t)ow[i] < nc) last = ow[i]; else if (last >= 0) ow[i] = last; }
+			last = -1;
+			for (size_t i = k->n; i-- > 0;) { if (ow[i] >= 0) last = ow[i]; else ow[i] = last; }
+			for (size_t step = 0; step < k->n; step++) {
+				/* the runs: [a, b) of one character, and their lengths */
+				size_t best = SIZE_MAX, ba = 0, bb = 0, runs = 0;
+				double bl = HW_NEAT_SPILL * xh0;
+				for (size_t a = 0; a < k->n;) {
+					size_t b = a;
+					while (b < k->n && ow[b] == ow[a]) b++;
+					if (ow[a] >= 0) {
+						runs++;
+						double l = 0;
+						for (size_t i = a + 1; i < b; i++) l += hypot(k->x[i] - k->x[i - 1], k->y[i] - k->y[i - 1]);
+						if (l < bl) { bl = l; best = a; ba = a; bb = b; }
+					}
+					a = b;
+				}
+				if (best == SIZE_MAX || runs < 2) break;
+				/* the neighbouring runs' owners (past points of no character) and lengths */
+				int lo = -1, hi = -1;
+				double ll = 0, lh = 0;
+				size_t i = ba;
+				while (i > 0 && ow[i - 1] < 0) i--;
+				if (i > 0) { lo = ow[i - 1]; for (size_t z = i - 1; z > 0 && ow[z - 1] == lo; z--) ll += hypot(k->x[z] - k->x[z - 1], k->y[z] - k->y[z - 1]); }
+				i = bb;
+				while (i < k->n && ow[i] < 0) i++;
+				if (i < k->n) { hi = ow[i]; for (size_t z = i + 1; z < k->n && ow[z] == hi; z++) lh += hypot(k->x[z] - k->x[z - 1], k->y[z] - k->y[z - 1]); }
+				int to = lo < 0 ? hi : hi < 0 ? lo : ll >= lh ? lo : hi;
+				if (to < 0) break;
+				for (size_t z = ba; z < bb; z++) ow[z] = to;
+			}
+		}
+	}
+	/* and by the letter model: a character with a count of pieces of ink no version of it has
+	 * (and more than some), one of them a run of a stroke it shares with a neighbour, gives
+	 * that run to the neighbour (a joint the alignment put too far along); the neighbour's
+	 * count stays, the run joins its own */
+	for (int round = 0; q->fit && q->L && round < 8; round++) {
+		int changed = 0;
+		for (size_t j = 0; j < n && !changed; j++) {
+			const struct hw_ink *k = &q->ink[j];
+			int *ow = q->own[j];
+			for (size_t a = 0; a < k->n && !changed;) {
+				size_t b = a;
+				while (b < k->n && ow[b] == ow[a]) b++;
+				int o = ow[a], lo = a > 0 ? ow[a - 1] : -1, hi = b < k->n ? ow[b] : -1;
+				if (o >= 0 && (size_t)o < nc && (lo >= 0 || hi >= 0)) {
+					int np = pieces_of(q, (size_t)o);
+					if (np >= 2 && !has_version(q->L, q->cp[o], np) && fewer_version(q->L, q->cp[o], np)) {
+						int to = lo < 0 ? hi : hi < 0 ? lo : (a == 0 ? hi : lo);
+						if (to >= 0 && (size_t)to < nc) {
+							for (size_t z = a; z < b; z++) ow[z] = to;
+							changed = 1;
+						}
+					}
+				}
+				a = b;
+			}
+		}
+		if (!changed) break;
 	}
 	/* the alignment follows the order of writing, so a dot, bar or arm written after the
 	 * word sits with its last letter: it goes to the character it lies across, as the letter
@@ -711,6 +872,14 @@ int hw_neaten(struct hw_neat *q)
 			for (size_t c = 0; c < nc; c++)
 				for (int *p = sp[c]; *p >= 0; p++) if (*p == (int)j) { if (to >= 0) many = 1; to = (int)c; }
 			if (to < 0 || many) continue;
+			/* a joined stroke keeps its parts: the rules move whole strokes */
+			int first = -1, joined = 0;
+			for (size_t i = 0; i < q->ink[j].n; i++) {
+				int o = q->own[j][i];
+				if (o < 0 || (size_t)o >= nc) continue;
+				if (first < 0) first = o; else if (o != first) joined = 1;
+			}
+			if (joined) continue;
 			for (size_t i = 0; i < q->ink[j].n; i++) if (q->own[j][i] >= 0) q->own[j][i] = to;
 		}
 	for (size_t c = 0; sp && c < nc; c++) free(sp[c]);
@@ -745,34 +914,45 @@ int hw_neaten(struct hw_neat *q)
 		last = -1;
 		for (size_t i = k->n; i-- > 0;) { if (q->own[j][i] >= 0) last = q->own[j][i]; else q->own[j][i] = last; }
 	}
-	double sumfit = 0;
-	int nwr = 0;
 	double wx0 = INFINITY, wx1 = -INFINITY;
 	for (size_t k = 0; k < nc; k++) {
 		struct ch *c = &C[k];
+		c->why = c->npts ? HW_NEAT_WHY_LEVEL : HW_NEAT_WHY_NO_INK;
 		if (!c->npts) continue;
 		c->cx = (c->x0 + c->x1) / 2;
-		sumfit += c->fit > 0 ? c->fit : 0;
-		nwr++;
 		c->ok = c->fit >= HW_NEAT_FIT_READ;
 		if (c->x0 < wx0) wx0 = c->x0;
 		if (c->x1 > wx1) wx1 = c->x1;
+	}
+	/* a word (between spaces) read with low confidence, its characters' mean fit below
+	 * HW_NEAT_FIT_READ, gets the line-level corrections only; the others keep their pull
+	 * (FR-017). The fit is the alignment's (the model's frames for the characters), not the
+	 * dictionary's: a word it lacks reads as well as any other. */
+	for (size_t k0 = 0; k0 < nc;) {
+		size_t k1 = k0;
+		while (k1 < nc && !is_space(q->cp[k1])) k1++;
+		double sf = 0;
+		int nw = 0;
+		for (size_t k = k0; k < k1; k++) if (C[k].npts) { sf += C[k].fit > 0 ? C[k].fit : 0; nw++; }
+		if (nw && sf / nw < HW_NEAT_FIT_READ)
+			for (size_t k = k0; k < k1; k++) { C[k].ok = 0; if (C[k].npts) C[k].why = HW_NEAT_WHY_LOW_CONFIDENCE; }
+		k0 = k1 + 1;
 	}
 	int ret = 0;
 	double *v = malloc((nc + 1) * 3 * sizeof *v);
 	/* per point of a stroke: where the pull takes it from where the line-level map puts it */
 	double **ex = calloc(n + 1, sizeof *ex), **ey = calloc(n + 1, sizeof *ey);
 	q->pulled = calloc(nc + 1, 1);
-	if (!v || !ex || !ey || !q->pulled) { ret = -1; goto done; }
+	q->why = calloc(nc + 1, 1);
+	if (!v || !ex || !ey || !q->pulled || !q->why) { ret = -1; goto done; }
+	for (size_t k = 0; k < nc; k++) {
+		if (!q->L && C[k].why == HW_NEAT_WHY_LEVEL) C[k].why = HW_NEAT_WHY_NOT_COVERED;
+		q->why[k] = (unsigned char)C[k].why;
+	}
 	for (size_t j = 0; j < n; j++) {
 		ex[j] = calloc(q->ink[j].n + 1, sizeof **ex);
 		ey[j] = calloc(q->ink[j].n + 1, sizeof **ey);
 		if (!ex[j] || !ey[j]) { ret = -1; goto done; }
-	}
-	/* read with low confidence, or not at all: not writing */
-	if (!nwr || sumfit / nwr < HW_NEAT_FIT_READ) {
-		for (size_t j = 0; j < n; j++) if (q->how[j] == HW_NEAT_LINE) { q->how[j] = HW_NEAT_KEPT; if (q->keep) q->keep[j] = 1; }
-		goto done;
 	}
 
 	/* the x-height: the characters' heights by their class, else the person's, else the ink */
@@ -867,9 +1047,13 @@ int hw_neaten(struct hw_neat *q)
 	/* the pull (FR-014, FR-035, FR-036): a character read well, covered, whose pieces are as
 	 * many as one of its versions has strokes; towards that version's best */
 	if (q->L && on.pull && !q->line_only && s > HW_NEAT_LIGHT)
-		for (size_t k = 0; k < nc; k++)
-			if (C[k].npts && C[k].fit >= HW_NEAT_FIT_PULL && !(q->nopull && q->nopull[k]))
-				if (pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey)) { ret = -1; goto done; }
+		for (size_t k = 0; k < nc; k++) {
+			struct ch *c = &C[k];
+			if (!c->npts || c->why == HW_NEAT_WHY_LOW_CONFIDENCE) continue;
+			if (c->fit < HW_NEAT_FIT_PULL) c->why = HW_NEAT_WHY_LOW_CONFIDENCE;
+			else if ((q->nopull && q->nopull[k]) || (mask && mask[k])) c->why = HW_NEAT_WHY_SHAPE_GUARD;
+			else if (pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey)) { ret = -1; goto done; }
+		}
 
 	/* spacing (FR-014): each pair of neighbouring letters towards the letter model's gap for
 	 * it (spacing.c: the narrowest distance between their ink profiles, taken from the ink
@@ -979,6 +1163,22 @@ int hw_neaten(struct hw_neat *q)
 		double *cum = malloc((m + 1) * sizeof *cum);
 		if (!cum) { ret = -1; goto done; }
 		arc(k->x, k->y, m, cum);
+		/* the joints' blends: wide enough that the move changes by at most HW_NEAT_BLEND_SLOPE
+		 * of the way along the stroke (no step back, no kink, however far the two characters
+		 * are pulled apart), at most HW_NEAT_BLEND_MAX x-heights */
+		double *hw = nown[j] > 1 ? malloc((m + 1) * sizeof *hw) : NULL;
+		if (nown[j] > 1 && !hw) { free(cum); ret = -1; goto done; }
+		for (size_t i = 0; hw && i < m; i++) hw[i] = HW_NEAT_BLEND * xh;
+		for (size_t i = 1; hw && i < m; i++) {
+			int o1 = q->own[j][i - 1], o2 = q->own[j][i];
+			if (o1 < 0 || o2 < 0 || o1 == o2) continue;
+			double ax1, ay1, ax2, ay2;
+			move_of(q, C, ex, ey, j, i - 1, o1, i - 1, la, &ax1, &ay1);
+			move_of(q, C, ex, ey, j, i, o2, i, la, &ax2, &ay2);
+			double h = clampd(hypot(ax2 - ax1, ay2 - ay1) / HW_NEAT_BLEND_SLOPE, HW_NEAT_BLEND * xh, HW_NEAT_BLEND_MAX * xh);
+			for (size_t z = 0; z < m; z++)
+				if (fabs(cum[z] - cum[i]) < h && h > hw[z]) hw[z] = h;
+		}
 		for (size_t i = 0; i < m; i++) {
 			int o = q->own[j][i];
 			if (o < 0) continue;
@@ -988,7 +1188,7 @@ int hw_neaten(struct hw_neat *q)
 				/* the characters' moves weighted by how much of the stroke around the point is
 				 * theirs (a tent of HW_NEAT_BLEND x-heights to either side, by arc length), each
 				 * as at its point nearest to it: smooth across the joints, a short run too */
-				double h = HW_NEAT_BLEND * xh, wsum = 0, sx2 = 0, sy2 = 0;
+				double h = hw[i], wsum = 0, sx2 = 0, sy2 = 0;
 				size_t lo2 = i, hi2 = i;
 				while (lo2 > 0 && cum[i] - cum[lo2 - 1] < h) lo2--;
 				while (hi2 + 1 < m && cum[hi2 + 1] - cum[i] < h) hi2++;
@@ -1017,9 +1217,20 @@ int hw_neaten(struct hw_neat *q)
 			q->y[j][i] = k->y[i] + my;
 			if (C[o].pull > 0) q->how[j] = HW_NEAT_PULLED;
 		}
-		free(cum);
+		free(cum); free(hw);
 	}
-	for (size_t k = 0; k < nc; k++) q->pulled[k] = C[k].pull > 0;
+	for (size_t k = 0; k < nc; k++) {
+		q->pulled[k] = C[k].pull > 0;
+		q->why[k] = (unsigned char)(C[k].pull > 0 ? HW_NEAT_WHY_PULLED : C[k].why == HW_NEAT_WHY_PULLED ? HW_NEAT_WHY_LEVEL : C[k].why);
+	}
+	/* the shape guard (FR-037): each pulled character's new ink nearer its own versions than
+	 * any other character's with as many strokes */
+	for (size_t k = 0; fail && k < nc; k++) {
+		if (!q->pulled[k]) continue;
+		int g = guard_fails(q, k, xh);
+		if (g < 0) { ret = -1; goto done; }
+		if (g || (q->guard && q->guard[k])) fail[k] = 1;
+	}
 done:
 	free(v);
 	for (size_t j = 0; j < n; j++) { if (ex) free(ex[j]); if (ey) free(ey[j]); }
@@ -1027,5 +1238,25 @@ done:
 	for (size_t k = 0; k < nc; k++) free(C[k].pc);
 	free(C); free(nown);
 	if (ret) hw_neat_free(q);
+	return ret;
+}
+
+/* rounds of the shape guard: a character it fails is neatened again without the pull, which
+ * can move its neighbours' ink at a joint */
+#define NEAT_GUARD_ROUNDS 3
+
+int hw_neaten(struct hw_neat *q)
+{
+	unsigned char *mask = calloc(q->nc + 1, 1), *fail = calloc(q->nc + 1, 1);
+	int ret = mask && fail ? 0 : -1;
+	for (int r = 0; !ret; r++) {
+		memset(fail, 0, q->nc + 1);
+		ret = neaten_once(q, mask, r < NEAT_GUARD_ROUNDS ? fail : NULL);
+		int again = 0;
+		for (size_t k = 0; !ret && k < q->nc; k++) if (fail[k] && !mask[k]) { mask[k] = 1; again = 1; }
+		if (ret || !again || r >= NEAT_GUARD_ROUNDS) break;
+		hw_neat_free(q);
+	}
+	free(mask); free(fail);
 	return ret;
 }
