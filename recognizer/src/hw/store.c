@@ -18,6 +18,7 @@
 #include "sample.h"
 #include "store.h"
 #include "size.h"
+#include "words.h"
 
 #define META_HEAD "glassine-handwriting-meta"
 #define EXPORT_FORMAT "glassine-handwriting-export"
@@ -1404,6 +1405,7 @@ static int rewrite_meta(void *arg)
 
 static int prefs_drop(int (*gone)(const char *id, void *arg), void *arg);
 static int marks_drop(int (*gone)(const char *id, void *arg), void *arg);
+static int looks_drop(const char *id, const char *client);
 static int gone_client(const char *id, void *arg);
 static int gone_id(const char *id, void *arg);
 
@@ -1420,8 +1422,10 @@ long hw_samples_erase(const char *client)
 	unsigned long gen;
 	long erased = -1;
 	/* the preferences of what goes, before the samples */
-	if (!client ? hw_store_replace("preferences", NULL, 0) || hw_store_replace("marks", NULL, 0)
-		    : (ix_sync(&SIX, 1) || prefs_drop(gone_client, (void *)client) || marks_drop(gone_client, (void *)client)))
+	if (!client ? hw_store_replace("preferences", NULL, 0) || hw_store_replace("marks", NULL, 0) ||
+		      hw_store_replace("lookalikes", NULL, 0)
+		    : (ix_sync(&SIX, 1) || prefs_drop(gone_client, (void *)client) || marks_drop(gone_client, (void *)client) ||
+		       looks_drop(NULL, client)))
 		goto out;
 	if (hw_samples_load(&es, &n, &gen)) goto out;
 	size_t cap = 64, len = 0, mcap = 256, mlen = 0;
@@ -1476,6 +1480,7 @@ int hw_samples_delete(const char *id, const char *owner)
 	if (owner && strcmp(SIX.e[k].pub.meta.client, owner)) { r = -2; goto out; }
 	if (prefs_drop(gone_id, (void *)id)) goto out;      /* its preferences before the sample */
 	if (marks_drop(gone_id, (void *)id)) goto out;      /* and its marks */
+	if (looks_drop(id, NULL)) goto out;                 /* and its look-alike picks */
 	if (hw_size_drop(id)) goto out;                     /* and its measured letters */
 	/* counts as a change: a running adaptation drops its result */
 	struct meta_out mo = { id, SIX.gen + 1 };
@@ -2190,4 +2195,112 @@ int hw_donor_new(char *out, size_t n)
 	int r = donor_make(out, n);
 	hw_store_unlock(fd);
 	return r;
+}
+
+/* ---------------------------------------------------------------- personal look-alikes */
+
+static int is_digit_cp(unsigned c) { return c >= '0' && c <= '9'; }
+
+/* the lines of `lookalikes` that stay (drop: those of sample id, or of client), written back */
+static int looks_drop(const char *id, const char *client)
+{
+	char p[4096];
+	if (hw_store_path(p, sizeof p, "lookalikes")) return -1;
+	size_t len;
+	char *b = slurp(p, &len);
+	if (!b) return errno == ENOENT ? 0 : -1;
+	char *o = malloc(len + 1);
+	size_t ol = 0;
+	int changed = 0;
+	if (!o) { free(b); return -1; }
+	for (char *l = b, *e; l < b + len; l = e + 1) {
+		e = memchr(l, '\n', (size_t)(b + len - l));
+		if (!e) break;
+		char sid[24], cl[80];
+		*e = 0;
+		int ok = sscanf(l, "%23s\t%79s", sid, cl) == 2;
+		if (!ok || (id && !strcmp(sid, id)) || (client && !strcmp(cl, client))) { changed = 1; continue; }
+		size_t k = (size_t)(e - l);
+		memcpy(o + ol, l, k); o[ol + k] = '\n'; ol += k + 1;
+	}
+	int r = changed ? hw_store_replace("lookalikes", ol ? o : NULL, ol) : 0;
+	free(b); free(o);
+	return r;
+}
+
+int hw_lookalikes_add(const char *sample, const char *client, const unsigned (*pairs)[2], int n)
+{
+	if (n <= 0) return 0;
+	int fd = hw_store_lock();
+	if (fd < 0) return -1;
+	char p[4096];
+	int r = -1;
+	if (hw_store_path(p, sizeof p, "lookalikes")) goto out;
+	size_t len = 0;
+	char *b = slurp(p, &len);
+	if (!b && errno != ENOENT) goto out;
+	size_t lines = 0;
+	for (size_t i = 0; b && i < len; i++) lines += b[i] == '\n';
+	/* the oldest go when there are too many */
+	char *from = b;
+	while (b && lines + (size_t)n > HW_LOOKALIKE_KEEP && from < b + len) {
+		char *e = memchr(from, '\n', (size_t)(b + len - from));
+		if (!e) break;
+		from = e + 1;
+		lines--;
+	}
+	size_t keep = b ? (size_t)(b + len - from) : 0, cap = keep + (size_t)n * 128 + 1, ol = keep;
+	char *o = malloc(cap);
+	if (!o) { free(b); goto out; }
+	if (keep) memcpy(o, from, keep);
+	for (int i = 0; i < n; i++)
+		ol += (size_t)snprintf(o + ol, cap - ol, "%s\t%s\t%x\t%x\n", sample ? sample : "-", client && *client ? client : "-",
+				       pairs[i][0], pairs[i][1]);
+	r = hw_store_replace("lookalikes", o, ol);
+	free(o); free(b);
+out:
+	hw_store_unlock(fd);
+	return r;
+}
+
+int hw_lookalikes(unsigned (*out)[2], int max)
+{
+	/* the file as last read, and what it gave (one store per process at a time; a change of
+	 * store is a change of path) */
+	static struct { char path[4096]; struct stat st; int have, n; unsigned pairs[64][2]; } c;
+	char p[4096];
+	if (max <= 0 || hw_store_path(p, sizeof p, "lookalikes")) return 0;
+	struct stat st;
+	if (stat(p, &st)) { c.have = 0; return 0; }
+	if (!c.have || strcmp(c.path, p) || st.st_ino != c.st.st_ino || st.st_size != c.st.st_size ||
+	    st.st_mtim.tv_sec != c.st.st_mtim.tv_sec || st.st_mtim.tv_nsec != c.st.st_mtim.tv_nsec) {
+		size_t len;
+		char *b = slurp(p, &len);
+		struct lcount { unsigned d, l; int n; } cnt[256];
+		int nc = 0;
+		for (char *l = b, *e; b && l < b + len; l = e + 1) {
+			e = memchr(l, '\n', (size_t)(b + len - l));
+			if (!e) break;
+			*e = 0;
+			char sid[24], cl[80];
+			unsigned a, z;
+			if (sscanf(l, "%23s\t%79s\t%x\t%x", sid, cl, &a, &z) != 4) continue;
+			if (is_digit_cp(a) == is_digit_cp(z) || !(hw_is_letter(a) || hw_is_letter(z))) continue;
+			unsigned d = is_digit_cp(a) ? a : z, le = is_digit_cp(a) ? z : a;
+			int k = 0;
+			while (k < nc && (cnt[k].d != d || cnt[k].l != le)) k++;
+			if (k == nc) { if (nc == 256) continue; cnt[nc++] = (struct lcount){ d, le, 0 }; }
+			cnt[k].n++;
+		}
+		free(b);
+		c.n = 0;
+		for (int k = 0; k < nc && c.n < 64; k++)
+			if (cnt[k].n >= HW_LOOKALIKE_MIN) { c.pairs[c.n][0] = cnt[k].d; c.pairs[c.n][1] = cnt[k].l; c.n++; }
+		snprintf(c.path, sizeof c.path, "%s", p);
+		c.st = st;
+		c.have = 1;
+	}
+	int n = c.n < max ? c.n : max;
+	memcpy(out, c.pairs, (size_t)n * sizeof *out);
+	return n;
 }

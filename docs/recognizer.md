@@ -121,7 +121,7 @@ ones get `drop ID`. Requests between them are carried out in order.
   reading, `beam` another reading of the ink, `words` a word of the list one edit from a reading,
   `guided` the search the words guided, `chars` the search the character model weighed; Words
   and Characters, below) and `ok` when a pick of it is stored as it
-  is or `check` when a pick is checked first and would not pass (confirm, below). `SCORE` is the log-probability (≤ 0, higher is better). `ALIGN` has one
+  is or `check` when a pick is checked first and would not pass (confirm, below). `SCORE` is the log-probability of the text given the ink, calibrated (≤ 0, higher is better; Calibration, below). `ALIGN` has one
   entry per character (code point) of `TEXT`, separated by `;`: the strokes that make it,
   comma-separated, each `N` (the whole stroke) or `N:A-B` (points `A` to `B` of stroke `N`); empty
   for a space. Every written stroke belongs to some character.
@@ -188,7 +188,7 @@ model (below) weighs these readings too.
 - A second search of the ink is guided by the words: a prefix inside a word of the list pays
   nothing until the word ends, then as below; a letter that leaves the list makes an unknown
   word that pays per character, so names, numbers and codes still come through. Its ten best
-  readings join the ink's own ten best, when the ink scores them within 6 of its best.
+  readings join the ink's own ten best, when the ink scores them within 9 of its best.
 - All these readings are scored again: the ink's log-probability, plus 0.3 × (for each
   word of the list, the natural log of its probability after the two words before, from `BEFORE`
   and the reading itself; for every other character but a space, −4.5), plus the character
@@ -198,9 +198,9 @@ model (below) weighs these readings too.
   isn't all words of the list; the ink's best then comes second. The rest follow by score.
 - For an unknown word of four letters or more in the three best readings, up to two of the most
   frequent words of the list one edit away (a letter changed, left out, added, or two swapped)
-  are added, in the written word's case, when the ink scores them within 6 of its best; never
+  are added, in the written word's case, when the ink scores them within 9 of its best; never
   first.
-- `SCORE` stays the ink's log-probability of the text.
+- `SCORE` stays the ink's (calibrated) log-probability of the text.
 
 ## Characters (FR-019)
 
@@ -219,13 +219,23 @@ without it.
 - The floor bounds what one character can cost, so a code, a name or a number such as `4th`
   or `R2D2` that the ink reads clearly still comes through.
 - A search of the ink weighed by the character model runs beside the ink's own (width
-  8); its ten best readings join the others when the ink scores them within 6 of its
+  8); its ten best readings join the others when the ink scores them within 9 of its
   best. In a prose field the words' guided search is weighed by it too.
 - All readings are ranked by the ink's log-probability plus the character model's score (and
   the words' in a prose field). Without words the reading that scores best comes first; with
   words, as under Words, but the margin another reading needs over the ink's best is 1
   instead of 2.5. Either way the ink's best reading is then second.
-- `SCORE` stays the ink's log-probability of the text.
+- `SCORE` stays the ink's (calibrated) log-probability of the text.
+
+**Candidates** (contract 1.4). The best reading of the search the character model weighs (by
+the ink, the character model and, in a prose field, the words), and in a prose field the best
+of the search the words guide, is always among the candidates when it isn't the ink's best,
+also when the ink scores it more than 9 below its best (then it never comes first). Up to
+`COUNT`, the candidates are the first, the ink's best when it isn't first, then the character
+model's search's best, then the words' search's best, then the others by score (each once;
+one that would come later takes the place of the last of the others). With `COUNT` 1 only the
+first; with 2 the first and the ink's best (or the next one). A lone dot, dash or tick still
+lists its marks first (Size). `detail` names where each came from (`chars`, `guided`).
 
 **Look-alikes.** Letters and digits of one shape (`O` and `o` against `0`, `I` and `l` against
 `1`, `G` against `6`) are decided by the field where the ink leaves them open. In a field of
@@ -235,6 +245,34 @@ frame's other classes share what was taken, in proportion. So the field's side w
 ink gave the other side less than twice its chance, and a character written clearly reads as
 written. Not a text field (`-`) and every other field don't lean, nor does `read … raw` or a
 fit (a fit takes the better of the leaned and the ink's own chance, as with the size).
+
+Each writer also has look-alikes of their own (contract 1.4). A `confirm` of source `picked`,
+`confirmed` or `corrected` whose text has as many characters as the session's last first
+reading and differs from it in one or two places, each a letter where the reading had a digit
+or a digit where it had a letter (`5` read, `S` confirmed), counts each such pair once: in a
+field that learns, with learning on (Fields, Settings), also when the pick is refused (`skip
+fit`), never for a prompted sample. A pair counted 3 times, either way round, leans as `O` and
+`0` do: its digit in a field for text, its letter in a field for numbers. The pairs are the
+store's `lookalikes` (below): a writer's store has its own, the person's never reach it.
+
+## Calibration (contract 1.4, FR-022)
+
+The ink's frames are made surer or less sure by a temperature `T` before any reading is
+searched or ranked: each frame's log-probabilities are divided by `T` and normalized again
+(log-softmax of the log-probabilities over `T`). `T` above 1 makes a frame less sure, below 1
+surer; it never changes which class a frame reads most surely. The temperature in use is the
+adaptation's (`gha`, byte 52), else, for the base model's own head, the base model's
+(`calibration` beside it, Base models); none (0, or none that fits the model) reads with 1.
+
+- Fitted, as an adaptation is made (Adaptation) and by `calibrate` for a base model (Command
+  line), as the temperature in [0.5, 4] whose summed CTC loss of the held-back texts is
+  lowest (a golden-section search on log `T`); 1 when none is lower than at 1.
+- The size's weights (Size) and the look-alikes' lean apply to the calibrated frames as to the
+  ink's own; readings (`read`, `recognize`, all modes), their `SCORE`, the gesture's covered
+  characters and the reading stored with a prompted sample are made on the calibrated frames.
+- Fits stay the ink's own (the prompted check, the check of a pick, `align`, the letter model
+  and neatening's checks): calibration doesn't move what passes.
+- `GLASSINE_HANDWRITING_CALIB` (Environment) replaces the temperature, for measurements.
 
 ## Size (FR-017)
 
@@ -281,8 +319,8 @@ unweighed). The reference below serves both; the weighing only a version 1 model
   prompted fit (`align`, `confirm … prompted`, `donate`) and the check of a pick are made on the
   weighed frames; for a lone dot, dash or tick, the marks its shape allows come first (also when
   the search found none of them), then the other readings. A fit is the better of the weighed
-  frames' and the ink's own, so the size never lowers one. `SCORE` is the log-probability with
-  the size taken into account.
+  frames' and the ink's own, so the size never lowers one. `SCORE` is the (calibrated)
+  log-probability with the size taken into account.
 - The measurements are kept in the store's `size` (below); reading never waits on anything but
   the samples it hasn't measured yet.
 
@@ -519,6 +557,11 @@ Nothing in it leaves the device except by export or a donation the person writes
   character, `ID CODEPOINT MARK` (tab-separated, the code point in hex, MARK `out`, `way-out` or
   `favourite`). A deletion takes a sample's marks out with it, an erase with the samples (all, or
   the client's). Never exported or donated.
+- `lookalikes`: the person's look-alike picks (Characters, Look-alikes), one line per pair,
+  `SAMPLE CLIENT READ CHOSEN` (tab-separated; `SAMPLE` the sample the pick made, `-` for one
+  refused; `CLIENT` `-` when none was named; `READ` and `CHOSEN` code points in hex), the
+  newest 4096 kept. A deletion takes the sample's lines out with it, an erase of a client's
+  samples that client's lines, an erase of all samples the file. Never exported or donated.
 - `adaptation/LANG/current`, `previous`: the adaptation in use and the one before (below);
   `state` (`SAMPLES GEN TIME ID`: what the last run saw, the confirm time and id of the newest
   sample in it, so it doesn't run again for nothing and can count what came since); `log` (one
@@ -612,7 +655,10 @@ out: neither learned from nor held back, so a head learns only what the base mod
 its check isn't made on samples the base model already knows. Of the rest, one sample in five (by
 its id) is held back; the run keeps the new head only when its character error
 on the held-back samples is lower than that of the head in use (the base model's, or the current
-adaptation's). Then the current one becomes `previous`. It needs 40 samples to learn from and 10
+adaptation's). Then the current one becomes `previous`. A new head is calibrated on the same
+held-back samples (Calibration) and keeps its temperature; when the run has nothing new to
+learn from, or the new head isn't kept, a head in use without a temperature (made before
+calibration) gets one from the held-back samples, nothing else in it changed. It needs 40 samples to learn from and 10
 held back, runs only when something changed, and, unless `-f`, only while charging and idle, and
 stops when the charger is unplugged. With `-r` the person asked for it in a client (spec 002):
 charging is enough, and it runs at the lowest priority so the device stays usable. An adaptation belongs to one base model file (its hash is in
@@ -924,6 +970,7 @@ glassine-handwriting font install [-n NAME] [--nib DEG] [--random|--no-random] |
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
+glassine-handwriting calibrate [-l LANG] FILE     fit the temperature of the head in use on held-back samples
 ```
 
 `export -c CLIENT` writes only that client's samples and no adaptation. An export holds the
@@ -932,6 +979,14 @@ samples named by their ids); `import` adds those whose two samples are stored on
 read. `delete` deletes one
 sample by id; it counts as a change for the next adaptation (a running one drops its result), but
 the adaptation in use stays.
+
+`calibrate FILE` reads sample-format lines (their `spans` are not used; a line that isn't a
+sample, or whose text the model can't write, is skipped) as `read` does, the size as for reading
+and no look-alike lean, and fits the temperature of the head in use (the adaptation's when there
+is one, else the base model's) on them (Calibration). It prints `temperature T N LOSS_BEFORE
+LOSS_AFTER` (samples used, mean CTC loss per character at 1 and at `T`) and `line temperature
+HASH T`, the line for a base model's `calibration` file; or `temperature none N` (exit 1).
+The samples must be held back from the head's training.
 
 `adapt --plan` runs nothing and prints one line, `plan TRAIN HELD NEW MIN_TRAIN MIN_HELD
 charging|battery`: the samples of the language a run would learn from and hold back, those stored
@@ -1006,7 +1061,7 @@ none exists.
 One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
 `$GLASSINE_HANDWRITING_MODELS/LANG/`, else the setting `models`'s `LANG/`) with `recognizer.ghm` (the model), `chars.gclm` (the
 character model, optional; Characters) with `chars.json` (its recipe) and `CHARS-LICENSE`,
-`README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
+`calibration` (the base model's temperature, optional; Calibration), `README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
 line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, one per line, and
 `SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
 `glassine-train release` makes the whole directory as a release tarball
@@ -1072,8 +1127,14 @@ whose size doesn't match the header, or whose arrays are out of order, is refuse
 
 **gha, version 1** (an adaptation, little-endian): `GHWA`, version, the base model's hash (64-bit),
 rank, dimension, classes, samples learned from, held back (32-bit), error after and before
-(float), time (64-bit), then from byte 56 the head's floats: adapter down weights and bias, up
-weights and bias, output weights and bias.
+(float), time (64-bit), the temperature (float, byte 52; 0 in a head made before calibration,
+or one outside [0.5, 4]: none), then from byte 56 the head's floats: adapter down weights and
+bias, up weights and bias, output weights and bias.
+
+**calibration, version 1** (text): first line `glassine-handwriting-calibration 1`, then
+`temperature HASH T` lines: `HASH` the model file's hash (16 hex digits, as `calibrate` prints
+it), `T` its temperature. A line for another model file, or a `T` outside [0.5, 4], is not
+used; without a line that fits, the base model reads with 1.
 
 ## Environment
 
@@ -1086,6 +1147,7 @@ weights and bias, output weights and bias.
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` or `weigh` (alone or after the letters) the weighing off or on whatever the model (by default a version 1 model is weighed, a version 2 model not) |
+| `GLASSINE_HANDWRITING_CALIB` | for measurements: `off` reads with no calibration, a number in [0.5, 4] with that temperature (Calibration) |
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check, `misread=CHARS` has those characters read as another once pulled (comma-separated) |
