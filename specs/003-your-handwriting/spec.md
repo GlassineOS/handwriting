@@ -324,10 +324,17 @@ size, spacing) and keep their shape.
   over itself; a hook, loop or overshoot at a stroke's start or end that the version doesn't
   have goes to the version's start or end. The moves vary smoothly along the stroke.
   Letters joined in one stroke each get their own pull, blended smoothly across the joint.
-- **FR-037**: Each pulled or replaced character is checked on its own: when its new ink
-  reads as a different character than before, it stays as the line-level corrections left
-  it, while the rest of the line keeps its neatening; the line as a whole is also checked
-  as before (FR-017, SC-004).
+- **FR-037**: Each pulled or replaced character is checked on its own, by its shape: its new
+  ink (centred, at x-height) must be closer to that character's own versions than to any
+  version of any other character; when it isn't, that character alone stays as the
+  line-level corrections left it, and the rest of the line keeps its neatening. Nothing is
+  read again after neatening: with the confirmed text the characters are known, without it
+  the recognizer's one reading of the original ink tells them (FR-013). No check ever holds
+  back a whole line.
+- **FR-041**: The neatening reply says for each character whether it was pulled, and when it
+  wasn't, why: not covered, no version with its structure, not close enough for the level
+  (Medium), its shape would come closer to another character (FR-037), in a word read with
+  low confidence (FR-017), or drawing or a gesture (FR-020).
 - **FR-015**: The same ink, letter model and strength always give the same result.
 - **FR-016**: Neatening is a request in the recognizer's interface (docs/recognizer.md), so
   every app gets the same result; apps reach it through the neat ink layer (FR-018), keep the
@@ -340,8 +347,10 @@ size, spacing) and keep their shape.
   own documents; neatened ink it keeps is marked as neatened, and neatened ink that reaches
   a sample (a confirm, an import, a contribution) is refused, or kept marked and left out of
   adaptation, the letter model, base training and contributions.
-- **FR-017**: Ink the recognizer can't read, or reads with low confidence, gets only the
-  line-level corrections.
+- **FR-017**: A word the recognizer can't read, or reads with low confidence, gets only the
+  line-level corrections; the other words of the line keep their neatening. A word missing
+  from the dictionary is not by itself low confidence, and with the confirmed text a word
+  is held back only when its strokes can't be told apart into its characters.
 
 ### The neat ink layer
 
@@ -474,12 +483,16 @@ Host level:
   font validator with the rules and joined pairs in them;
 - neatening at strength 0 returns the input byte for byte; at each level from Medium up,
   covered characters are closer to their best version than at the level before (from Strong
-  up every one with a matching structure, however badly written), unless the reading check
-  keeps it or its line as it was; a character is pulled towards a version with its own
+  up every one with a matching structure, however badly written), unless the shape check
+  keeps it as it was (FR-037), and the reply names why each character that wasn't pulled
+  wasn't; a line with a name or another word missing from the dictionary is neatened like
+  any other; a character is pulled towards a version with its own
   strokes; no point of a pulled stroke moves backwards along the stroke; uneven gaps between
   letters come out closer to the letter model's spacing; stroke count, order, timing and
   pressure are kept;
-- the recognizer reads neatened ink at least as well as the original on a held-back set;
+- on a held-back set no pulled character comes out closer to another character's versions
+  than to its own; at joins and at stroke starts with an entry stroke or hook, the pulled
+  ink has no new backward steps or kinks, over every character and every joined pair;
 - through the neat ink layer, with a stand-in pen and recognizer: raw strokes pass on at
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
   as drawing pass unchanged, strength 0 gives the raw strokes, and a private field sends
@@ -514,6 +527,7 @@ by its neatened version and the original comes back at strength 0.
 - **SC-002**: The font, all three styles, builds in under 2 minutes on the device while charging, without
   making the device less responsive.
 - **SC-003**: Neatening one line of ink answers within 300 ms on the device.
-- **SC-004**: The recognizer's error on neatened ink is not higher than on the original.
+- **SC-004**: No neatened character takes the shape of another character: every pulled
+  character is closer to its own versions than to any other character's.
 - **SC-005**: In a blind check of original against neatened ink at the default strength,
   the person prefers the neatened version in at least 7 of 10 cases.
