@@ -398,7 +398,18 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
 - **The pull (FR-014, FR-035, FR-036).** From above Light, a character with a fit of 0.5 or
   more (or from `ALIGN`) goes towards its target. Its
   pieces are its runs of points: a stroke of its own, or its part of a stroke joined with a
-  neighbour. Without `ALIGN` the alignment's edges are put right first: points of no character
+  neighbour. A stroke the alignment gives several letters of a word (a joined word written in
+  one go) is cut among them where its parts best match their glyphs, when each has one (no pair
+  the font joins): in order, each letter's part its glyph's stroke as its pieces come in writing
+  order, each part and its glyph stroke at 24 points along them, centred, at the line's
+  x-height (their RMS distance and a quarter of the log of their lengths' ratio). The
+  alignment's frames put an edge a letter off often enough that joined letters lose their own
+  ink; without `ALIGN` the letters are those it gives the stroke points and those between,
+  and a neighbour it gives fewer pieces than its glyph has strokes, its others after the
+  stroke (or before, for one before), and not when one of them alone matches the whole stroke
+  as well as the parts do on the mean (one letter's stroke the alignment spread); from
+  Medium on, as the cut only matters to the pull.
+  Then the alignment's edges are put right: points of no character
   go with their neighbours, a run of one character shorter than 0.35 x-heights along the stroke
   goes to the run next to it (the longer one), and a character with a count of pieces no
   version of it has (more than some) gives a run it shares with a neighbour to that neighbour.
@@ -411,10 +422,11 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   bar written after the word belongs to the letter it lies across, not to the word's last one
   (five x-heights standing in for the area's line); a stroke joined from two characters' parts
   keeps its parts. `ALIGN` is used as given, except a stroke it lists whole for several
-  characters (a joined word: it says which letters the stroke holds, not where one ends): the
-  alignment of `TEXT` with the ink splits that stroke among them (a point it aligns with
-  another character goes with its neighbours), and the edges are put right as without
-  `ALIGN`. Its structure is tested coarsely, the shapes
+  characters (a joined word: it says which letters the stroke holds, not where one ends): that
+  stroke is cut among the letters it lists, in order, where its parts best match their glyphs
+  (as above; without a glyph for each, the alignment of `TEXT` with the ink splits it, a point
+  it aligns with another character going with its neighbours), and the edges are put right as
+  without `ALIGN`. Its structure is tested coarsely, the shapes
   don't matter: as many pieces as the glyph has strokes, each about where its stroke lies in
   the glyph (its middle within 0.45 x-heights, both about their middles), and its ink's
   middle within 0.75 x-heights of the glyph's above the baseline (so ink the alignment gave
