@@ -306,6 +306,13 @@ void hw_letters_view_free(struct hw_letters *v);
  * prev the step of the character (or space) before in the same run, -1 at its start or after a
  * character the font lacks. The character shows its variant slot[step]. */
 int hw_letters_step(int prev);
+/* The glyphs the font shapes a text into, as its lookups do (ttf.c: the cycle, then the
+ * joined pairs left to right, then each letter's first neighbour rule that applies, else its
+ * cycle's step; samples fontview.py glyphs()): per character of cp[0..n) the variant of V (a
+ * view, hw_letters_view) the font draws there, -1 for a space, a character it lacks or a
+ * letter of a joined pair; jo[k] the joined pair (V->joined) drawn for k and k + 1 (both
+ * set), else -1 */
+void hw_letters_glyphs(const struct hw_letters *V, const unsigned *cp, size_t n, int *var, long *jo);
 
 /* The font's styles (FR-034): one family, the same letters, spacing and kerning; only the
  * ink's width along each stroke differs. */
