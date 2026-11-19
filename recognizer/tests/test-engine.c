@@ -947,7 +947,7 @@ static void test_neaten_joined(void)
 	unsigned cp[2] = { 'c', 'u' };
 	for (int lv = 0; lv < 3; lv++) {
 		double st = lv == 0 ? 0 : lv == 1 ? 0.75 : 1;
-		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = st, .L = &L, .xh = xh };
+		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = st, .L = &L, .xh = xh, .confirmed = 1 };
 		if (hw_neaten(&q)) { CHECK(0, "neaten joined: memory"); break; }
 		double rs = 0, js = 0;
 		for (int i = 0; i + 1 < NP; i++) rs = fmax(rs, hypot(rx[i + 1] - rx[i], ry[i + 1] - ry[i]));
@@ -985,7 +985,7 @@ static void test_neaten_joined(void)
 		 "{\"joined\":\"cu\",\"samples\":3,\"written\":3,\"of\":3,\"variant\":{\"width\":1.05,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}}\n", ps);
 	if (hw_letters_parse(model2, &L) || L.njoined != 1) { CHECK(0, "neaten joined pair: model"); hw_ink_free(&ink); return; }
 	for (int lv = 0; lv < 2; lv++) {
-		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh };
+		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh, .confirmed = 1 };
 		if (hw_neaten(&q)) { CHECK(0, "neaten joined pair: memory"); break; }
 		int w = lv ? HW_NEAT_WHY_SET : HW_NEAT_WHY_PULLED;
 		CHECK(q.pulled && q.pulled[0] && q.pulled[1] && q.why[0] == w && q.why[1] == w, "neaten joined pair: %d: not both", lv);

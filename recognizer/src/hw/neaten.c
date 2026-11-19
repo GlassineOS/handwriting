@@ -1621,7 +1621,8 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 {
 	size_t nc = q->nc, n = q->n;
 	double xh = q->line_xh, base = q->line_base;
-	if (!q->line_hasbase || !(xh > 0) || !nc || !q->x) return 0;
+	/* (only the confirmed text: the reading's fit doesn't tell a word read wrongly) */
+	if (!q->confirmed || !q->line_hasbase || !(xh > 0) || !nc || !q->x) return 0;
 	int ret = -1;
 	double *pen = malloc((nc + 1) * sizeof *pen), **X = NULL;
 	int *word = malloc((nc + 1) * sizeof *word), *sw = malloc((n + 1) * sizeof *sw);
@@ -1651,25 +1652,19 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 			else if (sw[j] != word[o]) { if (sw[j] >= 0) ok[sw[j]] = 0; ok[word[o]] = 0; sw[j] = -2; }
 		}
 	}
-	/* the word's text known: confirmed, or read with high confidence; each character with ink
-	 * of its own; some character the font has */
+	/* each character with ink of its own; some character the font has */
 	for (size_t k0 = 0; k0 < nc;) {
 		if (word[k0] < 0) { k0++; continue; }
 		size_t k1 = k0;
 		while (k1 < nc && word[k1] == word[k0]) k1++;
 		int w = word[k0], any = 0;
-		double sf = 0, mf = 1;
 		for (size_t k = k0; k < k1; k++) {
-			double fk = q->fit ? q->fit[k] : 1;
-			sf += fk > 0 ? fk : 0;
-			if (fk < mf) mf = fk;
 			int lig2 = gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k];
 			if (!npts[k] && !lig2 && !(gjo[k] >= 0 && k + 1 < k1 && gjo[k + 1] == gjo[k] && npts[k + 1])) ok[w] = 0;
 			if (gjo[k] >= 0 || gvar[k] >= 0) any = 1;
 			if (q->why && (q->why[k] == HW_NEAT_WHY_LOW_CONFIDENCE || q->why[k] == HW_NEAT_WHY_DRAWING || q->why[k] == HW_NEAT_WHY_GESTURE)) ok[w] = 0;
 		}
 		if (!any) ok[w] = 0;
-		if (!q->confirmed && q->fit && (sf / (double)(k1 - k0) < HW_NEAT_FIT_SET || mf < HW_NEAT_FIT_SET_MIN)) ok[w] = 0;
 		k0 = k1;
 	}
 	/* the set points, per stroke */

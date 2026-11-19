@@ -42,14 +42,6 @@ enum {
  * corrections) with at least NEAT_READ mean fit of its characters */
 #define HW_NEAT_FIT_PULL 0.5
 #define HW_NEAT_FIT_READ 0.15
-/* without the confirmed text a word is set (FR-043) when the alignment reads it with at
- * least this mean fit of its characters and none below FIT_SET_MIN */
-#ifndef HW_NEAT_FIT_SET
-#define HW_NEAT_FIT_SET 0.9
-#endif
-#ifndef HW_NEAT_FIT_SET_MIN
-#define HW_NEAT_FIT_SET_MIN 0.5
-#endif
 /* a word is set where its ink (as Strong leaves it) is at most SET_WIDE times as wide as
  * the font sets it, or the font's at most that times the ink's, and each character's ink's
  * middle within SET_PLACE x-heights of its glyph's (from the word's left, the ink scaled to
@@ -77,7 +69,7 @@ struct hw_neat {
 	int line_only;                  /* no pull: line-level corrections only */
 	const unsigned char *nopull;    /* per character: 1 not pulled (FR-037); NULL none */
 	const unsigned char *guard;     /* (tests) per character: 1 fails the shape guard; NULL none */
-	int confirmed;                  /* cp is the confirmed text: every word's is known (FR-043) */
+	int confirmed;                  /* cp is the confirmed text: its words can be set (FR-043) */
 	/* out (malloc'd by hw_neaten; hw_neat_free) */
 	double **x, **y;
 	int *how;

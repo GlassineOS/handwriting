@@ -606,11 +606,9 @@ class Neaten(unittest.TestCase):
         self.assertEqual(seen, 4)
 
     def test_neatest_without_the_text(self):
-        """without the text a word is set only when it is read with high confidence (FR-043:
-        a word read wrongly would be set as another word); the others get Strong's pull. The
-        random-weight model reads with low confidence: none is set, the ink is Strong's; with
-        the text (and ALIGN: this model's own alignment gives a letter no ink) they are. (How many are read well enough on real ink, and how many
-        of those wrongly, is measured on a store with tools/eval-neaten.py.)"""
+        """without the text no word is set (FR-043: a word read wrongly would be set as
+        another word): the ink is Strong's; with the text (and ALIGN: this model's own
+        alignment gives a letter no ink) the words are set"""
         self.letters()
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         for seed, text in enumerate(("hello world", "the tree")):
