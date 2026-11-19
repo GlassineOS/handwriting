@@ -191,6 +191,14 @@ double hw_neat_variant_dist(const struct hw_ink *ink, size_t n, double xh, const
 #define HW_NEAT_ENDS 0.3
 /* how hard the stretch is held to none (per matched point) */
 #define HW_NEAT_RIGID 0.02
+/* how much downstroke (squared x-heights, by the versions' members) a character's versions
+ * need for their own lean to count as much as the person's slant */
+#define HW_NEAT_SLANT_PRIOR 0.05
+/* a turn this sharp (degrees) the version gives a letter's points where its ink has none
+ * near (this many points to either side) is a part the ink doesn't have */
+#define HW_NEAT_CORNER 90
+#define HW_NEAT_CORNER_NEAR 5
+#define HW_NEAT_CORNER_RAW 55
 
 /* unit direction (by the points to either side) and turn ([1 2 1] smoothed) along a resampled stroke */
 static void shape_feats(const double *x, const double *y, int n, double *ux, double *uy, double *tu)
@@ -443,6 +451,72 @@ static int affine_fit(const double *fp, size_t n, double *M, double *mf, double 
 	return M[0] * M[3] - M[1] * M[2] > 0 ? 0 : -1;
 }
 
+/* the turn at point i of a polyline in degrees, 0 where a step is shorter than min */
+static double turn_at(const double *x, const double *y, size_t i, double min)
+{
+	double ax = x[i] - x[i - 1], ay = y[i] - y[i - 1], bx = x[i + 1] - x[i], by = y[i + 1] - y[i];
+	double na = hypot(ax, ay), nb = hypot(bx, by);
+	if (!(na >= min) || !(nb >= min)) return 0;
+	return acos(clampd((ax * bx + ay * by) / (na * nb), -1, 1)) * 180 / M_PI;
+}
+
+/* a step from point i against the way the stroke goes from i - 3 to i + 3 */
+static int step_back(const double *x, const double *y, size_t i, double xh)
+{
+	double dx = x[i + 3] - x[i - 3], dy = y[i + 3] - y[i - 3], sx = x[i + 1] - x[i], sy = y[i + 1] - y[i];
+	double nd = hypot(dx, dy), ns = hypot(sx, sy);
+	return nd > 0.15 * xh && ns > 0.01 * xh && dx * sx + dy * sy < -0.5 * nd * ns;
+}
+
+/* the ink (x, y) moved by p (dx, dy) gets a corner (a turn over HW_NEAT_CORNER) where the ink
+ * turns by less than HW_NEAT_CORNER_RAW within HW_NEAT_CORNER_NEAR points, or a step back where it
+ * has none */
+static int new_corner(const double *x, const double *y, const double *dx, const double *dy, size_t m, double xh, double p)
+{
+	if (m < 3) return 0;
+	double *gx = malloc(m * 2 * sizeof *gx);
+	if (!gx) return 0;
+	double *gy = gx + m;
+	for (size_t i = 0; i < m; i++) { gx[i] = x[i] + p * dx[i]; gy[i] = y[i] + p * dy[i]; }
+	int found = 0;
+	for (size_t i = 1; i + 1 < m && !found; i++) {
+		if (!(turn_at(gx, gy, i, 0.01 * xh) > HW_NEAT_CORNER)) continue;
+		int raw = 0;
+		for (size_t z = i > HW_NEAT_CORNER_NEAR ? i - HW_NEAT_CORNER_NEAR : 1; z + 1 < m && z <= i + HW_NEAT_CORNER_NEAR && !raw; z++)
+			raw = turn_at(x, y, z, 0.01 * xh) > HW_NEAT_CORNER_RAW;
+		found = !raw;
+	}
+	/* or a step back along the way the stroke goes over 3 points to either side */
+	for (size_t i = 3; i + 4 <= m && !found; i++) {
+		if (!step_back(gx, gy, i, xh)) continue;
+		int raw = 0;
+		for (size_t z = i > HW_NEAT_CORNER_NEAR + 3 ? i - HW_NEAT_CORNER_NEAR : 3; z + 4 <= m && z <= i + HW_NEAT_CORNER_NEAR && !raw; z++)
+			raw = step_back(x, y, z, xh) || turn_at(x, y, z, 0.01 * xh) > HW_NEAT_CORNER_RAW;
+		found = !raw;
+	}
+	free(gx);
+	return found;
+}
+
+/* the lean of character cp's downstrokes as its versions have it (the same measure as the
+ * ink's: a letter leaning by its shape keeps that lean), towards the person's slant where the
+ * versions show little; the person's slant without a letter model or versions */
+static double slant_of(const struct hw_letters *L, unsigned cp, double slant)
+{
+	const struct hw_letter *le = L ? letter_of(L, cp) : NULL;
+	double num = 0, den = 0;
+	for (int t = 0; le && t < le->nvar; t++) {
+		const struct hw_variant *v = &le->var[t];
+		if (v->out || v->members < 2) continue;
+		for (size_t a = 0; a < v->nstrokes; a++)
+			for (size_t i = 1; i < v->s[a].n; i++) {
+				double dx = v->s[a].x[i] - v->s[a].x[i - 1], dy = v->s[a].y[i] - v->s[a].y[i - 1];
+				if (dy < 0 && -dy > 2 * fabs(dx)) { num += v->members * dx * dy; den += v->members * dy * dy; }
+			}
+	}
+	return (num + slant * HW_NEAT_SLANT_PRIOR) / (den + HW_NEAT_SLANT_PRIOR);
+}
+
 /* The pull of character k (FR-014, FR-035, FR-036): its pieces, the nearest of its versions
  * with as many strokes, how far it goes (by the level, and whether it is near its best
  * version), and for each of its points where the pull takes it: the place on the best
@@ -503,10 +577,12 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 		for (size_t i = 0; i < m; i++)
 			line_map(c, q->ink[pc->j].x[pc->a + i], q->ink[pc->j].y[pc->a + i], &sx[a][i], &sx[np + a][i]);
 	}
+	unsigned long long tried = 0;
+again:;
 	double best = INFINITY;
 	for (int t = 0; t < le->nvar; t++) {
 		/* a version made of one sample is that sample, jitter and all */
-		if (le->var[t].members < 2 || le->var[t].out) continue;
+		if (le->var[t].members < 2 || le->var[t].out || (t < 64 && (tried >> t & 1))) continue;
 		double d = dist_to(sx, sx + np, sn, (size_t)np, xh, &le->var[t], NULL, NULL);
 		if (d < best - 1e-12) { best = d; c->v = &le->var[t]; }
 	}
@@ -643,6 +719,22 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 		while (l > f && isnan(px[l - 1])) l--;
 		for (size_t i = pc->a; i < f; i++) { px[i] = f < pc->b ? px[f] : 0; py[i] = f < pc->b ? py[f] : 0; }
 		for (size_t i = l; i < pc->b; i++) { px[i] = px[l - 1]; py[i] = py[l - 1]; }
+	}
+	/* the version traced on the ink's own points (all the way, and as far as the level pulls):
+	 * a corner it gets where the ink has none is
+	 * a part of the version the ink doesn't have (a loop, a turn written otherwise), drawn
+	 * with too few points; the shapes don't correspond there, so the next nearest version
+	 * is tried, and none is pulled into it */
+	for (int a = 0; a < np; a++) {
+		const struct piece *pc = &c->pc[a];
+		size_t m = sn[a];
+		if (!new_corner(sx[a], sx[np + a], ex[pc->j] + pc->a, ey[pc->j] + pc->a, m, xh, 1) &&
+		    !new_corner(sx[a], sx[np + a], ex[pc->j] + pc->a, ey[pc->j] + pc->a, m, xh, c->pull)) continue;
+		int t = (int)(c->v - le->var);
+		if (t >= 64) { c->pull = 0; ret = 0; goto out; }
+		tried |= 1ULL << t;
+		c->v = NULL; c->t = NULL; c->pull = 0;
+		goto again;
 	}
 	c->off = acx / xh - vcx + sh[0];
 	c->why = HW_NEAT_WHY_PULLED;
@@ -1003,8 +1095,15 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 	double target_base = ba + bb * (wx0 + wx1) / 2;
 
 	/* the slant: steady, towards the person's (the line's own without a letter model) */
+	/* (with a letter model each letter against its own versions' lean, so a line of letters
+	 * that lean by their shape doesn't lean: the line's lean is then how far it leans off
+	 * them) */
 	double snum = 0, sden = 0;
-	for (size_t k = 0; k < nc; k++) if (C[k].npts && C[k].ok) { snum += C[k].snum; sden += C[k].sden; }
+	for (size_t k = 0; k < nc; k++)
+		if (C[k].npts && C[k].ok) {
+			snum += C[k].snum - slant_of(q->L, q->cp[k], q->L ? q->L->m.slant : 0) * C[k].sden;
+			sden += C[k].sden;
+		}
 	double sline = sden > 0 ? snum / sden : 0;
 	double starget = q->L ? q->L->m.slant : sline;
 	double prior = (0.5 * xh) * (0.5 * xh);
@@ -1016,8 +1115,11 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 		c->ax = c->cx;
 		c->ay = hasbase ? ba + bb * c->cx : c->y1;
 		if (!c->ok) continue;
-		double sc = (c->snum + sline * prior) / (c->sden + prior);
-		if (on.slant) c->shear = clampd(starget - sc, -0.4, 0.4);
+		/* its lean, towards what the line's lean makes of its versions' where it has little
+		 * downstroke; the shear takes it to its versions' */
+		double own = q->L ? slant_of(q->L, q->cp[k], starget) : starget;
+		double sc = (c->snum + (q->L ? own + sline : sline) * prior) / (c->sden + prior);
+		if (on.slant) c->shear = clampd(own - sc, -0.4, 0.4);
 		double r = ratio_of(c->cls, q->L);
 		if (on.size && r > 0 && c->y1 > c->y0 && c->fit >= HW_NEAT_FIT_PULL) c->f = clampd(xh * r / (c->y1 - c->y0), 0.85, 1.18);
 	}
