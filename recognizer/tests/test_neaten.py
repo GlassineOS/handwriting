@@ -9,9 +9,10 @@ Neatest the best version's shape); the best version is the target; a pulled lett
 new ink comes nearer another character's versions is put back, the others stay pulled, and
 the reply names each character's reason; a word the dictionary lacks doesn't hold back the
 line; at strength 1 the covered characters pulled are closer to their version (most of
-them are); no new step back or kink where strokes start or letters join; without a letter
-model the baseline is straightened; drawing passes unchanged; the session is unchanged, so
-a confirm stores the same sample; a private field keeps nothing to neaten.
+them are); no new step back or kink where strokes start or letters join, or where the ink
+and its versions differ (a loop one has); a letter that leans by its shape keeps its lean;
+without a letter model the baseline is straightened; drawing passes unchanged; the session
+is unchanged, so a confirm stores the same sample; a private field keeps nothing to neaten.
 
     HW_BIN=path/to/glassine-handwriting python3 tests/test_neaten.py
 
@@ -83,6 +84,29 @@ def flow(raw, out, xh):
     return nb, nk
 
 
+def add_loop(st, xh=30.0, r=0.12, n=10):
+    """the stroke with a small loop in its middle (to the left of the way it goes)"""
+    m = len(st) // 2
+    if m < 1 or m >= len(st) - 1:
+        return st
+    (x0, y0), (x1, y1) = st[m][:2], st[m + 1][:2]
+    d = math.hypot(x1 - x0, y1 - y0) or 1
+    ux, uy = (x1 - x0) / d, (y1 - y0) / d
+    cx, cy = x0 - uy * r * xh, y0 + ux * r * xh
+    loop = [[round(cx + uy * r * xh * math.cos(a) + ux * r * xh * math.sin(a), 3),
+             round(cy - ux * r * xh * math.cos(a) + uy * r * xh * math.sin(a), 3), st[m][2], 0.5]
+            for a in (2 * math.pi * k / n for k in range(1, n))]
+    return st[:m + 1] + loop + st[m + 1:]
+
+
+def retime(s):
+    t = 0.0
+    for st in s["strokes"]:
+        for p in st:
+            p[2] = round(t, 3)
+            t += 0.01
+
+
 WHY = {"pulled", "level", "not-covered", "no-structure", "not-near", "shape-guard", "low-confidence", "drawing",
        "gesture", "no-ink", "space"}
 
@@ -108,9 +132,14 @@ class Neaten(unittest.TestCase):
     def tearDown(self):
         TR.shutil.rmtree(self.e.dir, ignore_errors=True)
 
-    def letters(self, seed=1):
-        """a letter model from synthetic prompted samples of separate letters"""
+    def letters(self, seed=1, change=None):
+        """a letter model from synthetic prompted samples of separate letters (each stroke
+        changed by change(stroke) first)"""
         ss = TL.alphabet_samples(seed=seed, per=4)
+        if change:
+            for s in ss:
+                s["strokes"] = [change(st) for st in s["strokes"]]
+                retime(s)
         f = self.e.dir / "in.jsonl"
         lines = [json.dumps({"format": "glassine-handwriting-export", "version": 1})]
         for i, s in enumerate(ss):
@@ -472,6 +501,82 @@ class Neaten(unittest.TestCase):
                         where[key] = where.get(key, 0) + b + k
         self.assertGreater(pulled, 1000)
         self.assertEqual(new, 0, where)
+
+    def test_flow_where_ink_and_versions_differ(self):
+        """at every level, no new step back and no new kink where the versions have a part the
+        ink lacks (a loop: not traced with too few points, another version or none) or the ink
+        one the versions lack, over every character"""
+        rnd = random.Random(28)
+        for versions, ink in ((add_loop, None), (None, add_loop)):
+            TR.shutil.rmtree(self.e.dir, ignore_errors=True)
+            self.e = TR.Env()
+            self.e.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
+            self.letters(change=versions)
+            new, pulled, where = 0, 0, {}
+            for i in range(0, len(TL.ALNUM), 8):
+                s = TL.sample(" ".join(TL.ALNUM[i:i + 8]), rnd)
+                if ink:
+                    s["strokes"] = [ink(st) for st in s["strokes"]]
+                    retime(s)
+                align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+                for lv in (0.25, 0.5, 0.75, 1):
+                    self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                    c = self.e.start()
+                    self.begin(c, s)
+                    _, out, why = parse(c.ask("neaten", "s", str(lv), TR.esc(s["text"]), align), why=True)
+                    c.close()
+                    pulled += why.count("pulled")
+                    for k, ch in enumerate(s["text"]):
+                        for j in s["spans"][k]:
+                            b, kk = flow([(p[0], p[1]) for p in s["strokes"][j]], EV.to_xy(out[j][2]), 30.0)
+                            new += b + kk
+                            if b + kk:
+                                where[(lv, ch)] = where.get((lv, ch), 0) + b + kk
+            self.assertGreater(pulled, 30, versions)
+            self.assertEqual(new, 0, (bool(versions), where))
+
+    def test_slant_by_the_letters_own_lean(self):
+        """a letter whose versions lean by their shape keeps that lean while the others stand
+        up: the slant correction moves each letter towards its own versions' lean (FR-014)"""
+        def lean_by(v):
+            def f(st):
+                y0 = max(p[1] for p in st)
+                return [[round(p[0] + v * (y0 - p[1]), 3)] + list(p[1:]) for p in st]
+            return f
+
+        def lean(strokes):
+            num = den = 0.0
+            for st in strokes:
+                for a, b in zip(st, st[1:]):
+                    dx, dy = b[0] - a[0], -(b[1] - a[1])
+                    if dy < 0 and -dy > 2 * abs(dx):
+                        num += dx * dy
+                        den += dy * dy
+            return num / den if den else 0.0
+
+        # the l leans right by its shape, everything else a little left
+        ss = TL.alphabet_samples(seed=1, per=4)
+        for s in ss:
+            for k, ch in enumerate(s["text"]):
+                for j in s["spans"][k]:
+                    s["strokes"][j] = lean_by(0.35 if ch == "l" else -0.2)(s["strokes"][j])
+        f = self.e.dir / "in.jsonl"
+        lines = [json.dumps({"format": "glassine-handwriting-export", "version": 1})]
+        lines += [json.dumps({"sample": s, "client": "org.example.test", "confirmed": 1700000000 + i, "source": "prompted"})
+                  for i, s in enumerate(ss)]
+        f.write_text("\n".join(lines) + "\n")
+        self.e.run("samples", "import", str(f))
+        self.e.run("letters", "build", "-r")
+        s = TL.sample("lll lol lll", random.Random(29))
+        for k, ch in enumerate(s["text"]):
+            for j in s["spans"][k]:
+                s["strokes"][j] = lean_by(0.35 if ch == "l" else -0.2)(s["strokes"][j])
+        before = [lean([s["strokes"][j] for j in s["spans"][k]]) for k, ch in enumerate(s["text"]) if ch == "l"]
+        _, xy = self.neaten_letters(s, 0.25)
+        after = [lean([xy[j] for j in s["spans"][k]]) for k, ch in enumerate(s["text"]) if ch == "l"]
+        self.assertEqual(len(after), 8)
+        self.assertGreater(min(before), 0.15)
+        self.assertLess(abs(sum(after) - sum(before)) / 8, 0.08, (before, after))
 
     def test_same_strokes_variant(self):
         """a t written in one stroke goes to the one-stroke variant, one in two strokes to a
