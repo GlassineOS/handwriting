@@ -18,6 +18,7 @@ struct hw_lang {
 	struct hw_head adapted;         /* the person's head, when there is one (rank > 0 or not) */
 	int has_adapted;
 	struct stat adapt_st;           /* the adaptation file as last read */
+	double base_temp;               /* the base model's calibration, 0: none */
 	char dir[4096];
 };
 
@@ -41,7 +42,16 @@ struct hw_run {
 	/* the size (size.h): logp weighed by it, the ink's own in logp0; NULL without */
 	float *logp0;
 	struct hw_size_info *size;
+	/* the calibrated frames readings are searched and scored on (calib.h; weighed by the
+	 * size and leaned like logp); NULL: logp itself (no calibration). Fits use logp. */
+	float *dec;
 };
+
+/* the frames a reading is searched and scored on */
+static inline const float *hw_run_dec(const struct hw_run *r) { return r->dec ? r->dec : r->logp; }
+/* the temperature the language's head in use reads with (calib.h): the adaptation's own, the
+ * base model's for the base head; 1 when it has none */
+double hw_lang_temp(const struct hw_lang *l);
 
 int hw_run(struct hw_lang *l, const struct hw_stroke *s, size_t ns, struct hw_run *r);
 /* hw_run with the ink's reference height h and baseline (the ink's y of it, NAN: none), in

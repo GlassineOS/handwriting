@@ -15,6 +15,7 @@ struct hw_adapt_info {
 	uint32_t rank, ntrain, nheld;
 	float cer, cer_before;  /* on the held-back samples: this head, the one it replaced */
 	int64_t time;
+	float temp;             /* its calibration, fitted on the held-back samples (calib.h); 0: none */
 };
 
 /* 0 ok; -1 unreadable, or made for another base model */

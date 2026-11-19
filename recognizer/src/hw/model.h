@@ -27,6 +27,7 @@ struct hw_head {
 	float *out, *bout;      /* nclass x dim, nclass */
 	float *mem;             /* one allocation holding all of the above */
 	size_t nparam;
+	float temp;             /* its calibration (calib.h), 0: none */
 };
 
 struct hw_model {

@@ -15,6 +15,8 @@
 #include "../src/hw/featurize.h"
 #include "../src/hw/letters.h"
 #include "../src/hw/lookalike.h"
+#include "../src/hw/calib.h"
+#include "../src/hw/store.h"
 #include "../src/hw/model.h"
 #include "../src/hw/neaten.h"
 #include "../src/hw/recog.h"
@@ -675,12 +677,46 @@ static void test_lookalike(void)
 		{ "O0", { -0.05f, -3.5f }, HW_LEAN_DIGITS, 'O', "a clear letter in a number field stays a letter" },
 		{ "S5", { -0.6f, -0.8f }, HW_LEAN_LETTERS, 'S', "other pairs unchanged" },
 	};
+	/* a store of its own: the person's look-alikes (none yet) */
+	char data[] = "/tmp/hw-look-XXXXXX", sd[200], sf[240];
+	CHECK(mkdtemp(data) != NULL, "a store");
+	setenv("XDG_DATA_HOME", data, 1);
 	for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
 		run_of(&l, &r, 1, c[i].cps, c[i].v);
 		hw_lookalike_lean(&l, &r, c[i].lean, HW_LEAN_KEEP);
 		t = first_of(&l, &r, 3, all);
 		CHECK(t == c[i].want, "%s (%s)", c[i].what, all);
 	}
+	/* the person's own pair, picked three times (either way): it leans as the shared ones */
+	struct { const char *cps; int lean; char want; const char *what; } p[] = {
+		{ "5S", HW_LEAN_LETTERS, 'S', "the person's 5 or S in a text field: S" },
+		{ "S5", HW_LEAN_DIGITS, '5', "the person's S or 5 in a number field: 5" },
+		{ "5S", HW_LEAN_NONE, '5', "no lean without a field" },
+		{ "4h", HW_LEAN_LETTERS, '4', "a pair picked twice is not the person's yet" },
+	};
+	snprintf(sd, sizeof sd, "%s/glassine", data); mkdir(sd, 0700);
+	snprintf(sd, sizeof sd, "%s/glassine/handwriting", data); mkdir(sd, 0700);
+	snprintf(sf, sizeof sf, "%s/lookalikes", sd);
+	FILE *f = fopen(sf, "w");
+	if (f) {
+		fputs("0123456789abcdef\torg.example.keyboard\t35\t53\n-\torg.example.keyboard\t35\t53\n"
+		      "1123456789abcdef\t-\t53\t35\n2123456789abcdef\t-\t34\t68\n-\t-\t34\t68\n"
+		      "-\t-\t61\t62\n-\t-\t61\t62\n-\t-\t61\t62\n", f);
+		fclose(f);
+	}
+	unsigned pairs[8][2];
+	int np = hw_lookalikes(pairs, 8);
+	CHECK(np == 1 && pairs[0][0] == '5' && pairs[0][1] == 'S', "one pair of the person's (%d), never two letters", np);
+	for (size_t i = 0; i < sizeof p / sizeof p[0]; i++) {
+		run_of(&l, &r, 1, p[i].cps, (const float[]){ -0.6f, -0.8f });
+		hw_lookalike_lean(&l, &r, p[i].lean, HW_LEAN_KEEP);
+		t = first_of(&l, &r, 3, all);
+		CHECK(t == p[i].want, "%s (%s)", p[i].what, all);
+	}
+	unlink(sf); rmdir(sd);
+	snprintf(sd, sizeof sd, "%s/glassine", data); rmdir(sd); rmdir(data);
+	CHECK(hw_lookalikes(pairs, 8) == 0, "no store: none");
+	unsetenv("XDG_DATA_HOME");
 	/* the frame's total stays one; the ink's own reading is kept for the fit */
 	run_of(&l, &r, 1, "0O", (const float[]){ -0.6f, -0.8f });
 	double before = 0, after = 0;
@@ -691,6 +727,60 @@ static void test_lookalike(void)
 	CHECK(fabs(after - 1) < 1e-4, "the frame keeps its total (%g)", after);
 	CHECK(r.logp0 && fabs(r.logp0[2 * r.C + hw_class_of(&l.model, '0')] - (-0.6 - log(before))) < 1e-5, "the ink's own reading kept");
 	hw_run_free(&r);
+}
+
+/* ---------------------------------------------------------------- calibration (FR-022) */
+
+static void test_calib(void)
+{
+	/* a temperature keeps each frame a distribution and its surest class */
+	float in[2 * 3] = { -0.05f, -3.5f, -4.0f, -2.0f, -0.3f, -1.6f }, out[6];
+	hw_calib_apply(in, out, 2, 3, 2.0);
+	for (int f = 0; f < 2; f++) {
+		double tot = 0;
+		int a = 0, b = 0;
+		for (int c = 0; c < 3; c++) {
+			tot += exp(out[f * 3 + c]);
+			if (in[f * 3 + c] > in[f * 3 + a]) a = c;
+			if (out[f * 3 + c] > out[f * 3 + b]) b = c;
+		}
+		CHECK(fabs(tot - 1) < 1e-5 && a == b, "frame %d: a distribution (%g), the same surest class", f, tot);
+	}
+	CHECK(out[0] < in[0] && out[1] > in[1], "above 1: less sure");
+	/* ink that reads 'a' at 95 % where it is right 60 % of the time (else 'b'): the fitted
+	 * temperature is above 1 and makes 'a' about as likely as it is right */
+	static float lp[3];
+	lp[0] = (float)log(0.01); lp[1] = (float)log(0.95); lp[2] = (float)log(0.04);
+	int la = 1, lb = 2;
+	struct hw_calib_item it[10];
+	for (int i = 0; i < 10; i++) it[i] = (struct hw_calib_item){ lp, 1, 3, i < 6 ? &la : &lb, 1 };
+	double before, after, t = hw_calib_fit(it, 10, &before, &after);
+	float cal[3];
+	hw_calib_apply(lp, cal, 1, 3, t);
+	CHECK(t > 1.5 && t <= HW_CALIB_MAX && after < before, "overconfident ink: t %g, loss %g -> %g", t, before, after);
+	CHECK(fabs(exp(cal[1]) - 0.6) < 0.1, "calibrated: 'a' %g", exp(cal[1]));
+	/* ink as sure as it is right: about 1 */
+	lp[0] = (float)log(1e-6); lp[1] = (float)log(0.6); lp[2] = (float)log(0.4);
+	t = hw_calib_fit(it, 10, NULL, NULL);
+	CHECK(fabs(t - 1) < 0.1, "calibrated ink stays about 1 (%g)", t);
+	CHECK(hw_calib_fit(it, 0, NULL, NULL) == 0, "nothing to fit: none");
+	/* the base model's file: its line for this model's hash, in range */
+	char dir[] = "/tmp/hw-calib-XXXXXX", p[200];
+	CHECK(mkdtemp(dir) != NULL, "a model directory");
+	snprintf(p, sizeof p, "%s/calibration", dir);
+	CHECK(hw_calib_base(dir, 0x1234) == 0, "no file: none");
+	FILE *f = fopen(p, "w");
+	if (f) {
+		fputs("glassine-handwriting-calibration 1\ntemperature 00000000000000ff 1.3\n"
+		      "temperature 0000000000001234 1.25\ntemperature 0000000000005678 9\n", f);
+		fclose(f);
+	}
+	CHECK(fabs(hw_calib_base(dir, 0x1234) - 1.25) < 1e-9, "the model's own line");
+	CHECK(hw_calib_base(dir, 0x9999) == 0 && hw_calib_base(dir, 0x5678) == 0, "another model's, or out of range: none");
+	f = fopen(p, "w");
+	if (f) { fputs("glassine-handwriting-calibration 2\ntemperature 0000000000001234 1.25\n", f); fclose(f); }
+	CHECK(hw_calib_base(dir, 0x1234) == 0, "another version: none");
+	unlink(p); rmdir(dir);
 }
 
 /* neatening's correspondence (spec 003 FR-036), a property over many strokes: each point's
@@ -923,6 +1013,7 @@ int main(int argc, char **argv)
 	test_words(tmp);
 	test_size();
 	test_lookalike();
+	test_calib();
 	test_neaten_match();
 	test_neaten_joined();
 	test_letters_context();

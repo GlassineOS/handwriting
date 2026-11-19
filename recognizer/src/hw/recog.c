@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "adapt.h"
+#include "calib.h"
 #include "chars.h"
 #include "recog.h"
 #include "size.h"
@@ -56,8 +57,11 @@ static void lang_load(struct hw_lang *l, const char *lang, const char *dir)
 	char p[4200], err[128];
 	snprintf(p, sizeof p, "%s/recognizer.ghm", l->dir);
 	l->loaded = -1;
-	if (!hw_model_load(&l->model, p, err, sizeof err)) l->loaded = 1;
-	else if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
+	if (!hw_model_load(&l->model, p, err, sizeof err)) {
+		l->loaded = 1;
+		l->base_temp = hw_calib_base(l->dir, l->model.hash);
+		l->model.base.temp = (float)l->base_temp;
+	} else if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
 		fprintf(stderr, "glassine-handwriting: %s: %s\n", p, err);
 }
 
@@ -96,6 +100,20 @@ const struct hw_head *hw_lang_head(const struct hw_lang *l)
 	return l->has_adapted > 0 ? &l->adapted : &l->model.base;
 }
 
+double hw_lang_temp(const struct hw_lang *l)
+{
+	/* for measurements: "off" none, a number that temperature instead */
+	const char *e = getenv("GLASSINE_HANDWRITING_CALIB");
+	if (e && *e) {
+		char *end;
+		double v = strtod(e, &end);
+		if (!strcmp(e, "off")) return 1;
+		if (!*end && v >= HW_CALIB_MIN && v <= HW_CALIB_MAX) return v;
+	}
+	double t = hw_lang_head(l)->temp;
+	return t >= HW_CALIB_MIN && t <= HW_CALIB_MAX ? t : 1;
+}
+
 void hw_lang_forget_all(void)
 {
 	for (int i = 0; i < nlangs; i++) {
@@ -107,7 +125,7 @@ void hw_lang_forget_all(void)
 
 void hw_run_free(struct hw_run *r)
 {
-	free(r->feats); free(r->logp); free(r->frames); free(r->org); free(r->logp0); free(r->size);
+	free(r->feats); free(r->logp); free(r->frames); free(r->org); free(r->logp0); free(r->size); free(r->dec);
 	memset(r, 0, sizeof *r);
 }
 
@@ -132,6 +150,12 @@ static int run_engine(struct hw_lang *l, const struct hw_stroke *s, size_t ns, d
 	r->logp = malloc((size_t)r->T * r->C * sizeof *r->logp);
 	if (!r->logp) { hw_run_free(r); return -1; }
 	hw_head_forward(hw_lang_head(l), r->frames, r->T, r->logp, NULL, NULL);
+	double t = hw_lang_temp(l);
+	if (t != 1) {
+		r->dec = malloc((size_t)r->T * r->C * sizeof *r->dec);
+		if (!r->dec) { hw_run_free(r); return -1; }
+		hw_calib_apply(r->logp, r->dec, r->T, r->C, t);
+	}
 	return 0;
 }
 
@@ -154,6 +178,8 @@ static uint64_t run_key(const struct hw_lang *l, const struct hw_stroke *s, size
 	h = hw_hash(rb, sizeof rb, h);
 	const void *who[2] = { l, hw_lang_head(l) };
 	h = hw_hash(who, sizeof who, h);
+	double t = hw_lang_temp(l);
+	h = hw_hash(&t, sizeof t, h);
 	long long st[4] = { (long long)l->adapt_st.st_ino, (long long)l->adapt_st.st_size,
 			    (long long)l->adapt_st.st_mtim.tv_sec, (long long)l->adapt_st.st_mtim.tv_nsec };
 	h = hw_hash(st, sizeof st, h);
@@ -181,7 +207,9 @@ static int run_copy(const struct hw_run *a, struct hw_run *b, size_t dim)
 	b->org = dup_of(a->org, (size_t)a->rows * sizeof *a->org);
 	b->frames = dup_of(a->frames, (size_t)a->T * dim * sizeof *a->frames);
 	b->logp = dup_of(a->logp, (size_t)a->T * a->C * sizeof *a->logp);
-	if ((a->feats && !b->feats) || (a->org && !b->org) || (a->frames && !b->frames) || (a->logp && !b->logp)) {
+	b->dec = dup_of(a->dec, (size_t)a->T * a->C * sizeof *a->dec);
+	if ((a->feats && !b->feats) || (a->org && !b->org) || (a->frames && !b->frames) || (a->logp && !b->logp) ||
+	    (a->dec && !b->dec)) {
 		hw_run_free(b);
 		return -1;
 	}
@@ -347,7 +375,7 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 	if (n > 8) n = 8;
 	if (r->T <= 0) return 0;
 	struct hw_cand cand[8];
-	int nc = hw_ctc_beam(r->logp, r->T, r->C, 16, cand, n);
+	int nc = hw_ctc_beam(hw_run_dec(r), r->T, r->C, 16, cand, n);
 	for (int i = 0; i < nc; i++) {
 		out->c[i].len = cand[i].n;
 		out->c[i].score = cand[i].score;
@@ -364,7 +392,7 @@ int hw_read(const struct hw_lang *l, const struct hw_run *r, int n, struct hw_re
 /* the weights (natural log units); $GLASSINE_HANDWRITING_WORDS="lm=0.3,margin=2,..."
  * replaces them (tuning) */
 static struct { double lm, word, chr, margin, near; int beam, nbest, minlen, guided; } W = {
-	0.3, 0, -4.5, 2.5, 6.0, 16, 10, 4, 1 };
+	0.3, 0, -4.5, 2.5, 9.0, 16, 10, 4, 1 };
 #define POOL 40                 /* readings scored at most: the ink's, the character model's and the
 				 * guided search's, near words */
 
@@ -575,7 +603,7 @@ double hw_text_logp(const struct hw_lang *l, const struct hw_run *r, const unsig
 		if (!c) return -INFINITY;
 		lab[L++] = c;
 	}
-	double nll = hw_ctc_loss(r->logp, r->T, r->C, lab, L, NULL, 0);
+	double nll = hw_ctc_loss(hw_run_dec(r), r->T, r->C, lab, L, NULL, 0);
 	return isfinite(nll) ? -nll : -INFINITY;
 }
 
@@ -826,7 +854,7 @@ static int fused_read(const struct hw_lang *l, const struct hw_run *r, const str
 		*h = x->cctx;
 	}
 	struct hw_ctc_lm lm = { &f, fused_step, fused_end };
-	int k = hw_ctc_beam_lm(r->logp, r->T, r->C, words ? W.beam : CW.beam, out, n, &lm);
+	int k = hw_ctc_beam_lm(hw_run_dec(r), r->T, r->C, words ? W.beam : CW.beam, out, n, &lm);
 	free(f.g.st);
 	free(f.h);
 	return f.g.bad ? 0 : k;
@@ -847,7 +875,7 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 	if (n > 8) n = 8;
 	if (r->T <= 0 || n <= 0) return 0;
 	static struct hw_cand cand[POOL];
-	int nc = hw_ctc_beam(r->logp, r->T, r->C, W.beam, cand, W.nbest);
+	int nc = hw_ctc_beam(hw_run_dec(r), r->T, r->C, W.beam, cand, W.nbest);
 	if (!nc) return 0;
 	static struct scored s[POOL];
 	int ns = 0;
@@ -863,26 +891,37 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 		ns++;
 	}
 	/* readings the character model finds in the ink that its own search missed, then those
-	 * the words find (weighed by the character model too) */
+	 * the words find (weighed by the character model too); each search's best reading (by
+	 * the ink with the character model and the words) is shown whatever the ink says of it */
+	static struct scored best[2];
+	int nbest = 0;
 	for (int pass = 0; pass < 2; pass++) {
 		if (pass == 0 && !x->ch) continue;
 		if (pass == 1 && !(x->w && W.guided && hw_words_count(x->w))) continue;
 		static struct hw_cand gc[POOL];
-		int ng = fused_read(l, r, x, pass, gc, W.nbest);
-		for (int i = 0; i < ng && ns < POOL - 2; i++) {
-			struct scored *c = &s[ns];
+		int ng = fused_read(l, r, x, pass, gc, W.nbest), have = 0;
+		struct scored *b = &best[nbest];
+		for (int i = 0; i < ng; i++) {
+			static struct scored t;
+			struct scored *c = &t;
 			c->len = gc[i].n;
 			if (!c->len) continue;
 			for (int k = 0; k < c->len; k++) c->cp[k] = l->model.charset[gc[i].lab[k] - 1];
-			int dup = 0;
-			for (int q = 0; q < ns; q++) dup |= same(&s[q], c->cp, c->len);
-			if (dup) continue;
 			c->from = pass ? HW_FROM_GUIDED : HW_FROM_CHARS;
-			c->fwd = hw_text_logp(l, r, c->cp, c->len);
-			if (!isfinite(c->fwd) || c->fwd < s[0].fwd - W.near) continue;     /* not what the ink says */
-			score(x, c);
-			ns++;
+			int dup = -1;
+			for (int q = 0; q < ns && dup < 0; q++) if (same(&s[q], c->cp, c->len)) dup = q;
+			if (dup >= 0) *c = s[dup];
+			else {
+				c->fwd = hw_text_logp(l, r, c->cp, c->len);
+				if (!isfinite(c->fwd)) continue;
+				score(x, c);
+			}
+			if (!have || c->total > b->total) { *b = *c; have = 1; }
+			/* not what the ink says: only as the search's best */
+			if (dup >= 0 || c->fwd < s[0].fwd - W.near || ns >= POOL - 2) continue;
+			s[ns++] = *c;
 		}
+		nbest += have;
 	}
 	/* words of the list near an unknown word of the ink's best readings */
 	int props = 0, nink = x->w ? ns : 0;
@@ -936,10 +975,25 @@ int hw_read_words(const struct hw_lang *l, const struct hw_run *r, const struct 
 				others[0] = ink;
 				break;
 			}
-	int k = 0;
-	const struct scored *order[POOL];
+	int k = 0, pinned;
+	const struct scored *order[POOL + 2];
 	order[k++] = &head;
 	for (int i = 0; i < rest && k < n; i++) order[k++] = &others[i];
+	/* the first, and the ink's best when it is second, stay; each search's best reading that
+	 * isn't listed yet takes the place of the last of the others (FR-019, Candidates) */
+	pinned = first && n >= 2 ? 2 : 1;
+	for (int b = 0; b < nbest; b++) {
+		int in = 0;
+		for (int i = 0; i < k; i++) in |= same(order[i], best[b].cp, best[b].len);
+		if (in) continue;
+		if (k < n) { order[k++] = &best[b]; continue; }
+		int at = k - 1;
+		while (at >= pinned && order[at] >= best && order[at] < best + 2) at--;
+		if (at >= pinned) {
+			memmove(order + at, order + at + 1, (size_t)(k - 1 - at) * sizeof *order);
+			order[k - 1] = &best[b];
+		}
+	}
 	for (int i = 0; i < k; i++) {
 		out->c[i].len = order[i]->len;
 		memcpy(out->c[i].cp, order[i]->cp, (size_t)order[i]->len * sizeof(unsigned));
