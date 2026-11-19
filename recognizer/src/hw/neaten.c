@@ -542,8 +542,11 @@ static int new_corner(const double *x, const double *y, const double *dx, const 
  * only moved and scaled, on the straight baseline at the line's x-height with its middle on
  * the ink's (as the matched points have it), without a baseline its middle on the ink's.
  * 0, -1 out of memory. */
+static double guard_ratio(const struct hw_neat *q, size_t k, double xh, int neat, unsigned char *const *skip,
+			  const struct hw_variant *glyph);
+
 static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *nown, double xh, int hasbase,
-			double base, double s, double **ex, double **ey)
+			double base, double s, double **ex, double **ey, int doubt)
 {
 	struct ch *c = &C[k];
 	/* its target: the glyph the font draws for it there (set by the caller) */
@@ -732,6 +735,24 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 			bad = i1 - i0 > HW_NEAT_WIDE * fmax(gw, 0.5) || fmax(i1 - i0, j1 - j0) < HW_NEAT_SMALL * gs;
 		}
 		if (bad) { c->pull = 0; ret = 0; goto out; }
+	}
+	/* a character the letter model gave ink of its neighbour's or took ink from (the
+	 * alignment off there): only pulled when its own ink as written (a joint's connecting
+	 * part left out) is nearer its own versions than any other character's, else the run
+	 * moved can be its neighbour's whole letter, which the pull would draw as this one */
+	if (doubt) {
+		unsigned char **skip = calloc(q->n + 1, sizeof *skip);
+		int oom = !skip;
+		for (int a = 0; !oom && a < np; a++) {
+			const struct piece *pc = &c->pc[a];
+			if (!skip[pc->j] && !(skip[pc->j] = calloc(q->ink[pc->j].n + 1, 1))) { oom = 1; break; }
+			for (size_t i = pc->a; i < pc->b; i++) if (pc->l > pc->f && (i < pc->f || i >= pc->l)) skip[pc->j][i] = 2;
+		}
+		double rr = oom ? -1 : guard_ratio(q, k, xh, 0, skip, NULL);
+		for (size_t j = 0; skip && j < q->n; j++) free(skip[j]);
+		free(skip);
+		if (rr < 0) goto out;
+		if (isfinite(rr) && rr > HW_NEAT_MOVED_RATIO) { c->why = HW_NEAT_WHY_SHAPE_GUARD; c->pull = 0; ret = 0; goto out; }
 	}
 	/* the glyph traced on the ink's points (all the way, and as far as the level pulls): a
 	 * corner or a step back it gets where the ink has none is a part of the glyph the shape
@@ -1338,21 +1359,12 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 				if (pair) { C[k + 1].why = c->why; k++; }
 				continue;
 			}
-			/* a character the letter model gave ink of its neighbour's or took ink from (the
-			 * alignment off there): only pulled when that ink is nearer its own versions
-			 * than any other character's, else the run moved can be its neighbour's whole
-			 * letter, which the pull would draw as this one */
-			if (!pair && doubt[k]) {
-				double rr = guard_ratio(q, k, xh, 0, NULL, NULL);
-				if (rr < 0) { ret = -1; goto done; }
-				if (isfinite(rr) && rr > HW_NEAT_MOVED_RATIO) { c->why = HW_NEAT_WHY_SHAPE_GUARD; continue; }
-			}
 			if (!pair) {
 				if (gvar[k] >= 0) {
 					const struct hw_letter *le = letter_of(V, q->cp[k]);
 					if (le && gvar[k] < le->nvar) c->v = &le->var[gvar[k]];
 				}
-				if (pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey)) { ret = -1; goto done; }
+				if (pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey, doubt[k])) { ret = -1; goto done; }
 				continue;
 			}
 			/* the pair: one glyph, so one map for both letters (the first's) and the second
@@ -1370,7 +1382,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 			for (size_t j = 0; j < n; j++)
 				for (size_t i = 0; i < q->ink[j].n; i++)
 					if (q->own[j][i] == (int)k + 1) { q->own[j][i] = (int)k; moved[nm][0] = j; moved[nm++][1] = i; }
-			int r = pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey);
+			int r = pull_prepare(q, C, k, nown, xh, hasbase, target_base, s, ex, ey, 0);
 			for (size_t z = 0; z < nm; z++) q->own[moved[z][0]][moved[z][1]] = (int)k + 1;
 			free(moved);
 			if (r) { ret = -1; goto done; }
