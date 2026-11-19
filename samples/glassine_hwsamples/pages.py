@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The pages, as the design draws them (GlassineOS/ui designs/handwriting): the first-start
-introduction, Write, Samples, Coverage, Learn with Your handwriting, Contribute. Each paint
+introduction, Write, Your font, Learn with Samples and Coverage, Contribute. Each paint
 function draws one page into a cairo context and adds its tap targets; none reads or
 writes anything itself, the UI object (ui.py) does."""
 import math
@@ -11,7 +11,7 @@ import cairo
 from glassine_ui import paint as PT
 
 from . import fontview as FV, neat as N, prompts as P
-from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_w, btns_right, card, checkbox, chevron_row, dialog, draw_ink,
+from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_w, btns_right, card, checkbox, chevron_h, chevron_row, dialog, draw_ink,
                    footer, header, icon, icon_rows, ink_bounds, lbl, note, page_head, radio, sep, soft_box, tabs)
 
 SUB = "Teach the tablet your hand"
@@ -26,12 +26,11 @@ SETS = ((P.AUTO, "A mix, weighted towards what it knows least about your hand", 
         ("digits", "0 to 9, and marks like , . ? ! :", "pin"),
         ("symbols", "@ / & + # % _ = $, alone and in addresses", "alternate_email"),
         (P.OWN, "A list you keep in your files. Never contributed.", "person_edit"))
-# a guest's sets (spec 002 FR-018): the shipped ones, and the careful samples and the picks, which
-# are on Learn in the owner's session; no word list of their own
+# a guest's sets (spec 002 FR-018): the shipped ones, and the careful samples, which are on Your
+# font in the owner's session; no word list of their own, and no picks (they teach a font)
 GSETS = ((P.AUTO, "A mix, weighted towards what you have written least", "auto_awesome"),
          *(x for x in SETS if x[0] not in (P.AUTO, P.OWN)),
-         ("best", "A word written slowly and carefully, sometimes once quickly first", "draw"),
-         ("pick", "Two of your own versions side by side; tap the nicer one", "compare"))
+         ("best", "A word written slowly and carefully, sometimes once quickly first", "draw"))
 LICENCES = (("CC0-1.0", "Free for anyone", "CC0",
              "Anyone may use, change and share your samples for anything, with no conditions."),
             ("CC-BY-4.0", "Free, with a mention", "CC BY 4.0",
@@ -42,6 +41,7 @@ LIC = {k: (n, c) for k, n, c, _ in LICENCES}
 HOLDS = ["The pen strokes you write for the words the app shows", "Those words themselves",
          "The size of the writing area, and which way the tablet was turned",
          "What the tablet read when you wrote it", "Quick or careful, and your picks (with both versions)"]
+GHOLDS = HOLDS[:-1] + ["Quick or careful"]      # a guest makes no picks
 # the contributor number is in the list nowhere: it has a card of its own (donor_row)
 NEVER = ["Your name, or anything else about you", "Anything else about this tablet", "Dates and times",
          "Anything you write in other apps, or words from your own list unless you add them one by one",
@@ -263,7 +263,7 @@ def write_top(cr, ui, hits, w, h=None, head=True):
     if best and ui.guest:               # a set there (spec 002 FR-018)
         dropdown(cr, k, hits, w - PAD, y, "Write it your best", ui.open_sets)
     elif best:
-        dropdown(cr, k, hits, w - PAD, y, "Your handwriting", lambda: ui.open_best("intro"))
+        dropdown(cr, k, hits, w - PAD, y, "Your font", ui.open_best)
     else:
         dropdown(cr, k, hits, w - PAD, y, SET_NAMES.get(ui.state.set, ui.state.set), ui.open_sets)
     y += 56
@@ -336,7 +336,7 @@ def neat_top(cr, ui, hits, w, h=None, head=True):
     if h:
         fill(cr, k, w, h)
     y = chrome(cr, ui, hits, w) if head else 0
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Neaten my writing",
+    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your font", "Neaten my writing",
                   "Write anything below, in a hurry if you like. When you pause, it shows neater, in your own hand. "
                   "Nothing you write here is kept.", small=True, keep_lead=True)
     return y + 6
@@ -396,7 +396,7 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
     else:
         _, th = PT.text(cr, "Nothing here becomes a sample.", k["sub"], PAD, y, k.ink, maxw=w - 2 * PAD)
         y += th + 10
-    btn(cr, k, hits, PAD, y, "Your handwriting", lambda: ui.open_best("intro"), icon_name="arrow_back")
+    btn(cr, k, hits, PAD, y, "Your font", ui.open_best, icon_name="arrow_back")
     return y + BTN_H + 16
 
 
@@ -595,7 +595,7 @@ def wizard_page(cr, ui, hits, w, h):
             y = page_head(cr, k, PAD, y, cw, None, "Your samples stay here",
                           "Each word you write is kept as a sample. They belong to you.", small=True)
             art = ("tablet", "Kept on this tablet only. The app doesn’t use the internet.")
-            rows = [("grid_view", "Look at any sample", "Samples shows everything you have written here."),
+            rows = [("grid_view", "Look at any sample", "Samples, in Learn, shows everything you have written here."),
                     ("delete", "Delete what you don’t want", "One at a time, or all at once."),
                     ("folder", "Take a copy with you", "Export saves them all as one file in your Documents."),
                     ("volunteer_activism", "Share only if you choose to", "Next, you can decide about contributing. It is "
@@ -657,7 +657,7 @@ def wizard_page(cr, ui, hits, w, h):
             y += 60
             sep(cr, k, PAD, y, cw)
         icon(cr, "draw", 18, PAD + 10, y + 26, k.soft)
-        PT.text(cr, "You can also teach it your nicest handwriting, any time, from Learn.", k["sub"], PAD + 32, y + 16,
+        PT.text(cr, "You can also make a font of your handwriting, any time, in Your font.", k["sub"], PAD + 32, y + 16,
                 k.soft, maxw=cw - 32)
     wizard_foot(cr, ui, hits, w, h)
 
@@ -730,17 +730,17 @@ def guest_step(cr, ui, hits, w, h, y):
                 align=1)
 
 
-def holds_lists(cr, k, x, y, w, never=NEVER):
+def holds_lists(cr, k, x, y, w, never=NEVER, holds=HOLDS):
     """what a contribution holds and what it never holds, side by side; -> the y below"""
     cw = (w - 14) / 2
     hs = []
-    for head, items in (("What a contribution holds", HOLDS), ("What it never holds", never)):
+    for head, items in (("What a contribution holds", holds), ("What it never holds", never)):
         hh = 40
         for it in items:
             hh += PT.measure(cr, it, k["sub"], maxw=cw - 52, wrap=True)[1] + 10
         hs.append(hh + 8)
     h = max(hs)
-    for i, (head, items, ic) in enumerate((("What a contribution holds", HOLDS, "check"),
+    for i, (head, items, ic) in enumerate((("What a contribution holds", holds, "check"),
                                           ("What it never holds", never, "remove"))):
         bx = x + i * (cw + 14)
         card(cr, k, bx, y, cw, h)
@@ -864,6 +864,27 @@ def pager(cr, ui, hits, x, y, page, pages, go):
         icon_name="chevron_right", w=BTN_H)
 
 
+def sub_head(cr, ui, hits, w, y, title, lead):
+    """the head of a page beneath a tab (Samples, Coverage): no eyebrow, the title with the way
+    back beside it (to Learn; a guest's Samples to Contribute), the lead (dropped when the
+    tablet is turned) -> the y below"""
+    k = ui.theme
+    back = "Contribute" if ui.guest else "Learn"
+    bw = btn_w(cr, k, back, "arrow_back")
+    tw = w - 2 * PAD - bw - 14
+    _, th = PT.measure(cr, title, k["displayS"], maxw=tw, wrap=True)
+    y += 18
+    PT.text(cr, title, k["displayS"], PAD, y + max(0, (BTN_H - th) / 2), k.ink, maxw=tw, wrap=True,
+            ls=PT.ls_em(k["displayLs"]))
+    btn(cr, k, hits, w - PAD - bw, y + max(0, (th - BTN_H) / 2), back, lambda: ui.go("donate" if ui.guest else "learn"),
+        icon_name="arrow_back", w=bw)
+    y += max(th, BTN_H) + 8
+    if lead and not LAND[0]:
+        _, lh = PT.text(cr, lead, k["lead"], PAD, y, k.soft, maxw=w - 2 * PAD, wrap=True)
+        y += lh + 4
+    return y + 14
+
+
 def samples_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
@@ -872,10 +893,10 @@ def samples_page(cr, ui, hits, w, h):
         return sample_detail(cr, ui, hits, w, h, y)
     rows = list(reversed(ui.samples))
     n = len(rows)
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Samples", "%d sample%s" % (n, "" if n == 1 else "s"),
-                  ("Everything you have written here, newest first. Tap one to look at it or delete it." +
-                   (" Export takes a copy of them with you, as one file." if ui.guest else "")) if n else
-                  "Nothing written yet. Write shows the first prompt.", small=True)
+    y = sub_head(cr, ui, hits, w, y, "%d sample%s" % (n, "" if n == 1 else "s"),
+                 ("Everything you have written here, newest first. Tap one to look at it or delete it." +
+                  (" Export takes a copy of them with you, as one file." if ui.guest else "")) if n else
+                 "Nothing written yet. Write shows the first prompt.")
     cols = grid_cols(w)
     gap = 10
     tw = (w - 2 * PAD - gap * (cols - 1)) / cols
@@ -974,9 +995,9 @@ def coverage_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
     y = chrome(cr, ui, hits, w)
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Coverage", "How much of each character",
-                  "The number is how many of your samples have it. Shaded ones could use more; a dot marks the ones " +
-                  ("the reader often gets wrong." if ui.guest else "it often reads wrong."), small=True)
+    y = sub_head(cr, ui, hits, w, y, "How much of each character",
+                 "The number is how many of your samples have it. Shaded ones could use more; a dot marks the ones "
+                 "it often reads wrong.")
     cov = ui.writer.cov if ui.writer else P.Coverage()
     cols = 26 if w > 900 else 13
     gap = 5
@@ -1044,12 +1065,6 @@ def learn_state(ui):
 def learn_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
-    if ui.best == "intro":
-        return best_intro(cr, ui, hits, w, h)
-    if ui.best == "pick":
-        return best_pick(cr, ui, hits, w, h)
-    if ui.best == "font":
-        return best_font(cr, ui, hits, w, h)
     y = chrome(cr, ui, hits, w)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Learn", "How it’s learning", None, small=True, land_hide=True)
     st = learn_state(ui)
@@ -1135,8 +1150,15 @@ def learn_page(cr, ui, hits, w, h):
         rows.append(("history", "The version before", "Kept, in case you want to go back to it"))
         btns = [("Use the version before", ui.ask_revert, False)] + btns
     y = icon_rows(cr, k, PAD, y, w - 2 * PAD, rows, pad=10) + 14
-    chevron_row(cr, k, hits, PAD, y, w - 2 * PAD, "draw", "Your handwriting",
-                "Teach it what your nicest writing looks like", lambda: ui.open_best("intro"))
+    # the pages beneath Learn, side by side
+    n = len(ui.samples)
+    links = (("grid_view", "Samples", "%d, newest first. Look at one, delete or export them" % n if n else
+              "Nothing written yet", lambda: ui.go("samples")),
+             ("abc", "Coverage", "How much of each character it has seen from you", lambda: ui.go("coverage")))
+    lw = (w - 2 * PAD - 14) / 2
+    lh = max(chevron_h(cr, k, lw, sub) for _, _, sub, _ in links)
+    for i, (ic, name, sub, fn) in enumerate(links):
+        chevron_row(cr, k, hits, PAD + i * (lw + 14), y, lw, ic, name, sub, fn, min_h=lh)
     by = h - 20 - BTN_H
     x = btns_right(cr, k, hits, w - PAD, by, btns) if btns else w - PAD
     if foot:
@@ -1144,59 +1166,22 @@ def learn_page(cr, ui, hits, w, h):
     msg_line(cr, ui, by - 30, w)
 
 
-# ---------------------------------------------------------------- Your handwriting
+# ---------------------------------------------------------------- Your font
 
 
-def best_intro(cr, ui, hits, w, h):
-    k = ui.theme
-    y = chrome(cr, ui, hits, w)
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Learn", "Your handwriting",
-                  "Show it what your nicest writing looks like: a few words written with care, and now and then a "
-                  "choice between two of your own versions.", small=True, keep_lead=True)
-    cw = w - 2 * PAD
-    cards = (("Write it your best", "A word written slowly and carefully. Sometimes once quickly first, then once "
-              "with care.", ui.start_best, "Thursday"),
-             ("Which one is nicer?", "Two of your own versions side by side. Tap the one you like better.",
-              ui.start_pick, "g   g"),
-             ("Your font", "Your letters as a font for any app. See which ones it has, then install it.",
-              ui.open_font, "Aa Bb"),
-             ("Neaten my writing", "Write anything, in a hurry if you like. It comes back neater, in your own "
-              "hand.", ui.open_neat, "neat"))
-    cols = 2 if w > h else 1                  # turned: two cards side by side
-    gap = 14
-    colw = (cw - gap * (cols - 1)) / cols
-    for r in range(0, len(cards), cols):
-        row = cards[r:r + cols]
-        ch = 108
-        for name, desc, fn, art in row:
-            _, th = PT.measure(cr, desc, k["sub"], maxw=colw - 230, wrap=True)
-            ch = max(ch, th + 60)
-        for i, (name, desc, fn, art) in enumerate(row):
-            x = PAD + i * (colw + gap)
-            card(cr, k, x, y, colw, ch)
-            soft_box(cr, k, x + 18, y + 16, 132, ch - 32)
-            script_word(cr, k, art, x + 28, y + ch / 2 - 22, 30)
-            PT.text(cr, name, k["row"], x + 168, y + 28, k.ink, weight=600, maxw=colw - 230)
-            PT.text(cr, desc, k["sub"], x + 168, y + 54, k.ink, maxw=colw - 230, wrap=True)
-            icon(cr, "chevron_right", 24, x + colw - 30, y + ch / 2, k.ink)
-            hits.add(x, y, colw, ch, fn)
-        y += ch + gap
-    careful = sum(1 for v in ui.marked.values() if v[0] == "careful")
-    picks = len(ui.prefs)
-    s = ("%d careful sample%s and %d pick%s so far. They are kept like your other samples. If you contribute, a pick goes "
-         "along only with both of its versions; a font made from your writing never does."
-         % (careful, "" if careful == 1 else "s", picks, "" if picks == 1 else "s"))
-    by = h - 20 - BTN_H
-    btn(cr, k, hits, PAD, by, "Learn", lambda: ui.open_best(None), icon_name="arrow_back")
-    _, th = PT.measure(cr, s, k["sub"], maxw=cw, wrap=True)
-    PT.text(cr, s, k["sub"], PAD, by - 16 - th, k.soft, maxw=cw, wrap=True)
+def font_page(cr, ui, hits, w, h):
+    """the Your font tab: the font page, or Which one is nicer? opened from it"""
+    fill(cr, ui.theme, w, h)
+    if ui.best == "pick":
+        return best_pick(cr, ui, hits, w, h)
+    return best_font(cr, ui, hits, w, h)
 
 
 def best_pick(cr, ui, hits, w, h):
     """two of the person's own versions of one character, ink only, large"""
     k = ui.theme
     y = chrome(cr, ui, hits, w)
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Which one is nicer?",
+    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your font", "Which one is nicer?",
                   "Tap the one you like better." if ui.pick else None, small=True)
     pk = ui.pick
     by = h - 20 - BTN_H
@@ -1204,7 +1189,7 @@ def best_pick(cr, ui, hits, w, h):
         PT.text(cr, "Looking for two versions…" if ui.pick_loading else
                 "Not enough to choose from yet: write a few more words, and two versions of the same letter come up "
                 "here.", k["row"], PAD, y, k.soft, maxw=w - 2 * PAD, wrap=True)
-        btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
+        btn(cr, k, hits, PAD, by, "Back", ui.open_best, icon_name="arrow_back")
         return
     gap = 16
     land = w > h
@@ -1634,7 +1619,7 @@ def font_buttons(cr, ui, hits, w, by, mode, land):
     f = ui.font or {}
     have = any(ok for _, _, ok in FV.coverage(f.get("model"), status=st))
     miss = FV.missing(f.get("model"), status=st)
-    x = PAD + btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back") + 10
+    x = PAD                     # no Back: the font page is the Your font tab
     if land and miss:
         x += btn(cr, k, hits, x, by, "Write these now", ui.write_missing, icon_name="edit") + 10
     busy = bool(ui.font_busy)
@@ -1671,6 +1656,28 @@ def nib_stepper(cr, ui, hits, x0, x1, y):
             x += tw + 14
 
 
+# the rest of Your font, as rows below the font's letters (spec 003 FR-042)
+FONT_PARTS = (("draw", "Write it your best", "start_best"), ("compare", "Which one is nicer?", "start_pick"),
+              ("edit_note", "Neaten my writing", "open_neat"))
+PART_H = 60
+
+
+def font_parts(cr, ui, hits, x, y, w):
+    """Write it your best, Which one is nicer? and Neaten my writing, side by side"""
+    k = ui.theme
+    gap = 10
+    cw = (w - gap * (len(FONT_PARTS) - 1)) / len(FONT_PARTS)
+    for i, (ic, label, fn) in enumerate(FONT_PARTS):
+        bx = x + i * (cw + gap)
+        PT.box(cr, bx, y, cw, PART_H, k["rowR"], bg=k.sheet)
+        icon(cr, ic, 22, bx + 24, y + PART_H / 2, k.ink)
+        tw = cw - 46 - 34
+        _, th = PT.measure(cr, label, k["row"], maxw=tw, wrap=True)
+        PT.text(cr, label, k["row"], bx + 46, y + (PART_H - th) / 2, k.ink, maxw=tw, wrap=True)
+        icon(cr, "chevron_right", 22, bx + cw - 20, y + PART_H / 2, k.ink)
+        hits.add(bx, y, cw, PART_H, getattr(ui, fn))
+
+
 def best_font(cr, ui, hits, w, h):
     """Your font (spec 003 Scenario 3, the design's font.* boards): a preview in the font
     with where the letter model stands, a key per character (each opens its sheet), the
@@ -1682,16 +1689,18 @@ def best_font(cr, ui, hits, w, h):
     if ui.renaming:
         return rename_dialog(cr, ui, hits, w, h, y)
     land = w > h
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your handwriting", "Your font",
-                  None if land else "A character is in it once it has 3 good samples. Tap any key to see how you "
-                  "write it.", small=True)
+    # the tab's own page: no eyebrow; turned, no head at all, so the keys keep their width
+    y = y + 18 if land else page_head(
+        cr, k, PAD, y + 18, w - 2 * PAD, None, "Your handwriting as a font",
+        "A character is in it once it has 3 good samples. Tap any key to see how you write it.", small=True)
     cw = w - 2 * PAD
     by = h - 20 - BTN_H
+    py = by - 14 - PART_H                     # the rows to the rest of Your font
     f = ui.font or {}
     st, model = f.get("status") or {}, f.get("model")
     if not ui.font:
         PT.text(cr, "Counting your letters…", k["row"], PAD, y, k.soft, maxw=cw, wrap=True)
-        btn(cr, k, hits, PAD, by, "Back", lambda: ui.open_best("intro"), icon_name="arrow_back")
+        font_parts(cr, ui, hits, PAD, py, cw)
         return
     mode = font_mode(ui)
     cov = FV.coverage(model, status=st)
@@ -1699,10 +1708,12 @@ def best_font(cr, ui, hits, w, h):
         cov = [(c, n, n >= FV.MIN) for c, n, _ in cov]
     have = sum(1 for c in cov if c[2])
     miss = [c for c, _, ok in cov if not ok]
-    head = ("Enough samples: %d of %d" if mode in ("none", "learning") else "In your font: %d of %d") % (have, len(cov))
-    # turned, the styles take the count line's room: it drops the shaded keys' note
-    sub = ("%d not in it yet" % len(miss) + ("" if land else "; shaded ones have a sample or two")) if miss \
-        else "Every one is in it."
+    where = "with enough samples" if mode in ("none", "learning") else "in your font"
+    # turned, the styles take the count line's room: the label is shorter, the line drops the
+    # shaded keys' note
+    head = "Letters · %d of %d" % (have, len(cov)) + ("" if land else " " + where)
+    sub = ((where[0].upper() + where[1:] + "; " if land else "") + "%d not in it yet" % len(miss) +
+           ("" if land else "; shaded ones have a sample or two")) if miss else "Every one is in it."
     if land:
         lw_ = int(cw * 0.32)
         rx, rw = PAD + lw_ + 24, cw - lw_ - 24
@@ -1714,7 +1725,9 @@ def best_font(cr, ui, hits, w, h):
         PT.text(cr, sub, k["sub"], rx, y + (26 if sh else 20), k.ink, maxw=rw - (sw + 12 if sh else 0))
         if sh:
             style_segs(cr, ui, hits, rx + rw - sw, y, sw)
-        font_keys(cr, ui, hits, rx, y + (BTN_H + 8 if sh else 48), rw, 12, 44, cov)
+        ky = y + (BTN_H + 8 if sh else 48)
+        kh = max(32, min(44, int((py - 10 - ky) / ((len(cov) + 11) // 12)) - KEY_GAP))
+        font_keys(cr, ui, hits, rx, ky, rw, 12, kh, cov)
     else:
         ph = preview_card(cr, ui, hits, PAD, y, cw, mode)
         y += ph + 14
@@ -1727,9 +1740,10 @@ def best_font(cr, ui, hits, w, h):
         # keys as tall as the design's while the page has room (a short window: smaller)
         rows = (len(cov) + 12) // 13
         name_h = 12 + max(26 + 20, BTN_H) + 12 + 24
-        kh = max(34, min(46, int((by - 16 - name_h - y - 10) / rows) - KEY_GAP))
+        kh = max(34, min(46, int((py - 16 - name_h - y - 10) / rows) - KEY_GAP))
         y = font_keys(cr, ui, hits, PAD, y, cw, 13, kh, cov) + 10
         font_name_block(cr, ui, hits, PAD, y, cw, mode)
+    font_parts(cr, ui, hits, PAD, py, cw)
     font_buttons(cr, ui, hits, w, by, mode, land)
     if ui.msg:
         msg_line(cr, ui, by - 30, w)
@@ -2566,6 +2580,7 @@ def donate_page(cr, ui, hits, w, h):
         return earlier_review(cr, ui, hits, w, h, y)
     g = ui.guest
     never = GNEVER if g else NEVER
+    holds = GHOLDS if g else HOLDS
     if not on:
         y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "Help the reader for everyone",
                       "The handwriting reader is open source. It learns from handwriting people choose to contribute. "
@@ -2575,12 +2590,16 @@ def donate_page(cr, ui, hits, w, h):
         PT.text(cr, "Contributing is off", k["row"], PAD + 54, y + 10, k.ink, weight=600)
         PT.text(cr, "Nothing is set aside. Your samples stay here, in your session." if g else
                 "Nothing is set aside. Your samples stay yours alone.", k["sub"], PAD + 54, y + 34, k.soft, maxw=cw - 70)
-        y = holds_lists(cr, k, PAD, y + 76, cw, never=never) + 14
+        y = holds_lists(cr, k, PAD, y + 76, cw, never=never, holds=holds) + 14
         y = how_note(cr, k, PAD, y, cw, "folder", "Nothing is sent by itself. When you choose, your contribution is saved "
                      "as one file in this tablet’s Documents, for the owner to send to the project." if g else
                      "Nothing is sent by itself. When you choose, the app saves your contribution as one file in your "
                      "Documents, and you send it yourself.") + 14
         y = donor_row(cr, ui, hits, PAD, y, cw, donor)
+        if g:
+            n_ = len(ui.samples)
+            chevron_row(cr, k, hits, PAD, y, cw, "grid_view", "Your samples", plural(n_, "sample") +
+                        ". Look at one, delete or export them.", lambda: ui.go("samples"), shaded=False)
         msg_line(cr, ui, by - 30, w)
         bw = btn_w(cr, k, "Turn on…")
         btn(cr, k, hits, w - PAD - bw, by, "Turn on…", ui.turn_on, w=bw)
@@ -2614,15 +2633,26 @@ def donate_page(cr, ui, hits, w, h):
     y += bh + 14
     # what a contribution holds: shown when there is room for it (it was shown before turning on)
     y = donor_row(cr, ui, hits, PAD, y, cw, donor)
-    rest = (62 + 12 if ui.earlier else 0) + 30
-    probe = cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
-    if holds_lists(probe, k, PAD, y, cw, never=never) + 14 + rest <= by - 10:
-        y = holds_lists(cr, k, PAD, y, cw, never=never) + 14
+    # a guest's own samples (beneath this tab, spec 002 FR-018) and the earlier ones, side by side
+    rows = []
+    if g:
+        n_ = len(ui.samples)
+        rows.append(("grid_view", "Your samples", ("%d. Look at, delete or export them." % n_) if ui.earlier else
+                     plural(n_, "sample") + ". Look at one, delete or export them.", lambda: ui.go("samples")))
     if ui.earlier:
         e = len(ui.earlier)
-        y += chevron_row(cr, k, hits, PAD, y, cw, "add_to_photos", "Add earlier samples",
-                         "%d sample%s written before contributing %s not in it. Look through them, if you like." % (
-                             e, "" if e == 1 else "s", "is" if e == 1 else "are"), ui.review_earlier, shaded=False) + 12
+        rows.append(("add_to_photos", "Add earlier samples",
+                     "%d sample%s written before contributing %s not in it. Look through them, if you like." % (
+                         e, "" if e == 1 else "s", "is" if e == 1 else "are"), ui.review_earlier))
+    rw_ = (cw - 12 * (len(rows) - 1)) / max(len(rows), 1)
+    rh = max((chevron_h(cr, k, rw_, sub) for _, _, sub, _ in rows), default=0)
+    rest = (rh + 12 if rows else 0) + 30
+    probe = cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
+    if holds_lists(probe, k, PAD, y, cw, never=never, holds=holds) + 14 + rest <= by - 10:
+        y = holds_lists(cr, k, PAD, y, cw, never=never, holds=holds) + 14
+    for i, (ic, name, sub, fn) in enumerate(rows):
+        chevron_row(cr, k, hits, PAD + i * (rw_ + 12), y, rw_, ic, name, sub, fn, shaded=False, min_h=rh)
+    y += rh + 12 if rows else 0
     msg_line(cr, ui, by - 30, w)
     btns_right(cr, k, hits, w - PAD, by, [
         ("Erase contribution", ui.ask_erase_donation if n else None, False), ("Turn off", ui.ask_turn_off, False),
@@ -2955,7 +2985,7 @@ def loading_page(cr, ui, hits, w, h):
     PT.text(cr, ui.msg or "Loading…", k["row"], PAD, y + 24, k.soft, maxw=w - 2 * PAD, wrap=True)
 
 
-PAGES = {"samples": samples_page, "coverage": coverage_page, "learn": learn_page, "donate": donate_page,
+PAGES = {"samples": samples_page, "coverage": coverage_page, "font": font_page, "learn": learn_page, "donate": donate_page,
          "others": others_page}
 
 
