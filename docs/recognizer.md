@@ -402,6 +402,10 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   go with their neighbours, a run of one character shorter than 0.35 x-heights along the stroke
   goes to the run next to it (the longer one), and a character with a count of pieces no
   version of it has (more than some) gives a run it shares with a neighbour to that neighbour.
+  Such a move is a guess at where the alignment is off (it can be off by a whole letter, the
+  joints shifted along the word): the characters that gave or took a run are pulled only when
+  their ink as written is nearer their own versions than any other character's, so no
+  character's glyph is drawn over its neighbour's ink.
   Then the strokes are put right by where the ink lies as for the letter model, so a dot or
   bar written after the word belongs to the letter it lies across, not to the word's last one
   (five x-heights standing in for the area's line); a stroke joined from two characters' parts
