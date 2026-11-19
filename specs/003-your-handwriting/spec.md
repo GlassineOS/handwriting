@@ -32,7 +32,7 @@ This spec is about the person's own hand on their own device. Learning from many
 
 ### Scenario 1 – Writing it your best (Priority: P1)
 
-**Given** the samples app is open, **When** the person chooses "Write it your best",
+**Given** the samples app's Your font tab, **When** the person chooses "Write it your best",
 **Then** prompts are shown as usual but framed as unhurried, careful writing, and each
 kept sample is marked as careful.
 
@@ -42,13 +42,14 @@ then once carefully, **Then** both samples are kept and linked as a pair.
 ### Scenario 2 – Which one is nicer? (Priority: P1)
 
 **Given** the person has at least two samples of the same character or word, **When** they
-choose "Which one is nicer?", **Then** two of their own versions are shown side by side,
-ink only, and a tap on one records the preference; "Both fine" and "Skip" record nothing
-against either. Nothing is scored or ranked on screen.
+choose "Which one is nicer?" on the Your font tab, **Then** two of their own versions are
+shown side by side, ink only, and a tap on one records the preference; "Both fine" and
+"Skip" record nothing against either. Nothing is scored or ranked on screen.
 
 ### Scenario 3 – My handwriting as a font (Priority: P1)
 
-**Given** enough samples, **When** the person asks for their font, **Then** a preview shows
+**Given** enough samples, **When** the person opens the font page on the Your font tab,
+**Then** a preview shows
 a sentence in it, characters that are not yet covered are listed with a way to write them
 now, and on confirmation the font is installed for this person and appears wherever fonts
 are chosen (the settings app, text editors, notes apps).
@@ -116,6 +117,19 @@ size, spacing) and keep their shape.
   most. It never shows a sample from a private field.
 - **FR-005**: Careful and quick samples are also ordinary training samples for the
   recognizer (spec 001 FR-009); the modes add signals, they don't take samples away.
+
+### In the samples app
+
+- **FR-042**: Everything in this spec that makes or uses the font has a tab of its own in
+  the samples app (spec 002 FR-026), **Your font**, in the owner's session only. It opens on
+  its parts: the font page (Scenario 3: the preview, the styles and the nib, install, and
+  each character's page with its samples, FR-033, where a single character is also learned
+  again, FR-032), "Write it your best" (Scenario 1), "Which one is nicer?" (Scenario 2) and
+  Neaten my writing (the app's own page that draws through the neat ink layer, Scenario 4).
+  Each part leads back to it. The font's counts per character (FR-030) are on the font page
+  and the character's page, apart from the recognizer's coverage beneath Learn. A guest's
+  session has no Your font tab: "Write it your best" and "Which one is nicer?" are prompt
+  sets in its Write tab (spec 002 FR-018).
 
 ### The letter model
 
