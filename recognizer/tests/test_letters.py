@@ -26,6 +26,7 @@ import json
 import math
 import os
 import random
+import statistics
 import shutil
 import subprocess
 import tempfile
@@ -1328,8 +1329,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 11))
-            old = dict(head, inputs=hw_inputs(ids, 10))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 12))
+            old = dict(head, inputs=hw_inputs(ids, 11))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
@@ -1709,6 +1710,100 @@ def valid_font(test, ttf):
 def text_ids(e):
     """sample id -> its text"""
     return {f[0]: f[5] for f in (ln.split("\t") for ln in e.run("samples", "list").stdout.splitlines())}
+
+
+def set_mid(e, ttf, pair):
+    """the distance hb-shape sets the pair's letters' middles at (x-heights): their origins'
+    distance plus where each one's variant has its middle"""
+    lines = [json.loads(x) for x in e.model().splitlines()]
+    chars = {d["char"]: d for d in lines if "char" in d}
+    gl = font_glyphs(e.model())
+    got = hb(ttf, pair, "-liga")
+    mids, x = [], 0
+    for g in got:
+        k = gl[g["g"]]
+        d = chars[k[1]]
+        vs = [v for v in d["variants"] if not v.get("left_out")]
+        v = vs[d["slots"][k[2]] if k[0] == "step" else k[2]]
+        mids.append((x + g["dx"]) / 500 + v["middle"])
+        x += g["ax"]
+    return mids[1] - mids[0]
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class RunningText(unittest.TestCase):
+    """spec 003 FR-007: spacing follows running text: pairs written 4 times each in sentences
+    closer than in single words are set as in the sentences; pairs written only in single
+    words come closer by the person's ratio, learned from the pairs written both ways; single
+    words written wider don't widen it, and sentences written wider than single words don't
+    widen the pairs seen only in single words"""
+    BOTH = ["an", "en", "in", "on", "ar", "er", "or", "as", "es", "is", "os", "us"]
+    ONLY = ["lt", "ut"]
+    WORD, RUN = 0.45, 0.35
+
+    @classmethod
+    def store(cls, word=WORD, run=RUN, sentences=True):
+        e = Env()
+        rnd = random.Random(81)
+        ss = alphabet_samples(seed=81, per=3)
+        for p in cls.BOTH + cls.ONLY:
+            ss += [spaced_sample(p, rnd, gap=word if p in cls.BOTH else cls.WORD) for _ in range(4)]
+        if sentences:
+            for k in range(0, len(cls.BOTH), 4):
+                ss += [spaced_sample(" ".join(cls.BOTH[k:k + 4]), rnd, gap=run) for _ in range(4)]
+        e.put(ss)
+        e.run("letters", "build", "-r")
+        ttf = e.dir / "f.ttf"
+        e.run("font", "build", str(ttf))
+        lines = [json.loads(x) for x in e.model().splitlines()]
+        sp = next(d["spacing"] for d in lines if "spacing" in d)
+        return e, ttf, sp, {p[0] + p[1]: (p[2], p[4]) for p in sp["pairs"]}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = cls.store(sentences=False)
+        cls.full = cls.store()
+        cls.wider_words = cls.store(word=0.75)
+        cls.wider_run = cls.store(run=0.60)
+        # the letter model's x-height against the made-up letters' (gaps scale with it)
+        cls.r = statistics.median(cls.base[3][p][0] for p in cls.BOTH) / cls.WORD
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in (cls.base, cls.full, cls.wider_words, cls.wider_run):
+            s[0].close()
+
+    def test_as_in_the_sentences(self):
+        e, ttf, sp, pairs = self.full
+        for p in self.BOTH:
+            self.assertAlmostEqual(pairs[p][0], self.RUN * self.r, delta=0.02, msg=p)
+            self.assertAlmostEqual(set_mid(e, ttf, p), pairs[p][1], delta=0.02, msg=p)
+
+    def test_single_words_closer_by_the_ratio(self):
+        e, ttf, sp, pairs = self.full
+        base = self.base[3]
+        want = statistics.median((base[p][1] - (self.WORD - self.RUN) * self.r) / base[p][1] for p in self.BOTH)
+        self.assertLess(sp["run"], 1)
+        self.assertAlmostEqual(sp["run"], want, delta=0.02)
+        self.assertEqual(self.base[2]["run"], 1)                # no running text: no scaling
+        for p in self.ONLY:
+            self.assertAlmostEqual(pairs[p][1], sp["run"] * base[p][1], delta=0.02, msg=p)
+            self.assertAlmostEqual(set_mid(e, ttf, p), sp["run"] * base[p][1], delta=0.02, msg=p)
+            self.assertLess(pairs[p][0], base[p][0] - 0.05, p)
+
+    def test_wider_single_words_dont_widen(self):
+        full, wider = self.full[3], self.wider_words[3]
+        for p in self.BOTH:
+            self.assertAlmostEqual(wider[p][0], full[p][0], delta=0.02, msg=p)
+            self.assertAlmostEqual(wider[p][1], full[p][1], delta=0.02, msg=p)
+
+    def test_wider_sentences_dont_widen_single_words(self):
+        e, ttf, sp, pairs = self.wider_run
+        self.assertEqual(sp["run"], 1)
+        for p in self.ONLY:
+            self.assertAlmostEqual(pairs[p][1], self.base[3][p][1], delta=0.02, msg=p)
+        for p in self.BOTH:                                     # the sentences' own, as written
+            self.assertAlmostEqual(pairs[p][0], 0.60 * self.r, delta=0.02, msg=p)
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
