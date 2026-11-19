@@ -68,8 +68,11 @@ static int on_base(unsigned c)
 
 static void variant_free(struct hw_variant *v)
 {
-	for (size_t j = 0; j < v->nstrokes; j++) { free(v->s[j].x); free(v->s[j].y); }
-	free(v->s);
+	for (size_t j = 0; j < v->nstrokes; j++) {
+		free(v->s[j].x); free(v->s[j].y);
+		if (v->best) { free(v->best[j].x); free(v->best[j].y); }
+	}
+	free(v->s); free(v->best);
 	free(v->ids);
 	free(v->pres); free(v->speed);
 	memset(v, 0, sizeof *v);
@@ -128,7 +131,8 @@ static double jdn(json_object *e, size_t i)
 	return x && (json_object_is_type(x, json_type_double) || json_object_is_type(x, json_type_int)) ? json_object_get_double(x) : NAN;
 }
 
-char *hw_letters_format(const struct hw_letters *L, size_t *len)
+/* with_best 0: without the best versions (the font is made without them) */
+static char *format_model(const struct hw_letters *L, size_t *len, int with_best)
 {
 	struct sbuf b = { 0 };
 	sput(&b, "{\"format\":\"%s\",\"version\":%d,\"inputs\":\"%s\",\"samples\":%ld,\"built\":%lld}\n",
@@ -232,19 +236,23 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 			}
 			sput(&b, ",\"middle\":");
 			numn(&b, x->mid);
-			sput(&b, ",\"strokes\":[");
-			for (size_t j = 0; j < x->nstrokes; j++) {
-				sput(&b, "%s[", j ? "," : "");
-				for (size_t p = 0; p < x->s[j].n; p++) {
-					sput(&b, "%s[", p ? "," : "");
-					num(&b, x->s[j].x[p]);
-					sput(&b, ",");
-					num(&b, x->s[j].y[p]);
+			for (int bk = 0; bk < 2; bk++) {
+				const struct hw_lstroke *ts = bk ? x->best : x->s;
+				if (!ts || (bk && !with_best)) continue;
+				sput(&b, bk ? ",\"best\":[" : ",\"strokes\":[");
+				for (size_t j = 0; j < x->nstrokes; j++) {
+					sput(&b, "%s[", j ? "," : "");
+					for (size_t p = 0; p < ts[j].n; p++) {
+						sput(&b, "%s[", p ? "," : "");
+						num(&b, ts[j].x[p]);
+						sput(&b, ",");
+						num(&b, ts[j].y[p]);
+						sput(&b, "]");
+					}
 					sput(&b, "]");
 				}
 				sput(&b, "]");
 			}
-			sput(&b, "]");
 			/* how it was written (FR-006): the profiles, per stroke */
 			for (int pk = 0; pk < 2; pk++) {
 				const double *pv = pk ? x->speed : x->pres;
@@ -270,6 +278,8 @@ char *hw_letters_format(const struct hw_letters *L, size_t *len)
 	if (len) *len = b.n;
 	return b.s;
 }
+
+char *hw_letters_format(const struct hw_letters *L, size_t *len) { return format_model(L, len, 1); }
 
 static double jnum(json_object *o, const char *k, double def)
 {
@@ -433,6 +443,31 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 							w->s[j].y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
 						}
 					}
+					/* the best version (FR-035): as many strokes and points as the variant */
+					json_object *bs;
+					if (w->s && json_object_object_get_ex(x, "best", &bs) && json_object_is_type(bs, json_type_array) &&
+					    json_object_array_length(bs) == w->nstrokes) {
+						int good = (w->best = calloc(w->nstrokes + 1, sizeof *w->best)) != NULL;
+						for (size_t j = 0; good && j < w->nstrokes; j++) {
+							json_object *ps = json_object_array_get_idx(bs, j);
+							size_t np = json_object_is_type(ps, json_type_array) ? json_object_array_length(ps) : 0;
+							struct hw_lstroke *t = &w->best[j];
+							t->x = malloc((np + 1) * sizeof(double));
+							t->y = malloc((np + 1) * sizeof(double));
+							if (np != w->s[j].n || !t->x || !t->y) { good = 0; break; }
+							t->n = np;
+							for (size_t p = 0; p < np; p++) {
+								json_object *pt = json_object_array_get_idx(ps, p);
+								t->x[p] = json_object_get_double(json_object_array_get_idx(pt, 0));
+								t->y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
+							}
+						}
+						if (!good && w->best) {
+							for (size_t j = 0; j < w->nstrokes; j++) { free(w->best[j].x); free(w->best[j].y); }
+							free(w->best);
+							w->best = NULL;
+						}
+					}
 					/* how it was written: one profile of HW_LETTERS_PROFILE points per stroke */
 					for (int pk = 0; pk < 2 && w->s; pk++) {
 						json_object *pa;
@@ -559,6 +594,7 @@ struct inst {
 	size_t nstrokes;
 	struct hw_lstroke *s;           /* sample units until normalized, then x-heights, y up */
 	double w;                       /* weight */
+	double bw;                      /* its weight in the best version, times w (FR-035) */
 	int dropped;
 	int slip;                       /* far from the character's other versions in size */
 	int var;                        /* the variant it is written like, -1 none */
@@ -753,8 +789,8 @@ static double rdist(const double *a, const double *b, int total)
 
 static void letter_slots(struct hw_letter *l);
 
-/* builds one variant around a seed from its group */
-static int make_variant(struct inst *in, const struct group *g, int seed, struct hw_variant *v)
+/* builds one variant around a seed from its group; *xmin the left edge its x is from */
+static int make_variant(struct inst *in, const struct group *g, int seed, struct hw_variant *v, double *xmin_out)
 {
 	const double *sr = in[seed].rs;
 	double *acc = calloc((size_t)g->total * 2, sizeof *acc), wsum = 0;
@@ -830,6 +866,7 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 	}
 	for (size_t j = 0; j < v->nstrokes; j++)
 		for (size_t i = 0; i < v->s[j].n; i++) v->s[j].x[i] -= xmin;
+	*xmin_out = xmin;
 	v->width = xmax - xmin;
 	v->weight = wsum;
 	v->members = members;
@@ -843,6 +880,69 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 	v->lc = v->rc = -1;
 	free(acc);
 	return 0;
+}
+
+/* The best version of variant k (FR-035), made from its group around its seed as the variant
+ * is: the samples written like it, each with its weight times bw, within twice the variant's
+ * kernel; on the line where they sit, smoothed, x from the variant's left edge xmin. None
+ * when they all weigh the same (the variant itself is the best) or it comes out as the
+ * variant. */
+#define BEST_SAME 0.005 /* x-heights RMS: a best version closer than this to its variant is it */
+static void make_best(struct inst *in, const struct group *g, int seed, int k, double xmin, struct hw_variant *v)
+{
+	double lo = INFINITY, hi = -INFINITY;
+	for (int i = 0; i < g->n; i++) {
+		const struct inst *x = &in[g->members[i]];
+		if (x->var != k || !x->rs) continue;
+		if (x->bw < lo) lo = x->bw;
+		if (x->bw > hi) hi = x->bw;
+	}
+	if (!(hi > lo * (1 + 1e-9)) || v->nstrokes != g->nstrokes) return;
+	double *acc = calloc((size_t)g->total * 4 + 1, sizeof *acc), *raw = acc + 2 * g->total, wsum = 0, scx = 0, scy = 0;
+	if (!acc) return;
+	for (int i = 0; i < g->n; i++) {
+		struct inst *x = &in[g->members[i]];
+		if (x->var != k || !x->rs) continue;
+		double d = rdist(x->rs, in[seed].rs, g->total), kw = x->w * x->bw * exp(-(d / (2 * SIGMA)) * (d / (2 * SIGMA)));
+		if (!(kw > 0)) continue;
+		int o = 0;
+		double cx = 0, cy = 0;
+		for (size_t j = 0; j < x->nstrokes; j++) { resample(&x->s[j], (size_t)g->pts[j], raw + 2 * o); o += g->pts[j]; }
+		for (int q = 0; q < o; q++) { cx += raw[2 * q]; cy += raw[2 * q + 1]; }
+		for (int q = 0; q < 2 * g->total; q++) acc[q] += kw * x->rs[q];
+		scx += kw * cx / (o ? o : 1); scy += kw * cy / (o ? o : 1);
+		wsum += kw;
+	}
+	struct hw_lstroke *b = wsum > 0 ? calloc(g->nstrokes + 1, sizeof *b) : NULL;
+	double dd = 0;
+	int o = 0, bad = !b;
+	for (size_t j = 0; !bad && j < g->nstrokes; j++) {
+		int n = g->pts[j];
+		struct hw_lstroke *t = &b[j];
+		t->x = malloc(((size_t)n + 1) * sizeof(double));
+		t->y = malloc(((size_t)n + 1) * sizeof(double));
+		if (!t->x || !t->y || v->s[j].n != (size_t)n) { bad = 1; break; }
+		t->n = (size_t)n;
+		for (int i = 0; i < n; i++) { t->x[i] = (acc[2 * (o + i)] + scx) / wsum; t->y[i] = (acc[2 * (o + i) + 1] + scy) / wsum; }
+		if (n > 2) {
+			double px = t->x[0], py = t->y[0];
+			for (int i = 1; i < n - 1; i++) {
+				double nx = (px + 2 * t->x[i] + t->x[i + 1]) / 4, ny = (py + 2 * t->y[i] + t->y[i + 1]) / 4;
+				px = t->x[i]; py = t->y[i];
+				t->x[i] = nx; t->y[i] = ny;
+			}
+		}
+		for (int i = 0; i < n; i++) {
+			t->x[i] = round((t->x[i] - xmin) * 1e4) / 1e4;
+			t->y[i] = round(t->y[i] * 1e4) / 1e4;
+			dd += (t->x[i] - v->s[j].x[i]) * (t->x[i] - v->s[j].x[i]) + (t->y[i] - v->s[j].y[i]) * (t->y[i] - v->s[j].y[i]);
+		}
+		o += n;
+	}
+	free(acc);
+	if (!bad && sqrt(dd / (o ? o : 1)) >= BEST_SAME) { v->best = b; return; }
+	for (size_t j = 0; b && j < g->nstrokes; j++) { free(b[j].x); free(b[j].y); }
+	free(b);
 }
 
 static int cmp_uint(const void *a, const void *b)
@@ -1507,6 +1607,17 @@ int hw_letters_build(struct hw_letters *L)
 				if (ot) pf *= pr[q].ospan == (int)k ? 0.6 : pr[q].ospan < 0 ? 0.8 : 1;
 			}
 			x->w = w * clampd(pf, 0.2, 5);
+			/* its weight in the best version (FR-035): the favourite, careful and chosen
+			 * samples up, quick ones and those not chosen down, those left out with their way
+			 * out */
+			int mk = hw_mark_of(MK, nmk, m->id, cps[k]);
+			double bw = !strcmp(m->s.written, "careful") ? HW_BEST_CAREFUL : !strcmp(m->s.written, "quick") ? 1 / HW_BEST_CAREFUL : 1;
+			if (mk == HW_MARK_FAVOURITE) bw *= HW_BEST_FAVOURITE;
+			for (size_t q = 0; q < npr; q++) {
+				if (!strcmp(pr[q].chosen, m->id) && (pr[q].cspan == (int)k || pr[q].cspan < 0)) bw *= HW_BEST_CHOSEN;
+				if (!strcmp(pr[q].other, m->id) && (pr[q].ospan == (int)k || pr[q].ospan < 0)) bw *= HW_BEST_OTHER;
+			}
+			x->bw = mk == HW_MARK_WAY_OUT ? 0 : clampd(bw, 0.01, 100);
 			nin++;
 		}
 		m->ninst = (int)nin - m->first;
@@ -1816,9 +1927,10 @@ int hw_letters_build(struct hw_letters *L)
 				t = use[b2]; use[b2] = use[b2 - 1]; use[b2 - 1] = t;
 			}
 		int vix[HW_LETTERS_VARIANTS];
+		double vxm[HW_LETTERS_VARIANTS];
 		for (int k = 0; k < nsd; k++) {
 			vix[k] = -1;
-			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar])) { vix[k] = l->nvar; l->var[l->nvar++].use = use[k]; }
+			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar], &vxm[k])) { vix[k] = l->nvar; l->var[l->nvar++].use = use[k]; }
 			else variant_free(&l->var[l->nvar]);
 		}
 		/* the samples written like each variant (as use counts them), and the person's marks
@@ -1861,6 +1973,9 @@ int hw_letters_build(struct hw_letters *L)
 			if (!va->out && nfav > favn) { fav = k; favn = nfav; }
 		}
 		if (fav >= 0) l->var[fav].favourite = 1;
+		/* the best versions, the target of neatening (FR-035): none for one left out */
+		for (int k = 0; k < nsd; k++)
+			if (vix[k] >= 0 && !l->var[vix[k]].out) make_best(in, &G[sgr[k]], seeds[k], vix[k], vxm[k], &l->var[vix[k]]);
 		letter_slots(l);
 		free(way);
 		if (!l->nvar) l->covered = 0;
@@ -2272,7 +2387,8 @@ static int valid_name(const char *s)
 int hw_letters_fingerprint(const struct hw_letters *L, char out[17])
 {
 	size_t len;
-	char *t = hw_letters_format(L, &len);
+	/* what the font is made of: the best versions are neatening's alone */
+	char *t = format_model(L, &len, 0);
 	if (!t) return -1;
 	char *body = memchr(t, '\n', len);
 	body = body ? body + 1 : t + len;
