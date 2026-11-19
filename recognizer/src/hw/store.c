@@ -1864,7 +1864,9 @@ long hw_import(const char *path)
 	size_t nprefs_in = 0;
 	while ((len = getline(&line, &cap, f)) > 0) {
 		lineno++;
-		json_object *o = json_tokener_parse(line), *v, *w;
+		char *fixed = hw_json_finite(line);
+		json_object *o = json_tokener_parse(fixed ? fixed : line), *v, *w;
+		free(fixed);
 		if (!o || !json_object_is_type(o, json_type_object)) {
 			fprintf(stderr, "glassine-handwriting: %s:%ld: not JSON\n", path, lineno);
 			ok = 0; json_object_put(o); break;

@@ -62,6 +62,7 @@ void hw_sample_free(struct hw_sample *s);
 
 /* Parses one line; returns 0, or -1 with the reason in err (a version it doesn't know, a
  * missing field, ...). Fields it doesn't know are ignored. */
+char *hw_json_finite(const char *t);
 int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t errlen);
 
 /* The line (no newline), malloc'd. With `donation`, the licence is written; never a client

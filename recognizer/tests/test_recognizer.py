@@ -714,6 +714,32 @@ class Samples(unittest.TestCase):
         bad.write_text('{"format":"something-else","version":1}\n')
         self.assertNotEqual(self.env.run("samples", "import", str(bad), check=False).returncode, 0)
 
+    def test_impossible_reading_candidate(self):
+        """a candidate the reading scored minus infinity (written as -inf, not JSON, by older
+        versions) is left out; the sample still imports"""
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        self.assertEqual(self.confirm(c, INK[0])[2], "ok")
+        c.close()
+        exp = self.env.dir / "export.jsonl"
+        self.env.run("samples", "export", str(exp))
+        head, line = exp.read_text().splitlines()[:2]
+        o = json.loads(line)
+        o["sample"]["reading"] = [{"text": "cat", "score": -1.5}, {"text": "__", "score": -7.0}]
+        line = json.dumps(o, separators=(",", ":")).replace('"score":-7.0', '"score":-inf')
+        self.assertIn("-inf", line)
+        bad = self.env.dir / "inf.jsonl"
+        bad.write_text(head + "\n" + line + "\n")
+        other = Env()
+        try:
+            self.assertEqual(other.run("samples", "import", str(bad)).stdout, "1\n")
+            again = other.dir / "again.jsonl"
+            other.run("samples", "export", str(again))
+            r = json.loads(again.read_text().splitlines()[1])["sample"]["reading"]
+            self.assertEqual(r, [{"text": "cat", "score": -1.5}])
+        finally:
+            other.close()
+
     def test_marks_and_preferences(self):
         """spec 003: a session's marking goes into the samples it keeps; a preference goes with
         its samples: listed, removed with either, exported and imported with both, donated

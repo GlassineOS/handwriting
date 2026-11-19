@@ -768,7 +768,8 @@ static char *make_sample(struct hw_lang *l, const struct session *s, const char 
 	char texts[3][4 * HW_MAX_LABELS + 1];
 	if (prompted) {
 		hw_read(l, &r, 3, &rd);
-		for (int c = 0; c < rd.n && c < 3; c++) {
+		/* best first; an impossible candidate (no finite score) ends the list */
+		for (int c = 0; c < rd.n && c < 3 && isfinite(rd.c[c].score); c++) {
 			text_of(rd.c[c].cp, rd.c[c].len, texts[c], sizeof texts[c]);
 			smp.reading.text[c] = texts[c];
 			smp.reading.score[c] = round(rd.c[c].score * 1000) / 1000;
