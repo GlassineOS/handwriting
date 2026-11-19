@@ -222,6 +222,36 @@ def main():
             name, st["n"], 100 * st["cer"], 100 * st["wer"], 100 * st["exact"], a.count, 100 * st["in_candidates"]))
 
     show("all", stats(out))
+    # letters read as digits inside words of letters (and digits read as letters inside
+    # codes: words with letters and digits), the top candidate aligned to the text
+    def subs(a, b):
+        d = [[i + j if not i * j else 0 for j in range(len(b) + 1)] for i in range(len(a) + 1)]
+        for i in range(1, len(a) + 1):
+            for j in range(1, len(b) + 1):
+                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] != b[j - 1]))
+        i, j, out = len(a), len(b), []
+        while i and j:
+            if d[i][j] == d[i - 1][j - 1] + (a[i - 1] != b[j - 1]):
+                if a[i - 1] != b[j - 1]:
+                    out.append((i - 1, b[j - 1]))
+                i, j = i - 1, j - 1
+            elif d[i][j] == d[i - 1][j] + 1:
+                i -= 1
+            else:
+                j -= 1
+        return out
+    l2d = nl = d2l = nd = 0
+    for r in out:
+        t = r["text"]
+        word = [w.strip(".,;:!?\"'()") for w in t.split(" ") for _ in range(len(w) + 1)]
+        for i, ch in enumerate(t):
+            nl += ch.isalpha() and word[i].isalpha()
+            nd += ch.isdigit() and any(x.isalpha() for x in word[i])
+        for i, hc in subs(t, r["cands"][0] if r["cands"] else ""):
+            l2d += t[i].isalpha() and word[i].isalpha() and hc.isdigit()
+            d2l += t[i].isdigit() and any(x.isalpha() for x in word[i]) and hc.isalpha()
+    print("letters read as digits inside words: %d of %d; digits read as letters inside codes: %d of %d" % (
+        l2d, nl, d2l, nd))
     for name in sorted({r["set"] for r in out}):
         show(name, stats([r for r in out if r["set"] == name]))
     # short texts (one or two characters) by kind: what the size is for

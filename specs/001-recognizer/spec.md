@@ -228,6 +228,24 @@ included unless they pick them one by one.
     other field the ink and the character model decide alone. The lean is bounded per
     character as the character model is, so a digit or a letter written clearly reads as
     written (a code or "4th" in a text field, a letter in a number field).
+  - Beside these, each writer has look-alikes of their own: when the person picks or
+    corrects a reading so that, with nothing else changed, one or two of its digits become
+    letters or its letters digits (a letter where the first reading had a digit, or the
+    reverse), each such letter and digit count once as a pair; a pair counted three times
+    (either way round) is that writer's look-alike and is decided by the field as the
+    shared ones are. A pick counts also when it makes no sample (it fails the check
+    below): the choice is the evidence, not the ink. Only picks in fields that learn, with
+    learning on, count; a pair is never a letter for a letter. The pairs are kept in that
+    writer's store (the person's or a guest writer's, FR-021, never the other's), removed
+    with the sample they came from or the client's samples, erased with all samples, and
+    never exported or contributed.
+  - The best reading of the search the character model weighs, and in a prose field that of
+    the search the words guide, is always among the candidates when it differs from the
+    ink's best, however much less well the ink alone reads it, so a client that ranks again
+    with more context (the keyboard, with the text around the cursor) can choose it. Within
+    the count asked for, the candidates are: the first, then the ink's best when it isn't
+    first, then these (the character model's, then the words'), then the rest by score; a
+    reading that the ink alone reads far less well than its best never comes first.
   - A client can ask for the ink's reading alone (prompted writing's checks: how readable
     the ink itself is) or for the reading without words but with the character model
     (free writing that should not be bent towards the word list); the person can turn
@@ -295,6 +313,23 @@ included unless they pick them one by one.
   - The person's erase, counts and export cover the person's store only and count the
     writer stores kept beside it; only the samples app reaches a writer's store, never
     another client or the handwriting service's other apps (spec 004).
+- **FR-022**: Calibration: the ink's sureness is calibrated, so the ink's score of a reading
+  says how likely it is rather than how sure the model sounds (a model surer than it is
+  right outweighs the character model and the words where they should decide):
+  - Each base model and each personal adaptation has its own calibration, fitted on writing
+    held back from its training: a base model's on held-out ink of its training sets,
+    shipped with it and valid only for that model; an adaptation's on the person's samples
+    held back when it was made (FR-009), stored with it, so going back to the previous
+    adaptation goes back to its calibration too.
+  - Readings are searched and ranked on the calibrated sureness, and the score a client gets
+    for a candidate is the calibrated log-probability of its text given the ink. Fits (the
+    prompted check, FR-007, and the check of a pick, FR-009) stay on the ink's own sureness,
+    so calibration never lets a pick through that would not have passed.
+  - Without a calibration (none shipped, or an adaptation made before there was one) the ink
+    reads as it is. An adaptation without one gets one at the next adaptation run, from its
+    own held-back samples, without being trained again.
+  - Calibration only moves sureness: the ink's best single path, and so the adaptation's
+    check against held-back samples (FR-009), stays the same.
 
 ## Key entities
 
@@ -311,7 +346,7 @@ included unless they pick them one by one.
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import, writer stores) | owned (this program) | 1.3 | FR-001–FR-011, FR-021; `docs/recognizer.md` |
+| Recognizer session interface (recognize, stream, prompted alignment, gestures, samples, learning control, export/import, writer stores, calibration) | owned (this program) | 1.4 | FR-001–FR-011, FR-021, FR-022; `docs/recognizer.md` |
 | Sample format (export/import, contribution, training data) | owned (this program) | 1 | FR-010, FR-014; `docs/samples.md` |
 | Base model package (model, language, recipe, data sources and licences) | owned (this program) | 1 | FR-005, FR-012 |
 | Writing paper and corrections | consumer (`GlassineOS/shell` spec 006) | — | shell spec 006 FR-011–FR-013a |
@@ -331,6 +366,12 @@ included unless they pick them one by one.
 - With words (FR-015), the character and word error rates on a person's held-back
   samples are lower than the ink's alone, within the same time budget; readings the words
   make wrong are far fewer than those they make right, also for text the list lacks.
+- With calibration (FR-022), the personal look-alikes and the candidates of the weighed
+  searches (FR-019), on a person's held-back samples read with words and the character
+  model: the character and word error rates no higher than before, the right reading among
+  the first, three and five candidates at least as often, letters read as digits inside
+  words no more often; and on the synthetic sets of codes, numbers and names, and on another
+  writer's samples read without an adaptation, no worse.
 - With the character model (FR-019), the character and word error rates on a person's
   held-back samples are lower than without it, in the ink-only and the words reading;
   letters read as digits inside words (and the reverse) are fewer; numbers and codes read
@@ -361,7 +402,11 @@ rejected; a contribution file holds only reviewed samples and no client, time or
 words (FR-015) off in every non-prose field, a list word never first, a proposed pick
 that doesn't fit makes no sample; the character model (FR-019) on and off per field and
 per request, a pick it put first that doesn't fit makes no sample, and the error rates
-with and without it on held-back samples; error rates with and without words on held-back
+with and without it on held-back samples; the personal look-alikes (FR-019) counted only from
+picks in fields that learn, removed with their samples, absent from exports and from a writer's
+store's readings, leaning by the field once counted three times; the weighed searches' best
+readings among the candidates; calibration (FR-022) fitted with an adaptation, kept with it,
+an older adaptation calibrated without retraining, fits unchanged by it; error rates with and without words on held-back
 samples; size (FR-017): a dot, comma, apostrophe and hyphen and the case
 pairs at their true size next to a known reference read as written, and words and
 sentences of a person's samples read no worse than without it; writer stores (FR-021):

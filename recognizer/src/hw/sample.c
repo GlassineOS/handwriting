@@ -233,7 +233,8 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 		    !json_object_is_type(x, json_type_int) || json_object_get_int(x) < 1 ||
 		    !json_object_object_get_ex(v, "from", &y) || !json_object_is_type(y, json_type_string) ||
 		    (strcmp(json_object_get_string(y), "ink") && strcmp(json_object_get_string(y), "beam") &&
-		     strcmp(json_object_get_string(y), "words") && strcmp(json_object_get_string(y), "guided")))
+		     strcmp(json_object_get_string(y), "words") && strcmp(json_object_get_string(y), "guided") &&
+		     strcmp(json_object_get_string(y), "chars")))
 			FAIL("bad pick");
 		s->pick_rank = json_object_get_int(x);
 		snprintf(s->pick_from, sizeof s->pick_from, "%s", json_object_get_string(y));

@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "adapt.h"
+#include "calib.h"
 #include "ctc.h"
 #include "recog.h"
 #include "sample.h"
@@ -36,6 +37,7 @@ char *hw_adapt_serialize(const struct hw_head *h, const struct hw_adapt_info *in
 	memcpy(b + 36, &in->cer, 4);
 	memcpy(b + 40, &in->cer_before, 4);
 	memcpy(b + 44, &in->time, 8);
+	memcpy(b + 52, &in->temp, 4);
 	memcpy(b + HDR_BYTES, h->mem, h->nparam * sizeof(float));
 	*len = n;
 	return (char *)b;
@@ -67,6 +69,8 @@ static int parse_info(const unsigned char *b, size_t len, struct hw_adapt_info *
 	memcpy(&in->cer, b + 36, 4);
 	memcpy(&in->cer_before, b + 40, 4);
 	memcpy(&in->time, b + 44, 8);
+	memcpy(&in->temp, b + 52, 4);       /* 0 in a head made before calibration */
+	if (!(in->temp >= HW_CALIB_MIN && in->temp <= HW_CALIB_MAX)) in->temp = 0;
 	return 0;
 }
 
@@ -94,6 +98,7 @@ int hw_adapt_load(const char *path, const struct hw_model *m, struct hw_head *h,
 	if (len != HDR_BYTES + h->nparam * sizeof(float)) { hw_head_free(h); free(b); return -1; }
 	memcpy(h->mem, b + HDR_BYTES, h->nparam * sizeof(float));
 	if (!h->rank) h->bup = NULL;
+	h->temp = info->temp;
 	free(b);
 	return 0;
 }
@@ -178,6 +183,42 @@ static double cer(const struct hw_head *h, const struct hw_model *m, const struc
 		free(lp);
 	}
 	return tot ? (double)err / (double)tot : 1.0;
+}
+
+/* the head's temperature fitted on items (calib.h); 0 when nothing could be fitted */
+static double fit_temp(const struct hw_head *h, const struct item *it, size_t n)
+{
+	struct hw_calib_item *ci = calloc(n + 1, sizeof *ci);
+	float **lp = calloc(n + 1, sizeof *lp);
+	double t = 0;
+	size_t k = 0;
+	if (!ci || !lp) goto out;
+	for (size_t i = 0; i < n; i++) {
+		if (!(lp[i] = malloc((size_t)it[i].T * h->nclass * sizeof **lp))) goto out;
+		hw_head_forward(h, it[i].frames, it[i].T, lp[i], NULL, NULL);
+		ci[k++] = (struct hw_calib_item){ lp[i], it[i].T, (int)h->nclass, it[i].lab, it[i].L };
+	}
+	t = hw_calib_fit(ci, k, NULL, NULL);
+out:
+	for (size_t i = 0; lp && i < n; i++) free(lp[i]);
+	free(lp); free(ci);
+	return t;
+}
+
+/* the adaptation in use, without a temperature (made before calibration), gets the one its
+ * held-back samples give; the file is written again with it, nothing else changed */
+static int calibrate_current(const struct hw_lang *l, const char *rel, const char *cur, const struct item *he, size_t nhe)
+{
+	struct hw_adapt_info in;
+	if (l->has_adapted <= 0 || l->adapted.temp > 0 || hw_adapt_info(cur, &in) || in.base != l->model.hash) return 0;
+	in.temp = (float)fit_temp(&l->adapted, he, nhe);
+	if (!(in.temp > 0)) return 0;
+	size_t len;
+	char *bin = hw_adapt_serialize(&l->adapted, &in, &len), crel[192];
+	snprintf(crel, sizeof crel, "%s/current", rel);
+	int r = bin && !hw_store_replace(crel, bin, len) ? 1 : -1;
+	free(bin);
+	return r;
 }
 
 struct adam { float *m, *v; long step; };
@@ -382,6 +423,14 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 	long fresh = fresh_since(es, ne, o->lang, &sta);
 	progress(o, "plan\t%zu\t%zu\t%ld", ntr, nhe, fresh);
 	if (!o->force && sta.usable == usable && sta.gen == gen && !fresh) {
+		/* a head from before calibration is calibrated on its held-back samples once */
+		int fd = nhe >= (size_t)o->min_held ? hw_store_lock() : -1;
+		if (fd >= 0) {
+			hw_store_adaptation_dir(rel, sizeof rel, o->lang);
+			if (hw_store_generation() == gen && calibrate_current(l, rel, cur, he, nhe) > 0 && o->verbose)
+				printf("adapt %s: calibrated the adaptation in use\n", o->lang);
+			hw_store_unlock(fd);
+		}
 		if (o->verbose) printf("adapt %s: nothing new (%zu samples)\n", o->lang, usable);
 		progress(o, "skip\tnothing-new");
 		ret = 2; goto out;
@@ -406,7 +455,10 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 	}
 	double after = cer(&cand, m, he, nhe);
 	struct hw_adapt_info info = { m->hash, (uint32_t)o->rank, (uint32_t)ntr, (uint32_t)nhe, (float)after,
-				      (float)before, (int64_t)time(NULL) };
+				      (float)before, (int64_t)time(NULL), 0 };
+	/* its calibration, on the same held-back samples it was checked on */
+	info.temp = (float)fit_temp(&cand, he, nhe);
+	cand.temp = info.temp;
 	int fd = hw_store_lock();
 	if (fd < 0) { hw_head_free(&cand); goto out; }
 	hw_store_adaptation_dir(rel, sizeof rel, o->lang);
@@ -447,12 +499,13 @@ int hw_adapt_run(const struct hw_adapt_opts *o)
 			free(bin);
 		} else {
 			ret = 0;
+			calibrate_current(l, rel, cur, he, nhe);
 		}
 		progress(o, "result\t%s\t%.4f\t%.4f\t%zu\t%zu", ret == 1 ? "kept" : ret == 0 ? "rejected" : "error",
 			 before, after, ntr, nhe);
 		if (o->verbose)
-			printf("adapt %s: %s (held-back error %.1f%% -> %.1f%%, %zu learned from, %zu held back)\n", o->lang,
-			       ret == 1 ? "kept" : "not kept", 100 * before, 100 * after, ntr, nhe);
+			printf("adapt %s: %s (held-back error %.1f%% -> %.1f%%, %zu learned from, %zu held back, temperature %.2f)\n",
+			       o->lang, ret == 1 ? "kept" : "not kept", 100 * before, 100 * after, ntr, nhe, info.temp);
 	}
 	hw_store_unlock(fd);
 	hw_head_free(&cand);

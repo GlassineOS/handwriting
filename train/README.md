@@ -220,6 +220,34 @@ they were with the head (6 → 7 of 623 texts) and fell without it (5 → 2). Lo
 read as before with words, but 6 points worse with the character model alone (`read … chars`,
 margin 0): the margin was tuned on synthetic lone characters, where it cost nothing.
 
+**Calibration, the near gate, the weighed searches' best** (spec 001 FR-019, FR-022; model 4
+with the character model). Temperatures fitted by CTC loss (`glassine-handwriting calibrate`,
+`adapt`): model 4 on synthetic dev 1.10 (prose) and 1.12 (codes and numbers), model 2 1.79 and
+1.81; model 4 on one writer's real ink 1.52 alone, a fresh head of theirs 1.04 on its own
+held-back samples. So model 4 and its heads are close to calibrated, and calibrating them
+moves little. Traced on that writer's held-back dev lines, most readings that came out wrong
+had the right one found by the character model's or the words' search and then cut by the gate
+"within 6 of the ink's best" (ink 6 to 11 below, ahead by 2 to 20 with the character model and
+words). Tuned on dev only (synthetic dev and dev kinds, the writer's dev lines): the gate 6 → 9
+(12 and more read the writer's dev and synthetic prose a little better but codes and numbers
+a little worse; forced temperatures 1.5 and 2 helped the writer and cost codes 1 to 3 points),
+and each search's best always offered. Words + character model, before → after, CER / WER /
+right reading first, among three (`COUNT` 3 for the writers, the first three of five for the
+synthetic sets) and five:
+
+| set | before | after |
+|---|---|---|
+| the writer's fixed test session (116), fresh head | 2.6 / 15 % / 85 / 89 / 90 % | **1.6 / 9 % / 91 / 96 / 97 %** |
+| another writer, no head (19) | 24.8 / 100 % / 26 / 26 / 26 % | 22.8 / 89 % / 32 / 47 / 47 % |
+| synthetic dev kinds (1600: codes, numbers, names, dates, …) | 9.2 / 42.5 % / 38 / 53 / 58 % | 9.2 / 42.9 % / 38 / 53 / 59 % |
+| synthetic dev prose (2000) | 3.0 / 11.3 % / 66 / 82 / 84 % | 2.8 / 10.4 % / 69 / 85 / 89 % |
+
+The writer's test session: −1.9 to −0.3 CER points (paired bootstrap, 95 %), 6 lines right
+that weren't, none the other way; letters read as digits inside words 1 of 1012 letters before
+and after (synthetic prose 6 → 3 of 31157). A base temperature of 1.1 for model 4 changed the
+other writer and the synthetic sets by less than their noise, so model 4 ships without one.
+Read time unchanged (host, interleaved, three rounds: medians equal to 0.1 ms).
+
 **Time on the device** (the e-ink tablet's Cortex-A53/A73 cores, the recognizer program
 before and after this change, interleaved, three rounds of 60 synthetic lines each, median
 read time): prose lines with words 241 → 243 ms (+1 %; 95th percentile +3 %), single words
