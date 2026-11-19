@@ -136,6 +136,11 @@ def para(cr, k, s, f, x, y, w, col=None):
 LAND = [False]                            # the page being drawn is landscape (set per paint)
 
 
+def chevron_h(cr, k, w, sub, min_h=62):
+    """the height chevron_row takes"""
+    return max(min_h, 26 + 22 + (PT.measure(cr, sub, k["sub"], maxw=w - 100, wrap=True)[1] if sub else 0))
+
+
 def page_head(cr, k, x, y, w, eyebrow, title, lead=None, small=False, keep_lead=False, land_hide=False):
     """eyebrow, title, lead; -> the y below them. Landscape is short: a tab page there drops
     its lead (unless it says something the person must read first, keep_lead) or its whole
@@ -248,10 +253,10 @@ def icon_rows(cr, k, x, y, w, rows, icon_sz=24, pad=14, line=True):
     return y
 
 
-def chevron_row(cr, k, hits, x, y, w, ic, label, sub, fn, shaded=True):
-    """a row that opens something (Your handwriting, Add earlier samples); -> its height"""
+def chevron_row(cr, k, hits, x, y, w, ic, label, sub, fn, shaded=True, min_h=62):
+    """a row that opens something (Samples, Add earlier samples); -> its height"""
     _, h2 = PT.measure(cr, sub, k["sub"], maxw=w - 100, wrap=True) if sub else (0, 0)
-    h = max(62, 26 + 22 + h2)
+    h = max(min_h, 26 + 22 + h2)
     if shaded:
         PT.box(cr, x, y, w, h, k["rowR"], bg=k.sheet)
     else:
@@ -277,9 +282,9 @@ def bar(cr, k, x, y, w, n, on, h=10):
 # ---------------------------------------------------------------- chrome
 
 
-TABS = (("write", "Write"), ("samples", "Samples"), ("coverage", "Coverage"), ("learn", "Learn"),
-        ("donate", "Contribute"))
-GUEST_TABS = tuple(t for t in TABS if t[0] != "learn")     # a guest's session: no Learn (spec 002 FR-018)
+# Samples and Coverage are pages beneath Learn (spec 002 FR-026)
+TABS = (("write", "Write"), ("font", "Your font"), ("learn", "Learn"), ("donate", "Contribute"))
+GUEST_TABS = (("write", "Write"), ("donate", "Contribute"))     # a guest's session (spec 002 FR-018)
 
 
 def brand_mark(cr, k, cx, cy, col):
