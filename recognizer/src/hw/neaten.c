@@ -11,6 +11,10 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
 /* the shape guard (FR-037): a pulled character's ink nearer one of its own versions than this
  * times the nearest version of any other character */
 #define HW_NEAT_GUARD_MARGIN 1.0
+/* a character whose ink the letter model moved (a run given to or taken from a neighbour) is
+ * pulled only when its ink is at most this many times as far from its own versions as from
+ * any other character's */
+#define HW_NEAT_MOVED_RATIO 1.0
 /* the flow check measures corners and steps back at this share of the line's x-height (a
  * little finer than it, so ink of letters measured smaller has none either) */
 #define HW_NEAT_FLOW_FINE 0.75
@@ -894,7 +898,7 @@ static int guard_fails(const struct hw_neat *q, size_t k, double xh)
 }
 
 static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned char *fail, const struct hw_letters *V,
-		       const int *gvar, const long *gjo)
+		       const int *gvar, const long *gjo, unsigned char *doubt)
 {
 	size_t n = q->n;
 	q->x = calloc(n + 1, sizeof *q->x);
@@ -1000,6 +1004,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 					if (np >= 2 && !has_version(q->L, q->cp[o], np) && fewer_version(q->L, q->cp[o], np)) {
 						int to = lo < 0 ? hi : hi < 0 ? lo : (a == 0 ? hi : lo);
 						if (to >= 0 && (size_t)to < nc) {
+							doubt[o] = doubt[to] = 1;
 							for (size_t z = a; z < b; z++) ow[z] = to;
 							changed = 1;
 						}
@@ -1255,6 +1260,15 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 				if (pair) { C[k + 1].why = c->why; k++; }
 				continue;
 			}
+			/* a character the letter model gave ink of its neighbour's or took ink from (the
+			 * alignment off there): only pulled when that ink is nearer its own versions
+			 * than any other character's, else the run moved can be its neighbour's whole
+			 * letter, which the pull would draw as this one */
+			if (!pair && doubt[k]) {
+				double rr = guard_ratio(q, k, xh, 0);
+				if (rr < 0) { ret = -1; goto done; }
+				if (isfinite(rr) && rr > HW_NEAT_MOVED_RATIO) { c->why = HW_NEAT_WHY_SHAPE_GUARD; continue; }
+			}
 			if (!pair) {
 				if (gvar[k] >= 0) {
 					const struct hw_letter *le = letter_of(V, q->cp[k]);
@@ -1505,11 +1519,13 @@ done:
 
 int hw_neaten(struct hw_neat *q)
 {
-	unsigned char *mask = calloc(q->nc + 1, 1), *fail = calloc(q->nc + 1, 1);
+	/* doubt: the characters whose ink the letter model moved (kept over the rounds: a round
+	 * starts from the ink as the one before left it) */
+	unsigned char *mask = calloc(q->nc + 1, 1), *fail = calloc(q->nc + 1, 1), *doubt = calloc(q->nc + 1, 1);
 	int *gvar = calloc(q->nc + 1, sizeof *gvar);
 	long *gjo = calloc(q->nc + 1, sizeof *gjo);
 	struct hw_letters V, *vp = NULL;
-	int ret = mask && fail && gvar && gjo ? 0 : -1;
+	int ret = mask && fail && doubt && gvar && gjo ? 0 : -1;
 	/* the glyphs the font draws for the text (FR-035): the targets */
 	if (!ret && q->L) {
 		if (hw_letters_view(q->L, &V)) ret = -1;
@@ -1517,13 +1533,13 @@ int hw_neaten(struct hw_neat *q)
 	}
 	for (int r = 0; !ret; r++) {
 		memset(fail, 0, q->nc + 1);
-		ret = neaten_once(q, mask, r < NEAT_GUARD_ROUNDS ? fail : NULL, vp, gvar, gjo);
+		ret = neaten_once(q, mask, r < NEAT_GUARD_ROUNDS ? fail : NULL, vp, gvar, gjo, doubt);
 		int again = 0;
 		for (size_t k = 0; !ret && k < q->nc; k++) if (fail[k] && !mask[k]) { mask[k] = fail[k]; again = 1; }
 		if (ret || !again || r >= NEAT_GUARD_ROUNDS) break;
 		hw_neat_free(q);
 	}
 	if (vp) hw_letters_view_free(vp);
-	free(mask); free(fail); free(gvar); free(gjo);
+	free(mask); free(fail); free(doubt); free(gvar); free(gjo);
 	return ret;
 }
