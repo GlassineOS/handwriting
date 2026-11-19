@@ -18,9 +18,8 @@ enum { HW_NEAT_KEPT, HW_NEAT_LINE, HW_NEAT_PULLED };
 enum {
 	HW_NEAT_WHY_PULLED,
 	HW_NEAT_WHY_LEVEL,              /* the level pulls no letter (Light and below, no letter model's pull) */
-	HW_NEAT_WHY_NOT_COVERED,        /* the letter model doesn't cover it */
-	HW_NEAT_WHY_NO_STRUCTURE,       /* no version with its strokes and structure */
-	HW_NEAT_WHY_NOT_NEAR,           /* not close enough to its best version for the level (Medium) */
+	HW_NEAT_WHY_NOT_COVERED,        /* the font has no glyph for it there (not covered) */
+	HW_NEAT_WHY_NO_STRUCTURE,       /* its glyph hasn't its structure (strokes, where they lie) */
 	HW_NEAT_WHY_SHAPE_GUARD,        /* its new ink came closer to another character (FR-037) */
 	HW_NEAT_WHY_LOW_CONFIDENCE,     /* in a word read with low confidence, or itself (FR-017) */
 	HW_NEAT_WHY_DRAWING,            /* its strokes are drawing (FR-020) */
@@ -30,11 +29,11 @@ enum {
 
 /* the levels (FR-014): the strength of each; in between, part of the way to the next */
 #define HW_NEAT_LIGHT 0.25      /* the line-level corrections, all of them from here */
-#define HW_NEAT_MEDIUM 0.5      /* and the characters near their best version pulled */
-#define HW_NEAT_STRONG 0.75     /* and every character with a version of its structure */
-/* how far a pulled character goes towards its best version at Medium and at Strong; at 1
- * (Neatest) it is the best version */
-#define HW_NEAT_PULL_MEDIUM 0.6
+#define HW_NEAT_MEDIUM 0.5      /* and every character whose glyph has its structure pulled */
+#define HW_NEAT_STRONG 0.75     /* further */
+/* how far a pulled character goes towards its glyph (the one the font draws there, FR-035)
+ * at Medium and at Strong; at 1 (Neatest) it is the glyph */
+#define HW_NEAT_PULL_MEDIUM 0.5
 #define HW_NEAT_PULL_STRONG 0.85
 
 /* a character gets the pull with at least this fit, the ink is writing (line-level
@@ -43,9 +42,6 @@ enum {
 #define HW_NEAT_FIT_READ 0.15
 /* a stroke taller than this many x-heights is drawing, not writing */
 #define HW_NEAT_DRAWING 3.5
-/* a character is near its best version (Medium pulls it) within this distance (x-heights,
- * RMS, both centred) */
-#define HW_NEAT_NEAR 0.3
 
 struct hw_neat {
 	/* in */
