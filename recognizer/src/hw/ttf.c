@@ -804,19 +804,28 @@ static uint32_t tsum(const unsigned char *d, size_t n)
  * The classes: cls[g - g1] for the glyphs from g1, the letters' step glyphs their variant's,
  * the variants' and the joined pairs' glyphs their own; -1 none. */
 struct kent { unsigned cl, cr; const struct hw_profile *prof; double ml, mr, width; int lc, rc; };
+static struct kent kent_var(unsigned cp, const struct hw_variant *x)
+{
+	return (struct kent){ cp, cp, &x->prof, x->mid, x->mid, x->width, x->lc, x->rc };
+}
+static struct kent kent_joined(const struct hw_joined *j)
+{
+	return (struct kent){ j->a, j->b, &j->v.prof, NAN, NAN, j->v.width, j->v.lc, j->v.rc };
+}
+/* the kerning of a pair (units) */
+static short kern_of(const struct hw_letters *L, const struct kent *ea, const struct kent *ec)
+{
+	double at = hw_spacing_place(&L->sp, ea->cr, ea->prof, ea->mr, ea->rc, ec->cl, ec->prof, ec->ml, ec->lc);
+	long k = lround((at - (ea->width + L->sp.letter)) * XH);
+	return (short)(k < -3 * XH ? -3 * XH : k > 3 * XH ? 3 * XH : k);
+}
 static void gpos(struct bb *b, const struct hw_letters *L, const struct kent *E, int nv, const int *cls, int g1, int ng)
 {
 	short *kern = malloc((size_t)(nv + 1) * (size_t)(nv + 1) * sizeof *kern);
 	int *cov = malloc((size_t)(ng + 1) * sizeof(int));
 	if (!kern || !cov) { b->bad = 1; free(kern); free(cov); return; }
-	double letter = L->sp.letter;
 	for (int a = 0; a < nv; a++)
-		for (int c = 0; c < nv; c++) {
-			const struct kent *ea = &E[a], *ec = &E[c];
-			double at = hw_spacing_place(&L->sp, ea->cr, ea->prof, ea->mr, ea->rc, ec->cl, ec->prof, ec->ml, ec->lc);
-			long k = lround((at - (ea->width + letter)) * XH);
-			kern[a * nv + c] = (short)(k < -3 * XH ? -3 * XH : k > 3 * XH ? 3 * XH : k);
-		}
+		for (int c = 0; c < nv; c++) kern[a * nv + c] = kern_of(L, &E[a], &E[c]);
 	/* the first classes per subtable: what keeps its classes and coverage in 16-bit reach */
 	int cdsz = 6 + 2 * ng, per = (60000 - 16 - 3 * cdsz) / (2 * (nv + 1)) - 1;
 	if (per < 1) per = 1;
@@ -890,6 +899,55 @@ static void gpos(struct bb *b, const struct hw_letters *L, const struct kent *E,
 	free(kern); free(cov);
 }
 
+/* the advances (units) as the font has them: a glyph's, the space's, .notdef's */
+static int adv_of(const struct hw_letters *L, double width)
+{
+	return (int)lround((width + L->sp.letter) * XH);
+}
+static int adv_space(const struct hw_letters *L)
+{
+	int sp = (int)lround((L->sp.word - L->sp.letter) * XH);
+	return sp < XH / 10 ? XH / 10 : sp;
+}
+
+static const struct hw_letter *font_letter(const struct hw_letters *V, unsigned cp)
+{
+	for (size_t i = 0; i < V->n; i++)
+		if (V->l[i].cp == cp) return V->l[i].covered && V->l[i].nvar && cp != ' ' ? &V->l[i] : NULL;
+	return NULL;
+}
+
+void hw_font_layout(const struct hw_letters *V, const unsigned *cp, size_t n, const int *var, const long *jo, double *pen,
+		    double *bear)
+{
+	/* the glyphs in order, as the font shapes the text: the advance, the kerning between
+	 * two that have kerning classes (letters' variants, joined pairs) */
+	long x = 0;
+	struct kent prev;
+	int have = 0;
+	*bear = V->sp.letter / 2;
+	for (size_t k = 0; k < n; k++) {
+		struct kent e;
+		int adv, cls = 1;
+		const struct hw_letter *l = cp[k] == ' ' ? NULL : font_letter(V, cp[k]);
+		if (cp[k] == ' ') { adv = adv_space(V); cls = 0; }
+		else if (jo && jo[k] >= 0 && k + 1 < n && jo[k + 1] == jo[k]) {
+			const struct hw_joined *j = &V->joined[jo[k]];
+			e = kent_joined(j);
+			adv = adv_of(V, j->v.width);
+		} else if (l && var[k] >= 0 && var[k] < l->nvar) {
+			e = kent_var(l->cp, &l->var[var[k]]);
+			adv = adv_of(V, l->var[var[k]].width);
+		} else { adv = XH; cls = 0; }             /* .notdef */
+		if (cls && have) x += kern_of(V, &prev, &e);
+		pen[k] = (double)x / XH;
+		if (jo && jo[k] >= 0 && k + 1 < n && jo[k + 1] == jo[k]) { pen[k + 1] = pen[k]; k++; }
+		x += adv;
+		have = cls;
+		if (cls) prev = e;
+	}
+}
+
 /* the glyph ids: .notdef, the space at each step, each covered character (code point
  * order) at each step, then each character's variants (its outlines; the glyph at a step
  * is a reference to the variant the letter shows there), then the joined pairs (FR-039) */
@@ -951,8 +1009,7 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	double gap = L->sp.letter, ink = L->m.ink;
 	G[0].adv = XH;
 	/* the space: the word gap less the two side bearings beside it */
-	int sp = (int)lround((L->sp.word - gap) * XH);
-	if (sp < XH / 10) sp = XH / 10;
+	int sp = adv_space(L);
 	for (int s2 = 0; s2 < S; s2++) G[gl_at(0, s2, NULL)].adv = sp;
 	for (int i = 0; i < nl; i++) {
 		for (int v = 0; v < ls[i]->nvar; v++) glyph_of(&G[outl[i] + v], L, &ls[i]->var[v], gap, ink, style, nib);
@@ -1021,11 +1078,11 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 			first[i] = e;
 			for (int v = 0; v < ls[i]->nvar; v++) {
 				const struct hw_variant *x = &ls[i]->var[v];
-				E[e++] = (struct kent){ ls[i]->cp, ls[i]->cp, &x->prof, x->mid, x->mid, x->width, x->lc, x->rc };
+				E[e++] = kent_var(ls[i]->cp, x);
 			}
 		}
 		for (int k = 0; k < nj; k++)
-			E[e++] = (struct kent){ js[k]->a, js[k]->b, &js[k]->v.prof, NAN, NAN, js[k]->v.width, js[k]->v.lc, js[k]->v.rc };
+			E[e++] = kent_joined(js[k]);
 		for (int g = 0; g < ng; g++) cls[g] = -1;
 		for (int i = 0; i < nl; i++) {
 			for (int s2 = 0; s2 < S; s2++) cls[gl_at(i + 1, s2, NULL) - g1] = first[i] + (ls[i]->slot[s2] < ls[i]->nvar ? ls[i]->slot[s2] : 0);

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Neatening (spec 003 FR-013 to FR-017, FR-035 to FR-037, docs/recognizer.md "Neatening"):
+// Neatening (spec 003 FR-013 to FR-017, FR-035 to FR-037, FR-043, docs/recognizer.md "Neatening"):
 // ink in, ink out, the same strokes in the same order with every point moved: line-level
 // corrections (straight baseline, steady slant, even size and spacing) and each readable
 // character that the letter model covers pulled along its strokes towards the person's best
-// version of it, by levels of a strength from 0 to 1. Only x and y change; deterministic.
+// version of it, by levels of a strength from 0 to 1; at Neatest each word whose text is
+// known set anew in the font (FR-043). Only x and y change; deterministic.
 #ifndef HW_NEATEN_H
 #define HW_NEATEN_H
 
@@ -25,6 +26,7 @@ enum {
 	HW_NEAT_WHY_DRAWING,            /* its strokes are drawing (FR-020) */
 	HW_NEAT_WHY_GESTURE,            /* its stroke is a gesture (FR-020; the caller sets it) */
 	HW_NEAT_WHY_NO_INK,             /* no ink of its own (a space; or none aligned to it) */
+	HW_NEAT_WHY_SET,                /* its word set anew in the font (FR-043) */
 };
 
 /* the levels (FR-014): the strength of each; in between, part of the way to the next */
@@ -40,6 +42,23 @@ enum {
  * corrections) with at least NEAT_READ mean fit of its characters */
 #define HW_NEAT_FIT_PULL 0.5
 #define HW_NEAT_FIT_READ 0.15
+/* without the confirmed text a word is set (FR-043) when the alignment reads it with at
+ * least this mean fit of its characters and none below FIT_SET_MIN */
+#ifndef HW_NEAT_FIT_SET
+#define HW_NEAT_FIT_SET 0.9
+#endif
+#ifndef HW_NEAT_FIT_SET_MIN
+#define HW_NEAT_FIT_SET_MIN 0.5
+#endif
+/* a word is set where its ink (as Strong leaves it) is at most SET_WIDE times as wide as
+ * the font sets it, or the font's at most that times the ink's, and each character's ink's
+ * middle within SET_PLACE x-heights of its glyph's (from the word's left, the ink scaled to
+ * the font's width) */
+#define HW_NEAT_SET_WIDE 1.6
+#define HW_NEAT_SET_PLACE 0.6
+/* a pen lift in a set character's ink moves to the end of a glyph's stroke within this
+ * share of the glyph's length */
+#define HW_NEAT_SET_SNAP 0.2
 /* a stroke taller than this many x-heights is drawing, not writing */
 #define HW_NEAT_DRAWING 3.5
 
@@ -58,11 +77,15 @@ struct hw_neat {
 	int line_only;                  /* no pull: line-level corrections only */
 	const unsigned char *nopull;    /* per character: 1 not pulled (FR-037); NULL none */
 	const unsigned char *guard;     /* (tests) per character: 1 fails the shape guard; NULL none */
+	int confirmed;                  /* cp is the confirmed text: every word's is known (FR-043) */
 	/* out (malloc'd by hw_neaten; hw_neat_free) */
 	double **x, **y;
 	int *how;
 	unsigned char *pulled;          /* per character: 1 pulled */
 	unsigned char *why;             /* per character: HW_NEAT_WHY_* */
+	unsigned char *set;             /* per character: 1 its word set (FR-043) */
+	double line_xh, line_base;      /* the line's x-height and baseline (y) as neatened */
+	int line_hasbase;
 };
 
 /* Strokes too tall to be writing: marked in keep (xh as in struct hw_neat). */
