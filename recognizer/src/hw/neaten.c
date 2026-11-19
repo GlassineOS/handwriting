@@ -196,6 +196,8 @@ double hw_neat_variant_dist(const struct hw_ink *ink, size_t n, double xh, const
 #define HW_NEAT_JOIN HW_NEAT_PULL_MEDIUM
 #define HW_NEAT_JOIN_STEPS 64
 #define HW_NEAT_JOIN_DIR 0.08
+/* the ends' directions as long as this share of the chord */
+#define HW_NEAT_JOIN_TAN 0.5
 /* a run of a stroke's points of one character shorter than this (x-heights along the
  * stroke) is the alignment's spill, not a joint */
 #define HW_NEAT_SPILL 0.35
@@ -1573,7 +1575,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 			}
 			for (int e = 0; e < 4; e += 2) {
 				double l = hypot(d[e], d[e + 1]);
-				if (l > 0) { d[e] *= L / l; d[e + 1] *= L / l; }
+				if (l > 0) { d[e] *= HW_NEAT_JOIN_TAN * L / l; d[e + 1] *= HW_NEAT_JOIN_TAN * L / l; }
 				else { d[e] = x1 - x0; d[e + 1] = y1 - y0; }
 			}
 			double cx[HW_NEAT_JOIN_STEPS + 1], cy[HW_NEAT_JOIN_STEPS + 1], cl[HW_NEAT_JOIN_STEPS + 1];
@@ -1590,6 +1592,26 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 				double u = il > 0 ? (cum[z] - cum[A - 1]) / il : (double)(z - A + 1) / (double)(B - A + 1);
 				at_fraction(cx, cy, HW_NEAT_JOIN_STEPS + 1, cl, u, &q->x[j][z], &q->y[j][z]);
 				if (u < 0.5) mid = z + 1;
+			}
+			/* (a cubic that turns sharply where the ink doesn't, two glyph ends facing apart:
+			 * the moves go from the one end's to the other's along the connecting part) */
+			int sharp = 0;
+			for (size_t z = A > 1 ? A - 1 : 1; z <= B && z + 1 < m && !sharp; z++) {
+				double ax = q->x[j][z] - q->x[j][z - 1], ay = q->y[j][z] - q->y[j][z - 1];
+				double bx = q->x[j][z + 1] - q->x[j][z], by = q->y[j][z + 1] - q->y[j][z];
+				double na = hypot(ax, ay), nb = hypot(bx, by);
+				if (na < 0.01 * xh || nb < 0.01 * xh || (ax * bx + ay * by) / (na * nb) > 0) continue;
+				sharp = 1;
+				for (size_t w = z > 5 ? z - 5 : 1; w <= z + 5 && w + 1 < m && sharp; w++)
+					if (turn_at(k->x, k->y, w, 0.01 * xh) > 45) sharp = 0;
+			}
+			if (sharp) {
+				double m0x = x0 - k->x[A - 1], m0y = y0 - k->y[A - 1], m1x = x1 - k->x[B], m1y = y1 - k->y[B];
+				for (size_t z = A; z < B; z++) {
+					double u = il > 0 ? (cum[z] - cum[A - 1]) / il : (double)(z - A + 1) / (double)(B - A + 1);
+					q->x[j][z] = k->x[z] + (1 - u) * m0x + u * m1x;
+					q->y[j][z] = k->y[z] + (1 - u) * m0y + u * m1y;
+				}
 			}
 			for (size_t z = A; z < B; z++) q->own[j][z] = z < mid ? o1 : o2;
 			if (!rdr[j]) rdr[j] = calloc(m + 1, 1);
