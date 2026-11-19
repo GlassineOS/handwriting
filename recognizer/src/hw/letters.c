@@ -870,6 +870,8 @@ static double rdist(const double *a, const double *b, int total)
 
 #define TAU 0.30        /* distance (x-heights, RMS) within which versions are one shape */
 #define SIGMA 0.15      /* the kernel of a variant around its seed */
+#define HEIGHT_MIN 0.1  /* a variant's height (x-heights) below which it is left as averaged */
+#define HEIGHT_GROW 1.5 /* the most a variant is stretched back to its members' height */
 #define DIFF_MIN 0.06   /* a further variant must differ at least this much */
 #define WAY_TAU 0.60    /* within a stroke count, versions this close (x-heights, RMS) are one way of writing it */
 
@@ -879,7 +881,7 @@ static void letter_slots(struct hw_letter *l);
 static int make_variant(struct inst *in, const struct group *g, int seed, struct hw_variant *v, double *xmin_out)
 {
 	const double *sr = in[seed].rs;
-	double *acc = calloc((size_t)g->total * 2, sizeof *acc), wsum = 0;
+	double *acc = calloc((size_t)g->total * 2, sizeof *acc), wsum = 0, hsum = 0;
 	if (!acc) return -1;
 	int members = 0;
 	/* how it was written: the members' profiles with the same weights, each point over the
@@ -892,7 +894,12 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 		double d = rdist(x->rs, sr, g->total);
 		if (d > 2 * SIGMA) continue;
 		double kw = x->w * exp(-(d / SIGMA) * (d / SIGMA));
-		for (int i = 0; i < 2 * g->total; i++) acc[i] += kw * x->rs[i];
+		double lo = INFINITY, hi = -INFINITY;
+		for (int i = 0; i < 2 * g->total; i++) {
+			acc[i] += kw * x->rs[i];
+			if (i & 1) { if (x->rs[i] < lo) lo = x->rs[i]; if (x->rs[i] > hi) hi = x->rs[i]; }
+		}
+		if (hi > lo) hsum += kw * (hi - lo);
 		for (size_t i = 0; x->pp && x->pv && i < np; i++) {
 			if (!isnan(x->pp[i])) { pa[i] += kw * x->pp[i]; pw[i] += kw; }
 			if (!isnan(x->pv[i])) { va[i] += kw * x->pv[i]; vw[i] += kw; }
@@ -949,6 +956,24 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 		}
 		for (int i = 0; i < n; i++) { if (t->x[i] < xmin) xmin = t->x[i]; if (t->x[i] > xmax) xmax = t->x[i]; }
 		o += n;
+	}
+	/* as tall as its members on average (FR-006): averaging and smoothing versions that
+	 * differ a little in shape take height off; heights from its centre (where it sits),
+	 * the width as it comes */
+	{
+		double lo = INFINITY, hi = -INFINITY, h = hsum / wsum, cy = 0;
+		size_t np2 = 0;
+		for (size_t j = 0; j < v->nstrokes; j++)
+			for (size_t i = 0; i < v->s[j].n; i++) {
+				double y = v->s[j].y[i];
+				if (y < lo) lo = y;
+				if (y > hi) hi = y;
+				cy += y; np2++;
+			}
+		cy /= np2 ? np2 : 1;
+		if (h >= HEIGHT_MIN && hi - lo > 1e-6 && h / (hi - lo) <= HEIGHT_GROW)
+			for (size_t j = 0; j < v->nstrokes; j++)
+				for (size_t i = 0; i < v->s[j].n; i++) v->s[j].y[i] = cy + (v->s[j].y[i] - cy) * h / (hi - lo);
 	}
 	for (size_t j = 0; j < v->nstrokes; j++)
 		for (size_t i = 0; i < v->s[j].n; i++) v->s[j].x[i] -= xmin;
