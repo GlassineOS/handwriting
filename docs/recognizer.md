@@ -739,7 +739,14 @@ leftmost and rightmost x of its strokes' centre lines, every band a segment cros
 between two letters is the narrowest distance between the first's right profile and the
 second's left one over the bands both have ink in (their boxes when they share none). From
 neighbouring letters of the word samples (each with strokes of its own, placed by where they
-lie; gaps beyond −0.6 or 1.6 x-heights are the alignment's errors and left out) come: the
+lie; gaps beyond −0.6 or 1.6 x-heights are the alignment's errors and left out) come the
+values below. They follow how the person writes running text: a pair written at least 3 times
+in samples of several words (sentences) takes those alone; every other pair's single-word
+observations come closer by the person's running-text ratio (`run`: over the pairs written at
+least 3 times in both, at least 10 of them, the median of the running-text distance over the
+single-word one, within 0.85 and 1; 1 with fewer pairs), each one's distance times it and its
+gap less what that takes off. Samples whose spans the alignment inferred (the fit check failed)
+aren't used, as for the letters. So: the
 typical gap (the median); a pair's own gap (the median, written at least 3 times); the side
 shapes, the versions' left and right sides grouped by their shape (per band, how far in from
 the side's outermost ink, at most 1; within 0.3 x-heights RMS, at most 16 per side, greedily
@@ -820,7 +827,7 @@ then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"
 `x_height_per_line`, `base_below_guide` and `x_height_mm` what a sample without letters to measure
 its x-height or baseline from takes, which a one-character build reuses, as it does the two
 medians, 0 when none), then
-`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
+`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"run":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
 "sides":[[RIGHT,LEFT,GAP,N],…],"reach":[["a",RIGHT,LEFT,NR,NL],…],"left_shapes":[[…8],…],
 "right_shapes":[[…8],…]}}` (`DISTANCE`, `RIGHT` and `LEFT` null when not learned), then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
