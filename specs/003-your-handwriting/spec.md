@@ -127,8 +127,10 @@ size, spacing) and keep their shape.
   that way. Each variant is built from the samples of its group with the person's
   preferences, careful marking, readability (how well the recognizer read it when it was
   written) and consistency (closeness to the group's typical shape) as weights. Jitter is
-  removed; shape, proportions, stroke count and stroke order stay the person's, and a
-  variant sits on the line where the samples it is made from sit on average. A variant
+  removed; shape, proportions, size, stroke count and stroke order stay the person's (a
+  variant is as tall and as wide as the samples it is made from are on average; making
+  it never shrinks it), and a variant sits on the line where the samples it is made from
+  sit on average. A variant
   is never made by mixing versions written with different strokes. How often the font
   shows each variant follows from how often the person writes it that way and from their
   marks (FR-031). Each variant carries
@@ -147,7 +149,12 @@ size, spacing) and keep their shape.
   and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
   stays the neighbour's, so both count. Line metrics (baseline,
   x-height, cap height, ascender, descender, slant) and spacing come from the person's word
-  and sentence samples. One spacing serves the font and neatening alike, and places
+  and sentence samples. Spacing follows how the person writes running text: a pair's
+  distance and gap, the typical gap and how far letters reach come from their writing of
+  several words together (sentences, free writing) where they wrote it often enough (at
+  least 3 times for a pair); elsewhere from single words, scaled by how much closer the
+  person sets letters in running text than in single words, learned from the pairs seen in
+  both (at least 10 of them, else no scaling). The median stays the measure throughout. One spacing serves the font and neatening alike, and places
   each pair by what the variants actually used look like. A letter's middle is the mean
   position of its ink between the baseline and the x-height, each part weighted by how far
   it runs up or down: stems and bowls count, bars, hooks and connecting strokes hardly do,
@@ -467,7 +474,10 @@ Host level:
   are reported as a built model would count them; the font page and neatening show them, say
   the model isn't built or is out of date, and build it when asked without installing the font;
 - word samples with a fixed gap for a pair give that pair that gap, a rare pair its side
-  shapes' value and an unseen pair spacing from the profiles;
+  shapes' value and an unseen pair spacing from the profiles; with sentences that set a
+  pair closer than single words do, the font sets it as in the sentences, and pairs seen
+  only in single words come closer by the person's ratio; single words written wider
+  never widen it; a variant is as tall as the samples it is made from, within 2 %;
 - the font built from it passes a standard font validator, maps exactly the covered
   characters and the space, alternates variants deterministically when shaped with no
   feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
