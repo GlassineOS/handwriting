@@ -130,7 +130,11 @@ size, spacing) and keep their shape.
   removed; shape, proportions, size, stroke count and stroke order stay the person's (a
   variant is as tall and as wide as the samples it is made from are on average; making
   it never shrinks it), and a variant sits on the line where the samples it is made from
-  sit on average. A variant
+  sit on average. Its width then follows how the person writes running text: where they
+  write letters narrower in sentences than in single words, every variant is narrowed
+  about its middle by that ratio, learned from the characters seen in both (at least 10
+  of them, else no narrowing, and never by more than the spacing's own bound), its
+  profiles, reaches and middle with it, so the spacing (FR-007) stays at its distances. A variant
   is never made by mixing versions written with different strokes. How often the font
   shows each variant follows from how often the person writes it that way and from their
   marks (FR-031). Each variant carries
@@ -477,7 +481,9 @@ Host level:
   shapes' value and an unseen pair spacing from the profiles; with sentences that set a
   pair closer than single words do, the font sets it as in the sentences, and pairs seen
   only in single words come closer by the person's ratio; single words written wider
-  never widen it; a variant is as tall as the samples it is made from, within 2 %;
+  never widen it; a variant is as tall as the samples it is made from, within 2 %, and as
+  wide as they are times the person's running-text width ratio (1 with too few
+  characters seen in both), within 2 %, with pair distances unchanged by the narrowing;
 - the font built from it passes a standard font validator, maps exactly the covered
   characters and the space, alternates variants deterministically when shaped with no
   feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
