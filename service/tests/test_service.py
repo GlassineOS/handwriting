@@ -229,6 +229,22 @@ class Service(unittest.TestCase):
         r = self.pen_events(lambda o: any(m["op"] == "report" for m in o))[-1]
         self.assertEqual(r["result"], "not_allowed")
 
+    def test_neatened_without_the_reading_as_text(self):
+        """the pen's words are neatened without their reading as TEXT (spec 003 FR-043: only a
+        confirmed text is set in the font); the neaten method passes the app's text on"""
+        self.pen_send(op="surface", s=3, sandbox="org.example.Notes", pid=0)
+        self.pen_send(op="set", s=3, neaten=True, strength=1.0, text=False, units="device:6.25")
+        st = ink(4, seed=8)
+        self.write(3, st)
+        self.pen_events(lambda o: len({m["k"] for m in o if m["op"] == "neat"}) >= 4)
+        asks = [f for f in self.requests() if f[0] == "neaten"]
+        self.assertTrue(asks)
+        self.assertTrue(all(len(f) == 4 for f in asks), asks)
+        r = self.app("org.example.A")("neaten", strokes=ink(2, seed=9), strength=1, text="ab")
+        self.assertIn("strokes", r["result"])
+        asks = [f for f in self.requests() if f[0] == "neaten"]
+        self.assertEqual(asks[-1][4:5], ["ab"])
+
     def test_pick_stores_the_same_sample(self):
         self.call("permission.set", app="org.example.Notes", learn="allowed", samples="allowed")
         self.pen_send(op="surface", s=2, sandbox="org.example.Notes", pid=0)

@@ -337,20 +337,21 @@ of them goes between what they do:
 | 0.25 | Light | the line only: baseline, slant, size and spacing (each letter keeps its shape) |
 | 0.5 | Medium | Light, and every letter whose glyph has its structure pulled half way to the glyph the font draws there, also one written badly |
 | 0.75 | Strong | the same, pulled 0.85 of the way |
-| 1 | Neatest | every such letter takes that glyph's shape, on its own points |
+| 1 | Neatest | every word whose text is known set anew in the font, on its own points (below); any other word as at Strong |
 
 Below 0.25 the line-level corrections apply in part (0.1: 0.4 of them). The reply has one `N HOW POINTS` triple per stroke of the
 session, in the session's order: `N` the stroke's number, `POINTS` the stroke with the same
 points in the same order, each point's `x,y` moved (written to a thousandth) and the rest of it
 (time, pressure, tilt) exactly as sent. `HOW` says what was done: `pulled` (a character of it
-moved towards its glyph, or at Neatest given its shape, and the
+moved towards its glyph, or its word set in the font at Neatest, and the
 line-level corrections), `line` (the
 line-level corrections only) or `kept` (the stroke as sent). `TEXT` (escaped) is the reading the
 neatening followed, empty when none. `WHY` (contract 1.5, FR-041) is the last field: per
 character of `TEXT`, space-separated, whether it was pulled or why not: `pulled`; `level` (the
 strength pulls no letter, or this one not yet at it); `not-covered` (the font has no glyph
 for it there); `no-structure` (its pieces aren't its glyph's strokes, in count or place, or
-its glyph can't be traced on its points);
+its glyph can't be traced on its points); `set` (its word set in the font at Neatest:
+below);
 `shape-guard` (pulled it would come nearer another character's versions, below);
 `low-confidence` (its word is read with low confidence, below); `drawing` or `gesture` (its
 strokes are drawing, or the newest stroke a gesture); `no-ink` (no ink of its own); `space`
@@ -449,9 +450,33 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   baseline at the character's middle (moved by the matched points' mean offset, at most 0.5
   x-heights), at the line's x-height, with the lean the font draws it with. A point moves by
   the line-level corrections (fully from Light) and then by the pull × (its place on the glyph
-  − where the corrections put it): 0.5 at Medium, 0.85 at Strong, 1 at Neatest, going between
-  them linearly (from 0.25 to Medium, Medium to Strong, Strong to Neatest). At Neatest a
-  letter's points lie on its glyph, as many as it had, each with its time and pressure.
+  − where the corrections put it): 0.5 at Medium, 0.85 at Strong, going between them
+  linearly (from 0.25 to Medium, Medium to Strong); above Strong a word that isn't set
+  keeps Strong's pull.
+- **Setting the word (Neatest, FR-043).** A word (between spaces) whose text is known is set
+  anew: the glyph the font draws for each character there (the cycle, the neighbour rules,
+  the joined pairs, chosen over the whole text as the font chooses them) at the font's
+  advances and kerning, exactly as `hb-shape` places them in the font `font build` makes;
+  its leftmost glyph point where Strong leaves its leftmost ink, on the line's baseline, at
+  the line's x-height, with the lean the glyphs have. Each character's ink (a joined pair's
+  two letters' together), its pieces in the order written, runs along its glyph's strokes
+  one after another, each point at its share of the ink's length: as many pieces as the
+  glyph has strokes, one each; otherwise a pen lift moves to the end of a glyph's stroke
+  within 0.2 of the glyph's length (each end once, in order). Where the person didn't lift
+  the pen between two glyphs' strokes the two points either side are joined by a straight
+  line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
+  along the line to the middle of the font's box for it (`.notdef`, one x-height wide), and
+  stays `not-covered`. Only with `TEXT`: without it no word is set (on real ink even the
+  words read with the highest alignment fit were read wrongly more often than not, and a
+  word read wrongly would be set as another). A word is set only when every
+  character has ink of its own, its strokes hold no other word's ink, none is drawing or a
+  gesture or low confidence, the ink (as Strong leaves it) is at most 1.6 times as wide as
+  the set word and the set word at most 1.6 times the ink, and each character's ink's middle
+  is within 0.6 x-heights of its glyph's (both from the word's left, the ink scaled to the
+  set word's width): a stroke of the next word the alignment gave it, or a reading that
+  isn't what was written, isn't set over the ink. Its strokes are `pulled`, its characters
+  `set`; the shape guard and the flow check below are for the pull and don't apply to it.
+  Between Strong and Neatest its points go that far from Strong's ink to the set word.
 - **Joined letters (FR-036).** Where a stroke passes from one character to the next, the
   joint's ends are matched with the glyph's ends left open (a lead-in or lead-out the
   glyph doesn't have follows the matched point next to it), and each point near the joint

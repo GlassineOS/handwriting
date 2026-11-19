@@ -81,7 +81,11 @@ writing page, a notes app, a drawing app, the keyboard's writing paper) with nea
 **When** the person writes, **Then** each stroke appears under the pen as written, and once
 the words it belongs to are read it is replaced by its neatened version: the same text in the
 same hand. A strength control moves between the original and the neatest version, and the
-original can be brought back at any time.
+original can be brought back at any time. Through the neat ink layer the neatest version
+pulls the words towards the person's letters; it sets a word in their font only once its
+text is confirmed (FR-043). The handwriting app's writing page is a playground: there the
+neatest version sets each word at once as the page reads it (the reading it shows), so a
+misread word is set as what it was read as.
 
 ### Scenario 6 – Drawing stays drawing (Priority: P2)
 
@@ -331,8 +335,8 @@ size, spacing) and keep their shape.
     median gap, and the gaps between words towards the word spacing, by a limited step).
   - **Medium**: also pulls each covered character half way towards its target (FR-035).
   - **Strong**: pulls it most of the way (0.85).
-  - **Neatest**: puts the target itself in the character's place, on the person's points,
-    keeping the timing and pressure of their strokes.
+  - **Neatest**: sets each word anew in the person's font (FR-043); a word that can't be
+    set gets Strong's pull.
 
   A character is pulled only when its target has its structure, tested coarsely: the same
   number of strokes (after a late dot, bar or arm is placed with its character, FR-007)
@@ -347,29 +351,46 @@ size, spacing) and keep their shape.
   neighbour rules (FR-038) and the joined pairs (FR-039). It is fitted to the written
   character by similarity only: moved to its place, scaled uniformly to the line's
   x-height and set at the line's slant (or the letter model's), never stretched, sheared
-  or mirrored. Neatened ink at Neatest is the person's line drawn in their font.
+  or mirrored. At Neatest the word itself is set in the font instead (FR-043).
 - **FR-036**: A pull follows the stroke: each point of the person's stroke goes to the place
   on the version's stroke that matches it in shape (direction and curvature along the
   stroke), in order, so no point moves backwards along the stroke and the ink never folds
   over itself; a hook, loop or overshoot at a stroke's start or end that the version doesn't
   have goes to the version's start or end. The moves vary smoothly along the stroke.
   Letters joined in one stroke each get their own pull. At Medium the moves are blended
-  smoothly across the joint; at Strong and Neatest, where both letters are pulled, the
+  smoothly across the joint; at Strong, where both letters are pulled, the
   joining stroke between them is drawn anew from the end of the first letter's glyph to
   the start of the second's, as a smooth connection, carrying the timing and pressure of
   the person's own joining stroke, so a joined word keeps every letter and its joins stay
-  smooth.
+  smooth. A set word (FR-043) follows its glyphs instead.
 - **FR-037**: Each pulled or replaced character is checked on its own, by its shape: its new
   ink (centred, at x-height) must be closer to that character's own versions than to any
   version of any other character, whatever their stroke counts; when it isn't, that character alone stays as the
   line-level corrections left it, and the rest of the line keeps its neatening. Nothing is
   read again after neatening: with the confirmed text the characters are known, without it
   the recognizer's one reading of the original ink tells them (FR-013). No check ever holds
-  back a whole line.
-- **FR-041**: The neatening reply says for each character whether it was pulled, and when it
-  wasn't, why: not covered, its target without its structure,
+  back a whole line. A set word (FR-043) isn't checked: it is the font's own word.
+- **FR-041**: The neatening reply says for each character whether it was pulled or set
+  (FR-043), and when it was neither, why: not covered, its target without its structure,
   its shape would come closer to another character (FR-037), in a word read with
   low confidence (FR-017), or drawing or a gesture (FR-020).
+- **FR-043**: At Neatest each word whose text is known is set anew in the person's font,
+  exactly as the font sets that text: the same glyph for each character (the cycle, the
+  neighbour rules, the joined pairs: FR-035, FR-038, FR-039) and the font's advances and
+  kerning, placed on the line where the written word starts, on the line's baseline, at
+  the line's x-height, with the slant the font draws. The strokes stay the person's (FR-013):
+  each character's ink, its pieces in the order written, is drawn along the centre lines of
+  its glyph's strokes, each point by its share of the ink's length, so the timing and
+  pressure run along the glyph as written; a pen lift falls at the end of a glyph's stroke
+  near it, and where the person didn't lift the pen between two glyphs' strokes a straight
+  joining line runs from the one to the other. A character the letter model doesn't cover
+  keeps its written ink as the line-level corrections leave it, moved to the middle of the
+  box the font has for it. Only the confirmed text is known: without it no word is set (a
+  word read wrongly would be set as another word). A word is set only when its ink can be its
+  set word: each character with ink of its own, strokes of no other word, no drawing or
+  gesture among them, the ink about as wide as the set word (neither more than 1.6 times the
+  other) and each character's ink about where its glyph is (within 0.6 x-heights, scaled to
+  the font's width). Any other word gets Strong's pull (FR-014).
 - **FR-015**: The same ink, letter model and strength always give the same result.
 - **FR-016**: Neatening is a request in the recognizer's interface (docs/recognizer.md), so
   every app gets the same result; apps reach it through the neat ink layer (FR-018), keep the

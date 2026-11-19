@@ -14,8 +14,9 @@ The store given is only read; everything happens in a temporary copy.
     eval-neaten.py BIN STORE_DIR --models DIR [--strength S ...] [--limit N] [--adaptation] [--no-letters] [--words]
 
 --words neatens as the pen interface's service does (service/glassine_hwservice/pen.py): the
-line read once, then each word of the best reading on its own with the word as its text; the
-time is that of the read and all the words.
+line read once, then each word of the best reading on its own (without the reading as its
+text: the service has no confirmed text, spec 003 FR-043); the time is that of the read and
+all the words.
 """
 import argparse
 import json
@@ -112,7 +113,7 @@ def neaten_words(rec, s, strokes, strength):
         if not ks:
             continue
         session(rec, s, [strokes[k] for k in ks], "w")
-        _, h, o = parse_neaten(rec.ask("neaten", "w", strength, esc(wt)))
+        _, h, o = parse_neaten(rec.ask("neaten", "w", strength))
         rec.ask("end", "w")
         for j, k in enumerate(ks):
             how[k], out[k] = h[j], o[j]

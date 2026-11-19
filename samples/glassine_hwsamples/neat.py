@@ -2,7 +2,9 @@
 """Neaten my writing (spec 003 Scenario 4): what the person writes on the page is neatened by
 the recognizer (docs/recognizer.md, Neatening) one line of the writing area at a time, at the
 strength they chose. The raw strokes stay the app's; nothing written here becomes a sample
-(no confirm, no donate: FR-016, FR-024)."""
+(no confirm, no donate: FR-016, FR-024). The page is a playground: at Neatest it gives each
+line's own top reading (the one shown as "Read as") as the text, so the words are set in the
+person's font at once, a word read wrongly set as what it was read as (FR-043)."""
 
 import math
 import os
@@ -52,6 +54,8 @@ class Neat:
                 self.rec.write(SESSION, self.lang, units, area, [strokes[i] for i in idx])
                 self.open = True
                 text, res = self.rec.neaten(SESSION, strength)
+                if strength >= 1 and text:
+                    text, res = self.rec.neaten(SESSION, strength, text)
                 d = (key, {idx[n]: parse_points(p) for n, _, p in res}, {idx[n]: h for n, h, _ in res}, text)
                 self.done[k] = d
             out.update(d[1])
@@ -93,7 +97,9 @@ class PenInk:
     joins the page as written after a second.
 
     page: the list the page draws (the canvas's strokes); shown: {index: [(x, y)]} the
-    neatened ones; offset: the writing area's origin on the window's surface."""
+    neatened ones; offset: the writing area's origin on the window's surface. The service
+    sets no word in the font (it has no confirmed text, FR-043), so at Neatest the page
+    neatens its own ink itself (Neat) and shows that."""
 
     def __init__(self, pen, page, on_change):
         self.pen, self.page, self.on_change = pen, page, on_change

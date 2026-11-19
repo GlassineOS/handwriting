@@ -25,7 +25,9 @@ pressure 0 to 1 and the tilt in degrees. A stroke counts when it starts inside t
 (`set_area`, the whole surface by default). With ruled lines (`set_guides`), neatening goes
 line by line on them. Without them the lines are found from the writing. Each line is read,
 then neatened word by word, so a long line costs a few short requests rather than one long
-one.
+one. The service has no confirmed text for the writing, so no word is set in the person's
+font (spec 003 FR-043): at the neatest strength the words are pulled towards their letters as
+at the strong one.
 
 Every reading has a writing area and the units with the output's px per millimetre: the app's
 area and guides when it set them, else ones found from the writing (docs/service.md, The
