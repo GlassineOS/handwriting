@@ -261,8 +261,10 @@ size, spacing) and keep their shape.
   next to a particular neighbour (the character before it or after it), the font uses that
   way there, by contextual alternates that text shaping applies by default. A rule needs
   clear support: the pair written at least 6 times in usable samples, the same way in at
-  least three quarters of them, and, checked on samples the rule was not made from, it picks
-  the way the person wrote more often than the cycle of FR-010 does. Everywhere else the
+  least three quarters of them, that way's share there at least a quarter above its share
+  in the cycle of FR-010 (a way the person writes everywhere needs no rule), and, checked
+  on samples the rule was not made from, it picks the way the person wrote more often than
+  the cycle does. Everywhere else the
   cycle chooses. A character's page shows how often the cycle shows each way ("6 in 10");
   a rule changes only the places it names.
 - **FR-039**: A pair of letters the person writes joined in one stroke (FR-007) is drawn as
