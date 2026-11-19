@@ -1754,6 +1754,10 @@ class NeighbourRules(unittest.TestCase):
         self.assertFalse(has("e", "k"))         # 5 times: too few
         self.assertFalse(has("u", "m"))         # 5 of 8 one way: too mixed
         self.assertFalse(has("a", "q"))         # all in one sample: loses held back
+        # a way written nearly everywhere is no way of writing it beside one neighbour: an l
+        # before an o, an x after a z, all in their most common way, get none
+        self.assertFalse(any(r.get("next") == "o" for r in self.chars["l"].get("rules", [])))
+        self.assertFalse(any(r.get("prev") == "z" for r in self.chars["x"].get("rules", [])))
         # each of them has the way it would rule
         for c, texts in (("e", ("ke",)), ("a", ("qa" * 6,))):
             self.way(c, texts)
@@ -1775,6 +1779,14 @@ class NeighbourRules(unittest.TestCase):
                 else:
                     # the cycle: the step it has without the rule, which counts on through it
                     self.assertEqual(g, ("space", prev) if c == " " else ("step", c, prev), (st, k))
+            # before its neighbour: an m before a u (the m's first way, 8 of 8) is that way
+            # wherever the cycle is, the u after it its step
+            mu = next(r["variant"] for r in self.chars["m"]["rules"] if r.get("next") == "u")
+            for text in ("mu", "a mu", "aa mu"):
+                got = self.shown(ttf, text)
+                self.assertEqual(got[-2], ("variant", "m", mu), (st, text))
+                self.assertEqual(got[-1], ("step", "u", len(text) - 1), (st, text))
+            self.assertEqual(self.shown(ttf, "ma")[0], ("step", "m", 0))
             # the same text, the same glyphs
             self.assertEqual(hb(ttf, text), hb(ttf, text))
         self.assertIn("o", cov)
