@@ -1364,7 +1364,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 			p = end;
 		}
 	}
-	/* per character of the reading followed: pulled, or why not (FR-041; contract 1.4) */
+	/* per character of the reading followed: pulled, or why not (FR-041; contract 1.5) */
 	bstr(&b, "\t");
 	for (size_t k = 0; k < q.nc; k++) {
 		if (k) bstr(&b, " ");

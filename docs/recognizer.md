@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.4)
+# The handwriting recognizer (contract version 1.5)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -85,7 +85,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 to 1.4 only add to 1.0, so a client of any
+**hello** names the contract version (1: versions 1.1 to 1.5 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -346,7 +346,7 @@ points in the same order, each point's `x,y` moved (written to a thousandth) and
 moved towards its best version in the letter model, or at Neatest given its shape, and the
 line-level corrections), `line` (the
 line-level corrections only) or `kept` (the stroke as sent). `TEXT` (escaped) is the reading the
-neatening followed, empty when none. `WHY` (contract 1.4, FR-041) is the last field: per
+neatening followed, empty when none. `WHY` (contract 1.5, FR-041) is the last field: per
 character of `TEXT`, space-separated, whether it was pulled or why not: `pulled`; `level` (the
 strength pulls no letter, or this one not yet at it); `not-covered` (the letter model has no
 version of it); `no-structure` (its pieces don't match a version's strokes, in count, size,
@@ -354,7 +354,7 @@ place or shape); `not-near` (at Medium, further than 0.3 x-heights from its best
 `shape-guard` (pulled it would come nearer another character's versions, below);
 `low-confidence` (its word is read with low confidence, below); `drawing` or `gesture` (its
 strokes are drawing, or the newest stroke a gesture); `no-ink` (no ink of its own); `space`
-for a space. Empty when `TEXT` is. A client of 1.3 reads the fields by place and never gets to
+for a space. Empty when `TEXT` is. A client of 1.4 or before reads the fields by place and never gets to
 it; the samples app shows nothing of it yet. The same strokes, letter model and strength always give
 the same reply. `neaten` changes nothing in the session (its strokes, the last reading's
 candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-024).
