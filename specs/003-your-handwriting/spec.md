@@ -338,7 +338,12 @@ size, spacing) and keep their shape.
   stroke), in order, so no point moves backwards along the stroke and the ink never folds
   over itself; a hook, loop or overshoot at a stroke's start or end that the version doesn't
   have goes to the version's start or end. The moves vary smoothly along the stroke.
-  Letters joined in one stroke each get their own pull, blended smoothly across the joint.
+  Letters joined in one stroke each get their own pull. At Medium the moves are blended
+  smoothly across the joint; at Strong and Neatest, where both letters are pulled, the
+  joining stroke between them is drawn anew from the end of the first letter's glyph to
+  the start of the second's, as a smooth connection, carrying the timing and pressure of
+  the person's own joining stroke, so a joined word keeps every letter and its joins stay
+  smooth.
 - **FR-037**: Each pulled or replaced character is checked on its own, by its shape: its new
   ink (centred, at x-height) must be closer to that character's own versions than to any
   version of any other character, whatever their stroke counts; when it isn't, that character alone stays as the
@@ -514,7 +519,9 @@ Host level:
 - on a held-back set no pulled character comes out closer to another character's versions
   than to its own; at joins and at stroke starts with an entry stroke or hook, the pulled
   ink has no new backward steps or kinks, there or anywhere along the stroke, over every
-  character and every joined pair;
+  character and every joined pair; at Strong and Neatest the letters of a joined word are
+  pulled like any other letter (a join is no reason to keep one back), each keeps its own
+  ink, and the redrawn joins have no corner or step back;
 - through the neat ink layer, with a stand-in pen and recognizer: raw strokes pass on at
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
   as drawing pass unchanged, strength 0 gives the raw strokes, and a private field sends
