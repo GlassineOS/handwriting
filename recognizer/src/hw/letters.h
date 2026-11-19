@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 10     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 11     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -18,6 +18,32 @@
 #define HW_LETTERS_SLOTS 10     /* the font's cycle of variants along the text (FR-010): a tenth each */
 #define HW_LETTERS_WAY_SHARE 10 /* a way of writing a character gives a variant from 1/this of its samples */
 #define HW_LETTERS_PROFILE 16   /* points per stroke of a variant's pressure and speed profiles (FR-006) */
+/* neighbour rules (FR-038): a character written next to a neighbour at least HW_RULE_MIN
+ * times, the same variant in at least HW_RULE_SHARE_NUM / HW_RULE_SHARE_DEN of them (and in
+ * HW_RULE_LIFT more of them than the cycle shows it: a variant written so everywhere is no
+ * way of writing it there), and the rule picking the variant written more often than the
+ * cycle on samples it was not made from */
+#define HW_RULE_MIN 6
+#define HW_RULE_SHARE_NUM 3
+#define HW_RULE_SHARE_DEN 4
+#define HW_RULE_LIFT 0.25       /* and in that much more of them than its share of the cycle */
+#define HW_LETTERS_RULES 16     /* rules per character at most */
+/* joined pairs (FR-039): two letters written joined in at least HW_JOINED_MIN usable samples
+ * and in at least HW_JOINED_SHARE_NUM / HW_JOINED_SHARE_DEN of the samples with the pair, and
+ * those samples of one way (HW_JOINED_MIN of them close to each other). Written joined: one
+ * stroke in both spans that splits into one run per letter, at one place, each run with the
+ * letter's other strokes written like one of its versions: as close (centred RMS) as
+ * HW_JOINED_ORDINARY of the letter's own samples are to theirs (times HW_JOINED_SLACK: those
+ * shaped the versions they are measured against), and as long as that
+ * version's stroke within HW_JOINED_LEN times; between the runs at most the pen's way across */
+#define HW_JOINED_ORDINARY 0.95
+#define HW_JOINED_SLACK 1.25
+#define HW_JOINED_LEN 2.0
+#define HW_JOINED_BRIDGE 1.5    /* x-heights of the stroke between the two runs at most */
+#define HW_JOINED_MIN 4
+#define HW_JOINED_SHARE_NUM 3
+#define HW_JOINED_SHARE_DEN 4
+#define HW_JOINED_MAX 256       /* joined pairs in a model at most */
 /* the best version's weights (FR-035), times a sample's own weight: */
 #define HW_BEST_FAVOURITE 4.0   /* marked favourite */
 #define HW_BEST_CAREFUL 2.0     /* written to "Write it your best" (quick: 1 / this) */
@@ -87,6 +113,17 @@ struct hw_variant {
 	double *pres, *speed;
 };
 
+/* A neighbour rule (FR-038): after (side 0: the neighbour is the character before) or
+ * before (side 1: the one after) nb, the character shows variant var instead of its cycle's;
+ * n the times written next to it, same those written as var, hits how often the rule picked
+ * the variant written on samples it was not made from (leave one sample out), cycle how
+ * often the cycle does (the expected count) */
+struct hw_rule {
+	unsigned nb;
+	int side, var, n, same;
+	double hits, cycle;
+};
+
 struct hw_letter {
 	unsigned cp;
 	int samples;                    /* usable samples with this character */
@@ -96,6 +133,19 @@ struct hw_letter {
 	struct hw_variant var[HW_LETTERS_VARIANTS];    /* the most used first */
 	/* the variant at each step of the font's cycle, as often as each is used */
 	unsigned char slot[HW_LETTERS_SLOTS];
+	/* the neighbour rules, the strongest (hits over cycle) first: the first that applies wins */
+	int nrules;
+	struct hw_rule rule[HW_LETTERS_RULES];
+};
+
+/* A joined pair (FR-039): a, b written in one stroke, drawn as one glyph made from those
+ * samples; samples the usable ones written joined (the pair's strokes its own), joined all
+ * written joined, of all with the pair written with known strokes. v as a variant (x from its
+ * left edge; the font sets it at the gap on both sides, its middle unused). */
+struct hw_joined {
+	unsigned a, b;
+	int samples, joined, of;
+	struct hw_variant v;
 };
 
 struct hw_metrics {
@@ -145,6 +195,8 @@ struct hw_letters {
 	size_t n;                       /* characters seen, sorted by code point */
 	struct hw_letter *l;
 	struct hw_spacing sp;
+	size_t njoined;                 /* joined pairs, sorted by a, b */
+	struct hw_joined *joined;
 };
 
 /* the side shape of a profile's left (side 0) or right (1) side: the nearest typical one */
@@ -252,20 +304,24 @@ int hw_font_record(char *name, size_t nn, unsigned *version, char *path, size_t 
 /* Its styles' files (paths[s], "" when the record has none: a font installed before the
  * styles has Regular alone) and the nib angle it was made with (-1 none). 1, 0 none, -1. */
 int hw_font_styles(char paths[HW_STYLES][4096], int *nib);
+/* whether it was made with random alternates (FR-040): 1, 0 not, -1 error */
+int hw_font_random(void);
 /* The font file's bytes for a model, malloc'd (ttf.c): the Regular style, or one style at
- * a nib angle (degrees, Calligraphy only). */
+ * a nib angle (degrees, Calligraphy only), with random alternates ('rand', FR-040) when
+ * random. */
 unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len);
 unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name, unsigned version, int style,
-				   double nib, size_t *len);
+				   double nib, int random, size_t *len);
 /* The ink's width (x-heights) at each point of a variant's stroke j in a style (ttf.c, the
  * rules in docs/recognizer.md); Calligraphy: from the stroke's direction at each point. */
 void hw_font_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, int style, double nib, double *w);
 /* Calligraphy's thinnest and widest line (x-heights) for the model's ink width */
 void hw_font_nib_widths(const struct hw_letters *L, double *wmin, double *wmax);
 /* Builds and installs all three styles (replacing the font there, name kept when NULL, the
- * nib angle kept when < 0); prints the Regular file's path. 0, 1 no letter model or nothing
- * covered, -1 error, -2 a bad name. */
-int hw_font_install(const char *name, int nib, int verbose);
+ * nib angle kept when < 0, random alternates kept when random < 0, else on when 1);
+ * prints the Regular file's path. 0, 1 no letter model or nothing covered, -1 error, -2 a
+ * bad name. */
+int hw_font_install(const char *name, int nib, int random, int verbose);
 /* removes the installed font: 1 removed, 0 none, -1 error */
 int hw_font_remove(void);
 /* The store's lock held: removes the letter model and the installed font (an erase). */

@@ -11,7 +11,7 @@
 //   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
 //   glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR]|status|show|marks|mark KIND CHAR ID...|samples CHAR
 //                                                                  the letter model (spec 003)
-//   glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] FILE|install [-n NAME] [--nib DEG]|remove|status|widths
+//   glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE|install [-n NAME] [--nib DEG] [--random|--no-random]|remove|status|widths
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -1806,7 +1806,7 @@ static void usage(void)
 	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
 	      "       glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show | marks\n"
 	      "       glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | samples CHAR\n"
-	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] FILE | install [-n NAME] [--nib DEG] | remove | status | widths [--style S] [--nib DEG]\n"
+	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE | install [-n NAME] [--nib DEG] [--random|--no-random] | remove | status | widths [--style S] [--nib DEG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
 }
@@ -2191,9 +2191,11 @@ static int style_of(const char *s)
 static int cmd_font(int argc, char **argv)
 {
 	const char *sub = argc > 0 ? argv[0] : "status", *name = NULL, *file = NULL;
-	int style = -1, nib = -1;
+	int style = -1, nib = -1, random = -1;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) name = argv[++i];
+		else if (!strcmp(argv[i], "--random")) random = 1;
+		else if (!strcmp(argv[i], "--no-random")) random = 0;
 		else if (!strcmp(argv[i], "--style") && i + 1 < argc) { if ((style = style_of(argv[++i])) < 0) { usage(); return 2; } }
 		else if (!strcmp(argv[i], "--nib") && i + 1 < argc) {
 			char *e;
@@ -2206,8 +2208,10 @@ static int cmd_font(int argc, char **argv)
 	}
 	if (style >= 0 && strcmp(sub, "build") && strcmp(sub, "widths")) { usage(); return 2; }
 	if (nib >= 0 && strcmp(sub, "build") && strcmp(sub, "widths") && strcmp(sub, "install")) { usage(); return 2; }
+	/* random alternates (FR-040): asked for at a build or an install only */
+	if (random >= 0 && strcmp(sub, "install") && (strcmp(sub, "build") || !random)) { usage(); return 2; }
 	if (!strcmp(sub, "install")) {
-		int r = hw_font_install(name, nib, 1);
+		int r = hw_font_install(name, nib, random, 1);
 		if (r == -2) { fputs("glassine-handwriting: a font name is 1 to 63 bytes of UTF-8 without control characters\n", stderr); return 2; }
 		return r < 0 ? 1 : 0;
 	}
@@ -2230,6 +2234,7 @@ static int cmd_font(int argc, char **argv)
 			besc(&b, sp[k]);
 		}
 		if (fnib >= 0) bfmt(&b, "\nnib\t%d", fnib);
+		if (hw_font_random() == 1) bstr(&b, "\nrandom\ton");
 		puts(b.s);
 		free(b.s);
 		return 0;
@@ -2277,7 +2282,7 @@ static int cmd_font(int argc, char **argv)
 		unsigned v = 0;
 		if (hw_font_record(NULL, 0, &v, NULL, 0) != 1) v = 0;
 		size_t len;
-		unsigned char *t = hw_font_build_style(&L, name ? name : HW_FONT_NAME_DEFAULT, v + 1, style, nib, &len);
+		unsigned char *t = hw_font_build_style(&L, name ? name : HW_FONT_NAME_DEFAULT, v + 1, style, nib, random == 1, &len);
 		hw_letters_free(&L);
 		if (!t) return 1;
 		FILE *f = fopen(file, "we");
