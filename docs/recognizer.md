@@ -759,7 +759,10 @@ the middles of the versions used; then, where between the baseline and the x-hei
 bands from −0.05 to 1.05) their profiles come closer than its gap, or than half the typical gap
 when that is smaller, moved apart to it. A pair without a distance (or a version without ink
 running up or down in the x-height band) is set at its gap. A version sits on the line where the
-samples it is made from sit on average (with the weights that make its shape). The same samples and picks make
+samples it is made from sit on average (with the weights that make its shape), and is as tall
+as they are on average: averaging and smoothing take height off versions that differ a little
+in shape, so its heights are stretched back from its centre (the width as it comes; not when
+under 0.1 x-heights tall or needing more than 1.5 times). The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
 
 It is made again when its inputs (the prompted samples and the picks, and the way it is built: a

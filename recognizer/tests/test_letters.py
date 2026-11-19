@@ -26,6 +26,7 @@ import json
 import math
 import os
 import random
+import statistics
 import shutil
 import subprocess
 import tempfile
@@ -351,6 +352,42 @@ class LetterModel(unittest.TestCase):
         for v in o["variants"]:
             ys = [p[1] for st in v["strokes"] for p in st]
             self.assertLess(abs(min(ys)), 0.05, (min(ys), max(ys)))
+
+    def test_variant_keeps_its_versions_size(self):
+        """a variant is as tall and as wide as its versions on average, within 2 % (FR-006):
+        versions that put the top of their curve a little earlier or later along the stroke
+        average to a flatter one, which making it doesn't let shrink"""
+        rnd = random.Random(43)
+
+        def wavy(c, dphi):
+            # one stroke, its height from the phase of its curve, its width from x alone
+            out = []
+            for i in range(24):
+                t = i / 23
+                x = 0.1 + 0.6 * t + rnd.gauss(0, 0.004)
+                y = 0.5 + 0.5 * math.sin(2.4 * math.pi * t + dphi + (0.6 if c == "o" else 0)) + rnd.gauss(0, 0.004)
+                out.append((x, y))
+            y0, y1 = min(p[1] for p in out), max(p[1] for p in out)
+            return [[(px, (py - y0) / (y1 - y0)) for px, py in out]]
+
+        ss, widths = [], {}
+        for k in range(10):
+            letters = []
+            for i, c in enumerate("aon"):
+                sh = wavy(c, -0.3 + 0.6 * ((k * 7) % 10) / 9)
+                widths.setdefault(c, []).append(max(p[0] for p in sh[0]) - min(p[0] for p in sh[0]))
+                letters.append((sh, 1.2 * i))
+            ss.append(ink_sample("aon", letters))
+        self.e.put(ss)
+        self.e.run("letters", "build", "-r")
+        chars = {d["char"]: d for d in map(json.loads, self.e.model().splitlines()) if "char" in d}
+        for c in "aon":
+            for v in chars[c]["variants"]:
+                ys = [p[1] for st in v["strokes"] for p in st]
+                xs = [p[0] for st in v["strokes"] for p in st]
+                # the versions are one x-height tall (their samples' x-height) and about as wide
+                self.assertAlmostEqual(max(ys) - min(ys), 1, delta=0.02, msg=c)
+                self.assertAlmostEqual((max(xs) - min(xs)) / statistics.mean(widths[c]), 1, delta=0.02, msg=c)
 
     def test_deterministic_and_order_free(self):
         ss = alphabet_samples(per=3)
@@ -1328,8 +1365,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 11))
-            old = dict(head, inputs=hw_inputs(ids, 10))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 12))
+            old = dict(head, inputs=hw_inputs(ids, 11))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
