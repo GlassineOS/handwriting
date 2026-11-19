@@ -422,7 +422,7 @@ int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n,
 		ix[m0++] = (struct obs_ix){ o[i].a, o[i].b, hw_spacing_side(sp, &o[i].pa, 1), hw_spacing_side(sp, &o[i].pb, 0),
 					   o[i].gap, hw_profile_open(&o[i].pa, &o[i].pb), o[i].mb - o[i].ma, o[i].run };
 	}
-	n = running_text(sp, ix, n, x);
+	n = running_text(sp, ix, m0, x);
 	for (size_t i = 0; i < n; i++) g[i] = ix[i].gap;
 	/* the person's typical gap; how much closer open profiles sit (a least-squares slope of
 	 * the gap on the open space, with enough pairs) */

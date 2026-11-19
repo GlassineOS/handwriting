@@ -1766,6 +1766,67 @@ def set_mid(e, ttf, pair):
     return mids[1] - mids[0]
 
 
+class ModelText(unittest.TestCase):
+    """spec 003 FR-006, FR-015: a store with sentences and pairs whose gaps are left out (beyond
+    what handwriting has) builds a model of valid UTF-8 whose pairs are real characters, the
+    same byte for byte when built again; a damaged entry in a model is left out with a
+    warning, the rest loads"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(61)
+        ss = alphabet_samples(seed=61, per=3)
+        for k in range(4):
+            ss.append(spaced_sample("an en in on", rnd, gap=0.3))
+            ss.append(spaced_sample("ox ax ex", rnd, gaps={"ox": 2.2, "ax": -0.9}, gap=0.3))
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.raw = (cls.e.store / "letters" / "model").read_bytes()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_valid_and_real_characters(self):
+        text = self.raw.decode("utf-8")                       # strict
+        sp = next(d["spacing"] for d in map(json.loads, text.splitlines()) if "spacing" in d)
+        self.assertTrue(sp["pairs"])
+        for p in sp["pairs"]:
+            for c in p[:2]:
+                self.assertEqual(len(c), 1, p)
+                self.assertIn(c, ALNUM, p)
+        for r in sp["reach"]:
+            self.assertIn(r[0], ALNUM, r)
+
+    def test_same_when_built_again(self):
+        for _ in range(3):
+            self.e.run("letters", "build", "-r", "-f")
+            self.assertEqual((self.e.store / "letters" / "model").read_bytes(), self.raw)
+
+    def test_damaged_entries_left_out(self):
+        other = Env()
+        try:
+            lines = self.raw.split(b"\n")
+            k = next(i for i, ln in enumerate(lines) if ln.startswith(b'{"spacing"'))
+            lines[k] = lines[k].replace(b'"pairs":[[', b'"pairs":[["\xfc\x83\x80\xb0\x80\x80","a",0.3,3,null],[', 1)
+            c = next(i for i, ln in enumerate(lines) if ln.startswith(b'{"char":"b"'))
+            lines[c] = lines[c].replace(b'{"char":"b"', b'{"char":"\xed\xa0\x80"', 1)
+            lines.insert(c, b'{"char": not json')
+            (other.store / "letters").mkdir(parents=True)
+            (other.store / "letters" / "model").write_bytes(b"\n".join(lines))
+            ttf = other.dir / "f.ttf"
+            p = other.run("font", "build", str(ttf))
+            self.assertIn("isn't valid, left out", p.stderr)
+            self.assertNotIn("\ufffd", p.stderr)
+            self.assertTrue(ttf.exists())
+            st = subprocess.run([str(BIN), "letters", "show"], env=other.env, capture_output=True, timeout=60)
+            self.assertEqual(st.returncode, 0)
+            self.assertIn(b'"char":"a"', st.stdout)
+        finally:
+            other.close()
+
+
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
 class RunningText(unittest.TestCase):
     """spec 003 FR-007: spacing follows running text: pairs written 4 times each in sentences
