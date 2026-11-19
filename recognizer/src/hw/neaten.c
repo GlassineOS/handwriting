@@ -192,12 +192,16 @@ double hw_neat_variant_dist(const struct hw_ink *ink, size_t n, double xh, const
 /* a piece more than this many x-heights from where its stroke lies in the glyph (both about
  * their character's middle) hasn't the glyph's structure */
 #define HW_NEAT_PLACE 0.45
+/* nor ink whose middle lies more than this many x-heights above or below the glyph's on the
+ * line */
+#define HW_NEAT_PLACE_LINE 0.75
+/* a piece's matched places reach its glyph stroke's ends within this share of its length
+ * (at a joint within the other), else it is traced by the length along it */
+#define HW_NEAT_COVER 0.1
+#define HW_NEAT_COVER_JOINT 0.3
 /* how hard the stretch is held to none (per matched point; the matching's map only, the
  * glyph itself is only moved and scaled) */
 #define HW_NEAT_RIGID 0.02
-/* how much downstroke (squared x-heights, by the versions' members) a character's versions
- * need for their own lean to count as much as the person's slant */
-#define HW_NEAT_SLANT_PRIOR 0.05
 /* a turn this sharp (degrees) the version gives a letter's points where its ink has none
  * near (this many points to either side) is a part the ink doesn't have */
 #define HW_NEAT_CORNER 90
@@ -509,24 +513,6 @@ static int new_corner(const double *x, const double *y, const double *dx, const 
 	return new_corners(x, y, dx, dy, m, xh, p, NULL);
 }
 
-/* the lean of character cp's downstrokes as its versions have it (the same measure as the
- * ink's: a letter leaning by its shape keeps that lean), towards the person's slant where the
- * versions show little; the person's slant without a letter model or versions */
-static double slant_of(const struct hw_letters *L, unsigned cp, double slant)
-{
-	const struct hw_letter *le = L ? letter_of(L, cp) : NULL;
-	double num = 0, den = 0;
-	for (int t = 0; le && t < le->nvar; t++) {
-		const struct hw_variant *v = &le->var[t];
-		if (v->out || v->members < 2) continue;
-		for (size_t a = 0; a < v->nstrokes; a++)
-			for (size_t i = 1; i < v->s[a].n; i++) {
-				double dx = v->s[a].x[i] - v->s[a].x[i - 1], dy = v->s[a].y[i] - v->s[a].y[i - 1];
-				if (dy < 0 && -dy > 2 * fabs(dx)) { num += v->members * dx * dy; den += v->members * dy * dy; }
-			}
-	}
-	return (num + slant * HW_NEAT_SLANT_PRIOR) / (den + HW_NEAT_SLANT_PRIOR);
-}
 
 /* The pull of character k (FR-014, FR-035, FR-036) towards its glyph (c->v, the one the font
  * draws there): its pieces, whether they have the glyph's structure (as many as its strokes,
@@ -552,6 +538,7 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	c->pc = malloc((size_t)np * sizeof *c->pc);
 	double **sx = calloc((size_t)np * 2 + 1, sizeof *sx);
 	size_t *sn = calloc((size_t)np + 1, sizeof *sn);
+	double *cover = NULL;
 	int ret = -1;
 	if (!c->pc || !sx || !sn) goto out;
 	c->np = 0;
@@ -584,8 +571,10 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	ret = 0;
 	/* the structure (FR-014), coarsely: as many pieces as the glyph has strokes, each about
 	 * where its stroke lies in the glyph (so a stroke order or a cut of a joined stroke
-	 * other than the glyph's isn't pulled into it); how closely the shapes agree doesn't
-	 * matter */
+	 * other than the glyph's isn't pulled into it), and on the line about where the glyph
+	 * lies above the baseline (so ink the alignment gave the wrong character, a letter for
+	 * a mark above it, isn't pulled into that one's glyph); how closely the shapes agree
+	 * doesn't matter */
 	if ((int)c->v->nstrokes != np) goto out;
 	c->t = c->v->s;
 	{
@@ -608,6 +597,11 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 			}
 		}
 		if (ni && nt) { icx /= ni; icy /= ni; tcx /= nt; tcy /= nt; }
+		if (hasbase && !bad) {
+			double i0 = INFINITY, i1 = -INFINITY, t0 = INFINITY, t1 = -INFINITY;
+			for (int a = 0; a < np; a++) { i0 = fmin(i0, pb[a][2]); i1 = fmax(i1, pb[a][3]); t0 = fmin(t0, pb[a][6]); t1 = fmax(t1, pb[a][7]); }
+			bad = fabs((i0 + i1) / 2 + base / xh - (t0 + t1) / 2) > HW_NEAT_PLACE_LINE;
+		}
 		for (int a = 0; !bad && a < np; a++) {
 			const double *b = pb[a];
 			double dx = ((b[0] + b[1]) / 2 - icx) - ((b[4] + b[5]) / 2 - tcx), dy = ((b[2] + b[3]) / 2 - icy) - ((b[6] + b[7]) / 2 - tcy);
@@ -641,7 +635,9 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	size_t all = 0, nfp;
 	for (int a = 0; a < np; a++) all += sn[a];
 	double *fp = malloc((all + 1) * 4 * sizeof *fp);
-	if (!fp) goto out;
+	cover = malloc(((size_t)np + 1) * 2 * sizeof *cover);
+	if (!fp || !cover) { free(fp); free(cover); goto out; }
+	for (int a = 0; a < np; a++) { cover[2 * a] = 1; cover[2 * a + 1] = 0; }
 	for (int pass = 0; pass < 2; pass++) {
 		nfp = 0;
 		for (int a = 0; a < np; a++) {
@@ -665,6 +661,7 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 			for (size_t i = 0; i < m; i++) {
 				size_t pi = pc->a + i;
 				if (isnan(u[i])) { ex[pc->j][pi] = ey[pc->j][pi] = NAN; continue; }
+				if (pass) { cover[2 * a] = fmin(cover[2 * a], u[i]); cover[2 * a + 1] = fmax(cover[2 * a + 1], u[i]); }
 				double f2[2], p2[2] = { X[i], Y[i] };
 				/* (the version unmapped: the map only finds the places) */
 				at_fraction(T, TY, tn, tc, u[i], &f2[0], &f2[1]);
@@ -698,12 +695,16 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	 * matching gave too few points (a loop the ink lacks, a turn written otherwise). The
 	 * piece is traced again by the length along it instead (its points spread over the glyph's
 	 * stroke as over the ink's); still kinked, the glyph hasn't the ink's structure there and
-	 * it isn't pulled */
+	 * it isn't pulled. So is a piece whose matched places don't reach the glyph stroke's ends
+	 * (within HW_NEAT_COVER of its length, HW_NEAT_COVER_JOINT at a joint): the glyph is
+	 * drawn whole, not a part of it on all of the piece's points */
 	for (int a = 0; a < np; a++) {
 		const struct piece *pc = &c->pc[a];
 		size_t m = sn[a];
 		double *px = ex[pc->j] + pc->a, *py = ey[pc->j] + pc->a;
-		if (!new_corner(sx[a], sx[np + a], px, py, m, xh, 1) && !new_corner(sx[a], sx[np + a], px, py, m, xh, c->pull)) continue;
+		int whole = cover[2 * a] <= (pc->joint0 ? HW_NEAT_COVER_JOINT : HW_NEAT_COVER) &&
+			    cover[2 * a + 1] >= 1 - (pc->joint1 ? HW_NEAT_COVER_JOINT : HW_NEAT_COVER);
+		if (whole && !new_corner(sx[a], sx[np + a], px, py, m, xh, 1) && !new_corner(sx[a], sx[np + a], px, py, m, xh, c->pull)) continue;
 		const struct hw_lstroke *t = &c->t[a];
 		double *ic = malloc((m + 1 + t->n + 1) * sizeof *ic), *tc = ic + m + 1;
 		if (!ic) goto out;
@@ -731,7 +732,7 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 	ret = 0;
 out:
 	for (int a = 0; sx && a < np; a++) { free(sx[a]); free(sx[np + a]); }
-	free(sx); free(sn);
+	free(sx); free(sn); free(cover);
 	if (ret || !(c->pull > 0)) c->pull = 0;
 	return ret;
 }
@@ -1141,15 +1142,8 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 	double target_base = ba + bb * (wx0 + wx1) / 2;
 
 	/* the slant: steady, towards the person's (the line's own without a letter model) */
-	/* (with a letter model each letter against its own versions' lean, so a line of letters
-	 * that lean by their shape doesn't lean: the line's lean is then how far it leans off
-	 * them) */
 	double snum = 0, sden = 0;
-	for (size_t k = 0; k < nc; k++)
-		if (C[k].npts && C[k].ok) {
-			snum += C[k].snum - slant_of(q->L, q->cp[k], q->L ? q->L->m.slant : 0) * C[k].sden;
-			sden += C[k].sden;
-		}
+	for (size_t k = 0; k < nc; k++) if (C[k].npts && C[k].ok) { snum += C[k].snum; sden += C[k].sden; }
 	double sline = sden > 0 ? snum / sden : 0;
 	double starget = q->L ? q->L->m.slant : sline;
 	double prior = (0.5 * xh) * (0.5 * xh);
@@ -1161,11 +1155,8 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 		c->ax = c->cx;
 		c->ay = hasbase ? ba + bb * c->cx : c->y1;
 		if (!c->ok) continue;
-		/* its lean, towards what the line's lean makes of its versions' where it has little
-		 * downstroke; the shear takes it to its versions' */
-		double own = q->L ? slant_of(q->L, q->cp[k], starget) : starget;
-		double sc = (c->snum + (q->L ? own + sline : sline) * prior) / (c->sden + prior);
-		if (on.slant) c->shear = clampd(own - sc, -0.4, 0.4);
+		double sc = (c->snum + sline * prior) / (c->sden + prior);
+		if (on.slant) c->shear = clampd(starget - sc, -0.4, 0.4);
 		double r = ratio_of(c->cls, q->L);
 		if (on.size && r > 0 && c->y1 > c->y0 && c->fit >= HW_NEAT_FIT_PULL) c->f = clampd(xh * r / (c->y1 - c->y0), 0.85, 1.18);
 	}
