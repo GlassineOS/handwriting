@@ -381,9 +381,8 @@ size, spacing) and keep their shape.
   near it, and where the person didn't lift the pen between two glyphs' strokes a straight
   joining line runs from the one to the other. A character the letter model doesn't cover
   keeps its written ink as the line-level corrections leave it, moved to the middle of the
-  box the font has for it. The text is known with the confirmed text, or without it for a
-  word the recognizer reads with high confidence (the alignment's mean fit of its
-  characters at least 0.9, none below 0.5). A word is set only when its ink can be its
+  box the font has for it. Only the confirmed text is known: without it no word is set (a
+  word read wrongly would be set as another word). A word is set only when its ink can be its
   set word: each character with ink of its own, strokes of no other word, no drawing or
   gesture among them, the ink about as wide as the set word (neither more than 1.6 times the
   other) and each character's ink about where its glyph is (within 0.6 x-heights, scaled to

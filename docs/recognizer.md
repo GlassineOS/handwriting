@@ -466,8 +466,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   the pen between two glyphs' strokes the two points either side are joined by a straight
   line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
   along the line to the middle of the font's box for it (`.notdef`, one x-height wide), and
-  stays `not-covered`. The text is known with `TEXT`, or without it for a word whose
-  characters' mean fit is at least 0.9, none below 0.5. A word is set only when every
+  stays `not-covered`. Only with `TEXT`: without it no word is set (on real ink even the
+  words read with the highest alignment fit were read wrongly more often than not, and a
+  word read wrongly would be set as another). A word is set only when every
   character has ink of its own, its strokes hold no other word's ink, none is drawing or a
   gesture or low confidence, the ink (as Strong leaves it) is at most 1.6 times as wide as
   the set word and the set word at most 1.6 times the ink, and each character's ink's middle
