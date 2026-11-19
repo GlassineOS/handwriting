@@ -106,7 +106,10 @@ Size and Base models) has a reference: the person's letters in millimetres when 
   size in millimetres is assumed.
 
 The words of a line and the lines of the writing are read and neatened in sessions of their
-own, with the surface's box and line and the guide line of their line. The main session's area
+own, with the surface's box and line and the guide line of their line. A word is neatened
+without its reading as the text: the reading only tells which strokes are a word, and only a
+text the person confirmed is set in their font at Neatest (spec 003 FR-043; a word read
+wrongly would be set as another). The `neaten` method passes the app's `text` on as given. The main session's area
 follows the writing as it grows.
 
 A line found from the writing tells nothing of a lone character's size (a lone `o` from an
