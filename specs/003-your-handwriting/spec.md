@@ -122,14 +122,15 @@ size, spacing) and keep their shape.
 
 - **FR-042**: Everything in this spec that makes or uses the font has a tab of its own in
   the samples app (spec 002 FR-026), **Your font**, in the owner's session only. It opens on
-  its parts: the font page (Scenario 3: the preview, the styles and the nib, install, and
-  each character's page with its samples, FR-033, where a single character is also learned
-  again, FR-032), "Write it your best" (Scenario 1), "Which one is nicer?" (Scenario 2) and
-  Neaten my writing (the app's own page that draws through the neat ink layer, Scenario 4).
-  Each part leads back to it. The font's counts per character (FR-030) are on the font page
-  and the character's page, apart from the recognizer's coverage beneath Learn. A guest's
-  session has no Your font tab: "Write it your best" and "Which one is nicer?" are prompt
-  sets in its Write tab (spec 002 FR-018).
+  the font page (Scenario 3: the preview, the styles and the nib, install, and each
+  character's page with its samples, FR-033, where a single character is also learned again,
+  FR-032). Below the font's letters, rows open "Write it your best" (Scenario 1), "Which one
+  is nicer?" (Scenario 2) and Neaten my writing (the app's own page that draws through the
+  neat ink layer, Scenario 4); each leads back to the font page. The font's counts per
+  character (FR-030) are on the font page and the character's page, apart from the
+  recognizer's coverage beneath Learn. A guest's session has no Your font tab: "Write it
+  your best" is a prompt set in its Write tab, and "Which one is nicer?" isn't offered
+  there (spec 002 FR-018).
 
 ### The letter model
 
