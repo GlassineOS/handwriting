@@ -217,7 +217,7 @@ class UI:
         self.ep = 0                     # its page
         self.confirm = None             # (title, text, yes-label, fn) for a destructive action
         self.sets_open = False
-        self.best = None                # Learn's Your handwriting: None, "intro", "pick", "font"
+        self.best = None                # on the Your font tab: "font" (its page) or "pick"; else None
         self.font = None                # the font page: {"status": cli.letters(), "model": fontview.parse()}
         self.font_busy = None           # "making" while the letter model and the font are built
         self.font_name = None           # a name chosen before the font is installed
@@ -539,11 +539,17 @@ class UI:
     # ---------------------------------------------------------- navigation
 
     def go(self, page):
-        if self.guest and page in ("learn", "neat", "others"):
+        """a tab, or a page beneath one: Samples and Coverage beneath Learn, a guest's Samples
+        beneath Contribute, Neaten my writing beneath Your font (spec 002 FR-026)"""
+        if self.guest and page in ("font", "learn", "coverage", "neat", "others"):
             page = "write"              # not in a guest's session (spec 002 FR-018)
+        if (not self.guest and self.page == "write" and self.tab == "font" and self.writer
+                and self.writer.best is not None and not self.demo):
+            self.run(self.writer.stop_best)     # Write it your best is left
         self.close_neat()
         self.page = page
-        self.tab = page
+        self.tab = {"samples": "donate" if self.guest else "learn", "coverage": "learn",
+                    "neat": "font"}.get(page, page)
         self.detail = None
         self.asking_delete = False
         self.confirm = None
@@ -555,11 +561,12 @@ class UI:
         if self.sheet:
             self.close_char()
         self.renaming = None
-        if page != "learn":
-            self.best = None
-            self.pick = None
+        self.best = "font" if page == "font" else None
+        self.pick = None
         if page != "write" and not self.demo:
             self.refresh()
+        if page == "font":
+            self.load_font()
         self.redraw()
 
     def open_sets(self):
@@ -732,15 +739,13 @@ class UI:
         self.act("skip")
 
     def choose_set(self, name):
-        """a prompt set; in a guest's session also Write it your best and Which one is nicer?,
-        which are sets there (spec 002 FR-018: no Learn tab)"""
+        """a prompt set; in a guest's session also Write it your best, a set there (spec 002
+        FR-018: no Your font tab; Which one is nicer? isn't offered to a guest)"""
         self.sets_open = False
         if name == "best":
             return self.start_best()
         if name == "pick":
-            self.go("write")
-            self.page = "learn"
-            return self.start_pick()
+            return self.redraw()
         wr = self.writer
 
         def go():
@@ -938,40 +943,29 @@ class UI:
         cli, lang = self.cli, self.state.lang
         self.run(lambda: cli.revert(lang), lambda _: self.refresh())
 
-    # ---------------------------------------------------------- Your handwriting
+    # ---------------------------------------------------------- Your font
 
-    def open_best(self, mode):
-        """Learn's Your handwriting (mode "intro"), or back to Learn (None); either way the
-        careful writing stops. In a guest's session: back to the sets"""
+    def open_best(self):
+        """back to the font page, the Your font tab, from its parts; the careful writing
+        stops. In a guest's session (no Your font tab): back to the sets"""
         if self.guest:
             self.go("write")
             return self.open_sets()
-        self.close_neat()
-        if self.sheet:
-            self.close_char()
-        self.renaming = None
-        if self.writer and self.writer.best is not None:
-            self.run(self.writer.stop_best)
-        self.page = self.tab = "learn"
-        self.best = mode
-        self.pick = None
-        self.sets_open = False
-        self.redraw()
+        self.go("font")
 
     def start_best(self):
-        self.best = None
-        self.run(self.writer.start_best)
+        """Write it your best: Write's page, as a part of Your font (in a guest's session, a
+        set in Write)"""
         self.go("write")
+        self.run(self.writer.start_best)
+        if not self.guest:
+            self.tab = "font"
+        self.redraw()
 
     def open_font(self):
         """Your font: the letters it has, a preview, what is missing"""
-        if self.guest:
-            return
-        self.best = "font"
-        self.msg = ""
-        self.sheet = None
-        self.redraw()
-        self.load_font()
+        if not self.guest:
+            self.go("font")
 
     def letters_bg(self, fn, done):
         """the letter model's calls on a thread of their own: a count or a build of the
@@ -1552,7 +1546,7 @@ class UI:
             return
         self.neat = N.Neat(self.rec, self.state.lang)
         self.neat_shown, self.neat_text, self.neat_orig = {}, "", False
-        self.page, self.tab, self.best = "neat", "learn", None
+        self.page, self.tab, self.best = "neat", "font", None
         self.msg = ""
         self.load_font()
         self.redraw()
@@ -1564,7 +1558,7 @@ class UI:
         self.neat_gen += 1
         self.neat_shown, self.neat_text, self.neat_again = {}, "", None
         if self.page == "neat":
-            self.page, self.best = "learn", "intro"
+            self.page, self.best = "font", "font"
         if self.work:
             self.work.do(n.close)
 
@@ -1617,8 +1611,11 @@ class UI:
         self.redraw()
 
     def start_pick(self):
+        """Which one is nicer?, on the Your font tab; not offered to a guest (spec 002 FR-018)"""
+        if self.guest:
+            return
+        self.go("font")
         self.best = "pick"
-        self.pick = None
         self.next_pick()
 
     def next_pick(self):
@@ -2116,7 +2113,7 @@ def writing(ui):
 def sheet_writing(ui):
     """the character sheet on Write more, or writing a sample again: a writing page inside
     the sheet"""
-    return bool(ui.page == "learn" and ui.best == "font" and ui.sheet and not ui.renaming and
+    return bool(ui.page == "font" and ui.best == "font" and ui.sheet and not ui.renaming and
                 (redoing(ui) or (ui.sheet["seg"] == "write" and not pages.drilled(ui.sheet))))
 
 
@@ -2400,19 +2397,19 @@ class App(Gtk.Application):
 SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", "wizard.learning", "wizard.donate",
            "wizard.licence", "wizard.ready", "write.prompt", "write.ink", "write.kept", "write.check", "write.sentence",
            "write.sets", "samples.list", "samples.detail", "samples.delete", "coverage", "learn.few", "learn.waiting",
-           "learn.running", "learn.better", "learn.kept", "best.intro", "best.write", "best.quick", "best.careful",
+           "learn.running", "learn.better", "learn.kept", "best.write", "best.quick", "best.careful",
            "best.pick", "font.none", "font.learning", "font.current", "font.installed", "font.outdated",
            "font.rename", "font.relearn", "font.style-calligraphy", "font.style-brush", "char.versions", "char.samples", "char.write", "char.pick", "char.missing",
            "char.sample", "char.redo", "char.delete", "char.version-samples",
            "neat.write", "neat.original", "neat.unlearned", "donate.off", "donate.licence", "donate.earlier", "donate.on", "donate.saved",
            "others.list", "others.empty", "others.add", "others.rename", "others.taken", "others.long", "others.remove",
            "others.remove-plain", "others.done", "others.done-kept", "guest.hello", "guest.try", "guest.share", "guest.age",
-           "guest.age-ticked", "guest.licence", "guest.write", "guest.best", "guest.sets", "guest.samples", "guest.coverage",
+           "guest.age-ticked", "guest.licence", "guest.write", "guest.best", "guest.sets", "guest.samples",
            "guest.contribute-off", "guest.contribute", "guest.saved")
 # a guest's screens are the owner's pages in that writer's session (made-up names, no one's)
 GUEST_SCREENS = {"hello": "wizard.hello", "try": "wizard.try", "share": "wizard.donate", "age": "wizard.age",
                  "age-ticked": "wizard.age", "licence": "wizard.licence", "write": "write.prompt", "best": "best.write",
-                 "sets": "write.sets", "samples": "samples.list", "coverage": "coverage", "contribute-off": "donate.off",
+                 "sets": "write.sets", "samples": "samples.list", "contribute-off": "donate.off",
                  "contribute": "donate.on", "saved": "donate.saved"}
 DEMO_WRITERS = (("00000000000000a1", "Guest writer", 48, 12, True), ("00000000000000a2", "Second writer", 9, 0, False),
                 ("00000000000000a3", "Book club guest", 0, 0, False))
@@ -2580,7 +2577,7 @@ def demo(screen, voice="white"):
         elif sub == "sets":
             ui.sets_open = True
     elif sec == "samples":
-        ui.page = ui.tab = "samples"
+        ui.page, ui.tab = "samples", "donate" if guest else "learn"
         if sub in ("detail", "delete"):
             sid = ui.samples[-3][0]
             ui.detail = (sid, dict(ui.inks[sid], reading=[{"text": ui.inks[sid]["text"]}],
@@ -2588,7 +2585,7 @@ def demo(screen, voice="white"):
             ui.donated.add(sid)
             ui.asking_delete = sub == "delete"
     elif sec == "coverage":
-        ui.page = ui.tab = "coverage"
+        ui.page, ui.tab = "coverage", "learn"
     elif sec == "learn":
         ui.page = ui.tab = "learn"
         if sub == "few":
@@ -2601,24 +2598,21 @@ def demo(screen, voice="white"):
         elif sub == "kept":
             ui.fresh, ui.result = 0, ("result", ["rejected", "0.121", "0.127", "120", "28"])
     elif sec == "best":
-        if sub == "intro":
-            ui.page = ui.tab = "learn"
-            ui.best = "intro"
-        elif sub == "pick":
-            ui.page = ui.tab = "learn"
+        if sub == "pick":
+            ui.page = ui.tab = "font"
             ui.best = "pick"
             a, sa = demo_ink("g", 3)
             b, sb = demo_ink("g", 11)
             ui.pick = {"a": ("a", a, 0), "b": ("b", b, 0), "char": "g", "chosen": None}
         else:
-            ui.page = ui.tab = "write"
+            ui.page, ui.tab = "write", "write" if guest else "font"
             w.best = {"step": {"write": "careful", "quick": "quick", "careful": "pair"}[sub], "pair": "0" * 16, "n": 2}
             w.prompt = P.Prompt("Thursday", "words", "en", written="quick" if sub == "quick" else "careful")
             if sub == "careful":
                 w.shown = shown("Thursday")
                 w.shown.prompt = P.Prompt("Thursday", "words", "en", written="quick", pair="0" * 16)
     elif sec == "font":
-        ui.page = ui.tab = "learn"
+        ui.page = ui.tab = "font"
         ui.best = "font"
         ui.font = demo_font(sub in ("installed", "outdated", "rename", "relearn") or sub.startswith("style-"),
                             {"none": "none", "learning": "none", "outdated": "outdated"}.get(sub, "current"))
@@ -2631,7 +2625,7 @@ def demo(screen, voice="white"):
         elif sub == "rename":
             ui.renaming = {"text": "Garden letters"}
     elif sec == "char":
-        ui.page = ui.tab = "learn"
+        ui.page = ui.tab = "font"
         ui.best = "font"
         ui.font = demo_font(True)
         c = "Q" if sub == "missing" else "t"
@@ -2676,7 +2670,7 @@ def demo(screen, voice="white"):
             w.prompt = ps[w.best["n"]]
             del n
     elif sec == "neat":
-        ui.page, ui.tab = "neat", "learn"
+        ui.page, ui.tab = "neat", "font"
         ui.font = demo_font(False, "none" if sub == "unlearned" else "current")
         ui.neat_text = "Call back about the train at ten"
         ui.neat_orig = sub == "original"

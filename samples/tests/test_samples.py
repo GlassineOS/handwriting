@@ -817,14 +817,16 @@ class Pages(Case):
         u.wizard_done()
         u.start_best()
         self.settle(u)
+        self.assertEqual((u.page, u.tab), ("write", "font"))     # a part of Your font
         kinds = []
         for _ in range(4):
             sh = self.submit(u)
             kinds.append(sh.prompt.written)
         self.assertEqual(kinds, ["careful", "careful", "quick", "careful"])
         self.assertEqual(u.careful_today(), 3)
-        u.open_best("intro")
+        u.open_best()                   # back to the font page
         self.settle(u)
+        self.assertEqual((u.page, u.tab, u.best), ("font", "font", "font"))
         self.assertIsNone(u.writer.best)
         u.refresh()
         self.settle(u)
@@ -917,7 +919,6 @@ class Pages(Case):
         u.close_char()
         self.settle(u, lambda: not u.relearn and not u.letters_loading)
         # a new name: made again under it, the version counts on
-        u.open_best("intro")
         u.open_font()
         self.settle(u, lambda: u.font is not None and not u.letters_job and not u.letters_loading)
         u.font_name = "Notes hand"
@@ -1017,7 +1018,6 @@ class Pages(Case):
         self.e.cli.run("samples", "import", str(f))
         u = self.make()
         u.wizard_done()
-        u.open_best("intro")
         u.open_font()
         self.settle(u, lambda: u.font is not None and not u.letters_loading)
         u.make_font()                               # Install learns the letters first
@@ -1122,7 +1122,6 @@ class Pages(Case):
         noread = next(i for i, g in got.items() if "reading" not in g)
         u = self.make()
         u.wizard_done()
-        u.open_best("intro")
         u.open_font()
         self.settle(u, lambda: u.font is not None and not u.letters_loading)
         u.build_letters()
@@ -1245,9 +1244,9 @@ class Pages(Case):
         u = self.make()
         u.wizard_done()
         before = len(self.e.cli.samples())
-        u.open_best("intro")
+        u.open_font()
         u.open_neat()
-        self.assertEqual((u.page, u.tab), ("neat", "learn"))
+        self.assertEqual((u.page, u.tab), ("neat", "font"))
         self.assertTrue(self.U.writing(u))
         line, first = 150, 93
         strokes = ink(self.rng, n=4) + [[(x, y + line, *r) for x, y, *r in s] for s in ink(self.rng, n=3)]
@@ -1470,19 +1469,26 @@ class Guests(Case):
         self.assertTrue(u.guest)
         self.settle(u, lambda: u.loaded)
         self.assertEqual((u.page, u.wstep, u.gflow), ("wizard", "g-hello", "intro"))
-        self.assertEqual([t for t, *_ in look.GUEST_TABS], ["write", "samples", "coverage", "donate"])
-        # the header's Finish on every page, the intro's too; four tabs, nothing of the owner's
+        self.assertEqual([t for t, *_ in look.GUEST_TABS], ["write", "donate"])
+        # the header's Finish on every page, the intro's too; two tabs, nothing of the owner's;
+        # their own samples beneath Contribute
         import cairo
-        for page in ("wizard", "write", "samples", "coverage", "donate", "learn", "others"):
+        for page in ("wizard", "write", "samples", "coverage", "donate", "font", "learn", "others"):
             if page != "wizard":
                 u.go(page)
-            self.assertNotIn(u.page, ("learn", "others"))
+            self.assertNotIn(u.page, ("font", "learn", "coverage", "others"))
+            if page == "samples":
+                self.assertEqual((u.page, u.tab), ("samples", "donate"))
             hits = self.U.Hits()
             pages.paint_full(cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 702, 936)), u, hits, 702, 936)
             self.assertTrue(any(getattr(fn, "__func__", None) is self.U.UI.finish for *_, fn in hits.boxes), page)
-        for a in ("adapt", "open_font", "open_neat", "import_latest"):
+        for a in ("adapt", "open_font", "open_neat", "start_pick", "import_latest"):
             getattr(u, a)()
-            self.assertNotIn(u.page, ("learn", "neat"))
+            self.assertNotIn(u.page, ("font", "learn", "neat"))
+        # Which one is nicer? isn't offered to a guest, not even as a set
+        self.assertNotIn("pick", [n for n, *_ in pages.GSETS])
+        u.choose_set("pick")
+        self.assertIsNone(u.best)
         # the introduction: hello, try, share, 18 or older, licence; the age is kept nowhere
         u.page, u.gflow = "wizard", "intro"
         u.wizard_to("g-hello")
@@ -1685,7 +1691,6 @@ class Window(Case):
                 seen.append(("turned", a.width < 936 and a.height < 702))
                 w.resize(702, 936)
                 u.wizard_done()
-                u.open_best("intro")
                 u.open_font()
                 return True
             sa = w.stack.get_allocation()
@@ -1750,7 +1755,7 @@ class Window(Case):
         app.run(["glassine-handwriting-samples"])
         self.assertEqual(seen, ["full", ("try", "write", True), ("turned", True), ("sheet", "Q", True),
                                 ("rename", "full", True, "My handwriting"), ("named", "Garden letters", False),
-                                ("again", 0, True, "learn"), ("private", True, True, True), ("added", "Rose", False, ""),
+                                ("again", 0, True, "font"), ("private", True, True, True), ("added", "Rose", False, ""),
                                 ("guest", "wizard", "g-hello"), ("wrote", "kept"), ("finished", False, "Rose", 1, True)])
         self.assertEqual(self.e.cli.samples(), [])          # the guest's sample is in their store alone
 
