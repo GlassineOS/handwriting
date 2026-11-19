@@ -14,6 +14,20 @@
 /* what was done to a stroke */
 enum { HW_NEAT_KEPT, HW_NEAT_LINE, HW_NEAT_PULLED };
 
+/* what was done to a character (FR-041): pulled, or why not */
+enum {
+	HW_NEAT_WHY_PULLED,
+	HW_NEAT_WHY_LEVEL,              /* the level pulls no letter (Light and below, no letter model's pull) */
+	HW_NEAT_WHY_NOT_COVERED,        /* the letter model doesn't cover it */
+	HW_NEAT_WHY_NO_STRUCTURE,       /* no version with its strokes and structure */
+	HW_NEAT_WHY_NOT_NEAR,           /* not close enough to its best version for the level (Medium) */
+	HW_NEAT_WHY_SHAPE_GUARD,        /* its new ink came closer to another character (FR-037) */
+	HW_NEAT_WHY_LOW_CONFIDENCE,     /* in a word read with low confidence, or itself (FR-017) */
+	HW_NEAT_WHY_DRAWING,            /* its strokes are drawing (FR-020) */
+	HW_NEAT_WHY_GESTURE,            /* its stroke is a gesture (FR-020; the caller sets it) */
+	HW_NEAT_WHY_NO_INK,             /* no ink of its own (a space; or none aligned to it) */
+};
+
 /* the levels (FR-014): the strength of each; in between, part of the way to the next */
 #define HW_NEAT_LIGHT 0.25      /* the line-level corrections, all of them from here */
 #define HW_NEAT_MEDIUM 0.5      /* and the characters near their best version pulled */
@@ -47,17 +61,22 @@ struct hw_neat {
 	double xh;                      /* the person's x-height in the ink's units, 0 unknown */
 	int line_only;                  /* no pull: line-level corrections only */
 	const unsigned char *nopull;    /* per character: 1 not pulled (FR-037); NULL none */
+	const unsigned char *guard;     /* (tests) per character: 1 fails the shape guard; NULL none */
 	/* out (malloc'd by hw_neaten; hw_neat_free) */
 	double **x, **y;
 	int *how;
 	unsigned char *pulled;          /* per character: 1 pulled */
+	unsigned char *why;             /* per character: HW_NEAT_WHY_* */
 };
 
 /* Strokes too tall to be writing: marked in keep (xh as in struct hw_neat). */
 void hw_neat_drawing(const struct hw_ink *ink, size_t n, double xh, unsigned char *keep);
 
-/* 0, or -1 when out of memory. Strokes kept (keep, or not written by any character of a
- * reading the ink is read with low confidence) come out as they went in. */
+/* 0, or -1 when out of memory. Strokes kept (keep) come out as they went in. A word whose
+ * characters are read with low confidence (mean fit) gets the line-level corrections only,
+ * the other words keep their pull (FR-017). Each pulled character's new ink must be nearer
+ * (centred RMS, at the line's x-height) to its own versions than to any version of another
+ * character with as many strokes, else it isn't pulled (FR-037, the shape guard). */
 int hw_neaten(struct hw_neat *q);
 void hw_neat_free(struct hw_neat *q);
 
