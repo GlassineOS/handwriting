@@ -404,8 +404,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   version of it has (more than some) gives a run it shares with a neighbour to that neighbour.
   Such a move is a guess at where the alignment is off (it can be off by a whole letter, the
   joints shifted along the word): the characters that gave or took a run are pulled only when
-  their ink as written is nearer their own versions than any other character's, so no
-  character's glyph is drawn over its neighbour's ink.
+  their own ink as written (a joint's connecting parts left out, which no version has) is
+  nearer their own versions than any other character's, so no character's glyph is
+  drawn over its neighbour's ink.
   Then the strokes are put right by where the ink lies as for the letter model, so a dot or
   bar written after the word belongs to the letter it lies across, not to the word's last one
   (five x-heights standing in for the area's line); a stroke joined from two characters' parts
@@ -453,7 +454,12 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   the line-level corrections (fully from Light) and then by the pull × (its place on the glyph
   − where the corrections put it): 0.5 at Medium, 0.85 at Strong, 1 at Neatest, going between
   them linearly (from 0.25 to Medium, Medium to Strong, Strong to Neatest). At Neatest a
-  letter's points lie on its glyph, as many as it had, each with its time and pressure.
+  letter's points lie on its glyph, as many as it had, each with its time and pressure. A
+  pulled letter's separate mark (a stroke of its own beside its tallest one, the stem: an i's
+  or j's dot, a t's bar written apart) goes where the full pull puts it, moved by as much as
+  the stem's own points ended up from where the full pull puts them, so it sits on its stem
+  as the glyph has it however far the stem was pulled, not just its own way towards its
+  place.
 - **Joined letters (FR-036).** Where a stroke passes from one character to the next, the
   joint's ends are matched with the glyph's ends left open: the points beyond where the first
   letter's glyph stroke ends and before where the second's starts are the joint's connecting
