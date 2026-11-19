@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Host acceptance for neatening (spec 003 FR-013 to FR-017, FR-020, FR-022, FR-023,
-FR-035 to FR-037), with a random-weight model and synthetic samples: strength 0 gives the
+FR-035 to FR-037, FR-043), with a random-weight model and synthetic samples: strength 0 gives the
 strokes back byte for byte; any strength keeps the strokes, their order, every point's time,
 pressure and tilt as sent; the same request gives the same ink; the four levels do what they
 say (Light no letter's shape, Medium every letter half way to its glyph, Strong further,
-Neatest the glyph's shape on the letter's own points); the target is the glyph the font
+Neatest the word set in the font, FR-043: its points on the glyphs where hb-shape puts
+them, a character the font lacks moved only, a word read without the text set only when
+read with high confidence); the target is the glyph the font
 draws there, the variant itself, not its best version; a letter is pulled when written in as
 many strokes as that glyph; a pulled letter whose new ink comes nearer another character's
 versions (whatever their strokes) than it was written is put back, the others stay pulled,
@@ -207,7 +209,7 @@ def retime(s):
 
 
 WHY = {"pulled", "level", "not-covered", "no-structure", "shape-guard", "low-confidence", "drawing",
-       "gesture", "no-ink", "space"}
+       "gesture", "no-ink", "space", "set"}
 
 
 def parse(r, why=False):
@@ -221,6 +223,47 @@ def parse(r, why=False):
     assert all(w in WHY for w in reasons), reasons
     out = [(int(r[5 + 3 * i]), r[6 + 3 * i], r[7 + 3 * i]) for i in range(k)]
     return (text, out, reasons) if why else (text, out)
+
+
+def near_seg(x, y, segs):
+    """the nearest point to (x, y) on segments [((ax, ay), (bx, by))]"""
+    best, bp = math.inf, None
+    for (ax, ay), (bx, by) in segs:
+        dx, dy = bx - ax, by - ay
+        ll = dx * dx + dy * dy
+        t = max(0, min(1, ((x - ax) * dx + (y - ay) * dy) / ll)) if ll > 0 else 0
+        qx, qy = ax + t * dx, ay + t * dy
+        d = (qx - x) ** 2 + (qy - y) ** 2
+        if d < best:
+            best, bp = d, (qx, qy)
+    return bp
+
+
+def on_set(pts, glyphs, rounds=60):
+    """how far points (device units, y down) lie from a set word's glyph strokes (x-heights,
+    y up; per point the strokes it should lie on) once scaled and moved onto them at best (one
+    scale, no stretch): (RMS in x-heights, the scale: device units per x-height, the
+    baseline's y, the x of the glyphs' 0)"""
+    P = [(x, -y) for x, y in pts]
+    segs = [[(a, b) for st in g for a, b in (zip(st, st[1:]) if len(st) > 1 else [(st[0], st[0])])] for g in glyphs]
+    gx = [p[0] for g in glyphs for st in g for p in st]
+    gy = [p[1] for g in glyphs for st in g for p in st]
+    px, py = [p[0] for p in P], [p[1] for p in P]
+    sc = (max(gx) - min(gx) + max(gy) - min(gy)) / ((max(px) - min(px) + max(py) - min(py)) or 1)
+    tx, ty = min(gx) - sc * min(px), min(gy) - sc * min(py)
+    sc0 = sc
+    mx, my = sum(px) / len(P), sum(py) / len(P)
+    for _ in range(rounds):
+        q = [near_seg(sc * x + tx, sc * y + ty, sg) for (x, y), sg in zip(P, segs)]
+        qx, qy = sum(a for a, _ in q) / len(q), sum(b for _, b in q) / len(q)
+        num = sum((x - mx) * (a - qx) + (y - my) * (b - qy) for (x, y), (a, b) in zip(P, q))
+        den = sum((x - mx) ** 2 + (y - my) ** 2 for x, y in P)
+        # (the scale kept near the boxes': moved freely it would shrink the points onto one)
+        sc = min(max(num / den if den > 0 else sc, 0.95 * sc0), 1.05 * sc0)
+        tx, ty = qx - sc * mx, qy - sc * my
+    q = [near_seg(sc * x + tx, sc * y + ty, sg) for (x, y), sg in zip(P, segs)]
+    rms = math.sqrt(sum((sc * x + tx - a) ** 2 + (sc * y + ty - b) ** 2 for (x, y), (a, b) in zip(P, q)) / len(P))
+    return rms, 1 / sc if sc else math.inf, ty / sc if sc else math.inf, -tx / sc if sc else math.inf
 
 
 class Neaten(unittest.TestCase):
@@ -319,7 +362,7 @@ class Neaten(unittest.TestCase):
         for j in s["spans"][2]:
             for p in s["strokes"][j]:
                 p[1] = round(p[1] - 1.3 * 30, 3)
-        how, xy = self.neaten_letters(s, 1)
+        how, xy = self.neaten_letters(s, 0.75)
         self.assertEqual(self.why[2], "no-structure", self.why)
         self.assertGreaterEqual(self.why.count("pulled"), 3, self.why)
 
@@ -328,7 +371,7 @@ class Neaten(unittest.TestCase):
         alignment and the letter model decide which ink is whose, and where they are off (a
         letter written in more strokes than its versions have, so the joints shift along the
         word) no character's glyph is drawn over another one's ink; texts with spaces and
-        repeated letters, at every level above Light"""
+        repeated letters, at the levels that pull (Neatest sets the word: FR-043)"""
         self.letters()
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         n = 0
@@ -343,7 +386,7 @@ class Neaten(unittest.TestCase):
             s["strokes"][j0:j0 + 1] = [st[:len(st) // 2], st[len(st) // 2:]]
             s["spans"] = [[j + (j > j0) for j in sp] + ([j0 + 1] if k == k0 else []) for k, sp in enumerate(s["spans"])]
             glyphs = self.glyphs(text)
-            for strength in ("0.5", "0.85", "1"):
+            for strength in ("0.5", "0.75"):
                 c = self.e.start()
                 self.begin(c, s)
                 _, out = parse(c.ask("neaten", "s", strength, TR.esc(text)))
@@ -372,8 +415,8 @@ class Neaten(unittest.TestCase):
         self.assertGreater(n, 10)
 
     def test_closer_to_the_glyph(self):
-        """at Neatest the covered characters pulled are closer to the glyph the font draws
-        there (most of those with its strokes are pulled)"""
+        """at Neatest the covered characters are closer to the glyph the font draws there,
+        set on it (FR-043)"""
         self.letters()
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         rnd = random.Random(11)
@@ -404,7 +447,8 @@ class Neaten(unittest.TestCase):
                 after = [xy[j] for j in s["spans"][k]]
                 # its points on the glyph's strokes (a letter already that near keeps its few
                 # points: on the glyph, chords between them)
-                self.assertLess(on_curve(after, g), 0.003, (text, ch))
+                self.assertLess(on_set([p for st in after for p in st], [g["strokes"]] * sum(map(len, after)))[0], 0.003,
+                                (text, ch))
                 da = shape_dist(after, g)
                 self.assertLess(da, max(db, 0.08), (text, ch))
                 # all of the glyph, not a part of it on all its points
@@ -424,6 +468,162 @@ class Neaten(unittest.TestCase):
         _, out, self.why = parse(c.ask("neaten", "s", str(strength), *args), why=True)
         c.close()
         return [o[1] for o in out], [EV.to_xy(o[2]) for o in out]
+
+    def set_layout(self, text):
+        """per character of text the strokes of the glyph the font sets there (x-heights from
+        the text's start, y up; a joined pair's for both its letters), None where the font has
+        none: from hb-shape and the font built (the pen x and the glyph), else as the samples
+        app's preview lays the font out (the same advances and kerning)"""
+        model_text = (self.e.store / "letters" / "model").read_text()
+        view = FV.font_view(FV.parse(model_text))
+        gap = (view.get("spacing") or {}).get("letter", 0.15)
+        out = [None] * len(text)
+        self.pens = [None] * len(text)
+        if TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"):
+            # (a character the font lacks: the font's .notdef, one x-height wide, where the
+            # preview has the system font's)
+            k, more = 0, 0
+            for c, strokes, x, adv, _ in FV.layout(view, text):
+                for z in range(len(c)):
+                    self.pens[k + z] = x + more
+                    if strokes:
+                        out[k + z] = [[(x + more + p[0], p[1]) for p in st] for st in strokes]
+                if strokes is None:
+                    more += 1 - adv
+                k += len(c)
+            return out, "preview"
+        ttf = self.e.dir / "set.ttf"
+        if not ttf.exists():
+            self.e.run("font", "build", "-n", "Set Test", str(ttf))
+        gl = TL.font_glyphs(model_text)
+        joined = {tuple(d["joined"]): d for d in map(json.loads, model_text.splitlines()) if "joined" in d}
+        g = TL.hb(ttf, text)
+        x = 0
+        for i, e in enumerate(g):
+            k = gl.get(e["g"])
+            cl = e["cl"]
+            end = g[i + 1]["cl"] if i + 1 < len(g) else len(text)
+            v = None
+            if k and k[0] == "step":
+                d = view["chars"][k[1]]
+                v = d["variants"][FV.slots(d)[k[2]]]
+            elif k and k[0] == "variant":
+                v = view["chars"][k[1]]["variants"][k[2]]
+            elif k and k[0] == "joined":
+                v = joined[tuple(k[1])]["variant"]
+            at = (x + e["dx"]) / 500
+            for z in range(cl, end):
+                self.pens[z] = at
+            if v is not None:
+                for z in range(cl, end):
+                    out[z] = [[(at + gap / 2 + p[0], p[1]) for p in st] for st in v["strokes"]]
+            x += e["ax"]
+        return out, "hb-shape"
+
+    def test_neatest_sets_the_word(self):
+        """at Neatest a word whose text is known is set anew in the font (FR-043): every point
+        of a character on the centre line of the glyph the font sets for it, the glyphs where
+        hb-shape (or the preview's layout, without it) puts them, all at one size (the line's
+        x-height) and on one baseline; HOW pulled, the characters' reason set. (With the text
+        alone the alignment of this random-weight model decides whose ink is whose: set too,
+        the strokes kept, tested in test_keeps_strokes_order_time_pressure.)"""
+        self.letters()
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        rnd = random.Random(50)
+        words = 0
+        for text in ("hello world", "see the tree", "quick brown fox", "jumps over"):
+            s = TL.sample(text, rnd)
+            for st in s["strokes"]:
+                for p in st:
+                    p[0] += rnd.gauss(0, 1.0)
+                    p[1] += rnd.gauss(0, 1.0)
+            lay, how_laid = self.set_layout(text)
+            align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+            c = self.e.start()
+            self.begin(c, s)
+            _, out, why = parse(c.ask("neaten", "s", "1", TR.esc(text), align), why=True)
+            c.close()
+            xy = [EV.to_xy(o[2]) for o in out]
+            self.assertEqual([w for w in why if w != "space"], ["set"] * len(text.replace(" ", "")), (text, why))
+            self.assertTrue(all(o[1] == "pulled" for o in out))
+            # each word where it was written, set as the font sets it, all on one baseline
+            k0, bases = 0, []
+            for w in text.split(" "):
+                ks = range(k0, k0 + len(w))
+                k0 += len(w) + 1
+                wp = [p for k in ks for j in s["spans"][k] for p in xy[j]]
+                wg = [lay[k] for k in ks for j in s["spans"][k] for _ in xy[j]]
+                rms, size, base, _ = on_set(wp, wg)
+                self.assertLess(rms, 0.003, (text, w, how_laid))
+                self.assertAlmostEqual(size / 30.0, 1, delta=0.15)
+                bases.append(base)
+                words += 1
+            self.assertLess(max(bases) - min(bases), 0.3, (text, bases))
+        self.assertEqual(words, 10)
+
+    def test_neatest_keeps_what_the_font_lacks(self):
+        """a character the letter model doesn't cover (here punctuation) keeps its ink as
+        written in a set word (FR-043): moved, not reshaped, into the box the font has for it
+        (its .notdef, one x-height wide), the word's other characters set around it"""
+        self.letters()
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        rnd = random.Random(51)
+        seen = 0
+        for text in ("hi, you.", "a-b c;d"):
+            s = TL.sample(text, rnd)
+            lay, _ = self.set_layout(text)
+            align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+            res = {}
+            for st in ("0.75", "1"):
+                c = self.e.start()
+                self.begin(c, s)
+                _, out, why = parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
+                c.close()
+                res[st] = ([EV.to_xy(o[2]) for o in out], why)
+            xy, why = res["1"]
+            k0 = 0
+            for w in text.split(" "):
+                ks = range(k0, k0 + len(w))
+                k0 += len(w) + 1
+                miss = [k for k in ks if lay[k] is None]
+                for k in ks:
+                    self.assertEqual(why[k], "not-covered" if k in miss else "set", (text, k, why))
+                wp = [p for k in ks if k not in miss for j in s["spans"][k] for p in xy[j]]
+                wg = [lay[k] for k in ks if k not in miss for j in s["spans"][k] for _ in xy[j]]
+                rms, size, _, x0 = on_set(wp, wg)
+                self.assertLess(rms, 0.003, (text, w))
+                for k in miss:
+                    # moved only: as Strong left it, all its points by one step along the line
+                    a = [p for j in s["spans"][k] for p in xy[j]]
+                    b = [p for j in s["spans"][k] for p in res["0.75"][0][j]]
+                    dx = [p[0] - q[0] for p, q in zip(a, b)]
+                    self.assertLess(max(dx) - min(dx), 0.01)
+                    self.assertTrue(all(abs(p[1] - q[1]) < 0.01 for p, q in zip(a, b)))
+                    # in the middle of its box
+                    mid = (min(p[0] for p in a) + max(p[0] for p in a)) / 2
+                    self.assertAlmostEqual((mid - x0) / size, self.pens[k] + 0.5, delta=0.02)
+                    seen += 1
+        self.assertEqual(seen, 4)
+
+    def test_neatest_without_the_text(self):
+        """without the text no word is set (FR-043: a word read wrongly would be set as
+        another word): the ink is Strong's; with the text (and ALIGN: this model's own
+        alignment gives a letter no ink) the words are set"""
+        self.letters()
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        for seed, text in enumerate(("hello world", "the tree")):
+            s = TL.sample(text, random.Random(52 + seed))
+            c = self.e.start()
+            self.begin(c, s)
+            read, out, why = parse(c.ask("neaten", "s", "1"), why=True)
+            _, strong = parse(c.ask("neaten", "s", "0.75"))
+            align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+            _, _, known = parse(c.ask("neaten", "s", "1", text, align), why=True)
+            c.close()
+            self.assertTrue(read)
+            self.assertNotIn("set", why)
+            self.assertEqual([o[2] for o in out], [o[2] for o in strong])
+            self.assertIn("set", known)
 
     def test_levels(self):
         """the four levels (FR-014): Light moves no letter's shape, only the line; Medium
@@ -515,12 +715,12 @@ class Neaten(unittest.TestCase):
         gl = self.glyphs("oo")
         for k in range(2):
             ink = [xy[j] for j in s["spans"][k]]
-            if self.why[k] != "pulled":
+            if self.why[k] not in ("pulled", "set"):
                 continue
             # its points on the glyph itself, moved and scaled only, not on the blend
             self.assertLess(on_curve(ink, gl[k]), 0.003)
             self.assertGreater(on_curve(ink, {"strokes": v["best"]}), 2 * on_curve(ink, gl[k]))
-        self.assertIn("pulled", self.why)
+        self.assertIn("set", self.why)
 
     def test_letter_check(self):
         """a pulled letter whose new ink would come closer to another character is put back
@@ -528,10 +728,10 @@ class Neaten(unittest.TestCase):
         (FR-037, FR-041; the knob's guard= has those characters fail the check)"""
         self.letters()
         s = TL.sample("hello", random.Random(24))
-        how0, _ = self.neaten_letters(s, 1)
+        how0, _ = self.neaten_letters(s, 0.75)
         why0 = self.why
         for mis in ("o", "hel", "lo"):
-            how, _ = self.neaten_letters(s, 1, knob="guard=" + mis)
+            how, _ = self.neaten_letters(s, 0.75, knob="guard=" + mis)
             for k, ch in enumerate(s["text"]):
                 if ch in mis:
                     self.assertTrue(all(how[j] != "pulled" for j in s["spans"][k]), (mis, how))
@@ -585,7 +785,7 @@ class Neaten(unittest.TestCase):
         s = TL.sample("hello my name is Qxzvk", random.Random(26))
         # with the text and its spans: the name and the other words are pulled
         how, _ = self.neaten_letters(s, 1)
-        words = "".join(" " if w == "space" else "p" if w == "pulled" else "-" for w in self.why).split(" ")
+        words = "".join(" " if w == "space" else "p" if w in ("pulled", "set") else "-" for w in self.why).split(" ")
         self.assertTrue(all("p" in w for w in words), self.why)
         # without it (the reading of this random-weight model is low confidence throughout):
         # a reason for every character read
@@ -596,7 +796,7 @@ class Neaten(unittest.TestCase):
         c.close()
 
     def test_flow_at_starts_and_joins(self):
-        """at every level, no new step back and no new kink where a stroke starts (with an
+        """at every level that pulls (Neatest sets the word: FR-043), no new step back and no new kink where a stroke starts (with an
         entry stroke or a hook the version lacks) or where it passes from one letter to the
         next (FR-036), over every character and every joined pair of small letters, also
         where the alignment cuts a joined stroke elsewhere than written"""
@@ -681,7 +881,7 @@ class Neaten(unittest.TestCase):
         runs = [(li, s, align) for li, (s, align) in enumerate(lines)] + \
             [(li, s, None) for li, (s, align) in enumerate(lines) if li >= 8]
         for li, s, align in runs:
-            for lv in (0.25, 0.5, 0.75, 1):
+            for lv in (0.25, 0.5, 0.75):
                 self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
                 c = self.e.start()
                 self.begin(c, s)
@@ -704,7 +904,7 @@ class Neaten(unittest.TestCase):
         its letters (it holds them, but not where one ends), and with the text alone: at every
         level every letter keeps its ink at about its own size (its box at least half its
         glyph's), and in its own place (the letters' middles in the order written, none on a
-        neighbour's)"""
+        neighbour's); a word set at Neatest is the font's (FR-043)"""
         self.letters()
         rnd = random.Random(31)
         xh = 30.0
@@ -772,9 +972,10 @@ class Neaten(unittest.TestCase):
                         pts = [xy[j][i] for j, a, b in m for i in range(a, b + 1)]
                         x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
                         y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
-                        word.append((x0 + x1) / 2)
+                        if why[k] != "set":
+                            word.append((x0 + x1) / 2)
                         g = glyphs[k]
-                        if g is None:
+                        if g is None or why[k] == "set":
                             continue
                         gx = [p[0] for st in g["strokes"] for p in st]
                         gy = [p[1] for st in g["strokes"] for p in st]
@@ -791,7 +992,7 @@ class Neaten(unittest.TestCase):
         self.assertGreater(checked, 1000)
 
     def test_flow_where_ink_and_versions_differ(self):
-        """at every level, no new step back and no new kink where the versions have a part the
+        """at every level that pulls (Neatest sets the word: FR-043), no new step back and no new kink where the versions have a part the
         ink lacks (a loop: not traced with too few points, another version or none) or the ink
         one the versions lack, over every character"""
         rnd = random.Random(28)
@@ -807,7 +1008,7 @@ class Neaten(unittest.TestCase):
                     s["strokes"] = [ink(st) for st in s["strokes"]]
                     retime(s)
                 align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
-                for lv in (0.25, 0.5, 0.75, 1):
+                for lv in (0.25, 0.5, 0.75):
                     self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
                     c = self.e.start()
                     self.begin(c, s)
@@ -853,7 +1054,7 @@ class Neaten(unittest.TestCase):
             c = self.e.start()
             self.begin(c, s)
             align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
-            _, out = parse(c.ask("neaten", "s", "1", "ato", align))
+            _, out = parse(c.ask("neaten", "s", "0.75", "ato", align))
             c.close()
             xy = [EV.to_xy(o[2]) for o in out]
             g = self.glyphs("ato")[1]

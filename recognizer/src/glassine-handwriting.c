@@ -1278,7 +1278,7 @@ static const char *neat_how(int h) { return h == HW_NEAT_PULLED ? "pulled" : h =
 static const char *neat_why(int w)
 {
 	static const char *const name[] = { "pulled", "level", "not-covered", "no-structure", "shape-guard",
-					    "low-confidence", "drawing", "gesture", "no-ink" };
+					    "low-confidence", "drawing", "gesture", "no-ink", "set" };
 	return w >= 0 && w < (int)(sizeof name / sizeof *name) ? name[w] : "level";
 }
 
@@ -1395,6 +1395,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		q.strength = st;
 		q.L = letters_now();
 		q.xh = xh;
+		q.confirmed = text != NULL;
 		/* nothing is read again after neatening (FR-037): each pulled character's shape is
 		 * checked in hw_neaten. (tests) guard=CHARS: those characters fail the check. */
 		const char *knob = getenv("GLASSINE_HANDWRITING_NEATEN");
