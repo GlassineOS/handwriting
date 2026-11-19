@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "sample.h"
 
 void hw_ink_free(struct hw_ink *k)
@@ -106,12 +107,52 @@ int hw_pair_ok(const char *p)
 	return n == 16;
 }
 
+/* A copy of a JSON text with each bare non-finite number (inf, -inf, nan as printf writes
+ * them; not valid JSON) replaced by null; NULL when there is none (or out of memory). Lines
+ * stored before readings dropped their impossible candidates have them. */
+char *hw_json_finite(const char *t)
+{
+	char *out = NULL;
+	size_t n = strlen(t), o = 0;
+	int instr = 0;
+	for (size_t i = 0; i < n; i++) {
+		char c = t[i];
+		if (instr) {
+			if (c == '\\' && i + 1 < n) { if (out) { out[o++] = c; out[o++] = t[i + 1]; } i++; continue; }
+			if (c == '"') instr = 0;
+			if (out) out[o++] = c;
+			continue;
+		}
+		if (c == '"') { instr = 1; if (out) out[o++] = c; continue; }
+		size_t k = i + (c == '-' || c == '+');
+		size_t m = 0;
+		if (!strncasecmp(t + k, "infinity", 8)) m = 8;
+		else if (!strncasecmp(t + k, "inf", 3) || !strncasecmp(t + k, "nan", 3)) m = 3;
+		if (m && (i == 0 || strchr(":,[ ", t[i - 1]))) {
+			if (!out) {
+				if (!(out = malloc(n + 5))) return NULL;
+				memcpy(out, t, i);
+				o = i;
+			}
+			memcpy(out + o, "null", 4);
+			o += 4;
+			i = k + m - 1;
+			continue;
+		}
+		if (out) out[o++] = c;
+	}
+	if (out) out[o] = 0;
+	return out;
+}
+
 #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); goto bad; } while (0)
 
 int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t errlen)
 {
 	memset(s, 0, sizeof *s);
-	json_object *o = json_tokener_parse(line), *v, *st, *sp;
+	char *fixed = hw_json_finite(line);
+	json_object *o = json_tokener_parse(fixed ? fixed : line), *v, *st, *sp;
+	free(fixed);
 	if (!o || !json_object_is_type(o, json_type_object)) FAIL("not a JSON object");
 	if (!json_object_object_get_ex(o, "version", &v) || !json_object_is_type(v, json_type_int))
 		FAIL("no version");
@@ -176,6 +217,8 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 		for (size_t k = 0; k < json_object_array_length(v); k++) {
 			json_object *c = json_object_array_get_idx(v, k), *t, *sc;
 			double d;
+			/* an impossible candidate (no score): left out */
+			if (json_object_is_type(c, json_type_object) && json_object_object_get_ex(c, "score", &sc) && !sc) continue;
 			if (!json_object_is_type(c, json_type_object) || !json_object_object_get_ex(c, "text", &t) ||
 			    !json_object_is_type(t, json_type_string) || !json_object_object_get_ex(c, "score", &sc) || num(sc, &d))
 				FAIL("bad reading");
@@ -290,6 +333,7 @@ char *hw_sample_format(const struct hw_sample *s)
 	if (s->reading.n) {
 		json_object *a = json_object_new_array();
 		for (int k = 0; k < s->reading.n; k++) {
+			if (!isfinite(s->reading.score[k])) continue;
 			json_object *c = json_object_new_object();
 			json_object_object_add(c, "text", json_object_new_string(s->reading.text[k]));
 			json_object_object_add(c, "score", jnum(s->reading.score[k]));
