@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.2)
+# The handwriting recognizer (contract version 1.4)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -80,12 +80,12 @@ microsecond.
 | `prefer ID CHOSEN OTHER [CHOSEN_CHAR OTHER_CHAR]` | `prefer ID ok` |
 | `preferences ID [all]` | `preferences ID K {CHOSEN OTHER CHOSEN_CHAR OTHER_CHAR}×K` |
 | `sample ID SAMPLE` | `sample ID JSON` (the sample's line, escaped) |
-| `neaten ID S STRENGTH [TEXT [ALIGN]]` | `neaten ID ok TEXT K {N HOW POINTS}×K` |
+| `neaten ID S STRENGTH [TEXT [ALIGN]]` | `neaten ID ok TEXT K {N HOW POINTS}×K WHY` |
 | `donate ID S TEXT [keep]` | `donate ID ok COUNT SAMPLE`, or `donate ID skip REASON` |
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 and 1.2 only add to 1.0, so a client of either
+**hello** names the contract version (1: versions 1.1 to 1.4 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -346,7 +346,16 @@ points in the same order, each point's `x,y` moved (written to a thousandth) and
 moved towards its best version in the letter model, or at Neatest given its shape, and the
 line-level corrections), `line` (the
 line-level corrections only) or `kept` (the stroke as sent). `TEXT` (escaped) is the reading the
-neatening followed, empty when none. The same strokes, letter model and strength always give
+neatening followed, empty when none. `WHY` (contract 1.4, FR-041) is the last field: per
+character of `TEXT`, space-separated, whether it was pulled or why not: `pulled`; `level` (the
+strength pulls no letter, or this one not yet at it); `not-covered` (the letter model has no
+version of it); `no-structure` (its pieces don't match a version's strokes, in count, size,
+place or shape); `not-near` (at Medium, further than 0.3 x-heights from its best version);
+`shape-guard` (pulled it would come nearer another character's versions, below);
+`low-confidence` (its word is read with low confidence, below); `drawing` or `gesture` (its
+strokes are drawing, or the newest stroke a gesture); `no-ink` (no ink of its own); `space`
+for a space. Empty when `TEXT` is. A client of 1.3 reads the fields by place and never gets to
+it; the samples app shows nothing of it yet. The same strokes, letter model and strength always give
 the same reply. `neaten` changes nothing in the session (its strokes, the last reading's
 candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-024).
 
@@ -358,9 +367,13 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   long `TEXT`).
 - **Writing only (FR-020).** The newest stroke when it is a gesture, strokes taller than 3.5
   x-heights (the person's letters for the size, else the strokes' own median height) and
-  strokes no character of the reading has are drawing and stay `kept`. When the characters'
-  mean fit (as in `align`) is below 0.15 the ink isn't read as writing and every stroke is
-  kept.
+  strokes no character of the reading has are drawing and stay `kept`.
+- **Per word (FR-017).** Without `TEXT`, a word whose characters' mean fit (as in `align`:
+  how well the ink fits the reading, not whether the dictionary has the word) is below 0.15
+  is read with low confidence: its characters stay at the line level (`low-confidence`), the
+  other words are neatened. A word the dictionary lacks, a name, is not low confidence by that
+  alone. With `TEXT` the text is the person's: no word is held back for its reading, only a
+  character whose strokes can't be split into its pieces (`no-structure`).
 - **Line-level corrections (FR-014, FR-017).** For every character of the writing: the line's
   baseline is fitted through the bottoms of the letters that sit on it (fit at least 0.5,
   outliers more than 0.3 x-heights off left out) and straightened to its height at the line's
@@ -379,10 +392,14 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   its nearest version (centred RMS distance, the ink at the line's x-height) of those made of at
   least two samples, not left out, with as many pieces of ink as the version has strokes. Its
   pieces are its runs of points: a stroke of its own, or its part of a stroke joined with a
-  neighbour (a stroke mostly one character's, three quarters of its points or more, counts as
-  its; then the strokes are put right by where the ink lies as for the letter model, so a dot or
-  bar written after the word belongs to the letter it lies across, not to the word's last one,
-  five x-heights standing in for the area's line). It is pulled only when its structure matches
+  neighbour. Without `ALIGN` the alignment's edges are put right first: points of no character
+  go with their neighbours, a run of one character shorter than 0.35 x-heights along the stroke
+  goes to the run next to it (the longer one), and a character with a count of pieces no
+  version of it has (more than some) gives a run it shares with a neighbour to that neighbour.
+  Then the strokes are put right by where the ink lies as for the letter model, so a dot or
+  bar written after the word belongs to the letter it lies across, not to the word's last one
+  (five x-heights standing in for the area's line); a stroke joined from two characters' parts
+  keeps its parts. `ALIGN` is used as given. It is pulled only when its structure matches
   the version: each piece about the size of its stroke of the version (at most 1.8 times as wide
   or tall, or as narrow, plus 0.35 x-heights) and where that stroke lies in the letter (its
   middle within 0.45 x-heights); and its points, matched along the version (next), within 0.12
@@ -411,21 +428,18 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   joint's ends are matched with the version's ends left open (a lead-in or lead-out the
   version doesn't have follows the matched point next to it), and each point near the joint
   takes the moves of both characters, weighted by how near it is to each one's points (over
-  0.15 x-heights), so the stroke doesn't jump where they meet.
+  0.15 x-heights to either side, wider where the two characters' moves differ more: the move
+  changes by at most half the length along the stroke, up to 0.8 x-heights), so the stroke
+  doesn't jump, kink or step back where they meet.
 - **Spacing with the pull.** A pulled character's profile and middle for the spacing above go
   towards its version's as far as it is pulled.
 - **Without a letter model** only the line-level corrections apply (FR-022).
-- **The check (SC-004, FR-037).** The neatened ink is read again (as the reading above, words
-  included), and in the same run each character: the class the model reads most surely over
-  the frames the character's ink is aligned to. A pulled character whose class is neither the
-  one the original ink gives it nor its own character reads as another character: it isn't
-  pulled (it stays at the line level), the others keep their pull, and the ink is neatened and
-  read once more. Then the whole line must read at least as close to `TEXT` (without `TEXT`,
-  to the original reading) as the original strokes do. When it doesn't, the request is tried
-  again without the pull, and when that still reads worse every stroke is `kept`. So
-  neatening never makes the reading worse. It costs at most four runs of the model: the
-  original strokes, the neatened ink, the ink with the misread letters put back, and the ink
-  without the pull (usually one or two).
+- **The shape guard (SC-004, FR-037).** Each pulled character's neatened ink must be nearer
+  (centred RMS distance at the line's x-height, as above) to one of its own versions, or a
+  version's best, than to any version of another character with as many strokes. One that
+  isn't goes back to the line level alone (`shape-guard`), the others keep their pull, and the
+  line is neatened again (at most three times). Nothing is read again, and no check holds back
+  the whole line.
 
 **recognize** is `begin`, a stroke per `;`-separated part of `STROKES`, `read`, `end` in one line,
 for a client that has the whole ink at once. It stores nothing.
@@ -1150,6 +1164,6 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_HANDWRITING_CALIB` | for measurements: `off` reads with no calibration, a number in [0.5, 4] with that temperature (Calibration) |
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `check=0` the check, `misread=CHARS` has those characters read as another once pulled (comma-separated) |
+| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma) |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
 | `GLASSINE_HANDWRITING_CHARS` | for tuning: `weight=…,floor=…,bonus=…,margin=…,beam=…` replace the Characters weights |
