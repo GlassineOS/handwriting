@@ -534,6 +534,40 @@ class Samples(unittest.TestCase):
         (self.env.models / "en" / "chars.gclm").write_bytes(b"GHCM not a model")
         self.assertEqual(reads("normal"), raws, "a broken model: as raw")
 
+    def test_chars_best_always_offered(self):
+        """the character model's search's best reading is among the candidates also when the
+        ink reads it far less well than its best (beyond the near gate), never first, within
+        COUNT"""
+        c = self.env.start("-i", "0")
+        raws = []
+        for s in INK[:6]:
+            c.write_sample(s)
+            raws.append([t for t, _, _ in parse_text(c.ask("read", "s", "8", "raw"))])
+            c.ask("end", "s")
+        c.close()
+        self.env.chars([t for r in raws for t in r[1:] if t] * 20)
+        self.env.env["GLASSINE_HANDWRITING_CHARS"] = "weight=3,floor=-40,margin=0"
+        self.env.env["GLASSINE_HANDWRITING_WORDS"] = "near=-1e9"     # every reading but the ink's own is cut
+        c = self.env.start("-i", "0")
+        seen = 0
+        for s, raw in zip(INK[:6], raws):
+            c.write_sample(s)
+            r = c.ask("read", "s", "3", "detail")
+            n = int(r[3])
+            cands = [(r[4 + 5 * i], r[7 + 5 * i]) for i in range(n)]
+            self.assertLessEqual(n, 3)
+            self.assertIn(cands[0][1], ("ink", "beam"), "a reading of the ink first")
+            chars = [i for i, (t, f) in enumerate(cands) if f == "chars"]
+            self.assertLessEqual(len(chars), 1)
+            if chars:
+                self.assertGreater(chars[0], 0)
+                seen += 1
+            one = c.ask("read", "s", "1", "detail")
+            self.assertEqual((one[3], one[4]), ("1", cands[0][0]), "COUNT 1: the first alone")
+            c.ask("end", "s")
+        c.close()
+        self.assertGreater(seen, 0, "the character model's best offered beyond the gate")
+
     def test_pick_from_chars_must_fit(self):
         """a pick the character model put first (FROM chars) makes a sample only when its
         strokes fit it; `detail` says where it came from"""
@@ -713,6 +747,33 @@ class Samples(unittest.TestCase):
         bad = self.env.dir / "bad.jsonl"
         bad.write_text('{"format":"something-else","version":1}\n')
         self.assertNotEqual(self.env.run("samples", "import", str(bad), check=False).returncode, 0)
+
+    def test_pick_from_chars_reads_back(self):
+        """a sample picked from the character model's search (`pick` from `chars`) is a sample
+        like any other: it imports and is read back (adaptation, size, letters use it)"""
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        self.assertEqual(self.confirm(c, INK[0])[2], "ok")
+        c.close()
+        exp = self.env.dir / "export.jsonl"
+        self.env.run("samples", "export", str(exp))
+        head, line = exp.read_text().splitlines()[:2]
+        o = json.loads(line)
+        o["sample"]["source"] = "confirmed"
+        o["sample"]["pick"] = {"rank": 2, "from": "chars"}
+        f = self.env.dir / "chars-pick.jsonl"
+        f.write_text(head + "\n" + json.dumps(o, separators=(",", ":")) + "\n")
+        other = Env()
+        try:
+            self.assertEqual(other.run("samples", "import", str(f)).stdout, "1\n")
+            sid = other.run("samples", "list").stdout.split("\t")[0]
+            c = other.start("-i", "0")
+            c.ask("hello", "1", "org.example.keyboard")
+            smp = json.loads(unesc(c.ask("sample", sid)[2]))
+            c.close()
+            self.assertEqual(smp["pick"], {"rank": 2, "from": "chars"})
+        finally:
+            other.close()
 
     def test_impossible_reading_candidate(self):
         """a candidate the reading scored minus infinity (written as -inf, not JSON, by older
@@ -1298,6 +1359,122 @@ class Size(unittest.TestCase):
         self.assertFalse(f.exists())
 
 
+class Lookalikes(unittest.TestCase):
+    """the person's look-alikes (FR-019): a letter picked for a digit (or the reverse) often
+    enough leans like O and 0, by the field; kept in the store, removed with the samples,
+    never exported, never a writer's store's"""
+
+    SHARED = set("OoIlG016")
+
+    def setUp(self):
+        self.env = Env()
+
+    def tearDown(self):
+        self.env.close()
+
+    def first(self, c, s, field, *how):
+        c.write_sample(s, field=field)
+        r = parse_text(c.ask("read", "s", "3", *how))
+        c.ask("end", "s")
+        return r[0][0] if r else ""
+
+    def ink_with_letter(self, c):
+        """an ink whose first reading has a letter outside the shared look-alikes: the ink, its
+        reading, that letter's place"""
+        for s in INK:
+            t = self.first(c, s, "-")
+            for i, ch in enumerate(t):
+                if ch.isalpha() and ch.isascii() and ch not in self.SHARED:
+                    return s, t, i
+        self.skipTest("no reading with a plain letter")
+
+    def pick(self, c, s, text, field="normal"):
+        c.write_sample(s, field=field)
+        c.ask("read", "s", "3")
+        r = c.ask("confirm", "s", "corrected", esc(text))
+        c.ask("end", "s")
+        return r
+
+    def lines(self):
+        f = self.env.store / "lookalikes"
+        return [ln.split("\t") for ln in f.read_text().splitlines()] if f.exists() else []
+
+    def test_recorded_and_removed(self):
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        s, t, i = self.ink_with_letter(c)
+        r = self.pick(c, s, t[:i] + "7" + t[i + 1:])
+        self.assertEqual(r[2], "ok", r)
+        sid = r[3]
+        self.assertEqual(self.lines(), [[sid, "org.example.keyboard", "%x" % ord(t[i]), "37"]])
+        self.assertEqual(stat.S_IMODE((self.env.store / "lookalikes").stat().st_mode), 0o600)
+        # a letter for another letter, a longer text, a prompted sample: no look-alike
+        other = "b" if t[i] != "b" else "c"
+        self.assertEqual(self.pick(c, s, t[:i] + other + t[i + 1:])[2], "ok")
+        self.assertEqual(self.pick(c, s, t + "7")[2], "ok")
+        c.write_sample(s)
+        c.ask("confirm", "s", "prompted", esc(t[:i] + "7" + t[i + 1:]), "keep")
+        c.ask("end", "s")
+        self.assertEqual(len(self.lines()), 1)
+        # another client's pick, then the samples go: their look-alikes with them
+        c.ask("hello", "2", "org.example.notes")
+        r2 = self.pick(c, s, t[:i] + "4" + t[i + 1:])
+        self.assertEqual(r2[2], "ok", r2)
+        c.close()
+        self.assertEqual(len(self.lines()), 2)
+        exp = self.env.dir / "export.jsonl"
+        self.env.run("samples", "export", str(exp))
+        for ln in exp.read_text().splitlines()[1:]:
+            self.assertEqual(set(json.loads(ln)) - {"sample", "client", "confirmed", "source", "adaptation",
+                                                    "preference"}, set())
+        self.assertNotIn("lookalike", exp.read_text())
+        self.env.run("samples", "delete", sid)
+        self.assertEqual([ln[1] for ln in self.lines()], ["org.example.notes"])
+        self.env.run("samples", "erase", "-c", "org.example.notes")
+        self.assertEqual(self.lines(), [])
+        self.assertFalse((self.env.store / "lookalikes").exists())
+
+    def test_private_and_learning_off(self):
+        """nothing is kept from a field that doesn't learn, nor with learning off"""
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        s, t, i = self.ink_with_letter(c)
+        text = t[:i] + "7" + t[i + 1:]
+        for field in ("number", "terminal", "email"):
+            self.pick(c, s, text, field)
+        c.close()
+        self.assertEqual(self.lines(), [])
+        self.env.run("learning", "off")
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        self.assertEqual(self.pick(c, s, text)[2:4], ["skip", "learning"])
+        c.close()
+        self.assertFalse(self.env.store.exists())
+
+    def test_lean_by_field(self):
+        """picked often enough, the pair leans like O and 0: in a field for numbers the letter
+        gives way; in one for text, raw readings and a writer's store, nothing changes"""
+        self.env.env["GLASSINE_HANDWRITING_LOOKALIKE"] = "0.000001"     # a lean the random model can't miss
+        c = self.env.start("-i", "0")
+        c.ask("hello", "1", "org.example.keyboard")
+        s, t, i = self.ink_with_letter(c)
+        letter = t[i]
+        w = self.env.run("writer", "new").stdout.strip()
+        before = {f: self.first(c, s, f) for f in ("number", "normal")}
+        self.assertIn(letter, before["number"])
+        for k in range(3):
+            self.assertEqual(self.pick(c, s, t[:i] + "7" + t[i + 1:])[2], "ok")
+            if k < 2:   # not yet the person's
+                self.assertEqual(self.first(c, s, "number"), before["number"])
+        after = self.first(c, s, "number")
+        self.assertNotIn(letter, after)
+        self.assertEqual(self.first(c, s, "normal"), before["normal"])
+        self.assertIn(letter, self.first(c, s, "number", "raw"))
+        c.close()
+        g = self.env.start("--writer", w, "-i", "0")
+        self.assertEqual(self.first(g, s, "number"), before["number"])
+        g.close()
+
 
 class ModelsSetting(unittest.TestCase):
     """the setting `models`: another set of base models installed beside the default one,
@@ -1381,6 +1558,41 @@ class Adaptation(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(cur.stat().st_mode), 0o600)
         self.env.run("samples", "erase")
         self.assertFalse(cur.exists())
+
+    def test_calibrated(self):
+        """a new head carries its temperature (gha byte 52, FR-022); one made before
+        calibration gets one at the next run with nothing new, nothing else in it changed;
+        readings change with it, fits don't"""
+        import struct
+        cur = self.env.store / "adaptation" / "en" / "current"
+        self.teach(150)
+        self.assertIn("kept", self.env.run("adapt", *self.ARGS).stdout)
+        good = cur.read_bytes()
+        t = struct.unpack_from("<f", good, 52)[0]
+        self.assertTrue(0.5 <= t <= 4, t)
+        # as an older version wrote it: no temperature
+        old = good[:52] + b"\0\0\0\0" + good[56:]
+        cur.write_bytes(old)
+        self.env.run("adaptation", "show")
+        out = self.env.run("adapt", *self.ARGS[1:]).stdout
+        self.assertIn("nothing new", out)
+        now = cur.read_bytes()
+        self.assertEqual(now[:52] + now[56:], good[:52] + good[56:], "only the temperature written")
+        self.assertAlmostEqual(struct.unpack_from("<f", now, 52)[0], t, places=5)
+        self.assertNotIn("calibrated", self.env.run("adapt", *self.ARGS[1:]).stdout)   # once
+        # readings at another temperature; the prompted fit stays the ink's own
+        reads = {}
+        for temp in ("off", "3"):
+            self.env.env["GLASSINE_HANDWRITING_CALIB"] = temp
+            c = self.env.start("-i", "0")
+            c.ask("begin", "s", "en", "normal", "device:10", "")
+            for q in shapes("x", random.Random(5)):
+                c.ask("stroke", "s", q)
+            reads[temp] = (parse_text(c.ask("read", "s", "3")), c.ask("align", "s", "x")[2:])
+            c.close()
+        self.env.env.pop("GLASSINE_HANDWRITING_CALIB")
+        self.assertNotEqual([x[1] for x in reads["off"][0]], [x[1] for x in reads["3"][0]], "scores calibrated")
+        self.assertEqual(reads["off"][1], reads["3"][1], "the fit is the ink's own")
 
     def test_previous_and_revert(self):
         cur = self.env.store / "adaptation" / "en" / "current"

@@ -36,6 +36,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "hw/adapt.h"
+#include "hw/calib.h"
 #include "hw/gesture.h"
 #include "hw/letters.h"
 #include "hw/neaten.h"
@@ -804,6 +805,25 @@ out:
 	return line;
 }
 
+/* the look-alikes of a pick or a correction (docs/recognizer.md, Look-alikes): where the text
+ * confirmed has the length of the session's first reading and differs from it in one or two
+ * characters, each a letter for a digit or a digit for a letter, those (read, chosen) pairs */
+static int pick_lookalikes(const struct session *s, const char *text, unsigned (*out)[2])
+{
+	if (!s->ncand || !s->cand[0] || !strcmp(s->cand[0], text)) return 0;
+	unsigned a[HW_MAX_LABELS], b[HW_MAX_LABELS];
+	size_t na = hw_utf8_decode(s->cand[0], a, HW_MAX_LABELS), nb = hw_utf8_decode(text, b, HW_MAX_LABELS);
+	if (!na || na != nb || na > HW_MAX_LABELS) return 0;
+	int n = 0;
+	for (size_t i = 0; i < na; i++) {
+		if (a[i] == b[i]) continue;
+		int da = a[i] >= '0' && a[i] <= '9', db = b[i] >= '0' && b[i] <= '9';
+		if (n == 2 || da == db || !hw_is_letter(da ? b[i] : a[i])) return 0;
+		out[n][0] = a[i]; out[n][1] = b[i]; n++;
+	}
+	return n;
+}
+
 static void do_confirm(const char *id, struct session *s, const char *source, const char *text, int keep)
 {
 	const char *src = !strcmp(source, "picked") || !strcmp(source, "confirmed") ? "confirmed" :
@@ -824,7 +844,14 @@ static void do_confirm(const char *id, struct session *s, const char *source, co
 	double fit = 0;
 	char *line = make_sample(l, s, text, src, prompted, keep && !gate, gate, rank,
 				 from >= 0 && from < NFROMS ? froms[from] : "", &exact, &fit, &why);
-	if (!line && why == 3) { reply("confirm\t%s\tskip\tfit\t%.2f", id, fit); return; }
+	unsigned looks[2][2];
+	int nlooks = prompted ? 0 : pick_lookalikes(s, text, looks);
+	/* the person's choice counts for their look-alikes also when the pick makes no sample */
+	if (!line && why == 3) {
+		if (nlooks) hw_lookalikes_add(NULL, client, (const unsigned (*)[2])looks, nlooks);
+		reply("confirm\t%s\tskip\tfit\t%.2f", id, fit);
+		return;
+	}
 	if (!line) { reply("confirm\t%s\tskip\t%s", id, why == 1 ? "empty" : "short"); return; }
 	struct hw_meta m = { 0 };
 	snprintf(m.client, sizeof m.client, "%s", client);
@@ -835,6 +862,7 @@ static void do_confirm(const char *id, struct session *s, const char *source, co
 	hw_sample_id(line, sid);
 	int r = hw_samples_add(line, &m);
 	free(line);
+	if (r >= 0 && nlooks) hw_lookalikes_add(sid, client, (const unsigned (*)[2])looks, nlooks);
 	if (r < 0) reply("error\t%s\tstore", id);
 	else if (prompted) reply("confirm\t%s\tok\t%s\t%s", id, sid, exact ? "exact" : "inferred");
 	else reply("confirm\t%s\tok\t%s", id, sid);
@@ -1808,7 +1836,8 @@ static void usage(void)
 	      "       glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | samples CHAR\n"
 	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE | install [-n NAME] [--nib DEG] [--random|--no-random] | remove | status | widths [--style S] [--nib DEG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
-	      "       glassine-handwriting bench [-l LANG] FILE\n", stderr);
+	      "       glassine-handwriting bench [-l LANG] FILE\n"
+	      "       glassine-handwriting calibrate [-l LANG] FILE\n", stderr);
 }
 
 static int cmd_samples(int argc, char **argv)
@@ -2376,6 +2405,66 @@ static int cmd_read(int argc, char **argv, int bench)
 	return 0;
 }
 
+/* calibrate FILE: the temperature of the head in use (the base model's, or the person's
+ * adaptation) fitted on sample-format lines held back from its training (docs/recognizer.md,
+ * Calibration) */
+static int cmd_calibrate(int argc, char **argv)
+{
+	const char *lang = "en", *file = NULL;
+	for (int i = 0; i < argc; i++) {
+		if (!strcmp(argv[i], "-l") && i + 1 < argc) lang = argv[++i];
+		else if (file) { usage(); return 2; }
+		else file = argv[i];
+	}
+	if (!file || !valid_lang(lang)) { usage(); return 2; }
+	struct hw_lang *l = hw_lang_get(lang);
+	if (!l) { fprintf(stderr, "glassine-handwriting: no model for %s in %s\n", lang, hw_models_dir()); return 1; }
+	FILE *f = strcmp(file, "-") ? fopen(file, "re") : stdin;
+	if (!f) { fprintf(stderr, "glassine-handwriting: %s: %s\n", file, strerror(errno)); return 1; }
+	struct hw_calib_item *it = NULL;
+	size_t n = 0, cap = 0;
+	char *line = NULL;
+	size_t lcap = 0;
+	while (getline(&line, &lcap, f) > 0) {
+		struct hw_sample s;
+		char err[128];
+		if (hw_sample_parse(line, &s, err, sizeof err)) continue;
+		unsigned cp[HW_MAX_LABELS];
+		size_t nc = hw_utf8_decode(s.text, cp, HW_MAX_LABELS);
+		int *lab = nc && nc <= HW_MAX_LABELS ? malloc(nc * sizeof *lab) : NULL;
+		int ok = lab != NULL;
+		for (size_t k = 0; ok && k < nc; k++) ok = (lab[k] = hw_class_of(&l->model, cp[k])) != 0;
+		struct hw_stroke *st = ok ? calloc(s.nstrokes + 1, sizeof *st) : NULL;
+		struct hw_run r = { 0 };
+		if (st) {
+			hw_sample_strokes(&s, st);
+			struct hw_size_ref sz;
+			hw_size_ref_for(l->lang, &s.units, &s.area, NAN, &sz);
+			if (!hw_run_sized(l, st, s.nstrokes, &sz, &r) && r.T > 0) {
+				if (n == cap) { cap = cap ? cap * 2 : 256; it = realloc(it, cap * sizeof *it); }
+				/* the ink's own frames (the size as reading weighs it), not calibrated */
+				it[n++] = (struct hw_calib_item){ r.logp, r.T, r.C, lab, (int)nc };
+				r.logp = NULL;
+				lab = NULL;
+			}
+		}
+		hw_run_free(&r);
+		free(st); free(lab);
+		hw_sample_free(&s);
+	}
+	free(line);
+	if (f != stdin) fclose(f);
+	double before = 0, after = 0, t = hw_calib_fit(it, n, &before, &after);
+	if (t > 0) {
+		printf("temperature\t%.4f\t%zu\t%.4f\t%.4f\n", t, n, before, after);
+		printf("line\ttemperature %016llx %.4f\n", (unsigned long long)l->model.hash, t);
+	} else
+		printf("temperature\tnone\t%zu\n", n);
+	for (size_t i = 0; i < n; i++) { free((void *)it[i].logp); free((void *)it[i].lab); }
+	free(it);
+	return t > 0 ? 0 : 1;
+}
+
 static int cmd_writer(int argc, char **argv)
 {
 	if (argc == 1 && !strcmp(argv[0], "new")) {
@@ -2473,6 +2562,7 @@ int main(int argc, char **argv)
 		if (!strcmp(c, "font")) return cmd_font(argc - 2, argv + 2);
 		if (!strcmp(c, "read")) return cmd_read(argc - 2, argv + 2, 0);
 		if (!strcmp(c, "bench")) return cmd_read(argc - 2, argv + 2, 1);
+		if (!strcmp(c, "calibrate")) return cmd_calibrate(argc - 2, argv + 2);
 		usage();
 		return 2;
 	}

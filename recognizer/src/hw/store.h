@@ -132,4 +132,17 @@ int hw_mark_set(const char (*ids)[17], size_t n, unsigned cp, int kind);
 /* the mark kind of a sample and character in a sorted list, 0 none */
 int hw_mark_of(const struct hw_mark *m, size_t n, const char *id, unsigned cp);
 
+/* Personal look-alikes (spec 001 FR-019, docs/recognizer.md "Look-alikes"): a letter and a
+ * digit the person picked one over the other for, as the client confirmed a reading where the
+ * first one had read the other. Kept in the store's `lookalikes` (SAMPLE TAB CLIENT TAB
+ * READ-HEX TAB CHOSEN-HEX; SAMPLE `-` when the pick made no sample), removed with the sample
+ * or the client's samples, erased with the samples, never exported or contributed. */
+#define HW_LOOKALIKE_MIN 3      /* picks of a pair (either way) that make it the person's */
+#define HW_LOOKALIKE_KEEP 4096  /* lines kept, the oldest go first */
+/* records the pairs (read, chosen) of one pick; sample NULL: none was made */
+int hw_lookalikes_add(const char *sample, const char *client, const unsigned (*pairs)[2], int n);
+/* the person's look-alikes: pairs (digit, letter) picked HW_LOOKALIKE_MIN times or more,
+ * up to max; read again only when the file changed. Returns how many. */
+int hw_lookalikes(unsigned (*out)[2], int max);
+
 #endif

@@ -495,14 +495,14 @@ static double lse(double a, double b) { return a > b ? a + log1p(exp(b - a)) : b
 
 /* the frames of glyph k: weights within the chance of a character, the blank as it was;
  * then within each case pair the size moves the pair's chance between its forms */
-static void weigh(struct hw_run *r, const int *gid, int k, const double *wt, const struct pair *pr, int npr,
-		  const double d[2])
+static void weigh_frames(struct hw_run *r, float *frames, const int *gid, int k, const double *wt, const struct pair *pr,
+			 int npr, const double d[2])
 {
 	for (long f = 0; f < r->T; f++) {
 		long row = f * r->down;
 		if (row > r->rows - 1) row = r->rows - 1;
 		if (gid[r->org[row].stroke] != k) continue;
-		float *lp = r->logp + (size_t)f * r->C;
+		float *lp = frames + (size_t)f * r->C;
 		double m = -INFINITY, q = -INFINITY;
 		for (int c = 1; c < r->C; c++) {
 			double a = lp[c], b = lp[c] + wt[c];
@@ -524,6 +524,14 @@ static void weigh(struct hw_run *r, const int *gid, int k, const double *wt, con
 			if (pr[i].z) lp[pr[i].z] = (float)(z2 - t2 + tot);
 		}
 	}
+}
+
+/* the ink's frames and the calibrated ones readings are made on (calib.h) alike */
+static void weigh(struct hw_run *r, const int *gid, int k, const double *wt, const struct pair *pr, int npr,
+		  const double d[2])
+{
+	weigh_frames(r, r->logp, gid, k, wt, pr, npr, d);
+	if (r->dec) weigh_frames(r, r->dec, gid, k, wt, pr, npr, d);
 }
 
 /* characters of the run's best path (the most likely class per frame, repeats and blanks
