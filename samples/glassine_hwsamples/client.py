@@ -267,7 +267,8 @@ class Cli:
         return [self.binary, *self.args, *args]
 
     def run(self, *args, check=True):
-        p = subprocess.run(self.argv(*args), capture_output=True, text=True, env=self.env, timeout=600)
+        # bytes that aren't UTF-8 (a damaged file) come through replaced, never as an error
+        p = subprocess.run(self.argv(*args), capture_output=True, text=True, errors="replace", env=self.env, timeout=600)
         if check and p.returncode:
             raise Error(p.stderr.strip() or f"{args[0]} failed")
         return p.stdout

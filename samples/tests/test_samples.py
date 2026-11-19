@@ -635,6 +635,40 @@ class YourHandwriting(Case):
         self.assertTrue(flow.State().introduced)               # saved: never asked again
 
 
+class DamagedModel(Case):
+    """a letter model with damaged entries (bytes that aren't UTF-8, a line that isn't JSON, a
+    character that isn't one) still reads: the app gets its text, the preview leaves those
+    entries out with a warning and keeps the rest"""
+
+    def test_left_out_rest_kept(self):
+        from glassine_hwsamples import fontview
+        import contextlib
+        import io
+        good = {"format": "glassine-handwriting-letters", "version": 1}
+        lines = [json.dumps(good).encode(),
+                 b'{"spacing":{"letter":0.3,"word":1.2,"pairs":[["\xfc\x83\x80\xb0","a",0.3,3,null],'
+                 b'["a","b",0.3,3,0.9]],"reach":[["\xed\xa0\x80",0.5,0.5,3,3],["a",0.5,0.5,3,3]]}}',
+                 b'{"char": not json',
+                 b'{"char":"\xff","variants":[]}',
+                 b'{"char":"a","samples":3,"covered":true,"variants":[],"rules":[{"prev":"\xfe","variant":0}]}',
+                 b'{"joined":"a\xc0","variant":{}}']
+        f = self.e.dir / "model.bin"
+        f.write_bytes(b"\n".join(lines) + b"\n")
+        cli = client.Cli(binary="cat", env=dict(os.environ))
+        cli.argv = lambda *a: ["cat", str(f)]
+        text = cli.run("letters", "show")                     # no decoding error
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            m = fontview.parse(text)
+        self.assertEqual(list(m["chars"]), ["a"])
+        self.assertEqual(m["chars"]["a"]["rules"], [])
+        self.assertEqual([p[:2] for p in m["spacing"]["pairs"]], [["a", "b"]])
+        self.assertEqual([r[0] for r in m["spacing"]["reach"]], ["a"])
+        self.assertNotIn("joined", m)
+        self.assertGreaterEqual(err.getvalue().count("isn't valid, left out"), 5)
+        self.assertNotIn("\ufffd", err.getvalue())
+
+
 class FontPreview(Case):
     """spec 003 FR-010: the preview shows what shaping shows, with neighbour rules (FR-038) and
     joined pairs (FR-039): the same glyphs (each letter's variant, each pair as one) at the

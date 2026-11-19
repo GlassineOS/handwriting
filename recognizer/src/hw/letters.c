@@ -202,8 +202,31 @@ static void variant_out(struct sbuf *b, const struct hw_variant *x, int with_bes
 }
 
 /* with_best 0: without the best versions (the font is made without them) */
+/* a Unicode scalar value a character of the model can be */
+static int cp_ok(unsigned c) { return c && c <= 0x10ffff && (c < 0xd800 || c > 0xdfff); }
+
+/* every character the model names is one (FR-006: the model is UTF-8 text) */
+static int model_chars_ok(const struct hw_letters *L)
+{
+	const struct hw_spacing *sp = &L->sp;
+	for (size_t i = 0; i < sp->npairs; i++) if (!cp_ok(sp->pairs[i].a) || !cp_ok(sp->pairs[i].b)) return 0;
+	for (size_t i = 0; i < sp->nreach; i++) if (!cp_ok(sp->reach[i].cp)) return 0;
+	for (size_t i = 0; i < L->n; i++) {
+		if (!cp_ok(L->l[i].cp)) return 0;
+		for (int r = 0; r < L->l[i].nrules; r++) if (!cp_ok(L->l[i].rule[r].nb)) return 0;
+	}
+	for (size_t i = 0; i < L->njoined; i++) if (!cp_ok(L->joined[i].a) || !cp_ok(L->joined[i].b)) return 0;
+	return 1;
+}
+
+/* the model file's text; NULL when a character in it isn't one (it's never written) */
 static char *format_model(const struct hw_letters *L, size_t *len, int with_best)
 {
+	if (len) *len = 0;
+	if (!model_chars_ok(L)) {
+		fprintf(stderr, "glassine-handwriting: letters: a character in the model isn't one; not written\n");
+		return NULL;
+	}
 	struct sbuf b = { 0 };
 	sput(&b, "{\"format\":\"%s\",\"version\":%d,\"inputs\":\"%s\",\"samples\":%ld,\"built\":%lld}\n",
 	     HW_LETTERS_FORMAT, HW_LETTERS_VERSION, L->inputs, L->samples, L->built);
@@ -434,13 +457,41 @@ static void variant_in(json_object *x, struct hw_variant *w)
 	variant_measure(w);
 }
 
+/* s is strict UTF-8 holding exactly want characters (Unicode scalar values), into cp */
+static int model_chars(const char *s, unsigned *cp, size_t want)
+{
+	const unsigned char *p = (const unsigned char *)s;
+	size_t n = 0;
+	while (p && *p) {
+		unsigned c = *p++, min;
+		int extra = c < 0x80 ? 0 : (c & 0xe0) == 0xc0 ? 1 : (c & 0xf0) == 0xe0 ? 2 : (c & 0xf8) == 0xf0 ? 3 : -1;
+		if (extra < 0) return 0;
+		min = extra == 1 ? 0x80 : extra == 2 ? 0x800 : extra == 3 ? 0x10000 : 0;
+		if (extra) c &= 0x3fu >> extra;
+		for (int i = 0; i < extra; i++) {
+			if ((*p & 0xc0) != 0x80) return 0;
+			c = c << 6 | (*p++ & 0x3f);
+		}
+		if (c < min || !cp_ok(c) || n >= want) return 0;
+		cp[n++] = c;
+	}
+	return p && n == want;
+}
+
+/* an entry of the model left out: where, never what */
+static void model_skip(int line, const char *field)
+{
+	fprintf(stderr, "glassine-handwriting: letters: model line %d: %s isn't valid, left out\n", line, field);
+}
+
 int hw_letters_parse(const char *text, struct hw_letters *L)
 {
 	memset(L, 0, sizeof *L);
 	const char *s = text;
-	int line = 0, ok = 0;
+	int line = 0, ok = 0, at = 0;
 	size_t cap = 0;
 	while (s && *s) {
+		at++;
 		const char *e = strchr(s, '\n');
 		size_t n = e ? (size_t)(e - s) : strlen(s);
 		char *ln = strndup(s, n);
@@ -448,7 +499,12 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 		if (!ln) goto bad;
 		json_object *o = json_tokener_parse(ln);
 		free(ln);
-		if (!o) { if (n) goto bad; continue; }
+		if (!o) {
+			if (!n) continue;
+			if (!line) goto bad;
+			model_skip(at, "the line");
+			continue;
+		}
 		json_object *v;
 		if (line == 0) {
 			if (!json_object_object_get_ex(o, "format", &v) || strcmp(json_object_get_string(v), HW_LETTERS_FORMAT) ||
@@ -477,9 +533,9 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 				for (size_t i = 0; sp->pairs && i < na; i++) {
 					json_object *e = json_object_array_get_idx(a, i);
 					unsigned c1[2], c2[2];
-					if (json_object_array_length(e) < 4 ||
-					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 2) != 1 ||
-					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 1)), c2, 2) != 1) continue;
+					if (json_object_array_length(e) < 4) continue;
+					if (!model_chars(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 1) ||
+					    !model_chars(json_object_get_string(json_object_array_get_idx(e, 1)), c2, 1)) { model_skip(at, "a pair's character"); continue; }
 					sp->pairs[sp->npairs++] = (struct hw_pair){ c1[0], c2[0], json_object_get_double(json_object_array_get_idx(e, 2)),
 										   json_object_get_int(json_object_array_get_idx(e, 3)), jdn(e, 4) };
 				}
@@ -490,8 +546,8 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 				for (size_t i = 0; sp->reach && i < na; i++) {
 					json_object *e = json_object_array_get_idx(a, i);
 					unsigned c1[2];
-					if (json_object_array_length(e) < 5 ||
-					    hw_utf8_decode(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 2) != 1) continue;
+					if (json_object_array_length(e) < 5) continue;
+					if (!model_chars(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 1)) { model_skip(at, "a reach's character"); continue; }
 					sp->reach[sp->nreach++] = (struct hw_reach){ c1[0], jdn(e, 1), jdn(e, 2),
 										     json_object_get_int(json_object_array_get_idx(e, 3)),
 										     json_object_get_int(json_object_array_get_idx(e, 4)) };
@@ -523,7 +579,7 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			}
 		} else if (json_object_object_get_ex(o, "char", &v)) {
 			unsigned cp[2];
-			if (hw_utf8_decode(json_object_get_string(v), cp, 2) != 1) { json_object_put(o); goto bad; }
+			if (!model_chars(json_object_get_string(v), cp, 1)) { model_skip(at, "its character"); json_object_put(o); line++; continue; }
 			if (L->n == cap) {
 				cap = cap ? cap * 2 : 64;
 				struct hw_letter *x = realloc(L->l, cap * sizeof *x);
@@ -560,7 +616,8 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 					int side = json_object_object_get_ex(x, "next", &nb) ? 1 : json_object_object_get_ex(x, "prev", &nb) ? 0 : -1;
 					unsigned c1[2];
 					int var = (int)jnum(x, "variant", -1);
-					if (side < 0 || hw_utf8_decode(json_object_get_string(nb), c1, 2) != 1 || var < 0 || var >= l->nvar) continue;
+					if (side < 0 || var < 0 || var >= l->nvar) continue;
+					if (!model_chars(json_object_get_string(nb), c1, 1)) { model_skip(at, "a rule's neighbour"); continue; }
 					l->rule[l->nrules++] = (struct hw_rule){ c1[0], side, var, (int)jnum(x, "n", 0), (int)jnum(x, "same", 0),
 										 jnum(x, "hits", 0), jnum(x, "cycle", 0) };
 				}
@@ -568,8 +625,9 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 		} else if (json_object_object_get_ex(o, "joined", &v)) {
 			unsigned c2[3];
 			json_object *jv;
-			if (hw_utf8_decode(json_object_get_string(v), c2, 3) == 2 && json_object_object_get_ex(o, "variant", &jv) &&
-			    L->njoined < HW_JOINED_MAX) {
+			int good = model_chars(json_object_get_string(v), c2, 2);
+			if (!good) model_skip(at, "its pair");
+			if (good && json_object_object_get_ex(o, "variant", &jv) && L->njoined < HW_JOINED_MAX) {
 				struct hw_joined *x = realloc(L->joined, (L->njoined + 1) * sizeof *x);
 				if (!x) { json_object_put(o); goto bad; }
 				L->joined = x;
