@@ -1365,8 +1365,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 13))
-            old = dict(head, inputs=hw_inputs(ids, 12))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 14))
+            old = dict(head, inputs=hw_inputs(ids, 13))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
@@ -1825,6 +1825,78 @@ class ModelText(unittest.TestCase):
             self.assertIn(b'"char":"a"', st.stdout)
         finally:
             other.close()
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class RunningWidths(unittest.TestCase):
+    """spec 003 FR-006: letters written a known factor narrower in sentences than in single
+    words make every variant that much narrower, pairs still at their distances in the font;
+    too few characters seen both ways, or sentences written wider, narrow nothing"""
+    BOTH = "abcdefghijkl"
+    F = 0.9
+
+    @classmethod
+    def store(cls, f=None, chars=BOTH):
+        e = Env()
+        rnd = random.Random(91)
+        ss = alphabet_samples(seed=91, per=3)
+        if f:
+            def narrowed(c, style, r):
+                return [[(x * f, y) for x, y in st] for st in shape(c, style, r)]
+            shapes = {c: narrowed for c in chars}
+            for k in range(4):
+                for i in range(0, len(chars), 3):
+                    ss.append(sample(" ".join(chars[i:i + 3]) + " " + chars[i:i + 3], rnd, shapes=shapes))
+        e.put(ss)
+        e.run("letters", "build", "-r")
+        ttf = e.dir / "f.ttf"
+        e.run("font", "build", str(ttf))
+        lines = [json.loads(x) for x in e.model().splitlines()]
+        sp = next(d["spacing"] for d in lines if "spacing" in d)
+        chars = {d["char"]: d for d in lines if "char" in d}
+        return e, ttf, sp, chars
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = cls.store()
+        cls.full = cls.store(cls.F)
+        cls.few = cls.store(cls.F, chars=cls.BOTH[:6])
+        cls.wider = cls.store(1.15)
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in (cls.base, cls.full, cls.few, cls.wider):
+            s[0].close()
+
+    @staticmethod
+    def widths(chars, c):
+        return [v["width"] for v in chars[c]["variants"]]
+
+    def test_narrower_by_the_ratio(self):
+        sp, chars = self.full[2], self.full[3]
+        self.assertAlmostEqual(sp["narrow"], self.F, delta=0.02)
+        self.assertEqual(self.base[2]["narrow"], 1)
+        # a character written only in single words: its variants are its versions' width times
+        # the ratio (the same versions as in the store without sentences)
+        for c in "mnoprsuvwxz":
+            for w0, w1 in zip(self.widths(self.base[3], c), self.widths(chars, c)):
+                self.assertAlmostEqual(w1 / w0, sp["narrow"], delta=0.02, msg=c)
+
+    def test_pairs_at_their_distances(self):
+        e, ttf, sp, chars = self.full
+        n = 0
+        for a, b, gap, k, d in sp["pairs"]:
+            if d is None or a not in chars or b not in chars:
+                continue
+            self.assertAlmostEqual(set_mid(e, ttf, a + b), d, delta=0.02, msg=a + b)
+            n += 1
+        self.assertGreater(n, 5)
+
+    def test_too_few_or_wider_narrow_nothing(self):
+        self.assertEqual(self.few[2]["narrow"], 1)
+        self.assertEqual(self.wider[2]["narrow"], 1)
+        for c in "mnoz":
+            self.assertEqual(self.widths(self.wider[3], c), self.widths(self.base[3], c), c)
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
