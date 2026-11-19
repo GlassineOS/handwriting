@@ -378,11 +378,8 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   baseline is fitted through the bottoms of the letters that sit on it (fit at least 0.5,
   outliers more than 0.3 x-heights off left out) and straightened to its height at the line's
   middle; such a letter moves onto it when its bottom is within 0.35 x-heights (one further off
-  is more likely a descender read wrong); the slant of each character moves to its own
-  versions' lean in the letter model (the lean of their downstrokes, towards the letter model's
-  slant where they have little downstroke; so a letter that leans by its shape keeps that
-  lean, and the line's lean is how far its letters lean off their versions'; without a letter
-  model to the line's own), at most 0.4; letters read with a fit of 0.5 or more are
+  is more likely a descender read wrong); the slant of each character moves to the letter
+  model's (without one, the line's own), at most 0.4; letters read with a fit of 0.5 or more are
   scaled to the line's x-height (by their class: small letters, tall letters, capitals and
   digits; 0.85 to 1.18); each pair of neighbouring letters moves towards where the letter model's spacing places it
   (below: its middles' distance, guarded by its gap; profiles and middles taken from the ink as
@@ -410,14 +407,20 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   (five x-heights standing in for the area's line); a stroke joined from two characters' parts
   keeps its parts. `ALIGN` is used as given. Its structure is tested coarsely, the shapes
   don't matter: as many pieces as the glyph has strokes, each about where its stroke lies in
-  the glyph (its middle within 0.45 x-heights, both about their middles). A letter written
+  the glyph (its middle within 0.45 x-heights, both about their middles), and its ink's
+  middle within 0.75 x-heights of the glyph's above the baseline (so ink the alignment gave
+  the wrong character, a letter for the mark above it, isn't pulled into that one's glyph).
+  A letter written
   in another stroke order or cut otherwise at a joint doesn't have it, and stays at the line
   level (`no-structure`). Nor does one whose glyph its points can't trace: when the glyph,
   traced on the ink's own points (all the way, and as far as the level pulls), gives a turn
   over 90 degrees where the ink turns by less than 55 within five points, or a step back where
   the ink has none (a loop or a turn the ink doesn't have, drawn with too few points), the
   piece is traced again by the length along it (its points spread over the glyph's stroke as
-  over the ink's); still so, the letter stays at the line level.
+  over the ink's); still so, the letter stays at the line level. A piece whose matched places
+  don't reach its glyph stroke's ends (within a tenth of its length, 0.3 at a joint) is traced
+  by the length along it too: the glyph is drawn whole, not a part of it on all of the
+  piece's points.
 - **Along the stroke (FR-036).** Each point goes to a place on its stroke of the glyph, as a
   share of that stroke's length: both are resampled every 0.04 x-heights (8 to 128 points) and
   matched in order (dynamic time warping) by where the points are, the direction of the stroke
