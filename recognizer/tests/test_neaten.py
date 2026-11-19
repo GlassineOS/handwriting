@@ -206,6 +206,58 @@ def retime(s):
             t += 0.01
 
 
+def joined_line(rnd, words, shapes=None):
+    """a line of words, each word's letters joined into one stroke through them (a short
+    bridge from one letter's last stroke to the next one's first): the sample, per letter
+    its points as (stroke, first, last), and the same letters written apart"""
+    text = " ".join(words)
+    s = TL.sample(text, rnd, shapes=shapes)
+    strokes, at, k = [], [], 0
+    for w in words:
+        pj = None
+        for i, ch in enumerate(w):
+            sp = s["spans"][k]
+            pts = [[list(p) for p in s["strokes"][z]] for z in sp]
+            mine = []
+            if pj is not None:
+                prev = strokes[pj]
+                a, b = prev[-1], pts[0][0]
+                bridge = [[round(a[0] + (b[0] - a[0]) * z / 4, 3), round(a[1] + (b[1] - a[1]) * z / 4, 3), a[2], 0.5]
+                          for z in range(1, 4)]
+                start = len(prev) + len(bridge)
+                prev += bridge + pts[0]
+                mine.append((pj, start, len(prev) - 1))
+                rest = pts[1:]
+            else:
+                rest = pts
+            for st in rest:
+                strokes.append(st)
+                mine.append((len(strokes) - 1, 0, len(st) - 1))
+            # (the pen runs on from the letter's last stroke; from an i's or j's stem, the
+            # dot set after the word)
+            pj = mine[0][0] if ch in "ij" and len(pts) > 1 else mine[-1][0]
+            at.append(mine)
+            k += 1
+        if k < len(text):
+            at.append([])
+            k += 1
+    for z, st in enumerate(strokes):
+        for i, p in enumerate(st):
+            p[2] = round(z * 1.0 + 0.01 * i, 3)
+    return dict(s, strokes=strokes), at, s
+
+
+def mark_offset(xy, stem, mark):
+    """a mark's offset (x, y) from its stem: its points' middle less the stem's points'
+    median x and their top"""
+    j, a, b = stem
+    sx = sorted(xy[j][z][0] for z in range(a, b + 1))
+    top = min(xy[j][z][1] for z in range(a, b + 1))
+    j, a, b = mark
+    pts = [xy[j][z] for z in range(a, b + 1)]
+    return (sum(p[0] for p in pts) / len(pts) - sx[len(sx) // 2], sum(p[1] for p in pts) / len(pts) - top)
+
+
 WHY = {"pulled", "level", "not-covered", "no-structure", "shape-guard", "low-confidence", "drawing",
        "gesture", "no-ink", "space"}
 
@@ -231,10 +283,10 @@ class Neaten(unittest.TestCase):
     def tearDown(self):
         TR.shutil.rmtree(self.e.dir, ignore_errors=True)
 
-    def letters(self, seed=1, change=None):
+    def letters(self, seed=1, change=None, shapes=None):
         """a letter model from synthetic prompted samples of separate letters (each stroke
         changed by change(stroke) first)"""
-        ss = TL.alphabet_samples(seed=seed, per=4)
+        ss = TL.alphabet_samples(seed=seed, per=4, shapes=shapes)
         if change:
             for s in ss:
                 s["strokes"] = [change(st) for st in s["strokes"]]
@@ -713,44 +765,7 @@ class Neaten(unittest.TestCase):
         xh = 30.0
         small = "abcdefghijklmnopqrstuvwxyz"
 
-        def line(words):
-            # each word's letters joined into one stroke through them; per letter its points
-            # as (stroke, first, last)
-            text = " ".join(words)
-            s = TL.sample(text, rnd)
-            strokes, at, k = [], [], 0
-            for w in words:
-                prev = None
-                for i, ch in enumerate(w):
-                    sp = s["spans"][k]
-                    pts = [[list(p) for p in s["strokes"][z]] for z in sp]
-                    mine = []
-                    if prev is not None:
-                        a, b = prev[-1], pts[0][0]
-                        bridge = [[round(a[0] + (b[0] - a[0]) * z / 4, 3), round(a[1] + (b[1] - a[1]) * z / 4, 3), a[2], 0.5]
-                                  for z in range(1, 4)]
-                        j = len(strokes) - 1
-                        start = len(prev) + len(bridge)
-                        prev += bridge + pts[0]
-                        mine.append((j, start, len(prev) - 1))
-                        rest = pts[1:]
-                    else:
-                        rest = pts
-                    for st in rest:
-                        strokes.append(st)
-                        mine.append((len(strokes) - 1, 0, len(st) - 1))
-                    prev = strokes[-1]
-                    at.append(mine)
-                    k += 1
-                if k < len(text):
-                    at.append([])
-                    k += 1
-            for z, st in enumerate(strokes):
-                for i, p in enumerate(st):
-                    p[2] = round(z * 1.0 + 0.01 * i, 3)
-            return dict(s, strokes=strokes), at, s
-
-        lines = [line(["".join(rnd.choice(small) for _ in range(rnd.randint(2, 5))) for _ in range(4)]) for _ in range(8)]
+        lines = [joined_line(rnd, ["".join(rnd.choice(small) for _ in range(rnd.randint(2, 5))) for _ in range(4)]) for _ in range(8)]
         checked, new, where = 0, 0, {}
         rate = {}
         for s, at, apart in lines:
@@ -819,6 +834,97 @@ class Neaten(unittest.TestCase):
         # recognizer's alignment, of a model with random weights here)
         for lv in (0.75, 1):
             self.assertGreaterEqual(share[(lv, "points")], share[(lv, "apart")] - 0.05, share)
+
+    def test_joined_pairs_and_marks(self):
+        """letters written joined in one stroke (st, ch, ri, as inside words), ALIGN by points:
+        at Strong and Neatest each letter of such a pair is pulled (the stroke cut where its
+        letters meet, the join drawn anew; at Strong the shape guard may hold back one whose
+        pull part of the way passes nearer another letter's versions), with no new kink or
+        step back, every letter kept and in order, and at Neatest each glyph drawn whole in
+        its letter's ink; an i's dot, written aside, sits at Strong where Neatest has it on
+        the pulled stem"""
+        sh = {"i": TL.dotted_i}
+        self.letters(shapes=sh)
+
+        def aside(c, style, rnd):
+            # (an i with its dot written a quarter x-height high and to the left)
+            stem, dot = TL.dotted_i(c, style, rnd)
+            return [stem, [(x - 0.25, y + 0.25) for x, y in dot]]
+        rnd = random.Random(33)
+        xh = 30.0
+        words = ["past", "chin", "brim", "has", "rich", "cast", "arise", "chase", "first", "this"]
+        pairs = ("st", "ch", "ri", "as")
+        n = drawn = held = 0
+        mark = {}
+        for i in range(0, len(words), 5):
+            s, at, _ = joined_line(rnd, words[i:i + 5], shapes={"i": aside})
+            text = s["text"]
+            align = ";".join(",".join(f"{j}:{a}-{b}" for j, a, b in m) for m in at)
+            glyphs = self.glyphs(text)
+            for lv in ("0.75", "1"):
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                c = self.e.start()
+                self.begin(c, s)
+                _, out, why = parse(c.ask("neaten", "s", lv, TR.esc(text), align), why=True)
+                c.close()
+                xy = [EV.to_xy(o[2]) for o in out]
+                for j, st in enumerate(s["strokes"]):
+                    self.assertEqual(sum(flow([(p[0], p[1]) for p in st], xy[j], xh)), 0, (lv, j))
+                for k in range(len(text) - 1):
+                    if text[k:k + 2] not in pairs:
+                        continue
+                    for z in (k, k + 1):
+                        # (the shape guard may hold back one whose pull, part of the way,
+                        # passes nearer another letter's versions: one in this line)
+                        if why[z] != "pulled":
+                            self.assertEqual((lv, why[z]), ("0.75", "shape-guard"), text[k:k + 2])
+                            held += 1
+                        else:
+                            n += 1
+                mids = []
+                for k, m in enumerate(at):
+                    if not m:
+                        self.assertEqual(mids, sorted(mids), lv)
+                        mids = []
+                        continue
+                    pts = [xy[j][z] for j, a, b in m for z in range(a, b + 1)]
+                    mids.append((min(p[0] for p in pts) + max(p[0] for p in pts)) / 2)
+                    g = glyphs[k]
+                    if g is None or why[k] != "pulled":
+                        continue
+                    # at Neatest its glyph is drawn whole in its ink (each point of the glyph
+                    # on the ink, once moved and scaled onto it; the joining stroke drawn
+                    # anew beside it isn't the glyph's)
+                    full = [[(xy[j][z][0] / xh, -xy[j][z][1] / xh) for z in range(a, b + 1)] for j, a, b in m]
+                    if lv == "1" and len(full) == len(g["strokes"]):
+                        rev = on_curve([[(p[0], -p[1]) for p in st] for st in g["strokes"]], {"strokes": full})
+                        self.assertLess(rev, 0.05, text[k])
+                        drawn += 1
+                    # the mark: a stroke of its own, not the glyph's tallest, its offset from
+                    # the stem (its points' median x, their top)
+                    if text[k] not in "ij" or len(m) < 2 or len(g["strokes"]) != len(m):
+                        continue
+                    lens = [max(p[1] for p in gs) - min(p[1] for p in gs) for gs in g["strokes"]]
+                    an = lens.index(max(lens))
+                    for z, (j2, a2, b2) in enumerate(m):
+                        if z == an or any(j2 == j3 and k3 != k for k3, m3 in enumerate(at) for j3, _, _ in m3):
+                            continue
+                        offs = [mark_offset(pts, m[an], m[z]) for pts in (xy, s["strokes"])]
+                        mark.setdefault((i, k), {})[lv] = offs
+                self.assertEqual(mids, sorted(mids), lv)
+        # at Strong where Neatest (its glyph drawn whole) has it, the dot written aside (the
+        # dot's own pull part of the way would leave it a tenth of an x-height off)
+        dev = []
+        for (i, k), o in mark.items():
+            (st, raw), (nt, _) = o["0.75"], o["1"]
+            dev.append(math.hypot(st[0] - nt[0], st[1] - nt[1]) / xh)
+            self.assertLess(dev[-1], 0.06, (i, k))
+            self.assertGreater(math.hypot(raw[0] - nt[0], raw[1] - nt[1]), 0.2 * xh, (i, k))
+        self.assertLess(sum(dev) / len(dev), 0.04)
+        self.assertGreater(n, 40)
+        self.assertLessEqual(held, 1)
+        self.assertGreater(drawn, 30)
+        self.assertGreater(len(mark), 2)
 
     def test_flow_where_ink_and_versions_differ(self):
         """at every level, no new step back and no new kink where the versions have a part the

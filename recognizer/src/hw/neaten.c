@@ -1632,6 +1632,56 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 		}
 		free(cum); free(hw); free(seg);
 	}
+	/* a pulled letter's separate marks (a dot, a bar: a stroke of its own, not its tallest)
+	 * kept where its glyph has them from that stroke, the stem: a mark goes where the full
+	 * pull puts it, moved as far as the stem's own points (the joining strokes left out)
+	 * ended up from where the full pull puts them, so a dot sits on its stem however far the
+	 * stem was pulled (at Neatest, where the full pull puts it) */
+	for (size_t k = 0; k < nc; k++) {
+		struct ch *c = &C[k];
+		if (!(c->pull > 0) || c->pair == 2 || c->np < 2 || !c->t) continue;
+		int an = 0;
+		double best = -1;
+		for (int a = 0; a < c->np; a++) {
+			double lo = INFINITY, hi = -INFINITY;
+			for (size_t i = 0; i < c->t[a].n; i++) { lo = fmin(lo, c->t[a].y[i]); hi = fmax(hi, c->t[a].y[i]); }
+			if (hi - lo > best) { best = hi - lo; an = a; }
+		}
+		/* the mean of (where piece p's points are) less (where the full pull puts them),
+		 * over [f, l) */
+		double r[2], t[2], w[2];
+		const struct piece *ap = &c->pc[an];
+		size_t f = ap->f < ap->l ? ap->f : ap->a, l = ap->f < ap->l ? ap->l : ap->b;
+		size_t nr = 0;
+		r[0] = r[1] = 0;
+		for (size_t i = f; i < l; i++) {
+			double x, y;
+			if (!isfinite(ex[ap->j][i]) || !isfinite(ey[ap->j][i])) continue;
+			line_map(c, q->ink[ap->j].x[i], q->ink[ap->j].y[i], &x, &y);
+			r[0] += q->x[ap->j][i] - x - ex[ap->j][i];
+			r[1] += q->y[ap->j][i] - y - ey[ap->j][i];
+			nr++;
+		}
+		if (!nr) continue;
+		r[0] /= (double)nr; r[1] /= (double)nr;
+		for (int b = 0; b < c->np; b++) {
+			const struct piece *pc = &c->pc[b];
+			if (b == an || pc->joint0 || pc->joint1 || nown[pc->j] != 1 || pc->b <= pc->a) continue;
+			size_t nt = 0;
+			t[0] = t[1] = w[0] = w[1] = 0;
+			for (size_t i = pc->a; i < pc->b; i++) {
+				double x, y;
+				if (!isfinite(ex[pc->j][i]) || !isfinite(ey[pc->j][i])) continue;
+				line_map(c, q->ink[pc->j].x[i], q->ink[pc->j].y[i], &x, &y);
+				t[0] += x + ex[pc->j][i]; t[1] += y + ey[pc->j][i];
+				w[0] += q->x[pc->j][i]; w[1] += q->y[pc->j][i];
+				nt++;
+			}
+			if (!nt) continue;
+			double dx = (t[0] - w[0]) / (double)nt + r[0], dy = (t[1] - w[1]) / (double)nt + r[1];
+			for (size_t i = pc->a; i < pc->b; i++) { q->x[pc->j][i] += dx; q->y[pc->j][i] += dy; }
+		}
+	}
 	for (size_t k = 0; k < nc; k++) {
 		q->pulled[k] = C[k].pull > 0;
 		q->why[k] = (unsigned char)(C[k].pull > 0 ? HW_NEAT_WHY_PULLED : C[k].why == HW_NEAT_WHY_PULLED ? HW_NEAT_WHY_LEVEL : C[k].why);

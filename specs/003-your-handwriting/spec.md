@@ -358,7 +358,8 @@ size, spacing) and keep their shape.
   joining stroke between them is drawn anew from the end of the first letter's glyph to
   the start of the second's, as a smooth connection, carrying the timing and pressure of
   the person's own joining stroke, so a joined word keeps every letter and its joins stay
-  smooth.
+  smooth. A letter's separate mark (the dot of an i or j, a bar written apart) keeps the
+  place the glyph gives it relative to the letter's pulled main stroke, at every strength.
 - **FR-037**: Each pulled or replaced character is checked on its own, by its shape: its new
   ink (centred, at x-height) must be closer to that character's own versions than to any
   version of any other character, whatever their stroke counts; when it isn't, that character alone stays as the
