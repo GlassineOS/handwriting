@@ -10,7 +10,10 @@ until the app clears it or reports on it. A short pause after a stroke reads the
 (neatening needs the reading, text or not); a longer one gives the candidates. Each word of
 the best reading is neatened on its own (a short request, under the 300 ms of SC-003 also
 for a long line), from its raw strokes, and only again when its strokes, its text or the
-strength change. The writing is neatened line by line: by the area's guides (set_guides), else
+strength change. The reading only says which strokes make a word: the word is neatened
+without it as its text, which the person hasn't confirmed (at Neatest the recognizer sets
+only a confirmed text in the font, spec 003 FR-043; a word read wrongly would be set as
+another). The writing is neatened line by line: by the area's guides (set_guides), else
 by the lines found in it (lines()).
 
 Every session has a writing area (area.py): the app's box and guides when it set them, else
@@ -360,7 +363,8 @@ class Surface:
                 for k in ks:
                     await e.ask(self.app, "stroke", w, points(self.strokes[k]))
                 await self.set_area(w, line_ks)
-                r = await e.ask(self.app, "neaten", w, repr(self.strength), _esc(wt))
+                # (no TEXT: the reading isn't the person's)
+                r = await e.ask(self.app, "neaten", w, repr(self.strength))
             finally:
                 await e.ask(self.app, "end", w)
             if tuple(self.order) != held or not self.neaten:

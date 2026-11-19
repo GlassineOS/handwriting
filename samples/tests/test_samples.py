@@ -1266,6 +1266,28 @@ class Pages(Case):
             for a, b in zip(u.neat_shown[i], s):
                 self.assertAlmostEqual(a[0], b[0], places=3)
                 self.assertAlmostEqual(a[1], b[1], places=3)
+        # Neatest: each line's own top reading goes as the text (the playground sets it in the
+        # font at once, misreads too: FR-043); the text shown is that reading
+        asks, rec = [], u.neat.rec
+
+        class Rec:
+            def __getattr__(s, name):
+                return getattr(rec, name)
+
+            def neaten(s, *a):
+                asks.append(a)
+                return rec.neaten(*a)
+        u.neat.rec = Rec()
+        u.set_strength(1.0, (strokes, "device:6.2", area))
+        self.settle(u, lambda: not u.neat_busy)
+        u.neat.rec = rec
+        firsts = [a for a in asks if len(a) == 2]
+        self.assertTrue(firsts)
+        withtext = [a[2] for a in asks if len(a) == 3]
+        self.assertTrue(withtext and all(withtext), asks)
+        self.assertEqual(u.neat_text, " · ".join(withtext))
+        u.set_strength(0.0, (strokes, "device:6.2", area))
+        self.settle(u, lambda: not u.neat_busy)
         # the same ink again: no new call for lines that didn't change
         n = self.e.rec.n
         u.neaten((strokes, "device:6.2", area))
@@ -1317,6 +1339,10 @@ class Pages(Case):
         self.assertEqual(pi.text, "hi")
         u.set_strength(1.0, ([], "device", ()))
         self.assertEqual(pi.pen.calls[-1], ("set_neaten", (True, 1.0)))
+        # Neatest: the page's own neatening is shown (the service sets no word, FR-043)
+        u.neat_shown = {0: [(7, 7), (8, 8)]}
+        self.assertEqual(self.U.neat_view(u, page), [[(7, 7), (8, 8)], mouse])
+        u.neat_shown = {}
         pi.clear()
         self.assertEqual((pi.shown, pi.index, pi.text), ({}, {}, ""))
         # the service leaves: no more neatening through it, the pen's waiting strokes join the page

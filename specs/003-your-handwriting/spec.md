@@ -81,7 +81,11 @@ writing page, a notes app, a drawing app, the keyboard's writing paper) with nea
 **When** the person writes, **Then** each stroke appears under the pen as written, and once
 the words it belongs to are read it is replaced by its neatened version: the same text in the
 same hand. A strength control moves between the original and the neatest version, and the
-original can be brought back at any time.
+original can be brought back at any time. Through the neat ink layer the neatest version
+pulls the words towards the person's letters; it sets a word in their font only once its
+text is confirmed (FR-043). The handwriting app's writing page is a playground: there the
+neatest version sets each word at once as the page reads it (the reading it shows), so a
+misread word is set as what it was read as.
 
 ### Scenario 6 – Drawing stays drawing (Priority: P2)
 

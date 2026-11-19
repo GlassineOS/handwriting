@@ -1565,8 +1565,8 @@ class UI:
     def neaten(self, payload):
         """the page's ink (the writing area's payload) neatened at the strength chosen; a
         call while one runs waits for it, only the newest ink goes"""
-        if self.neat is None or self.demo or self.pen_ink:
-            return                        # through the pen interface the service neatens
+        if self.neat is None or self.demo or (self.pen_ink and self.neat_strength < 1):
+            return                        # through the pen interface the service neatens (not at Neatest: PenInk)
         if self.neat_busy:
             self.neat_again = payload
             return
@@ -1602,7 +1602,7 @@ class UI:
         self.neat_orig = False
         if self.pen_ink:                  # the service neatens what it holds again
             self.pen_ink.pen.set_neaten(True, s)
-        elif payload[0]:
+        if (not self.pen_ink or s >= 1) and payload[0]:
             self.neaten(payload)
         self.redraw()
 
@@ -1871,7 +1871,10 @@ class Canvas(Gtk.DrawingArea):
             log("pen interface lost neatening: the direct path")
             if self.strokes:
                 self.ui.neaten(self.payload())
-        self.ui.neat_text = self.ui.pen_ink.text if self.ui.pen_ink else self.ui.neat_text
+        elif pi and self.ui.neat_strength >= 1 and self.strokes:
+            self.ui.neaten(self.payload())  # Neatest: the page's own (neat.PenInk)
+        if self.ui.pen_ink and self.ui.neat_strength < 1:
+            self.ui.neat_text = self.ui.pen_ink.text
         self.queue_draw()
         self.on_change()
 
@@ -2076,7 +2079,7 @@ def area_frame(cr, ui, w, h):
 def neat_view(ui, strokes):
     """the strokes as the page shows them: on Neaten my writing each neatened one in its
     neatened form (unless the original is shown), the ones written since as written"""
-    shown = ui.pen_ink.shown if ui.pen_ink else ui.neat_shown
+    shown = ui.pen_ink.shown if ui.pen_ink and ui.neat_strength < 1 else ui.neat_shown
     if ui.page != "neat" or ui.neat_orig or not shown:
         return strokes
     return [shown.get(i, s) for i, s in enumerate(strokes)]
