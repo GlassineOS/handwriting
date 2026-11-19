@@ -794,7 +794,11 @@ samples it is made from sit on average (with the weights that make its shape), a
 as they are on average: averaging and smoothing take height off versions that differ a little
 in shape, so its heights are stretched back from its centre (the width as it comes; not when
 under 0.1 x-heights tall or needing more than 1.5 times). The same samples and picks make
-the same model, byte for byte except the build time, in any order they were stored.
+the same model, byte for byte except the build time, in any order they were stored. The model
+is UTF-8 text and names only real characters (Unicode scalar values): the writer refuses a
+model that would name another, and every reader (the recognizer, the samples app's font
+page) leaves an entry out that isn't valid (a line that isn't JSON, a character that isn't
+one), with a warning naming its line, and reads the rest.
 
 It is made again when its inputs (the prompted samples and the picks, and the way it is built: a
 revision of the build, `HW_LETTERS_BUILD` in `letters.h`, counted on when the model changes, as
