@@ -24,7 +24,7 @@ the person sees as a contribution and their contributor number.
 | `written` | string | no | How it was written (spec 003): `careful` (written as nicely as the person can) or `quick` (the quick half of a pair) |
 | `pair` | string | no | The link a quick and a careful sample of the same prompt share: 16 hex digits made at random; one whose other sample is gone links nothing |
 | `area` | object | no | The writing area it was written in (prompted writing): `box` `[x0, y0, x1, y1]` and `line` (the line spacing), in the units of `x` and `y`; `orientation`, the screen's rotation in degrees (0, 90, 180, 270) |
-| `reading` | list | no | What the recognizer read when it was written, before learning from it: candidates best first, each `{"text": …, "score": …}` (`score` the log-probability, ≤ 0) |
+| `reading` | list | no | What the recognizer read when it was written, before learning from it: candidates best first, each `{"text": …, "score": …}` (`score` the log-probability, ≤ 0 and finite; a candidate the recognizer found impossible is not listed, and one written as `-inf` by an older version is left out when read) |
 | `pick` | object | no | A picked candidate (`confirmed`): `rank`, its place among the candidates (1 = first), and `from`, where it came from: `ink` (the ink's best reading), `beam` (another reading of the ink), `words` (a word of the list one edit from a reading), `guided` (a reading of the search the words guided) or `chars` (a reading of the search the character model weighed) |
 
 A point is a list `[x, y, t]` or `[x, y, t, pressure]` or `[x, y, t, pressure, tilt_x,
