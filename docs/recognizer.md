@@ -405,11 +405,21 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   Then the strokes are put right by where the ink lies as for the letter model, so a dot or
   bar written after the word belongs to the letter it lies across, not to the word's last one
   (five x-heights standing in for the area's line); a stroke joined from two characters' parts
-  keeps its parts. `ALIGN` is used as given. Its structure is tested coarsely, the shapes
+  keeps its parts. `ALIGN` is used as given, except a stroke it lists whole for several
+  characters (a joined word: it says which letters the stroke holds, not where one ends): the
+  alignment of `TEXT` with the ink splits that stroke among them (a point it aligns with
+  another character goes with its neighbours), and the edges are put right as without
+  `ALIGN`. Its structure is tested coarsely, the shapes
   don't matter: as many pieces as the glyph has strokes, each about where its stroke lies in
   the glyph (its middle within 0.45 x-heights, both about their middles), and its ink's
   middle within 0.75 x-heights of the glyph's above the baseline (so ink the alignment gave
-  the wrong character, a letter for the mark above it, isn't pulled into that one's glyph).
+  the wrong character, a letter for the mark above it, isn't pulled into that one's glyph),
+  and of about one letter's size: ink more than twice as wide as the glyph (at least half an
+  x-height) holds more than this letter, ink whose larger side is less than half the glyph's
+  is a sliver of a joined stroke; neither is pulled. A letter in a word with no ink of its own,
+  or less than half its glyph's size, while it shares strokes with its neighbours, has its ink
+  in theirs: neither it nor they are pulled (`no-structure`). So every letter keeps its ink at
+  about its own size and in its own place.
   A letter written
   in another stroke order or cut otherwise at a joint doesn't have it, and stays at the line
   level (`no-structure`). Nor does one whose glyph its points can't trace: when the glyph,
