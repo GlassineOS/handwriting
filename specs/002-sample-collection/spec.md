@@ -115,7 +115,7 @@ name leaves the list.
 ### Scenario 6 – The person stays in charge (Priority: P1)
 
 **Given** stored samples, **When** the person opens the app's sample view (Samples, beneath
-Learn), **Then** they see
+Learn; in a guest's session, Your samples in Contribute), **Then** they see
 the samples from this app, can look at any sample and delete it, erase all of them, and
 export them as one file in the sample format; nothing leaves the device otherwise.
 
@@ -177,8 +177,8 @@ export them as one file in the sample format; nothing leaves the device otherwis
 - **FR-026**: The app's pages. The owner's session has four tabs, in this order:
   - **Write**: the prompt, the writing area and the choice of prompt set (Scenarios 1, 2
     and 4). It teaches the recognizer only.
-  - **Your font**: the font, the careful samples and picks that teach it, and Neaten my
-    writing (spec 003 FR-042).
+  - **Your font**: opens on the font page; below it, rows open the careful samples and
+    picks that teach it and Neaten my writing (spec 003 FR-042).
   - **Learn**: the adaptation, its progress and the version before (Scenario 3), with two
     pages beneath it: **Samples**, the sample view (Scenario 6), and **Coverage**, the
     samples per character the recognizer has seen (Scenario 4). Each opens from Learn and
@@ -186,11 +186,12 @@ export them as one file in the sample format; nothing leaves the device otherwis
     font's own counts per character are on the font page (spec 003 FR-030), not in Coverage.
   - **Contribute** (Scenario 5).
 
-  A guest's session has Write and Contribute only (FR-018). A way onward leads to the tab
-  whose work it is: Coverage's "Practise these" goes to Write with the set that favours
-  what is weak, and Learn's "Write more" to Write; the last step of the introduction
+  A guest's session has Write and Contribute only (FR-018); their own samples open from
+  "Your samples" in Contribute, which stays marked, and lead back to it. A way onward leads
+  to the tab whose work it is: Coverage's "Practise these" goes to Write with the set that
+  favours what is weak, and Learn's "Write more" to Write; the last step of the introduction
   (FR-012) and its Skip, the way back from the list of writers, and the note after Finish
-  go to Write; the ways back from the parts of Your font go to Your font.
+  go to Write; the ways back from the parts of Your font go to the font page.
 
 ### Other writers
 
@@ -223,20 +224,18 @@ export them as one file in the sample format; nothing leaves the device otherwis
   keeps the prompted samples the writer keeps, since they exist only for that writer's review
   and contribution.
 - **FR-018**: What a guest session offers: two tabs, Write and Contribute (FR-026). Write
-  has the shipped prompt sets, including "Write it your best" and "Which one is nicer?"
-  (spec 003 Scenarios 1 and 2), whose marks and preferences travel with a contribution, and
-  prompt choice (FR-004) by the writer's own coverage and the base model's errors on their
-  samples; Contribute (Scenario 5) has their own licence, contributor number and
-  earlier-samples offer, of their own samples only. Counts are today's and the total.
-  [NEEDS CLARIFICATION: with no Samples page in a guest's session, where does a writer look
-  at, delete, erase all and export their own samples? FR-024's row for Erase all in a guest's
-  session, the acceptance check of a guest's export and the last item of Out of scope rely on
-  it.] Not offered: the Your font and Learn tabs, so neither Samples, Coverage, Adapt and the
-  learning progress, nor the font and Neaten my writing; and no own word list. A font is
+  has the shipped prompt sets, including "Write it your best" (spec 003 Scenario 1), whose
+  marks travel with a contribution, and prompt choice (FR-004) by the writer's own coverage
+  and the base model's errors on their samples; Contribute (Scenario 5) has their own
+  licence, contributor number and earlier-samples offer, of their own samples only, and
+  "Your samples", the sample view of their own samples (Scenario 6): look at one, delete it,
+  erase all and export, with no import. Counts are today's and the total. Not offered: the
+  Your font and Learn tabs, so neither Coverage, Adapt and the learning progress, nor the
+  font, "Which one is nicer?" and Neaten my writing; and no own word list. A font is
   installed for the whole account and neatening works on the account's pen ink, so either
   would put the guest's hand into the owner's apps; an adaptation or a letter model of a
   guest's samples would serve no one on this device and cost power; the own word list is a
-  file among the owner's files. The recognizer refuses
+  file among the owner's files; the picks teach a font. The recognizer refuses
   an adaptation, a letter model, a font and neatening for a guest store, and never adapts
   one in the background.
 - **FR-019**: A guest's introduction: the first time a writer's session opens, the app shows
@@ -283,7 +282,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
   | Action | Touches | Leaves |
   |---|---|---|
   | Erase all, Samples page, owner's session | the owner's samples, adaptation, letter model and font (spec 001, spec 003) | every guest store; saved contribution files; the owner's contribution and number |
-  | Erase all, Samples page, a guest's session | that writer's samples, their preferences and marks | the writer, their contribution and number; every other store |
+  | Erase all, Your samples in Contribute, a guest's session | that writer's samples and their marks | the writer, their contribution and number; every other store |
   | Erase contribution, in a session | that session's writer's contribution not yet saved | their samples and contributor number; every other store; saved files |
   | Get a new contributor number, in a session | that writer's number, from now on | everything else; saved files keep the old one |
   | Remove a writer, owner's session | that writer's whole store and their name in the list | the owner's store; every other guest store; saved files |
