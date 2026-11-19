@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 11     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 12     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -167,6 +167,15 @@ struct hw_metrics {
  * reach; guarded by, and without a distance set at, the gap: a pair's median gap, a pair
  * of side shapes' gap, and for the rest the person's typical gap less open * (the
  * profiles' open space - open0); words at word. Gaps are hw_profile_gap's, in x-heights. */
+/* Running text (FR-007): a pair written at least HW_PAIR_MIN times in samples of several
+ * words is spaced from those alone; the rest from single words, their middles' distances
+ * times run and their gaps closer by the distance that takes off: run is the median, over
+ * the pairs written at least HW_PAIR_MIN times both ways (at least HW_RUN_PAIRS of them,
+ * else 1), of the running-text distance over the single-word one, within HW_RUN_MIN and
+ * HW_RUN_MAX (running text written wider than single words never widens them) */
+#define HW_RUN_PAIRS 10
+#define HW_RUN_MIN 0.85
+#define HW_RUN_MAX 1.0
 #define HW_PAIR_MIN 3                   /* times written for a pair's own gap */
 #define HW_SIDE_PAIR_MIN 5              /* for a pair of side shapes' gap */
 #define HW_SIDE_CLASSES 16              /* side shapes per side at most */
@@ -177,6 +186,7 @@ struct hw_reach { unsigned cp; double right, left; int nr, nl; };
 struct hw_side_pair { int rc, lc; double gap; int n; };
 struct hw_spacing {
 	double letter, word, open, open0;
+	double run;                     /* running text's distances over single words' (1 none) */
 	struct hw_pair *pairs;          /* sorted by a, b */
 	size_t npairs;
 	struct hw_side_pair *sides;     /* sorted by rc, lc */
@@ -208,8 +218,9 @@ double hw_spacing_gap(const struct hw_spacing *sp, unsigned a, const struct hw_p
  * relative to their own origins */
 double hw_spacing_place(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, double ma, int rc,
 			unsigned b, const struct hw_profile *pb, double mb, int lc);
-/* one observed pair of neighbouring letters, in x-heights, for hw_spacing_learn */
-struct hw_gap_obs { unsigned a, b; struct hw_profile pa, pb; double gap, ma, mb; };
+/* one observed pair of neighbouring letters, in x-heights, for hw_spacing_learn; run: in a
+ * sample of several words (running text) */
+struct hw_gap_obs { unsigned a, b; struct hw_profile pa, pb; double gap, ma, mb; int run; };
 /* the spacing from observed letter pairs and word gaps; the variants' side shapes set
  * (lc, rc) on L's letters. 0, -1 out of memory. */
 int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n, const double *words, size_t nw);
