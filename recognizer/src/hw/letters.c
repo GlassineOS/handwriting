@@ -251,6 +251,8 @@ static char *format_model(const struct hw_letters *L, size_t *len, int with_best
 		num(&b, sp->open0);
 		sput(&b, ",\"run\":");
 		num(&b, sp->run);
+		sput(&b, ",\"narrow\":");
+		num(&b, sp->narrow);
 		sput(&b, ",\"pairs\":[");
 		for (size_t i = 0; i < sp->npairs; i++) {
 			char u[16];
@@ -526,6 +528,7 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			sp->open = jnum(v, "open", 0);
 			sp->open0 = jnum(v, "open0", 0);
 			sp->run = jnum(v, "run", 1);
+			sp->narrow = jnum(v, "narrow", 1);
 			json_object *a;
 			if (json_object_object_get_ex(v, "pairs", &a) && json_object_is_type(a, json_type_array)) {
 				size_t na = json_object_array_length(a);
@@ -939,6 +942,28 @@ static double rdist(const double *a, const double *b, int total)
 static void letter_slots(struct hw_letter *l);
 
 /* builds one variant around a seed from its group; *xmin the left edge its x is from */
+/* a variant narrowed about its middle by k (FR-006), its best version with it, x again from
+ * its left edge; its profiles and middle measured again */
+static void variant_narrow(struct hw_variant *v, double k)
+{
+	if (!(k < 1) || !v->s) return;
+	double c = isfinite(v->mid) ? v->mid : v->width / 2, lo = INFINITY, hi = -INFINITY;
+	for (size_t j = 0; j < v->nstrokes; j++)
+		for (size_t i = 0; i < v->s[j].n; i++) {
+			double x = c + (v->s[j].x[i] - c) * k;
+			if (x < lo) lo = x;
+			if (x > hi) hi = x;
+		}
+	if (!isfinite(lo)) return;
+	for (size_t j = 0; j < v->nstrokes; j++) {
+		for (size_t i = 0; i < v->s[j].n; i++) v->s[j].x[i] = round((c + (v->s[j].x[i] - c) * k - lo) * 1e4) / 1e4;
+		for (size_t i = 0; v->best && i < v->best[j].n; i++)
+			v->best[j].x[i] = round((c + (v->best[j].x[i] - c) * k - lo) * 1e4) / 1e4;
+	}
+	v->width = round((hi - lo) * 1e4) / 1e4;
+	variant_measure(v);
+}
+
 static int make_variant(struct inst *in, const struct group *g, int seed, struct hw_variant *v, double *xmin_out)
 {
 	const double *sr = in[seed].rs;
@@ -1553,6 +1578,7 @@ static int build_progress;      /* letters build --progress */
  * the samples with it; its occurrences recorded */
 static unsigned build_only;
 static struct hw_metrics build_m;      /* the model's, for one character's build */
+static double build_narrow = 1;         /* the model's narrowing, for one character's build */
 struct occrec { char id[17]; int pos, state, inst; char *text; };
 static struct occrec *build_occ;
 static size_t build_nocc, build_cocc;
@@ -1976,6 +2002,7 @@ static int joined_glyph(struct hw_joined *J, const struct hw_letters *L, struct 
 	}
 	double xmin;
 	if (make_variant(in, &g, seed, &J->v, &xmin)) { variant_free(&J->v); ret = -1; goto out; }
+	variant_narrow(&J->v, L->sp.narrow);
 	J->v.use = bs;
 	J->v.ids = calloc((size_t)g.n + 1, sizeof *J->v.ids);
 	for (int a = 0; J->v.ids && a < g.n; a++) {
@@ -2601,6 +2628,33 @@ int hw_letters_build(struct hw_letters *L)
 	}
 	free(uc);
 
+	/* letter widths (FR-006): per character its median width in running text (a sample of
+	 * several words) over that in single words; one character's build takes the model's */
+	if (build_only) L->sp.narrow = build_narrow;
+	else {
+		double *r = malloc((L->n + 1) * sizeof *r), *wr = malloc((nin + 1) * sizeof *wr), *ww = malloc((nin + 1) * sizeof *ww);
+		size_t nr = 0;
+		L->sp.narrow = 1;
+		for (size_t c = 0; r && wr && ww && c < L->n; c++) {
+			size_t a = 0, b = 0;
+			for (size_t k = 0; k < nin; k++) {
+				const struct inst *x = &in[k];
+				if (x->cp != L->l[c].cp || x->dropped || x->slip) continue;
+				if (strchr(S[x->sample].s.text, ' ')) wr[a++] = x->x1;
+				else ww[b++] = x->x1;
+			}
+			if (a < HW_PAIR_MIN || b < HW_PAIR_MIN) continue;
+			double mr = median(wr, a, NAN), mw = median(ww, b, NAN);
+			if (mw > 0.05) r[nr++] = mr / mw;
+		}
+		if (nr >= HW_RUN_CHARS) {
+			double k = median(r, nr, 1);
+			L->sp.narrow = round((k < HW_RUN_MIN ? HW_RUN_MIN : k > HW_RUN_MAX ? HW_RUN_MAX : k) * 1e4) / 1e4;
+		}
+		free(r); free(wr); free(ww);
+	}
+	for (size_t c = 0; c < L->n; c++)
+		for (int v = 0; v < L->l[c].nvar; v++) variant_narrow(&L->l[c].var[v], L->sp.narrow);
 	/* one character's build: no spacing (the model's stays) */
 	if (build_only) goto measured;
 	/* spacing (FR-007): the profile gaps of neighbouring own letters of one sample (their
@@ -2655,7 +2709,9 @@ int hw_letters_build(struct hw_letters *L)
 			}
 		}
 	}
+	double narrow = L->sp.narrow;
 	if (hw_spacing_learn(L, obs, nobs, wgs.v, wgs.n)) { free(obs); free(wgs.v); goto fail; }
+	L->sp.narrow = narrow;
 	L->m.letter_gap = L->sp.letter;
 	L->m.word_gap = L->sp.word;
 	free(obs); free(wgs.v);
@@ -2837,6 +2893,7 @@ int hw_letters_relearn(unsigned cp, int verbose)
 	int r = hw_letters_load(&old);
 	if (r <= 0) return r;
 	build_m = old.m;
+	build_narrow = old.sp.narrow;
 	hw_letters_free(&old);
 	unsigned long gen = hw_store_generation();
 	struct hw_letters one;
@@ -2901,7 +2958,8 @@ int hw_letters_occurrences(unsigned cp, void (*emit)(const struct hw_occ *, void
 {
 	struct hw_letters one;
 	memset(&build_m, 0, sizeof build_m);
-	if (hw_letters_load(&one) == 1) { build_m = one.m; hw_letters_free(&one); }
+	build_narrow = 1;
+	if (hw_letters_load(&one) == 1) { build_m = one.m; build_narrow = one.sp.narrow; hw_letters_free(&one); }
 	build_only = cp;
 	int b = hw_letters_build(&one);
 	build_only = 0;
