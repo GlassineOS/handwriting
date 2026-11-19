@@ -28,8 +28,18 @@
 #define HW_RULE_SHARE_DEN 4
 #define HW_RULE_LIFT 0.25       /* and in that much more of them than its share of the cycle */
 #define HW_LETTERS_RULES 16     /* rules per character at most */
-/* joined pairs (FR-039): written joined in at least HW_JOINED_MIN usable samples and in at
- * least HW_JOINED_SHARE_NUM / HW_JOINED_SHARE_DEN of the samples with the pair */
+/* joined pairs (FR-039): two letters written joined in at least HW_JOINED_MIN usable samples
+ * and in at least HW_JOINED_SHARE_NUM / HW_JOINED_SHARE_DEN of the samples with the pair, and
+ * those samples of one way (HW_JOINED_MIN of them close to each other). Written joined: one
+ * stroke in both spans that splits into one run per letter, at one place, each run with the
+ * letter's other strokes written like one of its versions: as close (centred RMS) as
+ * HW_JOINED_ORDINARY of the letter's own samples are to theirs (times HW_JOINED_SLACK: those
+ * shaped the versions they are measured against), and as long as that
+ * version's stroke within HW_JOINED_LEN times; between the runs at most the pen's way across */
+#define HW_JOINED_ORDINARY 0.95
+#define HW_JOINED_SLACK 1.25
+#define HW_JOINED_LEN 2.0
+#define HW_JOINED_BRIDGE 1.5    /* x-heights of the stroke between the two runs at most */
 #define HW_JOINED_MIN 4
 #define HW_JOINED_SHARE_NUM 3
 #define HW_JOINED_SHARE_DEN 4
