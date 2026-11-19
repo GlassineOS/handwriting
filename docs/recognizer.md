@@ -432,8 +432,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   the ink has none (a loop or a turn the ink doesn't have, drawn with too few points), the
   piece is traced again by the length along it (its points spread over the glyph's stroke as
   over the ink's); still so, the letter stays at the line level. A piece whose matched places
-  don't reach its glyph stroke's ends (within a tenth of its length, 0.3 at a joint) is traced
-  by the length along it too: the glyph is drawn whole, not a part of it on all of the
+  don't reach its glyph stroke's ends (within a tenth of its length; at a joint 0.3 up to
+  Medium, 0.02 above it, where the joining stroke is drawn anew from the glyph's very end) is
+  traced by the length along it too (a joint's connecting part left as it is): the glyph is drawn whole, not a part of it on all of the
   piece's points.
 - **Along the stroke (FR-036).** Each point goes to a place on its stroke of the glyph, as a
   share of that stroke's length: both are resampled every 0.04 x-heights (8 to 128 points) and
@@ -443,7 +444,8 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   points and spread at most 2.5 times as fast as evenly (a part the stroke lacks is traced, not
   cut across). A hook, loop or overshoot at a start or end the glyph doesn't have (up to a
   quarter of the stroke's length, at most 0.6 x-heights) goes to the glyph's end, so it is
-  folded in, not dragged across the letter. The matching is done twice: the second time against the glyph
+  folded in, not dragged across the letter. The size and place tests above take the letter's
+  own ink, without a joint's connecting part (below). The matching is done twice: the second time against the glyph
   mapped onto the ink as the first gives it (moved, stretched and sheared, not mirrored; this
   map only finds the places). The glyph itself is only moved and scaled: placed on the straight
   baseline at the character's middle (moved by the matched points' mean offset, at most 0.5
@@ -453,24 +455,35 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   them linearly (from 0.25 to Medium, Medium to Strong, Strong to Neatest). At Neatest a
   letter's points lie on its glyph, as many as it had, each with its time and pressure.
 - **Joined letters (FR-036).** Where a stroke passes from one character to the next, the
-  joint's ends are matched with the glyph's ends left open (a lead-in or lead-out the
-  glyph doesn't have follows the matched point next to it), and each point near the joint
+  joint's ends are matched with the glyph's ends left open: the points beyond where the first
+  letter's glyph stroke ends and before where the second's starts are the joint's connecting
+  part (they follow the matched point next to them). Up to Medium each point near the joint
   takes the moves of both characters, weighted by how near it is to each one's points (over
   0.15 x-heights to either side, wider where the two characters' moves differ more: the move
   changes by at most half the length along the stroke, up to 0.8 x-heights), so the stroke
-  doesn't jump, kink or step back where they meet.
+  doesn't jump, kink or step back where they meet. Above Medium (Strong, Neatest), where both
+  letters are pulled, the joining stroke is drawn anew instead: a cubic from the end of the
+  first glyph's stroke to the start of the second's, along the directions both have there
+  (over 0.08 x-heights of their points), the person's points of the connecting part spread
+  along it by their length along the ink (each keeps its time and pressure); each letter's
+  own points stay on its glyph, and the joint's cut goes to the middle of the connecting
+  part (where the glyphs' ends leave no connecting part, the points within 0.15 x-heights of
+  the cut). A joint with a letter that isn't pulled is blended as at Medium.
 - **The flow (FR-036).** The neatened strokes are checked as they come out: a turn over 90
   degrees where the ink turns by less than 55 within five points, or a step back (against the
   way the stroke goes over three points to either side) where the ink has none, measured at
-  0.75 of the line's x-height, is new; each pulled character with points within a joint's
-  blend (0.8 x-heights along the stroke) of one goes back to the line level (`no-structure`)
-  and the line is neatened again, as for the shape guard (below). An alignment that cuts a
+  0.75 of the line's x-height, is new; up to Medium each pulled character with points within
+  a joint's blend (0.8 x-heights along the stroke) of one goes back to the line level
+  (`no-structure`) and the line is neatened again, as for the shape guard (below). Above
+  Medium a join is no reason to keep a letter back: one in a joining stroke drawn anew (or
+  two points from it) holds none back, one in a letter's own points that letter. An alignment that cuts a
   joined stroke elsewhere than the letters meet so gives none of the letters a kink.
 - **Spacing with the pull.** A pulled character's profile and middle for the spacing above go
   towards its glyph's as far as it is pulled (a joined pair's two letters towards the pair's).
 - **Without a letter model** only the line-level corrections apply (FR-022).
 - **The shape guard (SC-004, FR-037).** Each pulled character's neatened ink must be nearer one
-  of its own versions than any version of another character, whatever their strokes: each as
+  of its own versions (the glyph it is pulled to among them) than any version of another
+  character, whatever their strokes (its ink without a joining stroke drawn anew): each as
   one sequence of 48 points along its strokes in writing order (each stroke as many as its
   share of their length, a pen lift no part of it), centred, at the line's x-height, compared
   point by point (RMS). Ink written nearer another character already (a hasty letter can be)
