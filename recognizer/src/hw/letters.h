@@ -336,6 +336,13 @@ int hw_font_random(void);
 unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsigned version, size_t *len);
 unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name, unsigned version, int style,
 				   double nib, int random, size_t *len);
+/* Where the font sets a text (ttf.c, FR-043): per character the pen x (x-heights from the
+ * text's start) of its glyph as the font's advances and kerning put it, a joined pair's two
+ * letters both the pair's; var and jo as hw_letters_glyphs gives them, V a view
+ * (hw_letters_view). bear: the glyphs' left side bearing (x-heights), their strokes' x
+ * from the pen at bear + x. */
+void hw_font_layout(const struct hw_letters *V, const unsigned *cp, size_t n, const int *var, const long *jo, double *pen,
+		    double *bear);
 /* The ink's width (x-heights) at each point of a variant's stroke j in a style (ttf.c, the
  * rules in docs/recognizer.md); Calligraphy: from the stroke's direction at each point. */
 void hw_font_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, int style, double nib, double *w);

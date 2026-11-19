@@ -903,8 +903,9 @@ static void test_letters_glyphs(void)
 }
 
 /* two letters joined in one stroke (FR-036): each part pulled to its own letter, the
- * stroke's points as many, in order, and no jump where the parts meet; strength 0 gives
- * the ink back as it was */
+ * stroke's points as many, in order, and no jump where the parts meet; at Neatest the word
+ * set (FR-043): a joining line from the one glyph to the next where the pen wasn't lifted;
+ * strength 0 gives the ink back as it was */
 static void test_neaten_joined(void)
 {
 	/* a c (an arc open to the right) and a u, one variant each (x-heights, y up) */
@@ -958,7 +959,8 @@ static void test_neaten_joined(void)
 		} else {
 			CHECK(q.how[0] == HW_NEAT_PULLED && q.pulled && q.pulled[0] && q.pulled[1],
 			      "neaten joined: %g: not both pulled (how %d)", st, q.how[0]);
-			CHECK(js < 1.6 * rs, "neaten joined: %g: a jump of %.2f (raw steps up to %.2f)", st, js, rs);
+			if (st < 1) CHECK(js < 1.6 * rs, "neaten joined: %g: a jump of %.2f (raw steps up to %.2f)", st, js, rs);
+			else CHECK(q.why[0] == HW_NEAT_WHY_SET && q.why[1] == HW_NEAT_WHY_SET, "neaten joined: not set");
 			int fin = 1;
 			for (int i = 0; i < NP; i++) fin &= isfinite(q.x[0][i]) && isfinite(q.y[0][i]);
 			CHECK(fin, "neaten joined: %g: not finite", st);
@@ -966,7 +968,8 @@ static void test_neaten_joined(void)
 		hw_neat_free(&q);
 	}
 	hw_letters_free(&L);
-	/* the same with the pair joined in the font (FR-039): both letters go to its one glyph */
+	/* the same with the pair joined in the font (FR-039): both letters go to its one glyph,
+	 * at Strong pulled, at Neatest set on it (at the line's x-height) */
 	char ps[4096];
 	o = 0;
 	for (int i = 0; i < NP; i++) {
@@ -981,17 +984,34 @@ static void test_neaten_joined(void)
 	snprintf(model2 + m1, sizeof model2 - (size_t)m1,
 		 "{\"joined\":\"cu\",\"samples\":3,\"written\":3,\"of\":3,\"variant\":{\"width\":1.05,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}}\n", ps);
 	if (hw_letters_parse(model2, &L) || L.njoined != 1) { CHECK(0, "neaten joined pair: model"); hw_ink_free(&ink); return; }
-	struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = 1, .L = &L, .xh = xh };
-	if (!hw_neaten(&q)) {
-		CHECK(q.pulled && q.pulled[0] && q.pulled[1] && q.why[0] == HW_NEAT_WHY_PULLED && q.why[1] == HW_NEAT_WHY_PULLED,
-		      "neaten joined pair: not both pulled");
+	for (int lv = 0; lv < 2; lv++) {
+		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh };
+		if (hw_neaten(&q)) { CHECK(0, "neaten joined pair: memory"); break; }
+		int w = lv ? HW_NEAT_WHY_SET : HW_NEAT_WHY_PULLED;
+		CHECK(q.pulled && q.pulled[0] && q.pulled[1] && q.why[0] == w && q.why[1] == w, "neaten joined pair: %d: not both", lv);
 		struct hw_ink out = { 0 };
 		for (int i = 0; i < NP; i++) hw_ink_add(&out, q.x[0][i], q.y[0][i], i * 0.01, 0.5);
-		double dr = hw_neat_variant_dist(&ink, 1, xh, &L.joined[0].v), dn = hw_neat_variant_dist(&out, 1, xh, &L.joined[0].v);
-		CHECK(dn < 0.5 * dr && dn < 0.03, "neaten joined pair: not its glyph (%.3f, written %.3f)", dn, dr);
+		double dr = hw_neat_variant_dist(&ink, 1, xh, &L.joined[0].v), dn = hw_neat_variant_dist(&out, 1, lv ? q.line_xh : xh, &L.joined[0].v);
+		if (!lv) CHECK(dn < 0.5 * dr && dn < 0.03, "neaten joined pair: not its glyph (%.3f, written %.3f)", dn, dr);
+		if (lv) {
+			/* set: every point on the glyph's centre line, its first at the glyph's start */
+			const struct hw_lstroke *g = &L.joined[0].v.s[0];
+			double sx = q.x[0][0] - g->x[0] * q.line_xh, sy = q.y[0][0] + g->y[0] * q.line_xh, far = 0;
+			for (int i = 0; i < NP; i++) {
+				double best = INFINITY;
+				for (size_t t = 1; t < g->n; t++) {
+					double ax = sx + g->x[t - 1] * q.line_xh, ay = sy - g->y[t - 1] * q.line_xh;
+					double bx = sx + g->x[t] * q.line_xh, by = sy - g->y[t] * q.line_xh, dx = bx - ax, dy = by - ay;
+					double ll = dx * dx + dy * dy, u = ll > 0 ? fmin(1, fmax(0, ((q.x[0][i] - ax) * dx + (q.y[0][i] - ay) * dy) / ll)) : 0;
+					best = fmin(best, hypot(ax + u * dx - q.x[0][i], ay + u * dy - q.y[0][i]));
+				}
+				far = fmax(far, best);
+			}
+			CHECK(far < 0.001 * q.line_xh, "neaten joined pair: set off its glyph by %.4f", far);
+		}
 		hw_ink_free(&out);
 		hw_neat_free(&q);
-	} else CHECK(0, "neaten joined pair: memory");
+	}
 	hw_ink_free(&ink);
 	hw_letters_free(&L);
 }
