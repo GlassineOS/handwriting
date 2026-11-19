@@ -14,7 +14,9 @@
 #include "adapt.h"
 #include "letters.h"
 #include "sample.h"
+#include "neaten.h"
 #include "store.h"
+#include "words.h"
 
 /* ---------------------------------------------------------------- small helpers */
 
@@ -1623,9 +1625,132 @@ static void letter_rules(struct hw_letter *l, const struct inst *in, const int *
 
 /* ---------------------------------------------------------------- joined pairs (FR-039) */
 
-/* a pair of neighbouring characters in a sample: kind 0 written apart, 1 joined, 2 joined
- * with the pair's strokes its own (none shared with a third character) */
+/* a pair of neighbouring letters in a sample: kind 0 written apart (or not plainly joined),
+ * 1 joined, 2 joined with the pair's strokes its own (none shared with a third character) */
 struct jocc { unsigned a, b; int sample, pos, kind; };
+
+/* how close a letter's own samples are to its versions (FR-039): per letter the
+ * HW_JOINED_ORDINARY quantile of each own sample's distance to its nearest version; NAN
+ * with fewer than HW_LETTERS_MIN */
+struct jref { unsigned cp; double d; };
+
+static int cmp_ord(const void *x, const void *y) { return *(const int *)x - *(const int *)y; }
+
+/* the strokes of span sp but `skip`, in writing order, into k (at most 64); their count */
+static size_t span_strokes(const struct hw_sample *s, const int *sp, int skip, struct hw_ink *k, int *ord)
+{
+	size_t n = 0;
+	for (const int *p = sp; *p >= 0 && n < 64; p++)
+		if (*p != skip && (size_t)*p < s->nstrokes && s->strokes[*p].n) ord[n++] = *p;
+	qsort(ord, n, sizeof *ord, cmp_ord);
+	for (size_t j = 0; j < n; j++) k[j] = s->strokes[ord[j]];
+	return n;
+}
+
+/* the nearest version of letter l to the strokes k (y down, sample units) whose stroke at
+ * place `at` (-1 none) is as long as k's within HW_JOINED_LEN times; INFINITY none */
+static double near_version(const struct hw_letter *l, const struct hw_ink *k, size_t n, double xh, int at)
+{
+	double best = INFINITY;
+	for (int v = 0; l && v < l->nvar; v++) {
+		const struct hw_variant *x = &l->var[v];
+		if (x->out || x->nstrokes != n) continue;
+		if (at >= 0) {
+			double a = 0, b = slen(&x->s[at]);
+			for (size_t i = 1; i < k[at].n; i++) a += hypot(k[at].x[i] - k[at].x[i - 1], k[at].y[i] - k[at].y[i - 1]);
+			a /= xh;
+			if (!(a <= HW_JOINED_LEN * b && b <= HW_JOINED_LEN * a)) continue;
+		}
+		double d = hw_neat_variant_dist(k, n, xh, x);
+		if (d < best) best = d;
+	}
+	return best;
+}
+
+static const struct hw_letter *letter_get(const struct hw_letters *L, unsigned cp)
+{
+	for (size_t i = 0; i < L->n; i++) if (L->l[i].cp == cp) return &L->l[i];
+	return NULL;
+}
+
+static double ordinary(struct jref **R, size_t *nr, const struct hw_letters *L, struct smp *S, size_t ns, unsigned cp,
+		       const struct hw_mark *MK, size_t nmk)
+{
+	for (size_t i = 0; i < *nr; i++) if ((*R)[i].cp == cp) return (*R)[i].d;
+	const struct hw_letter *l = letter_get(L, cp);
+	struct dvec d = { 0 };
+	unsigned *cps = malloc(4097 * sizeof *cps);
+	for (size_t si = 0; l && cps && si < ns; si++) {
+		struct smp *m = &S[si];
+		if (m->xh <= 0) continue;
+		size_t nc = hw_utf8_decode(m->s.text, cps, 4096);
+		if (nc > 4096) nc = 4096;
+		for (size_t k = 0; k < nc && k < m->s.nspans; k++) {
+			if (cps[k] != cp || !m->s.spans[k] || hw_mark_of(MK, nmk, m->id, cp) == HW_MARK_OUT) continue;
+			/* its strokes its own: in no other span */
+			int own = 1;
+			for (const int *p = m->s.spans[k]; *p >= 0 && own; p++)
+				for (size_t q = 0; q < nc && q < m->s.nspans && own; q++)
+					if (q != k && m->s.spans[q] && span_has(m->s.spans[q], *p)) own = 0;
+			if (!own) continue;
+			struct hw_ink ink[64];
+			int ord[64];
+			size_t n = span_strokes(&m->s, m->s.spans[k], -1, ink, ord);
+			double x = n ? near_version(l, ink, n, m->xh, -1) : INFINITY;
+			if (isfinite(x)) dpush(&d, x);
+		}
+	}
+	free(cps);
+	double q = NAN;
+	if (d.n >= HW_LETTERS_MIN) {
+		qsort(d.v, d.n, sizeof *d.v, cmp_double);
+		q = HW_JOINED_SLACK * d.v[(size_t)fmin((double)d.n - 1, floor(HW_JOINED_ORDINARY * (double)d.n))];
+	}
+	free(d.v);
+	struct jref *x = realloc(*R, (*nr + 1) * sizeof *x);
+	if (x) { *R = x; x[(*nr)++] = (struct jref){ cp, q }; }
+	return q;
+}
+
+/* the pair at k, k + 1 of sample m (letters la, lb), sharing only stroke j, written joined
+ * (FR-039): j's first points with a's other strokes written like a, its last ones with b's
+ * like b, at one place each (the ends that are, one stretch of j each), and between them at
+ * most the pen's way across (HW_JOINED_BRIDGE) */
+static int real_joint(const struct hw_letter *la, const struct hw_letter *lb, const struct smp *m, int k, int j,
+		      double ra, double rb)
+{
+	const struct hw_ink *J = &m->s.strokes[j];
+	if (J->n < 4 || !isfinite(ra) || !isfinite(rb)) return 0;
+	struct hw_ink A[65], B[65];
+	int oa[64], ob[64];
+	size_t na = span_strokes(&m->s, m->s.spans[k], j, A, oa), nb = span_strokes(&m->s, m->s.spans[k + 1], j, B, ob);
+	if (na >= 64 || nb >= 64) return 0;
+	/* the run's place among the letter's strokes: by writing order */
+	size_t pa = 0, pb = 0;
+	while (pa < na && oa[pa] < j) pa++;
+	while (pb < nb && ob[pb] < j) pb++;
+	memmove(A + pa + 1, A + pa, (na - pa) * sizeof *A);
+	memmove(B + pb + 1, B + pb, (nb - pb) * sizeof *B);
+	/* a's run: points [0, c); b's: [c, n) */
+	size_t step = J->n / 64 + 1, a_lo = 0, a_hi = 0, b_lo = 0, b_hi = 0;
+	int ra_runs = 0, rb_runs = 0, pra = 0, prb = 0;
+	for (size_t c = 2; c + 1 < J->n; c += step) {
+		struct hw_ink a = *J, b = *J;
+		a.n = c;
+		b.x += c; b.y += c; b.n = J->n - c;
+		A[pa] = a; B[pb] = b;
+		int oka = near_version(la, A, na + 1, m->xh, (int)pa) <= ra, okb = near_version(lb, B, nb + 1, m->xh, (int)pb) <= rb;
+		if (oka) { if (!pra) { ra_runs++; a_lo = c; } a_hi = c; }
+		if (okb) { if (!prb) { rb_runs++; b_lo = c; } b_hi = c; }
+		pra = oka; prb = okb;
+	}
+	if (ra_runs != 1 || rb_runs != 1 || a_lo > b_hi) return 0;
+	/* the shortest way between a's end and b's start */
+	size_t e = a_hi < b_lo ? a_hi : b_lo, f = b_lo > e ? b_lo : e;
+	double w = 0;
+	for (size_t i = e; e < f && i <= f && i < J->n; i++) w += hypot(J->x[i] - J->x[i - 1], J->y[i] - J->y[i - 1]);
+	return w <= HW_JOINED_BRIDGE * m->xh;
+}
 
 static int cmp_jocc(const void *x, const void *y)
 {
@@ -1656,9 +1781,10 @@ static void inst_free(struct inst *x)
 	free(x->s); free(x->rs); free(x->pp); free(x->pv);
 }
 
-/* The pair's glyph from its usable joined occurrences o[i..j), made as a variant is (the
- * versions with the most common stroke count, averaged around the best supported one, the
- * jitter smoothed, on the line). 0 made, 1 none, -1 out of memory. */
+/* The pair's glyph from its usable joined occurrences o[i..j), made as a variant is from
+ * every stroke of both letters (their late strokes too): the versions with the most common
+ * stroke count, averaged around the best supported one, the jitter smoothed, on the line;
+ * none when fewer than HW_JOINED_MIN are of its way. 0 made, 1 none, -1 out of memory. */
 static int joined_glyph(struct hw_joined *J, const struct hw_letters *L, struct smp *S, const struct jocc *o, size_t i, size_t j)
 {
 	size_t n = 0;
@@ -1754,6 +1880,14 @@ static int joined_glyph(struct hw_joined *J, const struct hw_letters *L, struct 
 		for (int b = 0; b < g.n; b++) sup += rdist(in[x].rs, in[g.members[b]].rs, g.total) <= WAY_TAU;
 		if (sup > bs || (sup == bs && in[x].w > in[seed].w + 1e-12)) { bs = sup; seed = x; }
 	}
+	/* of one way, as a variant's group is: HW_JOINED_MIN of them close to each other, each
+	 * weighed by its closeness to the typical one (the rest stay out of it) */
+	if (seed < 0 || bs < HW_JOINED_MIN) goto out;
+	for (int a = 0; a < g.n; a++) {
+		struct inst *x = &in[g.members[a]];
+		double d = rdist(x->rs, in[seed].rs, g.total), c = exp(-(d / (2 * TAU / 3)) * (d / (2 * TAU / 3)));
+		x->w *= c < 0.15 ? 0.15 : c;
+	}
 	double xmin;
 	if (make_variant(in, &g, seed, &J->v, &xmin)) { variant_free(&J->v); ret = -1; goto out; }
 	J->v.use = bs;
@@ -1777,14 +1911,15 @@ out:
 	return ret;
 }
 
-/* The joined pairs (FR-039): every pair of neighbouring characters in the samples with
- * known strokes, written joined (a stroke in both spans) or apart; a pair joined in
- * HW_JOINED_MIN usable samples (the pair's strokes its own) and in HW_JOINED_SHARE of the
- * samples with it gets a glyph. A sample left out of either character counts for none. */
+/* The joined pairs (FR-039): every pair of neighbouring letters in the samples with known
+ * strokes, written joined (real_joint) or not; a pair joined in HW_JOINED_MIN usable samples
+ * (the pair's strokes its own) and in HW_JOINED_SHARE of the samples with it gets a glyph
+ * when those are of one way. A sample left out of either letter counts for none. */
 static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const struct hw_mark *MK, size_t nmk)
 {
 	struct jocc *o = NULL;
-	size_t n = 0, cap = 0;
+	struct jref *R = NULL;
+	size_t n = 0, cap = 0, nr = 0;
 	unsigned *cps = malloc(4097 * sizeof *cps);
 	if (!cps) return -1;
 	for (size_t si = 0; si < ns; si++) {
@@ -1794,33 +1929,40 @@ static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const st
 		if (nc > 4096) nc = 4096;
 		if (nc < 2) continue;
 		int *cnt = calloc(m->s.nstrokes + 1, sizeof *cnt);
-		if (!cnt) { free(o); free(cps); return -1; }
+		if (!cnt) { free(o); free(cps); free(R); return -1; }
 		for (size_t k = 0; k < m->s.nspans && k < nc; k++)
 			for (int *p = m->s.spans[k]; p && *p >= 0; p++) if ((size_t)*p < m->s.nstrokes) cnt[*p]++;
 		for (size_t k = 0; k + 1 < nc && k + 1 < m->s.nspans; k++) {
 			unsigned a = cps[k], b = cps[k + 1];
 			const int *sa = m->s.spans[k], *sb = m->s.spans[k + 1];
-			if (a == ' ' || b == ' ' || !span_ink(&m->s, sa) || !span_ink(&m->s, sb)) continue;
+			/* a pair of letters: no digits, marks or symbols */
+			if (!hw_is_letter(a) || !hw_is_letter(b) || !span_ink(&m->s, sa) || !span_ink(&m->s, sb)) continue;
 			if (hw_mark_of(MK, nmk, m->id, a) == HW_MARK_OUT || hw_mark_of(MK, nmk, m->id, b) == HW_MARK_OUT) continue;
-			int shared = 0, own = 1;
+			int shared = 0, sj = -1, own = 1;
 			for (int side = 0; side < 2; side++)
 				for (const int *p = side ? sb : sa; *p >= 0; p++) {
 					if ((size_t)*p >= m->s.nstrokes) { own = 0; continue; }
 					int here = span_has(sa, *p) + span_has(sb, *p);
-					if (here == 2) shared = 1;
+					if (here == 2 && !side) { shared++; sj = *p; }
 					if (cnt[*p] != here) own = 0;
 				}
+			/* one stroke in both, cut plainly in two: a joint (an aligner's share of a
+			 * stroke between two letters written apart is none) */
+			int joint = shared == 1 &&
+				    real_joint(letter_get(L, a), letter_get(L, b), m, (int)k, sj,
+					       ordinary(&R, &nr, L, S, ns, a, MK, nmk), ordinary(&R, &nr, L, S, ns, b, MK, nmk));
 			if (n == cap) {
 				cap = cap ? cap * 2 : 1024;
 				struct jocc *x = realloc(o, cap * sizeof *x);
-				if (!x) { free(cnt); free(o); free(cps); return -1; }
+				if (!x) { free(cnt); free(o); free(cps); free(R); return -1; }
 				o = x;
 			}
-			o[n++] = (struct jocc){ a, b, (int)si, (int)k, shared ? (own ? 2 : 1) : 0 };
+			o[n++] = (struct jocc){ a, b, (int)si, (int)k, joint ? (own ? 2 : 1) : 0 };
 		}
 		free(cnt);
 	}
 	free(cps);
+	free(R);
 	qsort(o, n, sizeof *o, cmp_jocc);
 	int ret = 0;
 	for (size_t i = 0; i < n && ret == 0;) {

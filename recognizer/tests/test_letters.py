@@ -70,8 +70,9 @@ def shape(c, style, rnd):
     return out
 
 
-def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0):
-    """a prompted sample (sample format v1) of separate letters, device units"""
+def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0, shapes=None):
+    """a prompted sample (sample format v1) of separate letters, device units; shapes: per
+    character a function in place of shape()"""
     strokes, spans = [], []
     x = 20.0
     base = line * 2 / 3
@@ -82,7 +83,7 @@ def sample(text, rnd, styles=None, written=None, line=150.0, xh=30.0):
             x += 0.9 * xh
             continue
         sp = []
-        for st in shape(c, (styles or {}).get(c, 0), rnd):
+        for st in (shapes or {}).get(c, shape)(c, (styles or {}).get(c, 0), rnd):
             pts = []
             for px, py in st:
                 pts.append([round(x + px * xh, 3), round(base - py * xh, 3), round(t, 3), 0.5])
@@ -315,11 +316,11 @@ class Env:
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
-def alphabet_samples(seed=1, per=4, careful=None, styles=None):
+def alphabet_samples(seed=1, per=4, careful=None, styles=None, shapes=None):
     """samples of separate letters that hold every letter and digit `per` times"""
     rnd = random.Random(seed)
     chars = list(ALNUM) * per
-    return [sample("".join(chars[i:i + 5]), rnd, styles=styles, written=careful) for i in range(0, len(chars), 5)]
+    return [sample("".join(chars[i:i + 5]), rnd, styles=styles, written=careful, shapes=shapes) for i in range(0, len(chars), 5)]
 
 
 class LetterModel(unittest.TestCase):
@@ -1632,16 +1633,29 @@ class Styles(unittest.TestCase):
 
 # ---------------------------------------------------------------- neighbours (FR-038 to FR-040)
 
-def joined(s, at):
-    """the sample s written with each pair of characters at k, k + 1 (k in at) joined: the
-    first's last stroke and the second's first one as one stroke, in both spans"""
+def join_strokes(s, a, bridge=True):
+    """the sample s with strokes a and a + 1 written as one: the first, the pen's way across
+    (points as densely as along a stroke) and the second, in the spans of both"""
     s = json.loads(json.dumps(s))
+    b = a + 1
+    p, q = s["strokes"][a][-1], s["strokes"][b][0]
+    d = math.hypot(*(p[i] - s["strokes"][a][-2][i] for i in (0, 1))) or 1
+    n = int(math.hypot(q[0] - p[0], q[1] - p[1]) / d) if bridge else 0
+    way = [[round(p[0] + (q[0] - p[0]) * i / (n + 1), 3), round(p[1] + (q[1] - p[1]) * i / (n + 1), 3),
+            round(p[2] + (q[2] - p[2]) * i / (n + 1), 3), 0.5] for i in range(1, n + 1)]
+    s["strokes"][a] = s["strokes"][a] + way + s["strokes"][b]
+    del s["strokes"][b]
+    s["spans"] = [sorted({a if j == b else j - (j > b) for j in sp}) for sp in s["spans"]]
+    return s
+
+
+def joined(s, at, bridge=True):
+    """the sample s written with each pair of characters at k, k + 1 (k in at) joined: the
+    first's last stroke and the second's first one as one stroke (join_strokes)"""
     for k in sorted(at, reverse=True):
         a, b = s["spans"][k][-1], s["spans"][k + 1][0]
         assert b == a + 1
-        s["strokes"][a] = s["strokes"][a] + s["strokes"][b]
-        del s["strokes"][b]
-        s["spans"] = [[a if j == b else j - (j > b) for j in sp] for sp in s["spans"]]
+        s = join_strokes(s, a, bridge)
     return s
 
 
@@ -1898,6 +1912,108 @@ class JoinedPairs(unittest.TestCase):
             th = self.pairs["th"]["variant"]
             self.assertAlmostEqual(profile_gap(self.prof(o1), self.prof(th), pos[1] - pos[0]), pairs["ot"], delta=0.02)
             self.assertAlmostEqual(profile_gap(self.prof(th), self.prof(o2), pos[2] - pos[1]), pairs["ho"], delta=0.02)
+
+
+def dotted_i(c, style, rnd):
+    """an i as print writes it: a stem down from the x-height, then a dot above it"""
+    stem = [(0.3 + rnd.gauss(0, 0.01), 1.0 - i / 11 + rnd.gauss(0, 0.01)) for i in range(12)]
+    dot = [(0.32 + 0.03 * math.cos(a) + rnd.gauss(0, 0.005), 1.4 + 0.03 * math.sin(a)) for a in (0, 2, 4, 6)]
+    return [stem, dot]
+
+
+def shared(s, k, j):
+    """the sample s with stroke j in character k's span as well (an alignment that gives a
+    neighbour's stroke to both)"""
+    s = json.loads(json.dumps(s))
+    s["spans"][k] = sorted(s["spans"][k] + [j])
+    return s
+
+
+def tail(s, j, dx, xh=30.0):
+    """the sample s with stroke j run on dx x-heights to the right, level, from its end (a
+    descender's tail under the next letter)"""
+    s = json.loads(json.dumps(s))
+    p = s["strokes"][j][-1]
+    s["strokes"][j] += [[round(p[0] + dx * xh * i / 12, 3), p[1], round(p[2] + 0.01 * i, 3), 0.5] for i in range(1, 13)]
+    return s
+
+
+def late(s, j):
+    """the sample s with stroke j written last (a dot or a bar set after the word)"""
+    s = json.loads(json.dumps(s))
+    n = len(s["strokes"])
+    order = [x for x in range(n) if x != j] + [j]
+    t = s["strokes"][order[-2]][-1][2]
+    st = s["strokes"][j]
+    st = [[p[0], p[1], round(t + 0.1 + p[2] - st[0][2], 3), p[3]] for p in st]
+    s["strokes"] = [s["strokes"][x] for x in order[:-1]] + [st]
+    new = {x: i for i, x in enumerate(order)}
+    s["spans"] = [sorted(new[x] for x in sp) for sp in s["spans"]]
+    return s
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class JoinedPlainly(unittest.TestCase):
+    """spec 003 FR-039, a joint only where the ink runs on: print letters whose alignment
+    gives a stroke to both (the i's stem to the p before it, the g's tail run on under the r
+    to the r after it) are no joined pair however often; an i joined to the n after it, its dot set after
+    the word, is one glyph with the dot; a letter joined to a full stop or a digit never is"""
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(57)
+        sh = {"i": dotted_i}
+        ss = alphabet_samples(seed=57, per=4, shapes=sh)
+        for _ in range(8):
+            s = sample("pi", rnd, shapes=sh)
+            ss.append(shared(s, 0, s["spans"][1][0]))
+            s = sample("gr", rnd)
+            ss.append(shared(tail(s, s["spans"][0][-1], 1.2), 1, s["spans"][0][-1]))
+            ss.append(joined(sample("y.", rnd), [0]))
+            ss.append(joined(sample("a1", rnd), [0]))
+        for _ in range(6):
+            s = sample("in", rnd, shapes=sh)
+            s = late(s, s["spans"][0][1])           # stem, the n, the dot
+            ss.append(join_strokes(s, 0))
+        cls.ss = ss
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.lines = [json.loads(x) for x in cls.e.model().splitlines()]
+        cls.pairs = {d["joined"]: d for d in cls.lines if "joined" in d}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+
+    def test_only_the_real_joint(self):
+        self.assertEqual(sorted(self.pairs), ["in"])
+
+    def test_alignment_shares_are_no_joint(self):
+        """the shared strokes are there as written: 8 times each, all usable otherwise"""
+        n = sum(1 for s in self.ss if s["text"] in ("pi", "gr") and set(s["spans"][0]) & set(s["spans"][1]))
+        self.assertEqual(n, 16)
+        self.assertNotIn("pi", sorted(self.pairs))
+        self.assertNotIn("gr", sorted(self.pairs))
+
+    def test_no_marks_or_digits(self):
+        self.assertEqual([p for p in self.pairs if not all(c.isalpha() for c in p)], [])
+
+    def test_late_dot_in_the_glyph(self):
+        v = self.pairs["in"]["variant"]
+        n = len(shape("n", 0, random.Random(0)))
+        self.assertEqual(len(v["strokes"]), 2 + n - 1)          # the joined stroke, the dot, the n's rest
+        dot = v["strokes"][-1]
+        self.assertGreater(min(p[1] for p in dot), 1.2)
+        self.assertLess(max(p[0] for p in dot) - min(p[0] for p in dot), 0.15)
+        # it is a ligature in the font like any other
+        ttf = self.e.dir / "plain.ttf"
+        self.e.run("font", "build", str(ttf))
+        gl = font_glyphs(self.e.model())
+        self.assertEqual([gl[g["g"]] for g in hb(ttf, "in")], [("joined", "in")])
+        f = valid_font(self, ttf)
+        lig = next(g for g, x in gl.items() if x == ("joined", "in"))
+        self.assertGreaterEqual(f["glyf"][f.getGlyphOrder()[lig]].numberOfContours, 2)
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")

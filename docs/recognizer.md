@@ -794,16 +794,33 @@ Versions left out count for none, and a rule for a version left out is gone. A c
 most 16 rules; where two apply, the first wins. The character's page shows the cycle's share
 ("6 in 10") as before: a rule changes only the places it names.
 
-**Joined pairs (FR-039).** For each pair of neighbouring characters in the samples with known
-strokes (both with ink, neither left out of that sample), the pair is written joined when a
-stroke is in both spans, and usable when the pair's strokes are also none of a third character's.
-A pair written joined in at least 4 usable samples and in at least three quarters of the samples
-with that pair (`samples`, `written`, `of`) gets a glyph, made as a version is: of its usable
-samples' strokes (both characters', in writing order), those with the most common stroke count,
-averaged around the one most others are near, the jitter smoothed, on the line where they sit,
-with its profiles and its pressure and speed. A pair written joined less often is two letters;
-it leaves the font at the next build. A model holds at most 256 joined pairs. They are made by a
-whole build (`-c` keeps them).
+**Joined pairs (FR-039).** For each pair of neighbouring letters (no digits, marks or
+symbols) in the samples with known strokes (both with ink, neither left out of that sample),
+the pair is written joined only where the ink plainly runs on from one letter into the next:
+- exactly one stroke is in both spans;
+- its first points, with the first letter's other strokes, are written like one of that
+  letter's versions, and its last points, with the second letter's other strokes, like one of
+  the second's. Written like means as close (centred RMS at the x-height, as neatening
+  measures it) as 95 % of the letter's own samples are to their nearest version, times 1.25
+  (those samples shaped the versions they are measured against), and that version's stroke
+  there as long as the run within 2 times (not a fragment). The late strokes (an i's dot, a t's
+  bar) count with their letter, in writing order;
+- each run fits at one stretch of the stroke only (where it could end or start in two places,
+  the cut is unclear: no joint), and between the two runs at most 1.5 x-heights of the stroke
+  (the pen's way across) is left.
+
+An alignment that gives one stroke to two letters written apart (a stem given to the letter
+before as well) is no joint: the letter given the extra piece doesn't match its versions. The
+pair is usable when its strokes are also none of a third character's. A pair written joined in
+at least 4 usable samples and in at least three quarters of the samples with that pair
+(`samples`, `written`, `of`) gets a glyph, made as a version is: of its usable samples' strokes
+(every stroke of both letters, their late strokes too, in writing order), those with the most
+common stroke count; at least 4 of them must be of one way (close to each other, as a
+variant's versions are), each weighed by how close it is to the typical one, averaged around
+it, the jitter smoothed, on the line where they sit, with its profiles and its pressure and
+speed. Otherwise, and for a pair written joined less often, it is two letters; it leaves the
+font at the next build. A model holds at most 256 joined pairs. They are made by a whole build
+(`-c` keeps them).
 
 **The font:** `font install` makes a TrueType font of the covered characters (everything else
 falls back to the system's fonts) in three styles (FR-034) and installs them together as
