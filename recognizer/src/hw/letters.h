@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 13     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 14     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -173,6 +173,11 @@ struct hw_metrics {
  * the pairs written at least HW_PAIR_MIN times both ways (at least HW_RUN_PAIRS of them,
  * else 1), of the running-text distance over the single-word one, within HW_RUN_MIN and
  * HW_RUN_MAX (running text written wider than single words never widens them) */
+/* Letter widths (FR-006) follow running text alike: every variant is narrowed about its
+ * middle by narrow, the median, over the characters written at least HW_PAIR_MIN times both
+ * ways (at least HW_RUN_CHARS of them, else 1), of their median width in running text over
+ * that in single words, within HW_RUN_MIN and HW_RUN_MAX */
+#define HW_RUN_CHARS 10
 #define HW_RUN_PAIRS 10
 #define HW_RUN_MIN 0.85
 #define HW_RUN_MAX 1.0
@@ -187,6 +192,7 @@ struct hw_side_pair { int rc, lc; double gap; int n; };
 struct hw_spacing {
 	double letter, word, open, open0;
 	double run;                     /* running text's distances over single words' (1 none) */
+	double narrow;                  /* running text's letter widths over single words' (1 none) */
 	struct hw_pair *pairs;          /* sorted by a, b */
 	size_t npairs;
 	struct hw_side_pair *sides;     /* sorted by rc, lc */

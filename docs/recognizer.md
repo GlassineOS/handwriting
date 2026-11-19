@@ -793,7 +793,12 @@ running up or down in the x-height band) is set at its gap. A version sits on th
 samples it is made from sit on average (with the weights that make its shape), and is as tall
 as they are on average: averaging and smoothing take height off versions that differ a little
 in shape, so its heights are stretched back from its centre (the width as it comes; not when
-under 0.1 x-heights tall or needing more than 1.5 times). The same samples and picks make
+under 0.1 x-heights tall or needing more than 1.5 times). Its width then follows running text: every version (a joined
+pair's too) is narrowed about its middle by `narrow`, the median, over the characters written at
+least 3 times both in samples of several words and in single words (at least 10 of them; 1 with
+fewer), of their median width in running text over that in single words, within 0.85 and 1;
+its profiles and middle are measured again, so pairs stay at their distances and only the ink
+narrows. A one-character build takes the model's `narrow`. The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored. The model
 is UTF-8 text and names only real characters (Unicode scalar values): the writer refuses a
 model that would name another, and every reader (the recognizer, the samples app's font
@@ -855,7 +860,7 @@ then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"
 `x_height_per_line`, `base_below_guide` and `x_height_mm` what a sample without letters to measure
 its x-height or baseline from takes, which a one-character build reuses, as it does the two
 medians, 0 when none), then
-`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"run":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
+`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"run":…,"narrow":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
 "sides":[[RIGHT,LEFT,GAP,N],…],"reach":[["a",RIGHT,LEFT,NR,NL],…],"left_shapes":[[…8],…],
 "right_shapes":[[…8],…]}}` (`DISTANCE`, `RIGHT` and `LEFT` null when not learned), then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
