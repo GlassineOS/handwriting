@@ -255,7 +255,32 @@ size, spacing) and keep their shape.
   way every time for the same text, by contextual
   alternates that text shaping applies by default (no setting in the app). The preview,
   spaced as the font spaces it,
-  (Scenario 3) shows the same variants as the installed font for the same text.
+  (Scenario 3) shows the same variants as the installed font for the same text, and the
+  same neighbour rules (FR-038) and joined pairs (FR-039).
+- **FR-038**: Where the person's samples show that they write a character a particular way
+  next to a particular neighbour (the character before it or after it), the font uses that
+  way there, by contextual alternates that text shaping applies by default. A rule needs
+  clear support: the pair written at least 6 times in usable samples, the same way in at
+  least three quarters of them, and, checked on samples the rule was not made from, it picks
+  the way the person wrote more often than the cycle of FR-010 does. Everywhere else the
+  cycle chooses. A character's page shows how often the cycle shows each way ("6 in 10");
+  a rule changes only the places it names.
+- **FR-039**: A pair of letters the person writes joined in one stroke (FR-007) is drawn as
+  one glyph made from their own joined samples, as a ligature that text shaping applies by
+  default, in each of the three styles: when the pair is written joined in at least 4 usable
+  samples and in at least three quarters of the samples where the person wrote that pair.
+  The joined glyph is spaced like the two letters around it (its sides from its own ink
+  profiles, kerned with its neighbours as any letter is), the characters around it keep the
+  ways they'd have without it, and it reads, copies and searches as the two characters it
+  stands for. A joined pair that is no longer written joined often enough leaves the font
+  at its next rebuild.
+- **FR-040**: Random alternates are off: the font has none unless the font is built with
+  them on request in the recognizer's interface (not offered on the font page). Built with
+  them, apps whose text shaping applies random alternates (it does by default in HarfBuzz,
+  so in GTK, Pango and the apps built on them) pick each character's way at random,
+  weighted as in the cycle, the same way each time for the same text, and other apps keep
+  the cycle; neighbour rules and joined pairs apply either way. Which apps honour them is
+  documented with the recognizer.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
   the session. A rebuild keeps the name; the font is rebuilt only when the person asks.
@@ -435,6 +460,18 @@ Host level:
   feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
   the word spacing, and the preview places letters where shaping does, and installs and is found by the system font cache in a test user;
   erasing the samples removes it;
+- with samples where a character is written one way after a neighbour often enough, the
+  font shapes it that way after that neighbour and by the cycle elsewhere; with too few
+  such samples, too mixed a way, or a rule that loses to the cycle on held-back samples,
+  there is no rule; the preview shows what shaping shows;
+- a pair written joined often enough is one glyph in each of the three styles, shaped as
+  a ligature with no feature requested, spaced within 0.02 x-heights of where its letters'
+  gaps put its neighbours, with the characters around it as without it; a pair written
+  joined too rarely is two glyphs; the glyph maps back to its two characters;
+- a font built without random alternates has no such feature and shapes the same with
+  and without it requested; one built with them varies the ways along a long text in
+  about the cycle's proportions, the same for the same text; all three styles pass the
+  font validator with the rules and joined pairs in them;
 - neatening at strength 0 returns the input byte for byte; at each level from Medium up,
   covered characters are closer to their best version than at the level before (from Strong
   up every one with a matching structure, however badly written), unless the reading check
