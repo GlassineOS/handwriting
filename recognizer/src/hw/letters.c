@@ -83,6 +83,8 @@ void hw_letters_free(struct hw_letters *L)
 	for (size_t i = 0; i < L->n; i++)
 		for (int k = 0; k < L->l[i].nvar; k++) variant_free(&L->l[i].var[k]);
 	free(L->l);
+	for (size_t i = 0; i < L->njoined; i++) variant_free(&L->joined[i].v);
+	free(L->joined);
 	hw_spacing_free(&L->sp);
 	memset(L, 0, sizeof *L);
 }
@@ -129,6 +131,72 @@ static double jdn(json_object *e, size_t i)
 {
 	json_object *x = json_object_array_length(e) > i ? json_object_array_get_idx(e, i) : NULL;
 	return x && (json_object_is_type(x, json_type_double) || json_object_is_type(x, json_type_int)) ? json_object_get_double(x) : NAN;
+}
+
+/* a character as a JSON string */
+static void char_out(struct sbuf *b, unsigned cp)
+{
+	char u[8];
+	u[hw_utf8_encode(cp, u)] = 0;
+	json_object *js = json_object_new_string(u);
+	sput(b, "%s", json_object_to_json_string_ext(js, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
+	json_object_put(js);
+}
+
+/* a variant's object in the model file (with_best 0: without its best version) */
+static void variant_out(struct sbuf *b, const struct hw_variant *x, int with_best)
+{
+	sput(b, "{\"width\":");
+	num(b, x->width);
+	sput(b, ",\"weight\":");
+	num(b, x->weight);
+	sput(b, ",\"members\":%d,\"use\":%d,\"lc\":%d,\"rc\":%d", x->members, x->use, x->lc, x->rc);
+	if (x->out) sput(b, ",\"left_out\":true");
+	if (x->favourite) sput(b, ",\"favourite\":true");
+	sput(b, ",\"ids\":[");
+	for (size_t q = 0; q < x->nids; q++) sput(b, "%s\"%s\"", q ? "," : "", x->ids[q]);
+	sput(b, "]");
+	for (int side = 0; side < 2; side++) {
+		sput(b, side ? ",\"right\":[" : ",\"left\":[");
+		for (int k = 0; k < HW_PROF_BANDS; k++) {
+			double y = side ? x->prof.r[k] : x->prof.l[k];
+			if (k) sput(b, ",");
+			if (isnan(y)) sput(b, "null"); else num(b, y);
+		}
+		sput(b, "]");
+	}
+	sput(b, ",\"middle\":");
+	numn(b, x->mid);
+	for (int bk = 0; bk < 2; bk++) {
+		const struct hw_lstroke *ts = bk ? x->best : x->s;
+		if (!ts || (bk && !with_best)) continue;
+		sput(b, bk ? ",\"best\":[" : ",\"strokes\":[");
+		for (size_t j = 0; j < x->nstrokes; j++) {
+			sput(b, "%s[", j ? "," : "");
+			for (size_t p = 0; p < ts[j].n; p++) {
+				sput(b, "%s[", p ? "," : "");
+				num(b, ts[j].x[p]);
+				sput(b, ",");
+				num(b, ts[j].y[p]);
+				sput(b, "]");
+			}
+			sput(b, "]");
+		}
+		sput(b, "]");
+	}
+	/* how it was written (FR-006): the profiles, per stroke */
+	for (int pk = 0; pk < 2; pk++) {
+		const double *pv = pk ? x->speed : x->pres;
+		if (!pv) continue;
+		sput(b, pk ? ",\"speed\":[" : ",\"pressure\":[");
+		for (size_t j = 0; j < x->nstrokes; j++) {
+			sput(b, "%s[", j ? "," : "");
+			for (int q = 0; q < HW_LETTERS_PROFILE; q++) { if (q) sput(b, ","); num(b, pv[j * HW_LETTERS_PROFILE + (size_t)q]); }
+			sput(b, "]");
+		}
+		sput(b, "]");
+	}
+	sput(b, "}");
 }
 
 /* with_best 0: without the best versions (the font is made without them) */
@@ -214,58 +282,8 @@ static char *format_model(const struct hw_letters *L, size_t *len, int with_best
 		sput(&b, "\"variants\":[");
 		json_object_put(js);
 		for (int v = 0; v < l->nvar; v++) {
-			const struct hw_variant *x = &l->var[v];
-			sput(&b, "%s{\"width\":", v ? "," : "");
-			num(&b, x->width);
-			sput(&b, ",\"weight\":");
-			num(&b, x->weight);
-			sput(&b, ",\"members\":%d,\"use\":%d,\"lc\":%d,\"rc\":%d", x->members, x->use, x->lc, x->rc);
-			if (x->out) sput(&b, ",\"left_out\":true");
-			if (x->favourite) sput(&b, ",\"favourite\":true");
-			sput(&b, ",\"ids\":[");
-			for (size_t q = 0; q < x->nids; q++) sput(&b, "%s\"%s\"", q ? "," : "", x->ids[q]);
-			sput(&b, "]");
-			for (int side = 0; side < 2; side++) {
-				sput(&b, side ? ",\"right\":[" : ",\"left\":[");
-				for (int k = 0; k < HW_PROF_BANDS; k++) {
-					double y = side ? x->prof.r[k] : x->prof.l[k];
-					if (k) sput(&b, ",");
-					if (isnan(y)) sput(&b, "null"); else num(&b, y);
-				}
-				sput(&b, "]");
-			}
-			sput(&b, ",\"middle\":");
-			numn(&b, x->mid);
-			for (int bk = 0; bk < 2; bk++) {
-				const struct hw_lstroke *ts = bk ? x->best : x->s;
-				if (!ts || (bk && !with_best)) continue;
-				sput(&b, bk ? ",\"best\":[" : ",\"strokes\":[");
-				for (size_t j = 0; j < x->nstrokes; j++) {
-					sput(&b, "%s[", j ? "," : "");
-					for (size_t p = 0; p < ts[j].n; p++) {
-						sput(&b, "%s[", p ? "," : "");
-						num(&b, ts[j].x[p]);
-						sput(&b, ",");
-						num(&b, ts[j].y[p]);
-						sput(&b, "]");
-					}
-					sput(&b, "]");
-				}
-				sput(&b, "]");
-			}
-			/* how it was written (FR-006): the profiles, per stroke */
-			for (int pk = 0; pk < 2; pk++) {
-				const double *pv = pk ? x->speed : x->pres;
-				if (!pv) continue;
-				sput(&b, pk ? ",\"speed\":[" : ",\"pressure\":[");
-				for (size_t j = 0; j < x->nstrokes; j++) {
-					sput(&b, "%s[", j ? "," : "");
-					for (int q = 0; q < HW_LETTERS_PROFILE; q++) { if (q) sput(&b, ","); num(&b, pv[j * HW_LETTERS_PROFILE + (size_t)q]); }
-					sput(&b, "]");
-				}
-				sput(&b, "]");
-			}
-			sput(&b, "}");
+			if (v) sput(&b, ",");
+			variant_out(&b, &l->var[v], with_best);
 		}
 		sput(&b, "]");
 		if (l->nvar) {
@@ -273,6 +291,34 @@ static char *format_model(const struct hw_letters *L, size_t *len, int with_best
 			for (int k = 0; k < HW_LETTERS_SLOTS; k++) sput(&b, "%s%d", k ? "," : "", l->slot[k]);
 			sput(&b, "]");
 		}
+		/* the neighbour rules (FR-038) */
+		if (l->nrules) {
+			sput(&b, ",\"rules\":[");
+			for (int r = 0; r < l->nrules; r++) {
+				const struct hw_rule *ru = &l->rule[r];
+				sput(&b, "%s{\"%s\":", r ? "," : "", ru->side ? "next" : "prev");
+				char_out(&b, ru->nb);
+				sput(&b, ",\"variant\":%d,\"n\":%d,\"same\":%d,\"hits\":", ru->var, ru->n, ru->same);
+				num(&b, ru->hits);
+				sput(&b, ",\"cycle\":");
+				num(&b, ru->cycle);
+				sput(&b, "}");
+			}
+			sput(&b, "]");
+		}
+		sput(&b, "}\n");
+	}
+	/* the joined pairs (FR-039) */
+	for (size_t i = 0; i < L->njoined; i++) {
+		const struct hw_joined *j = &L->joined[i];
+		char u[16];
+		size_t k = hw_utf8_encode(j->a, u);
+		u[k + hw_utf8_encode(j->b, u + k)] = 0;
+		json_object *js = json_object_new_string(u);
+		sput(&b, "{\"joined\":%s,\"samples\":%d,\"written\":%d,\"of\":%d,\"variant\":",
+		     json_object_to_json_string_ext(js, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE), j->samples, j->joined, j->of);
+		json_object_put(js);
+		variant_out(&b, &j->v, 0);
 		sput(&b, "}\n");
 	}
 	if (len) *len = b.n;
@@ -301,6 +347,87 @@ static void variant_measure(struct hw_variant *v)
 		}
 	}
 	v->mid = round(hw_mid_of(&md) * 1e4) / 1e4;
+}
+
+/* a variant from its object in the model file */
+static void variant_in(json_object *x, struct hw_variant *w)
+{
+	json_object *st;
+	w->width = jnum(x, "width", 0);
+	w->weight = jnum(x, "weight", 0);
+	w->members = (int)jnum(x, "members", 0);
+	w->use = (int)jnum(x, "use", 1);
+	w->lc = (int)jnum(x, "lc", -1);
+	w->rc = (int)jnum(x, "rc", -1);
+	json_object *f;
+	w->out = json_object_object_get_ex(x, "left_out", &f) && json_object_get_boolean(f);
+	w->favourite = json_object_object_get_ex(x, "favourite", &f) && json_object_get_boolean(f);
+	if (json_object_object_get_ex(x, "ids", &f) && json_object_is_type(f, json_type_array)) {
+		size_t ni = json_object_array_length(f);
+		w->ids = calloc(ni + 1, sizeof *w->ids);
+		for (size_t q = 0; w->ids && q < ni; q++) {
+			const char *id = json_object_get_string(json_object_array_get_idx(f, q));
+			if (id && strlen(id) == 16) snprintf(w->ids[w->nids++], 17, "%s", id);
+		}
+	}
+	if (!json_object_object_get_ex(x, "strokes", &st)) return;
+	w->nstrokes = json_object_array_length(st);
+	w->s = calloc(w->nstrokes + 1, sizeof *w->s);
+	for (size_t j = 0; w->s && j < w->nstrokes; j++) {
+		json_object *ps = json_object_array_get_idx(st, j);
+		size_t np = json_object_array_length(ps);
+		w->s[j].n = np;
+		w->s[j].x = malloc((np + 1) * sizeof(double));
+		w->s[j].y = malloc((np + 1) * sizeof(double));
+		for (size_t p = 0; p < np && w->s[j].x && w->s[j].y; p++) {
+			json_object *pt = json_object_array_get_idx(ps, p);
+			w->s[j].x[p] = json_object_get_double(json_object_array_get_idx(pt, 0));
+			w->s[j].y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
+		}
+	}
+	/* the best version (FR-035): as many strokes and points as the variant */
+	json_object *bs;
+	if (w->s && json_object_object_get_ex(x, "best", &bs) && json_object_is_type(bs, json_type_array) &&
+	    json_object_array_length(bs) == w->nstrokes) {
+		int good = (w->best = calloc(w->nstrokes + 1, sizeof *w->best)) != NULL;
+		for (size_t j = 0; good && j < w->nstrokes; j++) {
+			json_object *ps = json_object_array_get_idx(bs, j);
+			size_t np = json_object_is_type(ps, json_type_array) ? json_object_array_length(ps) : 0;
+			struct hw_lstroke *t = &w->best[j];
+			t->x = malloc((np + 1) * sizeof(double));
+			t->y = malloc((np + 1) * sizeof(double));
+			if (np != w->s[j].n || !t->x || !t->y) { good = 0; break; }
+			t->n = np;
+			for (size_t p = 0; p < np; p++) {
+				json_object *pt = json_object_array_get_idx(ps, p);
+				t->x[p] = json_object_get_double(json_object_array_get_idx(pt, 0));
+				t->y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
+			}
+		}
+		if (!good && w->best) {
+			for (size_t j = 0; j < w->nstrokes; j++) { free(w->best[j].x); free(w->best[j].y); }
+			free(w->best);
+			w->best = NULL;
+		}
+	}
+	/* how it was written: one profile of HW_LETTERS_PROFILE points per stroke */
+	for (int pk = 0; pk < 2 && w->s; pk++) {
+		json_object *pa;
+		if (!json_object_object_get_ex(x, pk ? "speed" : "pressure", &pa) || !json_object_is_type(pa, json_type_array) ||
+		    json_object_array_length(pa) != w->nstrokes) continue;
+		double *pv = malloc((w->nstrokes + 1) * HW_LETTERS_PROFILE * sizeof *pv);
+		int good = pv != NULL;
+		for (size_t j = 0; good && j < w->nstrokes; j++) {
+			json_object *e = json_object_array_get_idx(pa, j);
+			if (!json_object_is_type(e, json_type_array) || json_object_array_length(e) != HW_LETTERS_PROFILE) { good = 0; break; }
+			for (int q = 0; q < HW_LETTERS_PROFILE; q++)
+				pv[j * HW_LETTERS_PROFILE + (size_t)q] = json_object_get_double(json_object_array_get_idx(e, (size_t)q));
+		}
+		if (!good) { free(pv); continue; }
+		if (pk) w->speed = pv; else w->pres = pv;
+	}
+	/* its profiles and middle, from its strokes as the build makes them */
+	variant_measure(w);
 }
 
 int hw_letters_parse(const char *text, struct hw_letters *L)
@@ -409,83 +536,7 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			if (json_object_object_get_ex(o, "variants", &vs) && json_object_is_type(vs, json_type_array)) {
 				size_t nv = json_object_array_length(vs);
 				for (size_t k = 0; k < nv && l->nvar < HW_LETTERS_VARIANTS; k++) {
-					json_object *x = json_object_array_get_idx(vs, k), *st;
-					struct hw_variant *w = &l->var[l->nvar++];
-					w->width = jnum(x, "width", 0);
-					w->weight = jnum(x, "weight", 0);
-					w->members = (int)jnum(x, "members", 0);
-					w->use = (int)jnum(x, "use", 1);
-					w->lc = (int)jnum(x, "lc", -1);
-					w->rc = (int)jnum(x, "rc", -1);
-					json_object *f;
-					w->out = json_object_object_get_ex(x, "left_out", &f) && json_object_get_boolean(f);
-					w->favourite = json_object_object_get_ex(x, "favourite", &f) && json_object_get_boolean(f);
-					if (json_object_object_get_ex(x, "ids", &f) && json_object_is_type(f, json_type_array)) {
-						size_t ni = json_object_array_length(f);
-						w->ids = calloc(ni + 1, sizeof *w->ids);
-						for (size_t q = 0; w->ids && q < ni; q++) {
-							const char *id = json_object_get_string(json_object_array_get_idx(f, q));
-							if (id && strlen(id) == 16) snprintf(w->ids[w->nids++], 17, "%s", id);
-						}
-					}
-					if (!json_object_object_get_ex(x, "strokes", &st)) continue;
-					w->nstrokes = json_object_array_length(st);
-					w->s = calloc(w->nstrokes + 1, sizeof *w->s);
-					for (size_t j = 0; w->s && j < w->nstrokes; j++) {
-						json_object *ps = json_object_array_get_idx(st, j);
-						size_t np = json_object_array_length(ps);
-						w->s[j].n = np;
-						w->s[j].x = malloc((np + 1) * sizeof(double));
-						w->s[j].y = malloc((np + 1) * sizeof(double));
-						for (size_t p = 0; p < np && w->s[j].x && w->s[j].y; p++) {
-							json_object *pt = json_object_array_get_idx(ps, p);
-							w->s[j].x[p] = json_object_get_double(json_object_array_get_idx(pt, 0));
-							w->s[j].y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
-						}
-					}
-					/* the best version (FR-035): as many strokes and points as the variant */
-					json_object *bs;
-					if (w->s && json_object_object_get_ex(x, "best", &bs) && json_object_is_type(bs, json_type_array) &&
-					    json_object_array_length(bs) == w->nstrokes) {
-						int good = (w->best = calloc(w->nstrokes + 1, sizeof *w->best)) != NULL;
-						for (size_t j = 0; good && j < w->nstrokes; j++) {
-							json_object *ps = json_object_array_get_idx(bs, j);
-							size_t np = json_object_is_type(ps, json_type_array) ? json_object_array_length(ps) : 0;
-							struct hw_lstroke *t = &w->best[j];
-							t->x = malloc((np + 1) * sizeof(double));
-							t->y = malloc((np + 1) * sizeof(double));
-							if (np != w->s[j].n || !t->x || !t->y) { good = 0; break; }
-							t->n = np;
-							for (size_t p = 0; p < np; p++) {
-								json_object *pt = json_object_array_get_idx(ps, p);
-								t->x[p] = json_object_get_double(json_object_array_get_idx(pt, 0));
-								t->y[p] = json_object_get_double(json_object_array_get_idx(pt, 1));
-							}
-						}
-						if (!good && w->best) {
-							for (size_t j = 0; j < w->nstrokes; j++) { free(w->best[j].x); free(w->best[j].y); }
-							free(w->best);
-							w->best = NULL;
-						}
-					}
-					/* how it was written: one profile of HW_LETTERS_PROFILE points per stroke */
-					for (int pk = 0; pk < 2 && w->s; pk++) {
-						json_object *pa;
-						if (!json_object_object_get_ex(x, pk ? "speed" : "pressure", &pa) || !json_object_is_type(pa, json_type_array) ||
-						    json_object_array_length(pa) != w->nstrokes) continue;
-						double *pv = malloc((w->nstrokes + 1) * HW_LETTERS_PROFILE * sizeof *pv);
-						int good = pv != NULL;
-						for (size_t j = 0; good && j < w->nstrokes; j++) {
-							json_object *e = json_object_array_get_idx(pa, j);
-							if (!json_object_is_type(e, json_type_array) || json_object_array_length(e) != HW_LETTERS_PROFILE) { good = 0; break; }
-							for (int q = 0; q < HW_LETTERS_PROFILE; q++)
-								pv[j * HW_LETTERS_PROFILE + (size_t)q] = json_object_get_double(json_object_array_get_idx(e, (size_t)q));
-						}
-						if (!good) { free(pv); continue; }
-						if (pk) w->speed = pv; else w->pres = pv;
-					}
-					/* its profiles and middle, from its strokes as the build makes them */
-					variant_measure(w);
+					variant_in(json_object_array_get_idx(vs, k), &l->var[l->nvar++]);
 				}
 			}
 			json_object *sl;
@@ -494,6 +545,38 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			for (int k = 0; k < HW_LETTERS_SLOTS; k++) {
 				int v = have ? json_object_get_int(json_object_array_get_idx(sl, k)) : (l->nvar ? k % l->nvar : 0);
 				l->slot[k] = (unsigned char)(v >= 0 && v < l->nvar ? v : 0);
+			}
+			/* the neighbour rules (FR-038) */
+			json_object *ra;
+			if (json_object_object_get_ex(o, "rules", &ra) && json_object_is_type(ra, json_type_array)) {
+				size_t nr = json_object_array_length(ra);
+				for (size_t k = 0; k < nr && l->nrules < HW_LETTERS_RULES; k++) {
+					json_object *x = json_object_array_get_idx(ra, k), *nb;
+					int side = json_object_object_get_ex(x, "next", &nb) ? 1 : json_object_object_get_ex(x, "prev", &nb) ? 0 : -1;
+					unsigned c1[2];
+					int var = (int)jnum(x, "variant", -1);
+					if (side < 0 || hw_utf8_decode(json_object_get_string(nb), c1, 2) != 1 || var < 0 || var >= l->nvar) continue;
+					l->rule[l->nrules++] = (struct hw_rule){ c1[0], side, var, (int)jnum(x, "n", 0), (int)jnum(x, "same", 0),
+										 jnum(x, "hits", 0), jnum(x, "cycle", 0) };
+				}
+			}
+		} else if (json_object_object_get_ex(o, "joined", &v)) {
+			unsigned c2[3];
+			json_object *jv;
+			if (hw_utf8_decode(json_object_get_string(v), c2, 3) == 2 && json_object_object_get_ex(o, "variant", &jv) &&
+			    L->njoined < HW_JOINED_MAX) {
+				struct hw_joined *x = realloc(L->joined, (L->njoined + 1) * sizeof *x);
+				if (!x) { json_object_put(o); goto bad; }
+				L->joined = x;
+				struct hw_joined *j = &L->joined[L->njoined++];
+				memset(j, 0, sizeof *j);
+				j->a = c2[0];
+				j->b = c2[1];
+				j->samples = (int)jnum(o, "samples", 0);
+				j->joined = (int)jnum(o, "written", 0);
+				j->of = (int)jnum(o, "of", 0);
+				variant_in(jv, &j->v);
+				if (!j->v.nstrokes) { variant_free(&j->v); L->njoined--; }
 			}
 		}
 		json_object_put(o);
@@ -599,6 +682,7 @@ struct inst {
 	int slip;                       /* far from the character's other versions in size */
 	int var;                        /* the variant it is written like, -1 none */
 	int occ;                        /* its occurrence record (one character's build), -1 none */
+	unsigned prev, next;            /* the characters beside it in its sample's text, 0 none or a space */
 	double *rs;                     /* resampled, centred: 2 * total points (per group) */
 	/* how it was written: per stroke HW_LETTERS_PROFILE points along its arc length, the
 	 * pressure and the speed (sample units, then x-heights per second, then relative to the
@@ -1459,6 +1543,308 @@ int hw_letters_marks_changed(const struct hw_letters *L)
 	return changed;
 }
 
+/* ---------------------------------------------------------------- neighbour rules (FR-038) */
+
+struct nocc { unsigned nb; int side, sample, var; };
+
+static int cmp_nocc(const void *a, const void *b)
+{
+	const struct nocc *x = a, *y = b;
+	if (x->side != y->side) return x->side - y->side;
+	if (x->nb != y->nb) return x->nb < y->nb ? -1 : 1;
+	return x->sample - y->sample;
+}
+
+static int cmp_rule(const void *a, const void *b)
+{
+	const struct hw_rule *x = a, *y = b;
+	double gx = x->hits - x->cycle, gy = y->hits - y->cycle;
+	if (gx > gy + 1e-9) return -1;
+	if (gy > gx + 1e-9) return 1;
+	if (x->side != y->side) return x->side - y->side;
+	return x->nb < y->nb ? -1 : x->nb > y->nb;
+}
+
+/* A letter's neighbour rules from its versions v (their variants set, the cycle made): per
+ * character before it and after it, the variant written there most, when written there
+ * HW_RULE_MIN times, that variant in HW_RULE_SHARE of them and HW_RULE_LIFT more than in
+ * the cycle, and the rule wins on samples it
+ * was not made from: leaving out one sample at a time, the variant the others write most
+ * there matches the left-out sample's more often than the cycle's (each variant as often as
+ * its share of the cycle's steps). Variants left out count for none. */
+static void letter_rules(struct hw_letter *l, const struct inst *in, const int *v, int nv)
+{
+	l->nrules = 0;
+	if (l->nvar < 2) return;
+	struct nocc *o = malloc((2 * (size_t)nv + 1) * sizeof *o);
+	if (!o) return;
+	double share[HW_LETTERS_VARIANTS] = { 0 };
+	for (int k = 0; k < HW_LETTERS_SLOTS; k++) share[l->slot[k]] += 1.0 / HW_LETTERS_SLOTS;
+	size_t n = 0;
+	for (int i = 0; i < nv; i++) {
+		const struct inst *x = &in[v[i]];
+		if (x->var < 0 || x->var >= l->nvar || l->var[x->var].out) continue;
+		if (x->prev) o[n++] = (struct nocc){ x->prev, 0, x->sample, x->var };
+		if (x->next) o[n++] = (struct nocc){ x->next, 1, x->sample, x->var };
+	}
+	qsort(o, n, sizeof *o, cmp_nocc);
+	struct hw_rule R[64];
+	int nr = 0;
+	for (size_t i = 0; i < n;) {
+		size_t j = i;
+		while (j < n && o[j].side == o[i].side && o[j].nb == o[i].nb) j++;
+		int m = (int)(j - i), cnt[HW_LETTERS_VARIANTS] = { 0 }, top = 0;
+		for (size_t q = i; q < j; q++) cnt[o[q].var]++;
+		for (int k = 1; k < l->nvar; k++) if (cnt[k] > cnt[top]) top = k;
+		if (m >= HW_RULE_MIN && cnt[top] * HW_RULE_SHARE_DEN >= m * HW_RULE_SHARE_NUM &&
+		    (double)cnt[top] / m >= share[top] + HW_RULE_LIFT - 1e-9) {
+			double hits = 0, cyc = 0;
+			for (size_t q = i; q < j;) {
+				size_t r = q;
+				int cs[HW_LETTERS_VARIANTS] = { 0 }, p = -1;
+				while (r < j && o[r].sample == o[q].sample) cs[o[r++].var]++;
+				for (int k = 0; k < l->nvar; k++)
+					if (cnt[k] - cs[k] > 0 && (p < 0 || cnt[k] - cs[k] > cnt[p] - cs[p])) p = k;
+				for (int k = 0; k < l->nvar; k++) {
+					cyc += cs[k] * share[k];
+					hits += p >= 0 ? (k == p) * cs[k] : cs[k] * share[k];
+				}
+				q = r;
+			}
+			if (hits > cyc + 1e-9 && nr < 64)
+				R[nr++] = (struct hw_rule){ o[i].nb, o[i].side, top, m, cnt[top], round(hits * 1e4) / 1e4, round(cyc * 1e4) / 1e4 };
+		}
+		i = j;
+	}
+	free(o);
+	qsort(R, (size_t)nr, sizeof *R, cmp_rule);
+	for (int k = 0; k < nr && k < HW_LETTERS_RULES; k++) l->rule[l->nrules++] = R[k];
+}
+
+/* ---------------------------------------------------------------- joined pairs (FR-039) */
+
+/* a pair of neighbouring characters in a sample: kind 0 written apart, 1 joined, 2 joined
+ * with the pair's strokes its own (none shared with a third character) */
+struct jocc { unsigned a, b; int sample, pos, kind; };
+
+static int cmp_jocc(const void *x, const void *y)
+{
+	const struct jocc *a = x, *b = y;
+	if (a->a != b->a) return a->a < b->a ? -1 : 1;
+	if (a->b != b->b) return a->b < b->b ? -1 : 1;
+	if (a->sample != b->sample) return a->sample - b->sample;
+	return a->pos - b->pos;
+}
+
+static int span_ink(const struct hw_sample *s, const int *sp)
+{
+	for (const int *p = sp; p && *p >= 0; p++) if ((size_t)*p < s->nstrokes && s->strokes[*p].n) return 1;
+	return 0;
+}
+
+/* distinct samples among o[i..j) of at least this kind */
+static int jsamples(const struct jocc *o, size_t i, size_t j, int kind)
+{
+	int n = 0, last = -1;
+	for (size_t q = i; q < j; q++) if (o[q].kind >= kind && o[q].sample != last) { n++; last = o[q].sample; }
+	return n;
+}
+
+static void inst_free(struct inst *x)
+{
+	for (size_t j = 0; j < x->nstrokes; j++) { free(x->s[j].x); free(x->s[j].y); }
+	free(x->s); free(x->rs); free(x->pp); free(x->pv);
+}
+
+/* The pair's glyph from its usable joined occurrences o[i..j), made as a variant is (the
+ * versions with the most common stroke count, averaged around the best supported one, the
+ * jitter smoothed, on the line). 0 made, 1 none, -1 out of memory. */
+static int joined_glyph(struct hw_joined *J, const struct hw_letters *L, struct smp *S, const struct jocc *o, size_t i, size_t j)
+{
+	size_t n = 0;
+	struct inst *in = calloc(j - i + 1, sizeof *in);
+	if (!in) return -1;
+	for (size_t q = i; q < j; q++) {
+		if (o[q].kind != 2) continue;
+		struct smp *m = &S[o[q].sample];
+		const int *sa = m->s.spans[o[q].pos], *sb = m->s.spans[o[q].pos + 1];
+		int ord[512], no = 0;
+		for (int side = 0; side < 2; side++)
+			for (const int *p = side ? sb : sa; *p >= 0; p++) {
+				int dup = 0;
+				for (int t = 0; t < no; t++) dup |= ord[t] == *p;
+				if (!dup && no < 512 && (size_t)*p < m->s.nstrokes && m->s.strokes[*p].n) ord[no++] = *p;
+			}
+		for (int a = 1; a < no; a++) for (int b = a; b > 0 && ord[b] < ord[b - 1]; b--) { int t = ord[b]; ord[b] = ord[b - 1]; ord[b - 1] = t; }
+		struct inst *x = &in[n];
+		x->sample = o[q].sample; x->pos = o[q].pos; x->var = -1; x->occ = -1;
+		x->s = calloc((size_t)no + 1, sizeof *x->s);
+		x->pp = malloc(((size_t)no + 1) * HW_LETTERS_PROFILE * sizeof *x->pp);
+		x->pv = malloc(((size_t)no + 1) * HW_LETTERS_PROFILE * sizeof *x->pv);
+		if (!x->s || !x->pp || !x->pv) { inst_free(x); continue; }
+		x->x0 = x->y0 = INFINITY; x->x1 = x->y1 = -INFINITY;
+		for (int a = 0; a < no; a++) {
+			const struct hw_ink *k2 = &m->s.strokes[ord[a]];
+			for (size_t t = 0; t < k2->n; t++) {
+				if (k2->x[t] < x->x0) x->x0 = k2->x[t];
+				if (k2->x[t] > x->x1) x->x1 = k2->x[t];
+				if (k2->y[t] < x->y0) x->y0 = k2->y[t];
+				if (k2->y[t] > x->y1) x->y1 = k2->y[t];
+			}
+		}
+		for (int a = 0; a < no; a++) {
+			const struct hw_ink *k2 = &m->s.strokes[ord[a]];
+			struct hw_lstroke *t = &x->s[x->nstrokes];
+			t->x = malloc(k2->n * sizeof(double)); t->y = malloc(k2->n * sizeof(double));
+			if (!t->x || !t->y) { free(t->x); free(t->y); t->x = t->y = NULL; continue; }
+			t->n = k2->n;
+			for (size_t r = 0; r < k2->n; r++) { t->x[r] = (k2->x[r] - x->x0) / m->xh; t->y[r] = (m->base - k2->y[r]) / m->xh; }
+			double *pp = x->pp + x->nstrokes * HW_LETTERS_PROFILE, *pv = x->pv + x->nstrokes * HW_LETTERS_PROFILE;
+			stroke_profile(k2, m->pressure, pp, pv);
+			for (int r = 0; r < HW_LETTERS_PROFILE; r++) {
+				pp[r] = L->m.pres_mid > 0 ? pp[r] / L->m.pres_mid : NAN;
+				pv[r] = L->m.speed_mid > 0 ? pv[r] / m->xh / L->m.speed_mid : NAN;
+			}
+			x->nstrokes++;
+		}
+		/* far from a pair of letters in size: a slip */
+		if (!x->nstrokes || (x->x1 - x->x0) / m->xh > 8 || (x->y1 - x->y0) / m->xh > 6) { inst_free(x); memset(x, 0, sizeof *x); continue; }
+		double w = !strcmp(m->s.written, "careful") ? 1.5 : !strcmp(m->s.written, "quick") ? 0.6 : 1.0;
+		int k = o[q].pos;
+		x->w = w * (0.25 + (k + 1 < 512 ? (m->read[k] + m->read[k + 1]) / 2 : 0.6));
+		n++;
+	}
+	/* the most common stroke count (the fewer strokes of two as common) */
+	size_t best = 0;
+	int bn = 0;
+	for (size_t a = 0; a < n; a++) {
+		int c = 0;
+		for (size_t b = 0; b < n; b++) c += in[b].nstrokes == in[a].nstrokes;
+		if (c > bn || (c == bn && in[a].nstrokes < best)) { bn = c; best = in[a].nstrokes; }
+	}
+	int ret = 1;
+	struct group g = { best, calloc(n + 1, sizeof(int)), 0, calloc(best + 1, sizeof(int)), 0 };
+	if (!g.members || !g.pts) { ret = -1; goto out; }
+	for (size_t a = 0; a < n; a++) if (in[a].nstrokes == best) g.members[g.n++] = (int)a;
+	if (g.n < 1) goto out;
+	for (size_t s2 = 0; s2 < best; s2++) {
+		double *ls = malloc((size_t)g.n * sizeof *ls);
+		if (!ls) { ret = -1; goto out; }
+		for (int a = 0; a < g.n; a++) ls[a] = slen(&in[g.members[a]].s[s2]);
+		int np = (int)lround(median(ls, (size_t)g.n, 0) / 0.04);
+		free(ls);
+		g.pts[s2] = np < 4 ? 4 : np > 64 ? 64 : np;
+		g.total += g.pts[s2];
+	}
+	for (int a = 0; a < g.n; a++) {
+		struct inst *x = &in[g.members[a]];
+		x->rs = malloc((size_t)g.total * 2 * sizeof(double));
+		if (!x->rs) { ret = -1; goto out; }
+		int off = 0;
+		for (size_t s2 = 0; s2 < best; s2++) { resample(&x->s[s2], (size_t)g.pts[s2], x->rs + 2 * off); off += g.pts[s2]; }
+		double cx = 0, cy = 0;
+		for (int q = 0; q < g.total; q++) { cx += x->rs[2 * q]; cy += x->rs[2 * q + 1]; }
+		cx /= g.total; cy /= g.total;
+		for (int q = 0; q < g.total; q++) { x->rs[2 * q] -= cx; x->rs[2 * q + 1] -= cy; }
+	}
+	/* the seed: the version with the most others of one way near it */
+	int seed = -1, bs = -1;
+	for (int a = 0; a < g.n; a++) {
+		int sup = 0, x = g.members[a];
+		for (int b = 0; b < g.n; b++) sup += rdist(in[x].rs, in[g.members[b]].rs, g.total) <= WAY_TAU;
+		if (sup > bs || (sup == bs && in[x].w > in[seed].w + 1e-12)) { bs = sup; seed = x; }
+	}
+	double xmin;
+	if (make_variant(in, &g, seed, &J->v, &xmin)) { variant_free(&J->v); ret = -1; goto out; }
+	J->v.use = bs;
+	J->v.ids = calloc((size_t)g.n + 1, sizeof *J->v.ids);
+	for (int a = 0; J->v.ids && a < g.n; a++) {
+		const struct inst *x = &in[g.members[a]];
+		if (rdist(x->rs, in[seed].rs, g.total) > WAY_TAU) continue;
+		const char *id = S[x->sample].id;
+		int dup = 0;
+		for (size_t q = 0; q < J->v.nids && !dup; q++) dup = !strcmp(J->v.ids[q], id);
+		if (!dup) memcpy(J->v.ids[J->v.nids++], id, 17);
+	}
+	if (J->v.ids) qsort(J->v.ids, J->v.nids, sizeof *J->v.ids, cmp_id17);
+	J->v.lc = hw_spacing_side(&L->sp, &J->v.prof, 0);
+	J->v.rc = hw_spacing_side(&L->sp, &J->v.prof, 1);
+	ret = 0;
+out:
+	free(g.members); free(g.pts);
+	for (size_t a = 0; a < n; a++) inst_free(&in[a]);
+	free(in);
+	return ret;
+}
+
+/* The joined pairs (FR-039): every pair of neighbouring characters in the samples with
+ * known strokes, written joined (a stroke in both spans) or apart; a pair joined in
+ * HW_JOINED_MIN usable samples (the pair's strokes its own) and in HW_JOINED_SHARE of the
+ * samples with it gets a glyph. A sample left out of either character counts for none. */
+static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const struct hw_mark *MK, size_t nmk)
+{
+	struct jocc *o = NULL;
+	size_t n = 0, cap = 0;
+	unsigned *cps = malloc(4097 * sizeof *cps);
+	if (!cps) return -1;
+	for (size_t si = 0; si < ns; si++) {
+		struct smp *m = &S[si];
+		if (m->xh <= 0 || isnan(m->base)) continue;
+		size_t nc = hw_utf8_decode(m->s.text, cps, 4096);
+		if (nc > 4096) nc = 4096;
+		if (nc < 2) continue;
+		int *cnt = calloc(m->s.nstrokes + 1, sizeof *cnt);
+		if (!cnt) { free(o); free(cps); return -1; }
+		for (size_t k = 0; k < m->s.nspans && k < nc; k++)
+			for (int *p = m->s.spans[k]; p && *p >= 0; p++) if ((size_t)*p < m->s.nstrokes) cnt[*p]++;
+		for (size_t k = 0; k + 1 < nc && k + 1 < m->s.nspans; k++) {
+			unsigned a = cps[k], b = cps[k + 1];
+			const int *sa = m->s.spans[k], *sb = m->s.spans[k + 1];
+			if (a == ' ' || b == ' ' || !span_ink(&m->s, sa) || !span_ink(&m->s, sb)) continue;
+			if (hw_mark_of(MK, nmk, m->id, a) == HW_MARK_OUT || hw_mark_of(MK, nmk, m->id, b) == HW_MARK_OUT) continue;
+			int shared = 0, own = 1;
+			for (int side = 0; side < 2; side++)
+				for (const int *p = side ? sb : sa; *p >= 0; p++) {
+					if ((size_t)*p >= m->s.nstrokes) { own = 0; continue; }
+					int here = span_has(sa, *p) + span_has(sb, *p);
+					if (here == 2) shared = 1;
+					if (cnt[*p] != here) own = 0;
+				}
+			if (n == cap) {
+				cap = cap ? cap * 2 : 1024;
+				struct jocc *x = realloc(o, cap * sizeof *x);
+				if (!x) { free(cnt); free(o); free(cps); return -1; }
+				o = x;
+			}
+			o[n++] = (struct jocc){ a, b, (int)si, (int)k, shared ? (own ? 2 : 1) : 0 };
+		}
+		free(cnt);
+	}
+	free(cps);
+	qsort(o, n, sizeof *o, cmp_jocc);
+	int ret = 0;
+	for (size_t i = 0; i < n && ret == 0;) {
+		size_t j = i;
+		while (j < n && o[j].a == o[i].a && o[j].b == o[i].b) j++;
+		int of = jsamples(o, i, j, 0), joined = jsamples(o, i, j, 1), usable = jsamples(o, i, j, 2);
+		if (usable >= HW_JOINED_MIN && joined * HW_JOINED_SHARE_DEN >= of * HW_JOINED_SHARE_NUM && L->njoined < HW_JOINED_MAX) {
+			struct hw_joined *x = realloc(L->joined, (L->njoined + 1) * sizeof *x);
+			if (!x) { ret = -1; break; }
+			L->joined = x;
+			struct hw_joined *J = &L->joined[L->njoined];
+			memset(J, 0, sizeof *J);
+			J->a = o[i].a; J->b = o[i].b;
+			J->samples = usable; J->joined = joined; J->of = of;
+			int r = joined_glyph(J, L, S, o, i, j);
+			if (r < 0) ret = -1;
+			else if (r == 0) L->njoined++;
+		}
+		i = j;
+	}
+	free(o);
+	return ret;
+}
+
 int hw_letters_build(struct hw_letters *L)
 {
 	memset(L, 0, sizeof *L);
@@ -1569,6 +1955,8 @@ int hw_letters_build(struct hw_letters *L)
 			memset(x, 0, sizeof *x);
 			x->cp = cps[k]; x->sample = (int)si; x->pos = (int)k;
 			x->var = -1; x->occ = occ;
+			x->prev = k > 0 && cps[k - 1] != ' ' ? cps[k - 1] : 0;
+			x->next = k + 1 < nc && cps[k + 1] != ' ' ? cps[k + 1] : 0;
 			x->x0 = x->y0 = INFINITY; x->x1 = x->y1 = -INFINITY;
 			x->s = calloc((size_t)np, sizeof *x->s);
 			if (!x->s) break;
@@ -1977,6 +2365,7 @@ int hw_letters_build(struct hw_letters *L)
 		for (int k = 0; k < nsd; k++)
 			if (vix[k] >= 0 && !l->var[vix[k]].out) make_best(in, &G[sgr[k]], seeds[k], vix[k], vxm[k], &l->var[vix[k]]);
 		letter_slots(l);
+		letter_rules(l, in, v, nv);
 		free(way);
 		if (!l->nvar) l->covered = 0;
 		for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); }
@@ -2040,6 +2429,7 @@ int hw_letters_build(struct hw_letters *L)
 	L->m.letter_gap = L->sp.letter;
 	L->m.word_gap = L->sp.word;
 	free(obs); free(wgs.v);
+	if (joined_pairs(L, S, ns, MK, nmk)) goto fail;
 measured:
 	/* the occurrences' states from their instances */
 	for (size_t i = 0; i < build_nocc; i++) {
@@ -2135,6 +2525,10 @@ int hw_letters_view(const struct hw_letters *L, struct hw_letters *out)
 			b->var[b->nvar++] = a->var[v];
 		}
 		for (int k = 0; k < HW_LETTERS_SLOTS; k++) b->slot[k] = (unsigned char)(map[a->slot[k]] >= 0 ? map[a->slot[k]] : 0);
+		/* a rule for a variant left out is gone */
+		b->nrules = 0;
+		for (int r = 0; r < a->nrules; r++)
+			if (a->rule[r].var < a->nvar && map[a->rule[r].var] >= 0) { b->rule[b->nrules] = a->rule[r]; b->rule[b->nrules++].var = map[a->rule[r].var]; }
 		if (!b->nvar) b->covered = 0;
 	}
 	return 0;
@@ -2423,7 +2817,19 @@ static void style_path(char *out, size_t n, const char *dir, unsigned v, int sty
 	else snprintf(out, n, "%s/handwriting-%u-%s.ttf", dir, v, low);
 }
 
-int hw_font_install(const char *name, int nib, int verbose)
+int hw_font_random(void)
+{
+	char p[4096], line[4600];
+	if (hw_store_path(p, sizeof p, "letters/font")) return -1;
+	FILE *f = fopen(p, "re");
+	if (!f) return errno == ENOENT ? 0 : -1;
+	int on = 0;
+	while (fgets(line, sizeof line, f)) if (!strcmp(line, "random\ton\n")) on = 1;
+	fclose(f);
+	return on;
+}
+
+int hw_font_install(const char *name, int nib, int random, int verbose)
 {
 	struct hw_letters L;
 	int r = hw_letters_load(&L);
@@ -2440,6 +2846,8 @@ int hw_font_install(const char *name, int nib, int verbose)
 	if (name && !valid_name(name)) { hw_letters_free(&L); return -2; }
 	/* the nib angle: asked for, else the one the font has, else the default (FR-034) */
 	if (nib < 0) nib = onib >= HW_FONT_NIB_MIN && onib <= HW_FONT_NIB_MAX ? onib : HW_FONT_NIB_DEFAULT;
+	/* random alternates: asked for or not, else as the font has them (FR-040) */
+	if (random < 0) random = had && hw_font_random() == 1;
 	const char *nm = name ? name : oname;
 	char dir[4096], path[HW_STYLES][4200], tmp[sizeof path + 8];
 	if (fonts_dir(dir, sizeof dir)) { hw_letters_free(&L); return -1; }
@@ -2453,7 +2861,7 @@ int hw_font_install(const char *name, int nib, int verbose)
 	/* all three styles, or none (FR-034) */
 	for (int k = 0; k < HW_STYLES; k++, made++) {
 		size_t len;
-		unsigned char *ttf = hw_font_build_style(&L, nm, v, k, nib, &len);
+		unsigned char *ttf = hw_font_build_style(&L, nm, v, k, nib, random, &len);
 		if (!ttf) break;
 		style_path(path[k], sizeof path[k], dir, v, k);
 		snprintf(tmp, sizeof tmp, "%s.tmp", path[k]);
@@ -2469,6 +2877,7 @@ int hw_font_install(const char *name, int nib, int verbose)
 	for (int k = 1; k < HW_STYLES && n > 0 && (size_t)n < sizeof rec; k++)
 		n += snprintf(rec + n, sizeof rec - (size_t)n, "style\t%s\t%s\n", hw_font_style_names[k], path[k]);
 	if (n > 0 && (size_t)n < sizeof rec) n += snprintf(rec + n, sizeof rec - (size_t)n, "nib\t%d\n", nib);
+	if (random && n > 0 && (size_t)n < sizeof rec) n += snprintf(rec + n, sizeof rec - (size_t)n, "random\ton\n");
 	snprintf(vs, sizeof vs, "%u\n", v);
 	if (n <= 0 || (size_t)n >= sizeof rec || hw_store_mkdir("letters") || hw_store_replace("letters/font-version", vs, strlen(vs)) ||
 	    hw_store_replace("letters/font", rec, (size_t)n) || hw_store_replace("letters/font-model", fp, strlen(fp))) {

@@ -525,7 +525,7 @@ Nothing in it leaves the device except by export or a donation the person writes
   line per run: `TIME kept|rejected TRAIN HELD ERROR_BEFORE ERROR_AFTER`).
 - `letters/model`: the letter model (below); `letters/usable` (its usable samples, below); `letters/font` (`NAME VERSION PATH`, tab-separated:
   the installed font, PATH its Regular style's file; then `style STYLE PATH` for Calligraphy and Brush and `nib DEG`,
-  the nib angle it was made with; a font installed before the styles has the first line alone) and `letters/font-version` (the last version made, so a removed and
+  the nib angle it was made with, and `random on` when made with random alternates; a font installed before the styles has the first line alone) and `letters/font-version` (the last version made, so a removed and
   remade font doesn't reuse one) and `letters/font-model` (a hash of the letters the installed
   font was made from). An erase of all samples or of a client's takes out the letter
   model, the installed font and these files (the erased samples' preferences go with them).
@@ -764,7 +764,7 @@ character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,
 "members":N,"use":N,"lc":L,"rc":R,"left_out":true,"favourite":true,"ids":["ID",…],"left":[…8],
 "right":[…8],"middle":…,"strokes":[[[x,y],…],…],"best":[[[x,y],…],…],"pressure":[[…16],…],
 "speed":[[…16],…]}],
-"slots":[V,…]}` (x from the version's left
+"slots":[V,…],"rules":[{"prev":"o","variant":V,"n":N,"same":N,"hits":…,"cycle":…},…]}` (x from the version's left
 edge, y up from the baseline, in x-heights; `left` and `right` its profile, null for a band
 without ink, `middle` its middle (null without one), `pressure` and `speed` how it was written,
 16 values per stroke (above; each left out when the version has none),
@@ -775,7 +775,35 @@ this way, those its `use` counts, sorted; no versions when not covered). A chara
 has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the
 font's cycle (10 steps): the version the character shows at each step, each about as often as it
 is used (a favourite twice as often, a left-out one never), spread out (smooth weighted round
-robin); a model without it shows its versions in turn.
+robin); a model without it shows its versions in turn. `rules` (only when there are any) are its
+neighbour rules, below, the strongest first: `prev` or `next` the neighbour, `variant` the
+version, `n` the times written beside it, `same` those written as that version, `hits` and
+`cycle` the held-back check. Then per joined pair, after the characters, `{"joined":"th",
+"samples":N,"written":N,"of":N,"variant":{…}}` (`variant` as a character's, without `best`).
+
+**Neighbour rules (FR-038).** For each character and each character written right before it
+(`prev`) or right after it (`next`, a space is no neighbour), in the usable samples, the build
+counts which version each occurrence is written like. A rule needs all of: written beside that
+neighbour at least 6 times; the same version in at least three quarters of them, and in at least
+a quarter more of them than that version's share of the cycle (a version written that way
+everywhere is no way of writing it there); and a check on samples the rule is not made from:
+leaving out one sample at a time, the version the other samples write most beside that neighbour
+matches the left-out sample's occurrences (`hits`, summed) more often than the cycle does
+(`cycle`: each occurrence matched with the share of the cycle's steps that show its version).
+Versions left out count for none, and a rule for a version left out is gone. A character has at
+most 16 rules; where two apply, the first wins. The character's page shows the cycle's share
+("6 in 10") as before: a rule changes only the places it names.
+
+**Joined pairs (FR-039).** For each pair of neighbouring characters in the samples with known
+strokes (both with ink, neither left out of that sample), the pair is written joined when a
+stroke is in both spans, and usable when the pair's strokes are also none of a third character's.
+A pair written joined in at least 4 usable samples and in at least three quarters of the samples
+with that pair (`samples`, `written`, `of`) gets a glyph, made as a version is: of its usable
+samples' strokes (both characters', in writing order), those with the most common stroke count,
+averaged around the one most others are near, the jitter smoothed, on the line where they sit,
+with its profiles and its pressure and speed. A pair written joined less often is two letters;
+it leaves the font at the next build. A model holds at most 256 joined pairs. They are made by a
+whole build (`-c` keeps them).
 
 **The font:** `font install` makes a TrueType font of the covered characters (everything else
 falls back to the system's fonts) in three styles (FR-034) and installs them together as
@@ -792,9 +820,26 @@ references to one of its versions), and the `calt` feature has a rule per step t
 next glyph into its glyph at the step after. Letters are spaced by the spacing: each version has
 half the typical gap as side bearing on each side, and the `kern` feature (GPOS pair kerning
 with a class per version, every step glyph in its version's class) moves every pair of versions
-to where the spacing places it; the space is the word spacing less the typical gap. A preview that lays text
-out from the model (the samples app) spaces it the same way. The font is made only on the device and is
-never donated or exported.
+to where the spacing places it; the space is the word spacing less the typical gap.
+
+After the cycle's lookups, in this order (each sees the steps already set, so the steps count on
+through a rule or a joined pair and the letters around them show what they show without them):
+- **Joined pairs** (FR-039, `liga`, applied by default): a pair whose two letters are in the font
+  is one unencoded glyph of its own, a ligature of the first letter's step glyphs and the
+  second's; text shaping keeps both characters in its cluster, so it reads, copies and searches
+  as the two. It has its own profiles and side bearings and is kerned as a version is, at the
+  gap its first letter sets with the letter before and its last letter with the letter after
+  (its parts have no middles of their own).
+- **Neighbour rules** (FR-038, a second `calt` lookup, Extension-wrapped chain contexts): a
+  letter's step glyph after (or before) any glyph of the rule's neighbour (its steps, its
+  versions, a joined pair it ends or starts) turns into the rule's version's glyph.
+- **Random alternates** (FR-040, `rand`), only in a font built with them: each letter's step
+  glyphs to its versions, the cycle's 10 steps' versions as the alternates, so a random pick
+  shows each as often as the cycle does. Without them the font has no `rand` feature.
+
+A preview that lays text out from the model (the samples app) applies the cycle, the joined
+pairs and the rules the same way and spaces it the same way. The font is made only on the device
+and is never donated or exported.
 
 **The styles** (FR-034) differ only in their outlines: the glyphs and their order, `cmap`, `GSUB`,
 `GPOS`, the advances and the line metrics (`hhea`, the OS/2 typographic ones: the Regular style's)
@@ -828,6 +873,17 @@ The nib angle is a setting of the installed font: `font install --nib DEG` (0 to
 with it and keeps it in `letters/font`; an install without `--nib` keeps the font's angle (35 the
 first time).
 
+Random alternates (FR-040) are a setting of the installed font too, off unless asked for in this
+interface (the samples app doesn't offer them): `font install --random` makes the font with them
+and keeps `random on` in `letters/font`, `--no-random` makes it without, and an install with
+neither keeps what the font has. Which apps honour them: text shaping by HarfBuzz applies `rand`
+by default, picking at random among a glyph's alternates but the same way each time for the same
+text (its random numbers start alike for every run of text; asking for `rand=1` picks the first
+alternate instead), so apps that shape with HarfBuzz directly or through Pango, among them GTK
+apps, show the random versions; tested with `hb-shape`, `pango-view` and GTK through Pango
+(HarfBuzz 13.2.1, Pango 1.57.1). Apps that don't apply `rand` keep the cycle; Firefox, Chromium
+and LibreOffice are not tested. The neighbour rules and joined pairs apply either way.
+
 ## Command line
 
 Part of contract 1, for the settings app and anything else that shows or changes the samples.
@@ -847,7 +903,7 @@ glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
 glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show
 glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | marks | samples CHAR
-glassine-handwriting font install [-n NAME] [--nib DEG] | remove | status | build [-n NAME] [--style S] [--nib DEG] FILE | widths [--style S] [--nib DEG]
+glassine-handwriting font install [-n NAME] [--nib DEG] [--random|--no-random] | remove | status | build [-n NAME] [--style S] [--nib DEG] [--random] FILE | widths [--style S] [--nib DEG]
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
@@ -912,9 +968,10 @@ other versions in size to count).
 no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control characters,
 or a nib angle that isn't a whole number from 0 to 90, is a usage error. `font status` prints
 `NAME VERSION PATH` or `none`, then for a font `style STYLE PATH` per style it has (Regular,
-Calligraphy, Brush; a font from before the styles: Regular alone) and `nib DEG` (as `letters
-status`); `font remove` takes out all of its files; `font build FILE` writes one style (`--style
-regular|calligraphy|brush`, Regular unless given; the installed font's nib angle unless `--nib`) to
+Calligraphy, Brush; a font from before the styles: Regular alone), `nib DEG` (as `letters
+status`) and `random on` for a font with random alternates; `font remove` takes out all of its
+files; `font build FILE` writes one style (`--style regular|calligraphy|brush`, Regular unless
+given; the installed font's nib angle unless `--nib`; random alternates only with `--random`) to
 FILE without installing it, and `font widths` prints the width rules' output as JSON lines: first
 `{"style":…,"nib":…,"ink_width":…,"nib_min":…,"nib_max":…}`, then per stroke of every version
 `{"char":…,"variant":V,"stroke":J,"widths":[…]}`, the width at each of its points (for
