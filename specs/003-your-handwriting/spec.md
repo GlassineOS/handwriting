@@ -127,8 +127,10 @@ size, spacing) and keep their shape.
   that way. Each variant is built from the samples of its group with the person's
   preferences, careful marking, readability (how well the recognizer read it when it was
   written) and consistency (closeness to the group's typical shape) as weights. Jitter is
-  removed; shape, proportions, stroke count and stroke order stay the person's, and a
-  variant sits on the line where the samples it is made from sit on average. A variant
+  removed; shape, proportions, size, stroke count and stroke order stay the person's (a
+  variant is as tall and as wide as the samples it is made from are on average; making
+  it never shrinks it), and a variant sits on the line where the samples it is made from
+  sit on average. A variant
   is never made by mixing versions written with different strokes. How often the font
   shows each variant follows from how often the person writes it that way and from their
   marks (FR-031). Each variant carries
@@ -147,7 +149,12 @@ size, spacing) and keep their shape.
   and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
   stays the neighbour's, so both count. Line metrics (baseline,
   x-height, cap height, ascender, descender, slant) and spacing come from the person's word
-  and sentence samples. One spacing serves the font and neatening alike, and places
+  and sentence samples. Spacing follows how the person writes running text: a pair's
+  distance and gap, the typical gap and how far letters reach come from their writing of
+  several words together (sentences, free writing) where they wrote it often enough (at
+  least 3 times for a pair); elsewhere from single words, scaled by how much closer the
+  person sets letters in running text than in single words, learned from the pairs seen in
+  both (at least 10 of them, else no scaling). The median stays the measure throughout. One spacing serves the font and neatening alike, and places
   each pair by what the variants actually used look like. A letter's middle is the mean
   position of its ink between the baseline and the x-height, each part weighted by how far
   it runs up or down: stems and bowls count, bars, hooks and connecting strokes hardly do,
@@ -303,23 +310,25 @@ size, spacing) and keep their shape.
     size, and spacing (each pair of neighbouring letters moved so their gap goes towards the
     letter model's spacing for that pair, without a letter model towards the line's own
     median gap, and the gaps between words towards the word spacing, by a limited step).
-  - **Medium**: also pulls each covered character that is already close to its best version
-    (FR-035) towards it.
-  - **Strong**: pulls every covered character towards its best version, however far it is,
-    as long as a version has the same structure (stroke count and order; a t written in one
-    stroke goes towards a one-stroke version).
-  - **Neatest**: puts the best version itself in the character's place, at its position,
-    size and slant, keeping the timing and pressure of the person's strokes.
+  - **Medium**: also pulls each covered character half way towards its target (FR-035).
+  - **Strong**: pulls it most of the way (0.85).
+  - **Neatest**: puts the target itself in the character's place, on the person's points,
+    keeping the timing and pressure of their strokes.
 
-  A character none of whose versions has its structure is not pulled. A strength from 0 to
+  A character is pulled only when its target has its structure, tested coarsely: the same
+  number of strokes (after a late dot, bar or arm is placed with its character, FR-007)
+  and each stroke roughly where the target's is; how closely the shapes agree does not
+  matter. A character whose target doesn't have its structure is not pulled. A strength from 0 to
   1 runs through the levels (Light, Medium, Strong and Neatest at a quarter, a half, three
   quarters and 1); 0 returns the ink unchanged, and a strength between two levels moves
   part of the way to the next.
-- **FR-035**: The target of a pull is the person's best version of that way of writing the
-  character: built from the version's samples with the favourite mark (FR-031), careful
-  samples (written to "Write it your best", FR-001) and samples chosen in "Which one is
-  nicer?" (FR-003) weighted up, those left out weighted out; without any of these it is the
-  version as the letter model holds it.
+- **FR-035**: The target of a pull is exactly the glyph the font draws for that character at
+  that place in the text: the same version of the letter model (never a blend of
+  versions), chosen as the font chooses it for the same text, by the cycle (FR-010), the
+  neighbour rules (FR-038) and the joined pairs (FR-039). It is fitted to the written
+  character by similarity only: moved to its place, scaled uniformly to the line's
+  x-height and set at the line's slant (or the letter model's), never stretched, sheared
+  or mirrored. Neatened ink at Neatest is the person's line drawn in their font.
 - **FR-036**: A pull follows the stroke: each point of the person's stroke goes to the place
   on the version's stroke that matches it in shape (direction and curvature along the
   stroke), in order, so no point moves backwards along the stroke and the ink never folds
@@ -328,14 +337,14 @@ size, spacing) and keep their shape.
   Letters joined in one stroke each get their own pull, blended smoothly across the joint.
 - **FR-037**: Each pulled or replaced character is checked on its own, by its shape: its new
   ink (centred, at x-height) must be closer to that character's own versions than to any
-  version of any other character; when it isn't, that character alone stays as the
+  version of any other character, whatever their stroke counts; when it isn't, that character alone stays as the
   line-level corrections left it, and the rest of the line keeps its neatening. Nothing is
   read again after neatening: with the confirmed text the characters are known, without it
   the recognizer's one reading of the original ink tells them (FR-013). No check ever holds
   back a whole line.
 - **FR-041**: The neatening reply says for each character whether it was pulled, and when it
-  wasn't, why: not covered, no version with its structure, not close enough for the level
-  (Medium), its shape would come closer to another character (FR-037), in a word read with
+  wasn't, why: not covered, its target without its structure,
+  its shape would come closer to another character (FR-037), in a word read with
   low confidence (FR-017), or drawing or a gesture (FR-020).
 - **FR-015**: The same ink, letter model and strength always give the same result.
 - **FR-016**: Neatening is a request in the recognizer's interface (docs/recognizer.md), so
@@ -465,7 +474,10 @@ Host level:
   are reported as a built model would count them; the font page and neatening show them, say
   the model isn't built or is out of date, and build it when asked without installing the font;
 - word samples with a fixed gap for a pair give that pair that gap, a rare pair its side
-  shapes' value and an unseen pair spacing from the profiles;
+  shapes' value and an unseen pair spacing from the profiles; with sentences that set a
+  pair closer than single words do, the font sets it as in the sentences, and pairs seen
+  only in single words come closer by the person's ratio; single words written wider
+  never widen it; a variant is as tall as the samples it is made from, within 2 %;
 - the font built from it passes a standard font validator, maps exactly the covered
   characters and the space, alternates variants deterministically when shaped with no
   feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
@@ -484,17 +496,19 @@ Host level:
   about the cycle's proportions, the same for the same text; all three styles pass the
   font validator with the rules and joined pairs in them;
 - neatening at strength 0 returns the input byte for byte; at each level from Medium up,
-  covered characters are closer to their best version than at the level before (from Strong
-  up every one with a matching structure, however badly written), unless the shape check
+  covered characters are closer to the font's glyph for them than at the level before
+  (every one whose target has its structure, however badly written), at Neatest the
+  glyph itself fitted by position, uniform scale and slant only (its outline at the
+  font's version for that place: cycle, neighbour rules, joined pairs), unless the shape check
   keeps it as it was (FR-037), and the reply names why each character that wasn't pulled
   wasn't; a line with a name or another word missing from the dictionary is neatened like
-  any other; a character is pulled towards a version with its own
-  strokes; no point of a pulled stroke moves backwards along the stroke; uneven gaps between
+  any other; a character is pulled towards a version with its own number of strokes; no point of a pulled stroke moves backwards along the stroke; uneven gaps between
   letters come out closer to the letter model's spacing; stroke count, order, timing and
   pressure are kept;
 - on a held-back set no pulled character comes out closer to another character's versions
   than to its own; at joins and at stroke starts with an entry stroke or hook, the pulled
-  ink has no new backward steps or kinks, over every character and every joined pair;
+  ink has no new backward steps or kinks, there or anywhere along the stroke, over every
+  character and every joined pair;
 - through the neat ink layer, with a stand-in pen and recognizer: raw strokes pass on at
   once and unchanged, each neatened stroke names the raw stroke it replaces, strokes read
   as drawing pass unchanged, strength 0 gives the raw strokes, and a private field sends

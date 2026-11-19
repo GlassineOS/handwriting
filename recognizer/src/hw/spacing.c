@@ -278,7 +278,7 @@ static int side_classes(struct hw_letters *L, int side, double (*shape)[HW_PROF_
 	return nc;
 }
 
-struct obs_ix { unsigned a, b; int rc, lc; double gap, open, d; };
+struct obs_ix { unsigned a, b; int rc, lc; double gap, open, d; int run; };
 
 static int cmp_obs_pair(const void *x, const void *y)
 {
@@ -349,6 +349,61 @@ static int reaches(struct hw_spacing *sp, const struct obs_ix *ix, size_t n, dou
 	return 0;
 }
 
+/* the median of the middles' distances of o[i..j) written in running text (run 1) or in
+ * single words (0), in x[]; NAN with fewer than HW_PAIR_MIN */
+static double run_med(const struct obs_ix *o, size_t i, size_t j, int run, double *x)
+{
+	size_t k = 0;
+	for (size_t q = i; q < j; q++) if (o[q].run == run && isfinite(o[q].d)) x[k++] = o[q].d;
+	return k >= HW_PAIR_MIN ? med(x, k, 0) : NAN;
+}
+
+/* Running text (FR-007): a pair written HW_PAIR_MIN times in running text keeps only those;
+ * the others' single-word observations come closer by the person's ratio sp->run (their
+ * distance times it, their gap less what that takes off). The observations left; x: room
+ * for n numbers. */
+static size_t running_text(struct hw_spacing *sp, struct obs_ix *ix, size_t n, double *x)
+{
+	qsort(ix, n, sizeof *ix, cmp_obs_pair);
+	/* the ratio, from the pairs written often enough both ways */
+	double *r = malloc((n + 1) * sizeof *r), dw0;
+	size_t nr = 0, nd = 0;
+	sp->run = 1;
+	if (!r) return n;
+	for (size_t i = 0; i < n;) {
+		size_t j = i;
+		while (j < n && ix[j].a == ix[i].a && ix[j].b == ix[i].b) j++;
+		double dr = run_med(ix, i, j, 1, x), dw = run_med(ix, i, j, 0, x);
+		if (isfinite(dr) && isfinite(dw) && dw > 0.05) r[nr++] = dr / dw;
+		i = j;
+	}
+	if (nr >= HW_RUN_PAIRS) {
+		double k = med(r, nr, 1);
+		sp->run = round((k < HW_RUN_MIN ? HW_RUN_MIN : k > HW_RUN_MAX ? HW_RUN_MAX : k) * 1e4) / 1e4;
+	}
+	free(r);
+	/* the single words' typical distance, for an observation without middles */
+	for (size_t i = 0; i < n; i++) if (!ix[i].run && isfinite(ix[i].d)) x[nd++] = ix[i].d;
+	dw0 = med(x, nd, 1);
+	size_t w = 0;
+	for (size_t i = 0; i < n;) {
+		size_t j = i, nrun = 0;
+		while (j < n && ix[j].a == ix[i].a && ix[j].b == ix[i].b) j++;
+		for (size_t q = i; q < j; q++) nrun += ix[q].run;
+		for (size_t q = i; q < j; q++) {
+			struct obs_ix e = ix[q];
+			if (nrun >= HW_PAIR_MIN && !e.run) continue;
+			if (!e.run) {
+				e.gap -= (1 - sp->run) * (isfinite(e.d) ? e.d : dw0);
+				e.d *= sp->run;
+			}
+			ix[w++] = e;
+		}
+		i = j;
+	}
+	return w;
+}
+
 int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n, const double *words, size_t nw)
 {
 	struct hw_spacing *sp = &L->sp;
@@ -364,11 +419,11 @@ int hw_spacing_learn(struct hw_letters *L, const struct hw_gap_obs *o, size_t n,
 	size_t m0 = 0;
 	for (size_t i = 0; i < n; i++) {
 		if (!(o[i].gap >= GAP_MIN && o[i].gap <= GAP_MAX)) continue;
-		ix[m0] = (struct obs_ix){ o[i].a, o[i].b, hw_spacing_side(sp, &o[i].pa, 1), hw_spacing_side(sp, &o[i].pb, 0),
-					 o[i].gap, hw_profile_open(&o[i].pa, &o[i].pb), o[i].mb - o[i].ma };
-		g[m0++] = o[i].gap;
+		ix[m0++] = (struct obs_ix){ o[i].a, o[i].b, hw_spacing_side(sp, &o[i].pa, 1), hw_spacing_side(sp, &o[i].pb, 0),
+					   o[i].gap, hw_profile_open(&o[i].pa, &o[i].pb), o[i].mb - o[i].ma, o[i].run };
 	}
-	n = m0;
+	n = running_text(sp, ix, n, x);
+	for (size_t i = 0; i < n; i++) g[i] = ix[i].gap;
 	/* the person's typical gap; how much closer open profiles sit (a least-squares slope of
 	 * the gap on the open space, with enough pairs) */
 	sp->letter = med(g, n, 0.15);
