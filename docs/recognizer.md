@@ -763,7 +763,14 @@ leftmost and rightmost x of its strokes' centre lines, every band a segment cros
 between two letters is the narrowest distance between the first's right profile and the
 second's left one over the bands both have ink in (their boxes when they share none). From
 neighbouring letters of the word samples (each with strokes of its own, placed by where they
-lie; gaps beyond −0.6 or 1.6 x-heights are the alignment's errors and left out) come: the
+lie; gaps beyond −0.6 or 1.6 x-heights are the alignment's errors and left out) come the
+values below. They follow how the person writes running text: a pair written at least 3 times
+in samples of several words (sentences) takes those alone; every other pair's single-word
+observations come closer by the person's running-text ratio (`run`: over the pairs written at
+least 3 times in both, at least 10 of them, the median of the running-text distance over the
+single-word one, within 0.85 and 1; 1 with fewer pairs), each one's distance times it and its
+gap less what that takes off. Samples whose spans the alignment inferred (the fit check failed)
+aren't used, as for the letters. So: the
 typical gap (the median); a pair's own gap (the median, written at least 3 times); the side
 shapes, the versions' left and right sides grouped by their shape (per band, how far in from
 the side's outermost ink, at most 1; within 0.3 x-heights RMS, at most 16 per side, greedily
@@ -783,7 +790,10 @@ the middles of the versions used; then, where between the baseline and the x-hei
 bands from −0.05 to 1.05) their profiles come closer than its gap, or than half the typical gap
 when that is smaller, moved apart to it. A pair without a distance (or a version without ink
 running up or down in the x-height band) is set at its gap. A version sits on the line where the
-samples it is made from sit on average (with the weights that make its shape). The same samples and picks make
+samples it is made from sit on average (with the weights that make its shape), and is as tall
+as they are on average: averaging and smoothing take height off versions that differ a little
+in shape, so its heights are stretched back from its centre (the width as it comes; not when
+under 0.1 x-heights tall or needing more than 1.5 times). The same samples and picks make
 the same model, byte for byte except the build time, in any order they were stored.
 
 It is made again when its inputs (the prompted samples and the picks, and the way it is built: a
@@ -841,7 +851,7 @@ then `{"metrics":{"x_height":1,"cap_height":…,"ascender":…,"descender":…,"
 `x_height_per_line`, `base_below_guide` and `x_height_mm` what a sample without letters to measure
 its x-height or baseline from takes, which a one-character build reuses, as it does the two
 medians, 0 when none), then
-`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
+`{"spacing":{"letter":…,"word":…,"open":…,"open0":…,"run":…,"pairs":[["a","b",GAP,N,DISTANCE],…],
 "sides":[[RIGHT,LEFT,GAP,N],…],"reach":[["a",RIGHT,LEFT,NR,NL],…],"left_shapes":[[…8],…],
 "right_shapes":[[…8],…]}}` (`DISTANCE`, `RIGHT` and `LEFT` null when not learned), then per
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
