@@ -323,6 +323,54 @@ class Neaten(unittest.TestCase):
         self.assertEqual(self.why[2], "no-structure", self.why)
         self.assertGreaterEqual(self.why.count("pulled"), 3, self.why)
 
+    def test_pulled_ink_is_its_own_character(self):
+        """a pulled character is drawn from its own ink (FR-035): without ALIGN, the
+        alignment and the letter model decide which ink is whose, and where they are off (a
+        letter written in more strokes than its versions have, so the joints shift along the
+        word) no character's glyph is drawn over another one's ink; texts with spaces and
+        repeated letters, at every level above Light"""
+        self.letters()
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        n = 0
+        for seed, text in enumerate(("the there", "he he", "see the tree", "then when", "her here",
+                                     "wet ewe", "the wet hen", "three trees")):
+            rnd = random.Random(70 + seed)
+            s = TL.sample(text, rnd)
+            # one letter in two strokes, as a hasty hand lifts the pen
+            k0 = next(k for k, ch in enumerate(text) if ch != " " and len(s["spans"][k]) == 1)
+            j0 = s["spans"][k0][0]
+            st = s["strokes"][j0]
+            s["strokes"][j0:j0 + 1] = [st[:len(st) // 2], st[len(st) // 2:]]
+            s["spans"] = [[j + (j > j0) for j in sp] + ([j0 + 1] if k == k0 else []) for k, sp in enumerate(s["spans"])]
+            glyphs = self.glyphs(text)
+            for strength in ("0.5", "0.85", "1"):
+                c = self.e.start()
+                self.begin(c, s)
+                _, out = parse(c.ask("neaten", "s", strength, TR.esc(text)))
+                c.close()
+                xy = [EV.to_xy(o[2]) for o in out]
+                own = {j: [k for k, sp in enumerate(s["spans"]) if j in sp] for j in range(len(s["strokes"]))}
+                for k, ch in enumerate(text):
+                    sp = s["spans"][k]
+                    if ch == " " or glyphs[k] is None or not sp or any(own[j] != [k] for j in sp):
+                        continue
+                    if not all(out[j][1] == "pulled" for j in sp):
+                        continue
+                    before = [[(p[0], p[1]) for p in s["strokes"][j]] for j in sp]
+                    after = [xy[j] for j in sp]
+
+                    def near(ink):
+                        mine = shape_dist(ink, glyphs[k])
+                        others = [shape_dist(ink, g) for z, g in enumerate(glyphs) if g is not None and text[z] != ch]
+                        return mine, min([d for d in others if math.isfinite(d)], default=math.inf)
+                    mb, ob = near(before)
+                    if not mb <= ob:
+                        continue
+                    n += 1
+                    ma, oa = near(after)
+                    self.assertLessEqual(ma, oa, (text, k, ch, strength, mb, ob))
+        self.assertGreater(n, 10)
+
     def test_closer_to_the_glyph(self):
         """at Neatest the covered characters pulled are closer to the glyph the font draws
         there (most of those with its strokes are pulled)"""
