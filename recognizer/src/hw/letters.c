@@ -949,10 +949,12 @@ static double rdist(const double *a, const double *b, int total)
  * by point they blur (loops shrink, cusps round off, the letter comes out shorter). So each
  * sample is first registered to the variant's shape: matched point to point along each
  * stroke by dynamic time warping over position, direction and turning (each step of the
- * match at most two points on either side for one on the other), and moved as a whole to
- * fit; the variant is the weighted average of the registered samples, starting from its
- * seed, and the samples are registered again to that average (REG_ITER times: DTW
- * barycentre averaging). Which samples count, and how much, goes by their distance from the
+ * match at most two points on either side for one on the other), the match smoothed into a
+ * steady warp, and moved as a whole to fit; the variant is the weighted average of the
+ * registered samples, starting from its seed, its points spaced evenly along each stroke
+ * again, and the samples are registered again to that average (REG_ITER times: DTW
+ * barycentre averaging). Where it still comes out rougher than the samples averaged point
+ * by point (shape_rough, cusps left out), it is smoothed further, its cusps kept. Which samples count, and how much, goes by their distance from the
  * seed by arc length. GLASSINE_HANDWRITING_LETTERS_AVG=mean builds it
  * the way before (point by point, unregistered), for measuring one against the other; it
  * is part of the model's inputs. */
@@ -961,6 +963,10 @@ static double rdist(const double *a, const double *b, int total)
 #define REG_TURN 0.5    /* and of the turning (radians per point)² */
 #define REG_BAND 0.25   /* the match stays within this share of the stroke's points of the diagonal */
 #define REG_ITER 3      /* rounds of registering and averaging */
+#define REG_WARP_SMOOTH 2 /* passes of [1 2 1] / 4 over each match's warp */
+#define REG_CUSP 0.5      /* radians a point turns by at least to be a cusp, not a wobble */
+#define REG_SMOOTH_MAX 7  /* further passes over the average at most, while it is rougher than the pointwise mean */
+#define REG_SMOOTH_KEEP 4 /* of which the first this many keep its size (Taubin) */
 enum { AVG_MEAN, AVG_DBA };
 
 static int avg_method(void)
@@ -971,6 +977,8 @@ static int avg_method(void)
 }
 
 static int avg_mean(void) { return avg_method() == AVG_MEAN; }
+struct group;
+static double shape_rough(const double *p, const struct group *g, double cusp);
 
 /* per point the direction (radians) and the turning (radians per point) of a stroke */
 static void reg_feat(const double *p, int n, double *th, double *ka)
@@ -994,7 +1002,7 @@ static void reg_feat(const double *p, int n, double *th, double *ka)
 static void reg_stroke(const double *M, const double *mth, const double *mka, const double *X, double tx, double ty,
 		       int n, double *W)
 {
-	double P[2 * REG_MAXN], th[REG_MAXN], ka[REG_MAXN], sx[REG_MAXN], sy[REG_MAXN];
+	double P[2 * REG_MAXN], th[REG_MAXN], ka[REG_MAXN], su[REG_MAXN];
 	static double D[REG_MAXN][REG_MAXN], G[REG_MAXN][REG_MAXN];
 	static signed char mv[REG_MAXN][REG_MAXN];
 	int cnt[REG_MAXN];
@@ -1024,8 +1032,8 @@ static void reg_stroke(const double *M, const double *mth, const double *mka, co
 			mv[i][j] = m;
 		}
 	if (!isfinite(G[n - 1][n - 1])) { memcpy(W, P, (size_t)n * 2 * sizeof *W); return; }
-	for (int i = 0; i < n; i++) { sx[i] = sy[i] = 0; cnt[i] = 0; }
-#define REG_ADD(a, b) do { sx[a] += P[2 * (b)]; sy[a] += P[2 * (b) + 1]; cnt[a]++; } while (0)
+	for (int i = 0; i < n; i++) { su[i] = 0; cnt[i] = 0; }
+#define REG_ADD(a, b) do { su[a] += (b); cnt[a]++; } while (0)
 	int i = n - 1, j = n - 1;
 	while (i > 0 || j > 0) {
 		signed char m = mv[i][j];
@@ -1038,9 +1046,22 @@ static void reg_stroke(const double *M, const double *mth, const double *mka, co
 	}
 	if (i == 0 && j == 0) REG_ADD(0, 0);
 #undef REG_ADD
+	/* the warp as a smooth function (a match point by point jumps a point back and forth,
+	 * which bends a smooth curve): per point of M where along X it falls, smoothed, and X
+	 * taken there */
+	double u[REG_MAXN];
+	for (int q = 0; q < n; q++) u[q] = cnt[q] ? su[q] / cnt[q] : q;
+	for (int pass = 0; pass < REG_WARP_SMOOTH; pass++) {
+		double pu = u[0];
+		for (int q = 1; q < n - 1; q++) { double nu = (pu + 2 * u[q] + u[q + 1]) / 4; pu = u[q]; u[q] = nu; }
+	}
+	for (int q = 1; q < n; q++) if (u[q] < u[q - 1]) u[q] = u[q - 1];
 	for (int q = 0; q < n; q++) {
-		if (cnt[q]) { W[2 * q] = sx[q] / cnt[q]; W[2 * q + 1] = sy[q] / cnt[q]; }
-		else { W[2 * q] = P[2 * q]; W[2 * q + 1] = P[2 * q + 1]; }
+		double f = u[q] < 0 ? 0 : u[q] > n - 1 ? n - 1 : u[q];
+		int a = (int)f; if (a > n - 2) a = n - 2;
+		double t = f - a;
+		W[2 * q] = P[2 * a] + t * (P[2 * a + 2] - P[2 * a]);
+		W[2 * q + 1] = P[2 * a + 1] + t * (P[2 * a + 3] - P[2 * a + 1]);
 	}
 }
 
@@ -1125,7 +1146,51 @@ static double shape_mean(const struct inst *in, const struct group *g, int seed,
 			}
 			for (int i = 0; i < 2 * T; i++) out[i] = acc[i] / wsum;
 			centre_shape(out, T);
+			/* evenly along each stroke again: where many points of the samples meet one of it,
+			 * its points bunch, and smoothing bunched points kinks the curve */
+			{
+				int o = 0;
+				for (size_t j = 0; j < g->nstrokes; j++) {
+					int n = g->pts[j];
+					double xs[REG_MAXN], ys[REG_MAXN];
+					if (n <= REG_MAXN) {
+						for (int i = 0; i < n; i++) { xs[i] = out[2 * (o + i)]; ys[i] = out[2 * (o + i) + 1]; }
+						struct hw_lstroke t = { (size_t)n, xs, ys };
+						resample(&t, (size_t)n, out + 2 * o);
+					}
+					o += n;
+				}
+			}
 		}
+		/* not more wobbly than the samples averaged point by point: smoothed further (up to
+		 * REG_SMOOTH_MAX passes) while it is, its cusps (where it turns by more than REG_CUSP
+		 * at a point) left as they are and not counted */
+		double *pm = calloc((size_t)T * 2, sizeof *pm);
+		for (int k = 0; pm && k < g->n; k++)
+			for (int i = 0; kw[k] > 0 && i < 2 * T; i++) pm[i] += kw[k] * in[g->members[k]].rs[i] / wsum;
+		double rough = pm ? shape_rough(pm, g, REG_CUSP) : INFINITY;
+		for (int pass = 0; pass < REG_SMOOTH_MAX && shape_rough(out, g, REG_CUSP) > rough; pass++) {
+			/* first passes that don't shrink (Taubin: a step to the neighbours' middle, then
+			 * back a little more), then plain ones */
+			for (int half = 0; half < (pass < REG_SMOOTH_KEEP ? 2 : 1); half++) {
+				double f = pass >= REG_SMOOTH_KEEP ? 0.5 : half ? -0.53 : 0.5;
+				int o = 0;
+				for (size_t j = 0; j < g->nstrokes; j++) {
+					int n = g->pts[j];
+					double px = out[2 * o], py = out[2 * o + 1];
+					for (int i = 1; i < n - 1; i++) {
+						double *c = out + 2 * (o + i);
+						double nx = c[0] + f * ((px + c[2]) / 2 - c[0]), ny = c[1] + f * ((py + c[3]) / 2 - c[1]);
+						double ax = c[0] - px, ay = c[1] - py, bx = c[2] - c[0], by = c[3] - c[1];
+						int keep = fabs(atan2(ax * by - ay * bx, ax * bx + ay * by)) > REG_CUSP;
+						px = c[0]; py = c[1];
+						if (!keep) { c[0] = nx; c[1] = ny; }
+					}
+					o += n;
+				}
+			}
+		}
+		free(pm);
 	}
 	free(W); free(acc); free(tr);
 	return wsum;
@@ -1143,7 +1208,38 @@ static double shape_mean(const struct inst *in, const struct group *g, int seed,
  * back to their height). */
 static unsigned stats_cp;               /* the character being built, 0 a joined pair */
 
-struct vstat { double eff, hm, hv, am, av; };
+struct vstat { double eff, hm, hv, am, av, rm, rv; };
+
+/* how rough a shape is: per stroke, resampled evenly by arc length to its points, the
+ * turning angle (radians) at each point less its local mean (the turning of the point
+ * before, itself twice and the one after, over 4), squared and summed: a smooth curve,
+ * however tightly it bends, turns about as much at a point as at its neighbours; jitter,
+ * kinks and wobbles don't */
+static double shape_rough(const double *p, const struct group *g, double cusp)
+{
+	double e = 0, buf[2 * REG_MAXN], xs[REG_MAXN], ys[REG_MAXN], tn[REG_MAXN];
+	int o = 0;
+	for (size_t j = 0; j < g->nstrokes; j++) {
+		int n = g->pts[j];
+		if (n >= 5 && n <= REG_MAXN) {
+			for (int i = 0; i < n; i++) { xs[i] = p[2 * (o + i)]; ys[i] = p[2 * (o + i) + 1]; }
+			struct hw_lstroke t = { (size_t)n, xs, ys };
+			resample(&t, (size_t)n, buf);
+			for (int i = 1; i < n - 1; i++) {
+				double ax = buf[2 * i] - buf[2 * i - 2], ay = buf[2 * i + 1] - buf[2 * i - 1];
+				double bx = buf[2 * i + 2] - buf[2 * i], by = buf[2 * i + 3] - buf[2 * i + 1];
+				tn[i] = hypot(ax, ay) < 1e-9 || hypot(bx, by) < 1e-9 ? 0 : atan2(ax * by - ay * bx, ax * bx + ay * by);
+			}
+			for (int i = 2; i < n - 2; i++) {
+				if (fabs(tn[i - 1]) > cusp || fabs(tn[i]) > cusp || fabs(tn[i + 1]) > cusp) continue;
+				double d = tn[i] - (tn[i - 1] + 2 * tn[i] + tn[i + 1]) / 4;
+				e += d * d;
+			}
+		}
+		o += n;
+	}
+	return e;
+}
 
 /* the area a shape's strokes enclose, each closed by the line from its end to its start */
 static double shape_area(const double *p, const struct group *g)
@@ -1185,8 +1281,8 @@ static void variant_stats(const struct inst *in, const struct group *g, const ch
 	}
 	FILE *fp = n ? fopen(f, "a") : NULL;
 	if (fp) {
-		fprintf(fp, "variant\t%u\t%d\t%zu\t%.5f\t%.5f\t%.3f\t%.5f\t%.5f\t%.5f\t%.5f\n", stats_cp, n, g->nstrokes,
-			arc / n, reg / n, vs->eff, vs->hm, vs->hv, vs->am, vs->av);
+		fprintf(fp, "variant\t%u\t%d\t%zu\t%.5f\t%.5f\t%.3f\t%.5f\t%.5f\t%.5f\t%.5f\t%.5f\t%.5f\n", stats_cp, n, g->nstrokes,
+			arc / n, reg / n, vs->eff, vs->hm, vs->hv, vs->am, vs->av, vs->rm, vs->rv);
 		fclose(fp);
 	}
 	free(vr); free(W);
@@ -1219,7 +1315,7 @@ static void variant_narrow(struct hw_variant *v, double k)
 
 static int make_variant(struct inst *in, const struct group *g, int seed, struct hw_variant *v, double *xmin_out, struct vstat *vs)
 {
-	double *acc = calloc((size_t)g->total * 2 + 1, sizeof *acc), *kw = calloc((size_t)g->n + 1, sizeof *kw), hsum = 0, w2 = 0, asum = 0;
+	double *acc = calloc((size_t)g->total * 2 + 1, sizeof *acc), *kw = calloc((size_t)g->n + 1, sizeof *kw), hsum = 0, w2 = 0, asum = 0, rsum = 0;
 	if (!acc || !kw) { free(acc); free(kw); return -1; }
 	int members = 0;
 	/* the members near the seed, registered and averaged (shape_mean) */
@@ -1239,6 +1335,7 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 		if (hi > lo) hsum += w * (hi - lo);
 		w2 += w * w;
 		asum += w * shape_area(x->rs, g);
+		rsum += w * shape_rough(x->rs, g, INFINITY);
 		for (size_t i = 0; x->pp && x->pv && i < np; i++) {
 			if (!isnan(x->pp[i])) { pa[i] += w * x->pp[i]; pw[i] += w; }
 			if (!isnan(x->pv[i])) { va[i] += w * x->pv[i]; vw[i] += w; }
@@ -1311,7 +1408,8 @@ static int make_variant(struct inst *in, const struct group *g, int seed, struct
 			int q = 0;
 			for (size_t j = 0; sh && j < v->nstrokes; j++)
 				for (size_t i = 0; i < v->s[j].n; i++, q++) { sh[2 * q] = v->s[j].x[i]; sh[2 * q + 1] = v->s[j].y[i]; }
-			*vs = (struct vstat){ w2 > 0 ? wsum * wsum / w2 : 0, h, hi - lo, asum / wsum, sh ? shape_area(sh, g) : 0 };
+			*vs = (struct vstat){ w2 > 0 ? wsum * wsum / w2 : 0, h, hi - lo, asum / wsum, sh ? shape_area(sh, g) : 0,
+					      rsum / wsum, sh ? shape_rough(sh, g, INFINITY) : 0 };
 			free(sh);
 		}
 		if (h >= HEIGHT_MIN && hi - lo > 1e-6 && h / (hi - lo) <= HEIGHT_GROW) {

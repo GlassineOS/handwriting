@@ -5,7 +5,7 @@ copy of the store (the store given is only read) with GLASSINE_HANDWRITING_LETTE
 per way of averaging asked for (GLASSINE_HANDWRITING_LETTERS_AVG), and only aggregate numbers
 are printed, per way: how far the samples written like a variant are from it (RMS,
 x-heights: by arc length as neatening measures, and registered), how many samples it is made
-of in effect, its height and enclosed area as averaged over those of the samples it is made of
+of in effect, its height, enclosed area and roughness as averaged over those of the samples it is made of
 (1: kept, no stretch needed; also for the variants made of at least 5 samples in effect,
 where averaging can blur), how many needed a stretch over 2 %, and the build's time.
 
@@ -42,8 +42,10 @@ def summary(rows):
     for tag, rs in (("", rows), ("_eff5", [r for r in rows if r["eff"] >= 5])):
         h = [r["hv"] / r["hm"] for r in rs if r["hm"] > 0.1]
         ar = [r["av"] / r["am"] for r in rs if r["am"] > 0.05]
+        ro = [r["rv"] / r["rm"] for r in rs if r["rm"] > 1e-6]
         out |= {f"n{tag}": len(rs), f"height{tag}": med(h), f"height{tag}_p10": q(h, 0.1),
-                f"stretch_over_2pc{tag}": sum(x < 1 / 1.02 for x in h), f"area{tag}": med(ar), f"area{tag}_p10": q(ar, 0.1)}
+                f"stretch_over_2pc{tag}": sum(x < 1 / 1.02 for x in h), f"area{tag}": med(ar), f"area{tag}_p10": q(ar, 0.1),
+                f"roughness{tag}": med(ro), f"roughness{tag}_p90": q(ro, 0.9)}
     return out
 
 
@@ -79,7 +81,8 @@ def main():
                 if f[0] != "variant":
                     continue
                 rows.append({"cp": int(f[1]), "n": int(f[2]), "arc": float(f[4]), "reg": float(f[5]), "eff": float(f[6]),
-                             "hm": float(f[7]), "hv": float(f[8]), "am": float(f[9]), "av": float(f[10])})
+                             "hm": float(f[7]), "hv": float(f[8]), "am": float(f[9]), "av": float(f[10]),
+                             "rm": float(f[11]), "rv": float(f[12])})
             s = summary([r for r in rows if r["cp"]])
             j = summary([r for r in rows if not r["cp"]])
             print(f"{avg}: build {dt:.1f} s; {p.stdout.strip()}")

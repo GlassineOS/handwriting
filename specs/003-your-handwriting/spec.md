@@ -152,7 +152,9 @@ size, spacing) and keep their shape.
   sit on average. The samples are matched to each other point by point before they are
   averaged (a loop's top with a loop's top, a cusp with a cusp, wherever along the stroke
   each sample has it), so a variant keeps the loops, cusps and height its samples share
-  instead of the blur of points that don't correspond. Its width then follows how the person writes running text: where they
+  instead of the blur of points that don't correspond; where that matching would leave a
+  variant more wobbly than its samples averaged without it, it is smoothed, its cusps
+  kept, so a fluid curve stays fluid. Its width then follows how the person writes running text: where they
   write letters narrower in sentences than in single words, every variant is narrowed
   about its middle by that ratio, learned from the characters seen in both (at least 10
   of them, else no narrowing, and never by more than the spacing's own bound), its

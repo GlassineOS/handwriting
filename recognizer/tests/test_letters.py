@@ -423,10 +423,49 @@ class LetterModel(unittest.TestCase):
 
         registered, model = depth("")
         unregistered, model_mean = depth("mean")
-        self.assertGreater(registered, 0.97)
-        self.assertGreater(registered, unregistered + 0.02)
+        # (spaced evenly along the stroke again after each round, the point itself can fall
+        # between two of the version's points: a little of its depth goes)
+        self.assertGreater(registered, 0.96)
+        self.assertGreater(registered, unregistered + 0.01)
         # the way of averaging is part of the model's inputs
         self.assertNotEqual(json.loads(model.splitlines()[0])["inputs"], json.loads(model_mean.splitlines()[0])["inputs"])
+
+    def test_registered_stays_fluid(self):
+        """matching the samples point by point doesn't make a fluid curve wobble (FR-006):
+        an s after lead-ins of different lengths, with the pen's jitter, comes out no rougher
+        against its samples registered than averaged as they come"""
+        rnd = random.Random(11)
+
+        def ess(lead):
+            # a straight lead-in along the curve's first direction, so the only turns are the
+            # curve's own
+            d = math.hypot(0.4 * math.pi, 1)
+            pts = [(-0.3 * lead * (7 - i) / 7 * 0.4 * math.pi / d, -0.3 * lead * (7 - i) / 7 / d) for i in range(8)]
+            for i in range(1, 41):
+                y = i / 40
+                pts.append((0.2 * math.sin(2 * math.pi * y), y))
+            return [[(x + rnd.gauss(0, 0.004), y + rnd.gauss(0, 0.004)) for x, y in pts]]
+
+        ss = []
+        for k in range(12):
+            lead = 0.2 + 2.0 * ((k * 5) % 12) / 11
+            ss.append(ink_sample("so", [(ess(lead), 0.0), (shape("o", 0, rnd), 1.4)]))
+        self.e.put(ss)
+
+        def rough(avg):
+            stats = self.e.dir / f"stats-{avg or 'dba'}"
+            env = dict(self.e.env, GLASSINE_HANDWRITING_LETTERS_STATS=str(stats))
+            if avg:
+                env["GLASSINE_HANDWRITING_LETTERS_AVG"] = avg
+            p = subprocess.run([str(BIN), "letters", "build", "-f"], env=env, capture_output=True, text=True, timeout=300)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            rows = [ln.split("\t") for ln in stats.read_text().splitlines() if ln.split("\t")[1] == str(ord("s"))]
+            self.assertTrue(rows)
+            # RV over RM: the version's roughness against its samples'
+            return max(float(r[12]) / float(r[11]) for r in rows)
+
+        registered, unregistered = rough(""), rough("mean")
+        self.assertLessEqual(registered, unregistered)
 
     def test_deterministic_and_order_free(self):
         ss = alphabet_samples(per=3)
@@ -1404,8 +1443,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 15))
-            old = dict(head, inputs=hw_inputs(ids, 14))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 16))
+            old = dict(head, inputs=hw_inputs(ids, 15))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
