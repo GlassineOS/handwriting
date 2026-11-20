@@ -990,7 +990,7 @@ class Neaten(unittest.TestCase):
                             where[(lv, form)] = where.get((lv, form), 0) + b + k
                     if lv >= 0.75:
                         r = rate.setdefault((lv, form), [0, 0])
-                        r[0] += sum(w == "pulled" for w in why)
+                        r[0] += sum(w in ("pulled", "set") for w in why)
                         r[1] += sum(w != "space" for w in why)
                     mids, word = [], []
                     for k, m in enumerate(at):
@@ -1026,7 +1026,7 @@ class Neaten(unittest.TestCase):
                 _, out, why = parse(c.ask("neaten", "s", str(lv), TR.esc(text), ";".join(",".join(map(str, sp)) for sp in apart["spans"])), why=True)
                 c.close()
                 r = rate.setdefault((lv, "apart"), [0, 0])
-                r[0] += sum(w == "pulled" for w in why)
+                r[0] += sum(w in ("pulled", "set") for w in why)
                 r[1] += sum(w != "space" for w in why)
         self.assertGreater(checked, 1000)
         self.assertEqual(new, 0, where)
@@ -1077,7 +1077,8 @@ class Neaten(unittest.TestCase):
                     for z in (k, k + 1):
                         # (the shape guard may hold back one whose pull, part of the way,
                         # passes nearer another letter's versions: one in this line)
-                        if why[z] != "pulled":
+                        # (at Neatest a word whose text is given is set: its letters are the font's)
+                        if why[z] not in ("pulled", "set"):
                             self.assertEqual((lv, why[z]), ("0.75", "shape-guard"), text[k:k + 2])
                             held += 1
                         else:
@@ -1091,7 +1092,7 @@ class Neaten(unittest.TestCase):
                     pts = [xy[j][z] for j, a, b in m for z in range(a, b + 1)]
                     mids.append((min(p[0] for p in pts) + max(p[0] for p in pts)) / 2)
                     g = glyphs[k]
-                    if g is None or why[k] != "pulled":
+                    if g is None or why[k] not in ("pulled", "set"):
                         continue
                     # at Neatest its glyph is drawn whole in its ink (each point of the glyph
                     # on the ink, once moved and scaled onto it; the joining stroke drawn
@@ -1153,7 +1154,7 @@ class Neaten(unittest.TestCase):
                         for j, st in enumerate(s["strokes"]):
                             self.assertEqual(len(xy[j]), len(st), (path, lv))
                             self.assertEqual(sum(flow([(p[0], p[1]) for p in st], xy[j], xh)), 0, (path, lv, j))
-                        n = sum(why[z] == "pulled" for k in range(len(text) - 1) if text[k:k + 2] in pairs for z in (k, k + 1))
+                        n = sum(why[z] in ("pulled", "set") for k in range(len(text) - 1) if text[k:k + 2] in pairs for z in (k, k + 1))
                         m = sum(2 for k in range(len(text) - 1) if text[k:k + 2] in pairs)
                         self.assertGreaterEqual(n, m - 1, (path, lv, why))
 
