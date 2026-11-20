@@ -206,7 +206,10 @@ included unless they pick them one by one.
   than by the ink's own height, takes the size as an input of its own, and is trained with
   single characters and punctuation at their true size relative to the line. A model that
   reads size this way says so in its file's format version, and the recognizer reads both
-  kinds.
+  kinds. The line height only guesses at a letter's size: without the person's letters, a
+  line of writing whose letters are far smaller than the line suggests is read at the
+  size its own letters show, while a lone character or mark keeps its size against the
+  line.
 - **FR-019**: Characters: the model reads each moment of the ink on its own, so it has no
   sense of which character is likely after the ones before it ("lig4t" for "light"). Every
   reading therefore also weighs how likely each character is after the characters before

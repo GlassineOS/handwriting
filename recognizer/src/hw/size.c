@@ -573,6 +573,88 @@ static int best_len(const struct hw_run *r)
 	return hw_ctc_beam(r->logp, r->T, r->C, 8, &c, 1) == 1 ? (c.n < 3 ? c.n : 3) : 0;
 }
 
+/* With the line alone (docs/recognizer.md, Size): the line's letter height is a guess, and
+ * a writer who writes far smaller than it would be read with too few points per letter. A
+ * line of writing (at least INK_TURNS turns at each side, INK_WIDE of its own letters wide)
+ * whose letters come out below INK_SMALL of the line's is read at INK_SCALE times their
+ * height instead, at most INK_MAXF times below the line's; a lone character or mark keeps
+ * the line's. Its letters: every stroke resampled evenly by arc length (span / 400), the
+ * median height of its lowest turns (a letter's foot) less the median of its highest (its
+ * top), over INK_TURN_X (what that is of the small letters as the store measures them). */
+#define INK_TURNS 5
+#define INK_TURN_X 0.84
+#define INK_WIDE 4.0
+#define INK_SMALL 0.35
+#define INK_SCALE 2.0
+#define INK_MIN 0.08
+#define INK_MAXF 5.0
+
+/* the ink's small-letter height by its turns, 0 when it has too few; *width its width */
+static double ink_letter_height(const struct hw_stroke *s, size_t ns, double *width)
+{
+	double xmin = INFINITY, xmax = -INFINITY, ymin = INFINITY, ymax = -INFINITY;
+	for (size_t i = 0; i < ns; i++)
+		for (size_t k = 0; k < s[i].n; k++) {
+			xmin = fmin(xmin, s[i].x[k]); xmax = fmax(xmax, s[i].x[k]);
+			ymin = fmin(ymin, s[i].y[k]); ymax = fmax(ymax, s[i].y[k]);
+		}
+	*width = xmax - xmin;
+	double span = fmax(fmax(xmax - xmin, ymax - ymin), 1e-6), step = span / 400;
+	size_t cap = 64, nt = 0, nb = 0, ycap = 0;
+	double *top = malloc(cap * sizeof *top), *bot = malloc(cap * sizeof *bot), *y = NULL;
+	double r = 0;
+	if (!top || !bot) goto out;
+	for (size_t i = 0; i < ns; i++) {
+		const struct hw_stroke *q = &s[i];
+		if (q->n < 2) continue;
+		double L = 0;
+		for (size_t k = 1; k < q->n; k++) L += hypot(q->x[k] - q->x[k - 1], q->y[k] - q->y[k - 1]);
+		if (L < step) continue;
+		size_t m = (size_t)ceil(L / step) + 1;
+		if (m > ycap) {
+			double *t = realloc(y, m * sizeof *y);
+			if (!t) goto out;
+			y = t; ycap = m;
+		}
+		/* y at even arc lengths, linear between the pen's points */
+		double du = L / (double)(m - 1), d0 = 0, d1 = hypot(q->x[1] - q->x[0], q->y[1] - q->y[0]);
+		size_t k = 1;
+		for (size_t j = 0; j < m; j++) {
+			double u = j == m - 1 ? L : (double)j * du;
+			while (d1 < u && k < q->n - 1) { d0 = d1; k++; d1 = d0 + hypot(q->x[k] - q->x[k - 1], q->y[k] - q->y[k - 1]); }
+			double f = d1 > d0 ? (u - d0) / (d1 - d0) : 0;
+			y[j] = q->y[k - 1] + (f < 1 ? f : 1) * (q->y[k] - q->y[k - 1]);
+		}
+		for (size_t j = 1; j + 1 < m; j++) {
+			int hi = y[j] < y[j - 1] && y[j] <= y[j + 1], lo = y[j] > y[j - 1] && y[j] >= y[j + 1];
+			if (!hi && !lo) continue;
+			if (nt == cap || nb == cap) {
+				double *t1 = realloc(top, 2 * cap * sizeof *top);
+				if (!t1) goto out;
+				top = t1;
+				double *t2 = realloc(bot, 2 * cap * sizeof *bot);
+				if (!t2) goto out;
+				bot = t2;
+				cap *= 2;
+			}
+			if (hi) top[nt++] = y[j];
+			else bot[nb++] = y[j];
+		}
+	}
+	if (nt >= INK_TURNS && nb >= INK_TURNS) r = (median(bot, nb) - median(top, nt)) / INK_TURN_X;
+out:
+	free(top); free(bot); free(y);
+	return r > 0 ? r : 0;
+}
+
+/* the reference for the line alone (above): h, or one from the ink's own letters */
+static double line_reference(double h, const struct hw_stroke *s, size_t ns)
+{
+	double w, x = ink_letter_height(s, ns, &w);
+	if (!(x > 0) || w < INK_WIDE * x || x < INK_MIN * h || x >= INK_SMALL * h) return h;
+	return fmax(INK_SCALE * x, h / INK_MAXF);
+}
+
 double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke *s, size_t ns, double *base)
 {
 	*base = NAN;
@@ -595,6 +677,7 @@ double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke
 			free(y);
 		}
 	}
+	if (rf.kind == HW_SIZE_LINE && s && ns) return line_reference(rf.x, s, ns);
 	return rf.x;
 }
 

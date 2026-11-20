@@ -611,6 +611,29 @@ static void test_size(void)
 	CHECK(t == '.', "with the line only, a dot still reads as a dot (%s)", all);
 	hw_ink_free(&k[0]);
 	hw_run_free(&r);
+
+	/* the reference from the line: writing far smaller than the line's letters is read at
+	 * its own (twice its small letters), a lone letter and the person's letters as they are */
+	enum { NP = 801 };
+	double *zx = malloc(NP * sizeof *zx), *zy = malloc(NP * sizeof *zy), *zt = calloc(NP, sizeof *zt);
+	double base, href;
+	struct hw_stroke z = { 0, zx, zy, zt };
+	for (int periods = 1; periods <= 8; periods += 7)
+		for (double xh = 2; xh <= 9; xh += 7) {
+			z.n = periods == 8 ? NP : NP / 8;
+			for (size_t i = 0; i < z.n; i++) {
+				double u = (double)i / (double)(z.n - 1);
+				zx[i] = 100 + u * 3.0 * xh * periods;
+				zy[i] = 200 - xh * (0.5 - 0.5 * cos(2 * M_PI * periods * u));
+			}
+			href = hw_size_ref_height(&line, &z, 1, &base);
+			if (periods == 8 && xh == 2)
+				CHECK(href > 4 && href < 6, "small writing on the line alone reads at its own letters (%g)", href);
+			else
+				CHECK(href == line.x, "%s reads at the line's letters (%g)", periods == 1 ? "a lone letter" : "writing at the line's size", href);
+			CHECK(hw_size_ref_height(&ref, &z, 1, &base) == ref.x, "the person's letters stay the reference");
+		}
+	free(zx); free(zy); free(zt);
 }
 
 /* the character model against charlm.py: {"lang": L, "cases": [{"before": B, "text": T,
