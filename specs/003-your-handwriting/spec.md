@@ -272,8 +272,8 @@ size, spacing) and keep their shape.
   x-height); a character's other variants are in the font without a character of their own.
   Letters are set at the letter model's spacing: side bearings from the profiles and pair
   kerning that text shaping applies by default, for every pair of variants, so each pair
-  of variants comes out where the spacing places it (FR-007) and words at the word spacing.
-  Every other character falls back to the system's default font.
+  of variants comes out where the spacing places it (FR-007) and words at the word spacing;
+  letters the font joins are set as their join places them (FR-044). Every other character falls back to the system's default font.
 - **FR-034**: The font comes in three styles of one family, installed and updated together,
   that differ only in how wide the ink is along each stroke; the letters' shapes, their
   variants and how the font switches between them, the spacing and the kerning are the
@@ -296,7 +296,7 @@ size, spacing) and keep their shape.
   alternates that text shaping applies by default (no setting in the app). The preview,
   spaced as the font spaces it,
   (Scenario 3) shows the same variants as the installed font for the same text, and the
-  same neighbour rules (FR-038) and joined pairs (FR-039).
+  same neighbour rules (FR-038), joined pairs (FR-039) and joins (FR-044).
 - **FR-038**: Where the person's samples show that they write a character a particular way
   next to a particular neighbour (the character before it or after it), the font uses that
   way there, by contextual alternates that text shaping applies by default. A rule needs
@@ -315,13 +315,39 @@ size, spacing) and keep their shape.
   profiles, kerned with its neighbours as any letter is), the characters around it keep the
   ways they'd have without it, and it reads, copies and searches as the two characters it
   stands for. A joined pair that is no longer written joined often enough leaves the font
-  at its next rebuild.
+  at its next rebuild. It has no joins (FR-044) to the letters beside it.
+- **FR-044**: Letters the person joins are joined in the font, with joins drawn as the
+  person draws them. Each joint in their letters written joined (FR-007) is a join: the
+  stroke from where the first letter's own ink ends to where the second's begins. Joins are
+  learned per letter pair and per kind of join; the kind is where the first letter's way of
+  writing it ends (below the baseline, near it, at the x-height or above) and where the
+  second's starts (the same heights, in its left or its right half), each from the end of
+  the way's last stroke and the start of its first (or the stroke the person's exits leave
+  from and their entries lead into, FR-007). A letter pair joined at least 5 times has a
+  join shape of its own, a kind joined at least 4 times one for the kind: the mean of its
+  joins, matched point by point along their length. The font joins two neighbouring letters
+  of a word (letters only, no digits, marks or symbols) where the person writes that pair
+  joined: in at least half of the samples with the pair written with known strokes (at
+  least 3 of them, and joined at least twice); a pair written fewer than 3 times is joined
+  where the person writes its kind of join joined in at least half of the at least 10 times
+  they wrote it. The join takes the pair's own shape, else its kind's; a pair without a shape
+  of either, or one the person writes apart, stays as two letters set apart. Each joined
+  letter is drawn with its half of the join, by contextual alternates that text shaping
+  applies by default, the two halves meeting exactly: the join runs from the first letter's
+  end to the second's start along the learned shape, fitted between those ends. The cycle
+  (FR-010), the neighbour rules (FR-038) and the joined pairs (FR-039) choose the letters'
+  ways as without joins. Joined letters are set where the spacing places them (FR-007) as
+  closely as one meeting place for each way of writing a letter and join allows; a way
+  whose half would run backwards or longer than 1.5 x-heights isn't joined with that join.
+  In Regular and Calligraphy the join is drawn as any stroke; in Brush as a thin line (the
+  brush's thinnest width that isn't a taper). A store without letters written joined gives
+  no joins, and the font is the one it would be without them.
 - **FR-040**: Random alternates are off: the font has none unless the font is built with
   them on request in the recognizer's interface (not offered on the font page). Built with
   them, apps whose text shaping applies random alternates (it does by default in HarfBuzz,
   so in GTK, Pango and the apps built on them) pick each character's way at random,
   weighted as in the cycle, the same way each time for the same text, and other apps keep
-  the cycle; neighbour rules and joined pairs apply either way. Which apps honour them is
+  the cycle; neighbour rules, joined pairs and joins apply either way. Which apps honour them is
   documented with the recognizer.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
@@ -397,8 +423,11 @@ size, spacing) and keep their shape.
   each character's ink, its pieces in the order written, is drawn along the centre lines of
   its glyph's strokes, each point by its share of the ink's length, so the timing and
   pressure run along the glyph as written; a pen lift falls at the end of a glyph's stroke
-  near it, and where the person didn't lift the pen between two glyphs' strokes a straight
-  joining line runs from the one to the other. A character the letter model doesn't cover
+  near it, and where the person didn't lift the pen between two glyphs' strokes the ink
+  runs along the join between them: the font's join where the font joins the two (FR-044),
+  else the pair's learned join shape (or its kind's) fitted from the first glyph's end to
+  the second's start, each letter's ink along its glyph and its half of the join; only where
+  there is no learned join a straight line runs from the one to the other. A character the letter model doesn't cover
   keeps its written ink as the line-level corrections leave it, moved to the middle of the
   box the font has for it. Only the confirmed text is known: without it no word is set (a
   word read wrongly would be set as another word). A word is set only when its ink can be its
@@ -553,6 +582,14 @@ Host level:
   a ligature with no feature requested, spaced within 0.02 x-heights of where its letters'
   gaps put its neighbours, with the characters around it as without it; a pair written
   joined too rarely is two glyphs; the glyph maps back to its two characters;
+- with letters written joined often enough, the font shapes those pairs with no feature
+  requested into the letters' join alternates, whose halves meet within a font unit in all
+  three styles, with the letters' ways, the cycle, the rules and the joined pairs as without
+  joins; a pair written apart, a digit or a symbol stays as two letters set as the spacing
+  places them; a store without letters written joined gives the same font, every table but
+  the version stamps, as one built without joins; at Neatest ink that runs on between two
+  letters of a set word runs along the font's join there, else along the learned join, and
+  a straight line only where there is none;
 - a font built without random alternates has no such feature and shapes the same with
   and without it requested; one built with them varies the ways along a long text in
   about the cycle's proportions, the same for the same text; all three styles pass the
@@ -595,8 +632,8 @@ by its neatened version and the original comes back at strength 0.
 
 ## Out of scope
 
-- Generated handwriting with joined letters for text never written (a learned writing
-  model; a later spec).
+- Generated handwriting beyond the person's own letters and joins for text never written
+  (a learned writing model that invents ways of writing or joining; a later spec).
 - Neatening with another person's letter model, or sharing a handwriting font.
 - Fonts for scripts the recognizer has no model for.
 
