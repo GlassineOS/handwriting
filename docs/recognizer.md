@@ -786,10 +786,15 @@ averaged point by point the loops would shrink, the cusps round off and the lett
 shorter. So each sample is matched to the version point by point along each of its strokes by
 dynamic time warping over position, direction and turning (ends with ends, each step of the
 match at most two points on one side for one on the other, within a quarter of the stroke's
-points of the diagonal) and moved as a whole to fit; the version is the weighted average of the
-matched samples, starting from its seed, matched again to that average and averaged again,
-three times (DTW barycentre averaging). Then it is smoothed, so a single sample's jitter is
-gone; its `use`
+points of the diagonal), the match smoothed into a steady warp (a match point by point jumps
+back and forth along the sample, which bends a smooth curve) and the sample moved as a whole to
+fit; the version is the weighted average of the matched samples, starting from its seed, its
+points spaced evenly along each stroke again, matched again to that average and averaged again,
+three times (DTW barycentre averaging). Where it still wobbles more than the samples averaged
+point by point would (its roughness: the turning at each point less its neighbours', points
+that turn by more than half a radian, its cusps, left out), it is smoothed further until it
+doesn't, at most seven passes, the first four of them ones that keep its size, its cusps left
+where they are. Then it is smoothed once more, so a single sample's jitter is gone; its `use`
 is how many samples of its ways are nearest to it of the versions with their strokes, and the
 versions are stored most used first. Sizes are in x-heights from the baseline of each sample's area (or of its
 own letters); the line metrics (cap height, ascender, descender, slant, ink width as the app's
@@ -1258,6 +1263,6 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
 | `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
-| `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), HV and AV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
+| `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV RM RV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), RM those samples' mean roughness (per stroke, evenly spaced along it, the squared turning at each point less its neighbours' turning, summed: how much it wobbles rather than bends), HV, AV and RV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
 | `GLASSINE_HANDWRITING_CHARS` | for tuning: `weight=…,floor=…,bonus=…,margin=…,beam=…` replace the Characters weights |
