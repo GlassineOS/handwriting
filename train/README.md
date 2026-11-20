@@ -841,6 +841,47 @@ shared strokes, a letter missing in three in ten. Which of the two is right ther
 told from these spans; real ink with point labels would tell. Until then it is not wired in
 and not merged.
 
+### Many writers read as new people (`writerseval`)
+
+A base model read on other people's ink, writer by writer, as a new person meets it on the
+device: the base model alone (no adaptation head), no letters of theirs for the size (the
+writing area's line is the reference), the field `normal`, the modes asked for (`--modes ink
+chars words words+chars`). Out come the writers' CER, WER, top reading right and text among
+the top three (median, quartiles, the worst), the edits by kind (spaces, capitals, small
+letters, digits, punctuation, case only), CER by how much of a line is written in shared
+strokes (joined letters) and by delayed strokes, and each model against the first, per writer.
+
+```sh
+uv run glassine-train writerseval PATH --models m2=M2_NOCHARS,M2_CHARS m4=M4_NOCHARS,M4_CHARS \
+    --modes words+chars ink --per-writer 40 --out PRIVATE_DIR
+```
+
+The dataset is yours: a path to a copy you obtained yourself under its terms; nothing here
+downloads one, and no dataset, ink, writer number or per-sample result goes into this
+repository, CI, a pull request, a release or a published log. `--out` holds the ink as
+sample-format lines and every reading, so it must be a private directory; what is printed is
+aggregates over writers. Nothing here trains on the ink.
+
+Formats (`--format`):
+
+- `brush` (`brush.py`): the BRUSH dataset (Kotani, Tellex and Tompkin, "Generating
+  Handwriting via Decoupled Style Descriptors", ECCV 2020) as its authors distribute it on
+  https://github.com/brownvc/decoupled-style-descriptors (section "BRUSH dataset"): its
+  directory or its ZIP. Their terms: non-commercial research only; work that uses it cites
+  the paper. The reader is our own, from the format's description: a pickle per line, read
+  with an unpickler that builds numpy arrays and nothing else. Each line becomes a sample in
+  their writing box (120 by 748 pixels, baseline 100 pixels from the top): the area's line is
+  the box's height (`--line-scale` changes it), its guide on their baseline, spans from their
+  point labels. Their ink has no times; only the pause between strokes reaches the model, so
+  strokes are `--pause` seconds apart (0.11 s, a median pause of real prompted ink). `--step`
+  densifies their sparse points along a curve.
+- `samples`: sample-format lines whose `donor` tells the writers apart (a contribution of
+  several people).
+
+Lines are drawn per writer at random (`--per-writer`, `--seed`), only those whose text every
+model can write (`--charset common`: model 2's characters; `model4` adds its symbols), so
+each model reads the same lines.
+
 ## What limits accuracy
 
 1. **Generator realism.** Fonts give tidy, repeatable glyphs laid out letter by letter;
