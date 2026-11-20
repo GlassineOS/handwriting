@@ -1258,13 +1258,16 @@ static int split_joined(struct hw_lang *l, const struct session *s, const unsign
 			 * point where the stroke passes from the letter before it to the one after (or
 			 * the stroke's end next to its neighbour), so no character is left out */
 			for (size_t c = 0; c < nc; c++) {
+				/* (one ALIGN lists for a stroke kept as written is drawn with it) */
 				int has = 0;
-				for (size_t i = 0; i < s->n && !has; i++)
+				for (size_t i = 0; i < s->n && !has; i++) {
+					has = keep[i] && whole[i * nc + c];
 					for (size_t t = 0; t < s->ink[i].n && !has; t++) has = own[i][t] == (int)c;
+				}
 				for (size_t i = 0; i < s->n && !has; i++) {
 					int nk = 0;
 					for (size_t d = 0; d < nc; d++) nk += whole[i * nc + d];
-					if (nk < 2 || !whole[i * nc + c] || !s->ink[i].n) continue;
+					if (nk < 2 || !whole[i * nc + c] || keep[i] || !s->ink[i].n) continue;
 					size_t t = 0;
 					while (t < s->ink[i].n && (own[i][t] < 0 || own[i][t] < (int)c)) t++;
 					if (t == s->ink[i].n) t--;

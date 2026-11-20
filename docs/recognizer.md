@@ -518,7 +518,8 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
     pieces, or none of as many (an f whose bar it is). Set over the neighbour's glyph the
     bar would be lost. The neighbour keeps the rest of its piece, at least a quarter of it,
     so it is still drawn; with less, the bar stays the neighbour's.
-  Every letter of the reading keeps ink of its own, so none is left out. Between two words
+  Every letter of the reading keeps ink of its own, so none is left out (one left without
+  any would be `no-ink`). Between two words
   the gap stays at least as wide as written, or as the font's word gap where that is less:
   the word on the right moves along the line (set or not). A joined pair's
   ink keeps the rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves

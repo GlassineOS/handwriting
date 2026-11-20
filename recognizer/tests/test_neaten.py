@@ -826,6 +826,14 @@ class Neaten(unittest.TestCase):
         xy = {q[0]: EV.to_xy(q[2]) for q in out}
         h = max(p[1] for p in xy[1][nb:]) - min(p[1] for p in xy[1][nb:])
         self.assertGreater(h, 0.5 * 30)
+        # given nothing but the bar (all of it over the f), the o keeps it: not left out
+        s["strokes"] = [s["strokes"][0], bar, s["strokes"][2]]
+        TL.retime_sample(s)
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertNotIn("no-ink", why)
 
     def test_every_letter_keeps_ink_of_its_own(self):
         """words written in one stroke, ALIGN listing that stroke for every letter (the

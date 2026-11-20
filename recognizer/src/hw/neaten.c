@@ -2369,6 +2369,15 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 		}
 		k0 = k1;
 	}
+	/* (a letter the rules above left without ink of its own says so: none should be) */
+	for (size_t k = 0; k < nc; k++) {
+		if (is_space(q->cp[k]) || q->why[k] == HW_NEAT_WHY_NO_INK || q->why[k] == HW_NEAT_WHY_DRAWING ||
+		    q->why[k] == HW_NEAT_WHY_GESTURE) continue;
+		int has = 0;
+		for (size_t j = 0; j < n && !has; j++)
+			for (size_t i = 0; i < q->ink[j].n && !has; i++) has = q->own[j][i] == (int)k;
+		if (!has) { q->why[k] = HW_NEAT_WHY_NO_INK; q->pulled[k] = 0; }
+	}
 	/* letters kept as written that run on into a set letter in one stroke: moved along the
 	 * line so the stroke goes on from one into the other as written, not by a line drawn
 	 * between where each was placed (the run on into the letter after first) */
