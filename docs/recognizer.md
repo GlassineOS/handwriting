@@ -492,21 +492,32 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   leaves it, moved along the line to the middle of the font's glyph there (set where the
   font sets it, with its spacing), and the letter is
   `no-structure` (a piece run over two strokes would draw the pen's lift from one to the
-  other, and a stroke no piece runs along would not be drawn). So do a letter and its
-  neighbour (the next two letters of its word) when a piece of the neighbour in a stroke of
-  none of the letter's ink crosses the letter's ink or starts within 0.1 of its height of
-  it, as written (the line-level corrections can move two letters together): an f's bar
-  written on into the next letter, set over that one's glyph, would be lost (the letter
-  model leaves such letters out, FR-007); their ink stays as written, moved as one by how
-  the line-level corrections move its points on average (so the one's stays on the
-  other's), its middle at their glyphs'. Letters kept so that run on into a set letter in
-  one stroke move along the line until the stroke goes on from the one into the other as
-  written (the run on into the letter after first), so no line is drawn between them. And before any of this, a letter's part of a
-  stroke run on from the letter before that lies wholly left of the letter's own strokes
-  (its ink in strokes of no other letter) and is shorter and lower than they are is the
-  one before's exit tail, and the one before's part so right of its own strokes the letter's lead-in (a
-  dot is no letter's body, nor a bowl or bar lower than the stem beside it): the pen was lifted between them, so they aren't joined there.
-  A joined pair's ink keeps the rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
+  other, and a stroke no piece runs along would not be drawn). So does a letter whose
+  version there was made from fewer than 3 samples, when that version's top or bottom is
+  more than 0.75 x-heights from its ink's (so rare a version may not be how the letter is
+  written; set, the letter would leave its place on the line). Letters kept so that run on
+  into a set letter in one stroke move along the line, never up or down, until the stroke
+  goes on from the one into the other as written (the run on into the letter after first),
+  so no line is drawn between them. Before any of this, the ink is given back where the
+  reading cut it wrongly:
+  - a letter's part of a stroke run on from the letter before that lies wholly left of the
+    letter's own strokes (its ink in strokes of no other letter) and is shorter and lower
+    than they are is the one before's exit tail, and the one before's part so right of its
+    own strokes the letter's lead-in (a dot is no letter's body, nor a bowl or bar lower
+    than the stem beside it): the pen was lifted between them, so they aren't joined there;
+  - a letter's bar written on into a neighbour (one of the next two letters of its word):
+    the start of the neighbour's piece, in a stroke of none of the letter's ink, that
+    crosses the letter's ink or starts within 0.1 of its height of it as written (the
+    line-level corrections can move two letters together), lies along the line (at least
+    0.3 x-heights long, twice as long as high) and goes on over the letter until the stroke
+    turns back, is the letter's, when the letter has a version of one stroke more than its
+    pieces, or none of as many (an f whose bar it is). Set over the neighbour's glyph the
+    bar would be lost. The neighbour keeps the rest of its piece, at least a quarter of it,
+    so it is still drawn; with less, the bar stays the neighbour's.
+  Every letter of the reading keeps ink of its own, so none is left out. Between two words
+  the gap stays at least as wide as written, or as the font's word gap where that is less:
+  the word on the right moves along the line (set or not). A joined pair's
+  ink keeps the rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
   to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
   Only where the person didn't lift the pen between two letters the ink runs along a join
   between them (FR-044): from the end of the stroke the first letter's piece that runs on is
