@@ -498,13 +498,12 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   it: an f's bar written on into the next letter, set over that one's glyph, would be lost
   (the letter model leaves such letters out, FR-007); their ink stays as written, moved as
   one by how the line-level corrections move its points on average (so the one's stays on
-  the other's), its middle at their glyphs'. And before any of this, a letter's
-  part of a stroke run on from the letter before that lies wholly left of the letter's own
-  strokes (its ink in strokes of no other letter) and is shorter than they are is the one
-  before's exit tail, and the one before's part so right of its own strokes the letter's
-  lead-in (a dot is no letter's body): the pen was lifted
-  between them, so they aren't joined there. A joined pair's ink keeps the
-  rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
+  the other's), its middle at their glyphs'. And before any of this, a letter's part of a
+  stroke run on from the letter before that lies wholly left of the letter's own strokes
+  (its ink in strokes of no other letter) and is shorter than they are is the one before's
+  exit tail, and the one before's part so right of its own strokes the letter's lead-in (a
+  dot is no letter's body): the pen was lifted between them, so they aren't joined there.
+  A joined pair's ink keeps the rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
   to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
   Only where the person didn't lift the pen between two letters the ink runs along a join
   between them (FR-044): from the end of the stroke the first letter's piece that runs on is

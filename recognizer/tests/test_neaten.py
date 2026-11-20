@@ -620,13 +620,16 @@ class Neaten(unittest.TestCase):
 
     def test_neatest_draws_every_stroke_apart(self):
         """at Neatest (FR-043) a letter is set onto a variant with as many strokes as its ink
-        has pieces, each piece along its own stroke: an i's dot stays a dot and a p's bowl a
-        bowl (no line drawn from the stem to them, nothing of them lost), and an F written in
+        has pieces, each piece along its own stroke: the dots of i and j stay dots, the bars of
+        t, f, E and T bars and the bowls of p, b and d bowls (no line drawn from the stem to
+        them, nothing of them lost), and an F written in
         two strokes, its glyph in three, keeps its ink as written (set over the glyph, its pen
         lift would be drawn from its top bar to its middle one)"""
         self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
         rnd = random.Random(91)
-        s = TL.sample("Fipjtbd", rnd, shapes=TL.WHOLE_SHAPES)
+        # (the T a word of its own: the line's spacing would pull its bar's start onto the
+        # end of the E's top bar, and the two would keep their ink as written)
+        s = TL.sample("FipjtbdfE T", rnd, shapes=TL.WHOLE_SHAPES)
         # the F in two: the stem up and on along the top bar, then the middle bar
         f0, f1, f2 = (s["strokes"][j] for j in s["spans"][0])
         s["strokes"][s["spans"][0][0]] = list(reversed(f0)) + f1
@@ -636,9 +639,9 @@ class Neaten(unittest.TestCase):
         align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
         c = self.e.start()
         self.begin(c, s)
-        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fipjtbd"), align), why=True)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("FipjtbdfE T"), align), why=True)
         c.close()
-        self.assertEqual(why, ["no-structure"] + ["set"] * 6)
+        self.assertEqual(why, ["no-structure"] + ["set"] * 8 + ["space", "set"])
         xy = {o[0]: EV.to_xy(o[2]) for o in out}
 
         def box(j):
@@ -649,12 +652,14 @@ class Neaten(unittest.TestCase):
             xs, ys = [p[0] for p in s["strokes"][j]], [p[1] for p in s["strokes"][j]]
             return max(xs) - min(xs), max(ys) - min(ys)
         # each letter's strokes: stem (or body) first, then its mark
-        for c, (a, b) in zip("ipjtbd", ((2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13))):
-            with self.subTest(c=c):
+        marks = (("i", 2, 3), ("p", 4, 5), ("j", 6, 7), ("t", 8, 9), ("b", 10, 11), ("d", 12, 13),
+                 ("f", 14, 15), ("E", 16, 17), ("E", 16, 18), ("E", 16, 19), ("T", 20, 21))
+        for c, a, b in marks:
+            with self.subTest(c=c, stroke=b):
                 stem, mark = box(a), box(b)
                 if c in "ij":       # a dot stays a dot
                     self.assertLess(max(mark), 0.2 * stem[1])
-                elif c == "t":      # a bar stays a bar, across the stem
+                elif c in "tfET":   # a bar stays a bar
                     self.assertGreater(mark[0], 0.25 * stem[1])
                     self.assertLess(mark[1], 0.15 * stem[1])
                 else:               # a bowl stays a bowl
@@ -665,6 +670,30 @@ class Neaten(unittest.TestCase):
         sc = box(0)[1] / ink(0)[1]
         for j in (0, 1):
             self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
+
+    def test_neatest_gives_an_exit_tail_back(self):
+        """a's exit tail the reading gives the t, whose own strokes start after a pen lift:
+        the tail is the a's, both letters are set and nothing joins them (FR-043)"""
+        self.letters(seed=9)
+        s = TL.sample("at", random.Random(93))
+        sa, st = s["spans"]
+        last = s["strokes"][sa[-1]]
+        x, y, t = last[-1][0], last[-1][1], last[-1][2]
+        tail = [[round(x + 1.2 * z, 3), round(y - 0.8 * z, 3), round(t + 0.01 * z, 3), 0.5] for z in range(1, 6)]
+        n0 = len(last)
+        last += tail
+        TL.retime_sample(s)
+        self.assertLess(max(p[0] for p in tail), min(p[0] for j in st for p in s["strokes"][j]))
+        mine_a = [f"{j}:0-{len(s['strokes'][j]) - 1}" if j != sa[-1] else f"{j}:0-{n0 - 1}" for j in sa]
+        mine_t = [f"{sa[-1]}:{n0}-{n0 + len(tail) - 1}"] + [f"{j}:0-{len(s['strokes'][j]) - 1}" for j in st]
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("at"), ",".join(mine_a) + ";" + ",".join(mine_t)), why=True)
+        c.close()
+        self.assertEqual(why, ["set", "set"])
+        # the a's last stroke stays left of the t: no join drawn into it
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        self.assertLess(max(p[0] for p in xy[sa[-1]]), min(p[0] for j in st for p in xy[j]))
 
     def test_neatest_keeps_a_bar_written_into_the_next_letter(self):
         """an f's bar written on into the next letter (the start of that one's stroke, which

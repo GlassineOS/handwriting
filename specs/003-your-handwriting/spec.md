@@ -449,9 +449,9 @@ size, spacing) and keep their shape.
   neighbour, their ink as written moved as one (an f's bar written on into the next letter
   would be lost in that one's glyph).
   A letter's tail that the reading gives the next letter (it lies wholly before that
-  letter's own strokes) stays the letter's, and a lead-in the reading gives the letter
-  before stays the next letter's: the pen was lifted there, so the two aren't joined. Two letters are
-  joined only where the person didn't lift the pen between them: the ink runs along the
+  letter's own strokes and is shorter than they are) stays the letter's, and a lead-in the
+  reading gives the letter before stays the next letter's: the pen was lifted there, so the
+  two aren't joined. Two letters are joined only where the person didn't lift the pen between them: the ink runs along the
   join from the end of the stroke the first letter's piece is set along to the start of the
   one the second's is (it follows the ink: a bar the person writes on into the next letter
   is joined from the bar): the font's join where the font joins the two from and to those
