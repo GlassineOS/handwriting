@@ -169,8 +169,13 @@ size, spacing) and keep their shape.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
   prompt with its fit check passed (spans exact) or, for a prompt of one character alone,
   kept on the person's confirmation after a failed check (its strokes can only be that
-  character's: a lone full stop or comma counts), and with strokes of its own (a stroke
-  shared with a neighbour, as in joined writing, is not cut). Which strokes are a
+  character's: a lone full stop or comma counts), and with strokes of its own. A covered
+  character written joined counts as well: a stroke shared among the letters of a word is
+  cut where its parts best match those letters' variants from their samples written apart,
+  each letter taking its own part into its variants, and the bits of the joining stroke
+  that lead into the letter and out of it are kept with it as its entry and exit (so the
+  letter can be drawn joined as the person joins it); joined samples alone don't make a
+  character covered. Which strokes are a
   character's goes by where the ink lies as well as by the order of writing: a stroke written
   after the rest (an i's dot, the bar of a t or an f, the arms of an E, the second stroke of
   an x) is part of the character it lies across or stands over, in words as well as alone,
