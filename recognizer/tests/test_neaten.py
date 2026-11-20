@@ -714,10 +714,12 @@ class Neaten(unittest.TestCase):
         self.assertLess(b - a, 1.0 * 30)
 
     def test_neatest_spaces_a_kept_capital_as_the_person_does(self):
-        """an F written in two strokes (its versions have three: it keeps its ink), once as
-        wide as usual and once two and a half times as wide: kept, it sits on the middle of
-        its glyph, so how far it reaches towards the o set beside it changes with its width;
-        the o is set at the gap the person writes the pair at, the same both times (FR-043)"""
+        """an F written in two strokes (its versions have three: it keeps its ink) two and a
+        half times as wide as usual: kept, it sits on the middle of its glyph and the font
+        would leave the o further off than the person writes letters apart; the o is placed
+        as the line-level spacing places letters (the person's distance between the two
+        middles, never closer than half the typical gap where both have ink), so beside it,
+        neither on it nor further off than the person's gap (FR-043)"""
         self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
         gaps = []
         for scale in (1.0, 2.5):
@@ -741,8 +743,10 @@ class Neaten(unittest.TestCase):
             base = max(p[1] for p in xy[2])
             band = [p for j in (0, 1) for p in xy[j] if base - 30 <= p[1] <= base]
             gaps.append((min(p[0] for p in xy[2]) - max(p[0] for p in band)) / 30)
+        sp = [json.loads(x) for x in (self.e.store / "letters" / "model").read_text().splitlines() if '"spacing"' in x]
+        letter = sp[0]["spacing"]["letter"]
         self.assertGreater(min(gaps), 0, gaps)
-        self.assertLess(abs(gaps[0] - gaps[1]), 0.05, gaps)
+        self.assertLess(gaps[1], letter, (gaps, letter))
 
     def test_neatest_draws_no_letter_twice(self):
         """the reading gives the o only the f's bar and its body to the n (which then has a
