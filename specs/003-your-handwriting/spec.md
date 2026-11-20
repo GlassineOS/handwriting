@@ -180,7 +180,12 @@ size, spacing) and keep their shape.
   after the rest (an i's dot, the bar of a t or an f, the arms of an E, the second stroke of
   an x) is part of the character it lies across or stands over, in words as well as alone,
   and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
-  stays the neighbour's, so both count. Line metrics (baseline,
+  stays the neighbour's, so both count; a stroke about as long as the rest of its character
+  (an H's second stem) is no late stroke. A character a stroke of a neighbour in its word
+  crosses or starts or ends on (an f's or a t's bar written on into the next letter, a p's
+  bowl begun on its stem and run on into the next letter) has a part of it in the
+  neighbour's ink: neither of the two is usable there, so no way of writing a letter lacks
+  its bar or its bowl. Line metrics (baseline,
   x-height, cap height, ascender, descender, slant) and spacing come from the person's word
   and sentence samples. Spacing follows how the person writes running text: a pair's
   distance and gap, the typical gap and how far letters reach come from their writing of
@@ -323,13 +328,16 @@ size, spacing) and keep their shape.
   learned per letter pair and per kind of join; the kind is where the first letter's way of
   writing it ends (below the baseline, near it, at the x-height or above) and where the
   second's starts (the same heights, in its left or its right half), each from the end of
-  the way's last stroke and the start of its first (or the stroke the person's exits leave
-  from and their entries lead into, FR-007). A letter pair with at least 5 joins has a
+  the way's last stroke of its main body and the start of its first (or the stroke the
+  person's exits leave from and their entries lead into, FR-007); a join never leaves or
+  enters a mark: a stroke shorter than half the way's longest (a dot, a bar, an arm). A letter pair with at least 5 joins has a
   join shape of its own, a kind with at least 4 joins one for the kind: the mean of its
   joins, matched point by point along their length, each turned and scaled onto its own
   ends (a join whose ends nearly meet has no direction and counts for the ends alone). The
   shape keeps its curve only where it fits the person's joins better than a straight line
-  does, each of them tried against the mean of the others; else the join is straight. The
+  does, each of them tried against the mean of the others, and is smooth: no rougher than
+  0.01 by the roughness the letters' variants are measured with (a straight line has none);
+  else the join is straight. The
   font joins two neighbouring letters
   of a word (letters only, no digits, marks or symbols) where the person writes that pair
   joined: in at least half of the samples with the pair written with known strokes (at
@@ -431,12 +439,18 @@ size, spacing) and keep their shape.
   the line's x-height, with the slant the font draws. The strokes stay the person's (FR-013):
   each character's ink, its pieces in the order written, is drawn along the centre lines of
   its glyph's strokes, each point by its share of the ink's length, so the timing and
-  pressure run along the glyph as written; a pen lift falls at the end of a glyph's stroke
-  near it, and where the person didn't lift the pen between two glyphs' strokes the ink
-  runs along the join between them: the font's join where the font joins the two (FR-044),
-  else the pair's learned join shape (or its kind's) fitted from the first glyph's end to
-  the second's start, each letter's ink along its glyph and its half of the join; only where
-  there is no learned join a straight line runs from the one to the other. A character the letter model doesn't cover
+  pressure run along the glyph as written. Each letter is set onto a way of writing it
+  (FR-006) with as many strokes as its ink has pieces, each piece along its own stroke: the
+  font's there when it has that many, else the one with that many made from the most
+  samples; a letter with none keeps its written ink as the line-level corrections leave it,
+  moved to its place in the set word (a piece set over two strokes would draw the pen's
+  lift between them, and a stroke no piece runs along would not be drawn). Two letters are
+  joined only where the person didn't lift the pen between them: the ink runs along the
+  join from the end of the stroke the first letter's piece is set along to the start of the
+  one the second's is: the font's join where the font joins the two from and to those
+  strokes (FR-044), else the pair's learned join shape (or its kind's) fitted between them,
+  each letter's ink along its glyph and its half of the join; only where there is no learned
+  join a straight line runs from the one to the other. A character the letter model doesn't cover
   keeps its written ink as the line-level corrections leave it, moved to the middle of the
   box the font has for it. Only the confirmed text is known: without it no word is set (a
   word read wrongly would be set as another word). A word is set only when its ink can be its

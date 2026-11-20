@@ -1735,6 +1735,25 @@ static int others(const struct hw_sample *s, const int *sp, int j, const int *cn
 	return n;
 }
 
+/* whether stroke j crosses another stroke of span sp (two of their segments cross) */
+static int crosses(const struct hw_sample *s, const int *sp, int j)
+{
+	const struct hw_ink *a = &s->strokes[j];
+	for (const int *p = sp; p && *p >= 0; p++) {
+		if (*p == j || (size_t)*p >= s->nstrokes) continue;
+		const struct hw_ink *b = &s->strokes[*p];
+		for (size_t u = 1; u < a->n; u++)
+			for (size_t v = 1; v < b->n; v++) {
+				double ax = a->x[u - 1], ay = a->y[u - 1], bx = a->x[u], by = a->y[u];
+				double cx = b->x[v - 1], cy = b->y[v - 1], dx = b->x[v], dy = b->y[v];
+				double d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax), d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+				double d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx), d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+				if (d1 * d2 < 0 && d3 * d4 < 0) return 1;
+			}
+	}
+	return 0;
+}
+
 static int span_has(const int *sp, int j)
 {
 	for (const int *p = sp; p && *p >= 0; p++) if (*p == j) return 1;
@@ -1811,10 +1830,11 @@ static void delayed_strokes(struct hw_sample *s, size_t nc, const unsigned *cps,
 			double b[4], ol;
 			int own;
 			/* the only stroke of its own a character has stays (its other strokes shared),
-			 * and so does one longer than the rest of the character it is with, unless that
+			 * and so does one longer than HW_LETTERS_LATE_SHARE of the rest of the character it
+			 * is with (two stems alike: an H), unless that
 			 * is a mark (a 5's body below its bar is no late stroke of the 6 beside it) */
 			if (!others(s, s->spans[k], (int)j, cnt, b, &ol, &own) ||
-			    (has && cnt[j] == 1 && (!own || (stroke_len(sj) > ol && ol >= 0.25 * small)))) {
+			    (has && cnt[j] == 1 && (!own || (stroke_len(sj) > HW_LETTERS_LATE_SHARE * ol && ol >= 0.25 * small)))) {
 				alone |= has;
 				continue;
 			}
@@ -1907,6 +1927,29 @@ static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *
 		}
 		own[k] = (char)(ok && ink);
 	}
+	/* a character whose ink a neighbour's stroke in its word crosses or starts on (a bar
+	 * or a bowl written on into the next letter, a lead-in through the last) has a part
+	 * of it in the other's ink and the other a part of it: neither is a whole letter */
+	char *part = calloc(nc + 1, 1);
+	for (size_t k = 0; part && k < nc && k < s->nspans; k++) {
+		if (!s->spans[k] || cps[k] == ' ') continue;
+		double b[4] = { INFINITY, INFINITY, -INFINITY, -INFINITY };
+		for (const int *p = s->spans[k]; *p >= 0; p++) if ((size_t)*p < s->nstrokes) ink_box(&s->strokes[*p], b);
+		double near = HW_LETTERS_TOUCH * (b[3] - b[1]);
+		for (size_t o = k + 1; o <= k + 2 && o < nc && o < s->nspans && cps[o] != ' '; o++)
+			for (const int *p = s->spans[o]; p && *p >= 0; p++) {
+				if ((size_t)*p >= s->nstrokes || !s->strokes[*p].n || span_has(s->spans[k], *p)) continue;
+				const struct hw_ink *a = &s->strokes[*p];
+				int on = crosses(s, s->spans[k], *p);
+				for (const int *r = s->spans[k]; !on && *r >= 0; r++)
+					for (size_t v = 0; (size_t)*r < s->nstrokes && v < s->strokes[*r].n && !on; v++)
+						on = hypot(a->x[0] - s->strokes[*r].x[v], a->y[0] - s->strokes[*r].y[v]) <= near ||
+						     hypot(a->x[a->n - 1] - s->strokes[*r].x[v], a->y[a->n - 1] - s->strokes[*r].y[v]) <= near;
+				if (on) part[k] = part[o] = 1;
+			}
+	}
+	for (size_t k = 0; part && k < nc; k++) if (part[k]) own[k] = 0;
+	free(part);
 	if (cnt_out) *cnt_out = cnt;
 	else free(cnt);
 	return 0;
@@ -2640,14 +2683,35 @@ static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const st
 
 /* ---------------------------------------------------------------- joins (FR-044) */
 
+static double lstroke_len(const struct hw_lstroke *t)
+{
+	double l = 0;
+	for (size_t i = 1; i < t->n; i++) l += hypot(t->x[i] - t->x[i - 1], t->y[i] - t->y[i - 1]);
+	return l;
+}
+
+int hw_join_body(const struct hw_variant *v, size_t j)
+{
+	if (j >= v->nstrokes) return 0;
+	double m = 0;
+	for (size_t q = 0; q < v->nstrokes; q++) m = fmax(m, lstroke_len(&v->s[q]));
+	return lstroke_len(&v->s[j]) >= HW_JOIN_BODY * m;
+}
+
 size_t hw_join_exit_stroke(const struct hw_variant *v)
 {
-	return v->exit.n > 0 && v->exit.stroke >= 0 && (size_t)v->exit.stroke < v->nstrokes ? (size_t)v->exit.stroke : v->nstrokes - 1;
+	if (v->exit.n > 0 && v->exit.stroke >= 0 && hw_join_body(v, (size_t)v->exit.stroke)) return (size_t)v->exit.stroke;
+	size_t j = v->nstrokes ? v->nstrokes - 1 : 0;
+	while (j > 0 && !hw_join_body(v, j)) j--;
+	return j;
 }
 
 size_t hw_join_entry_stroke(const struct hw_variant *v)
 {
-	return v->entry.n > 0 && v->entry.stroke >= 0 && (size_t)v->entry.stroke < v->nstrokes ? (size_t)v->entry.stroke : 0;
+	if (v->entry.n > 0 && v->entry.stroke >= 0 && hw_join_body(v, (size_t)v->entry.stroke)) return (size_t)v->entry.stroke;
+	size_t j = 0;
+	while (j + 1 < v->nstrokes && !hw_join_body(v, j)) j++;
+	return j;
 }
 
 /* a height's band: below the baseline, near it, at the x-height, above */
@@ -2837,8 +2901,30 @@ static double join_apart(const double *x, const double *y, const double *u, cons
 	return s / (2 * D);
 }
 
+/* how rough a join's way is: shape_rough's measure (the turning at each point less its local
+ * mean, squared and summed, resampled evenly by its length) over its HW_JOIN_N points */
+static double join_rough(const double *x, const double *y)
+{
+	enum { N = HW_JOIN_N };
+	double xs[N], ys[N], buf[2 * N], tn[N] = { 0 }, e = 0;
+	memcpy(xs, x, sizeof xs); memcpy(ys, y, sizeof ys);
+	struct hw_lstroke t = { N, xs, ys };
+	resample(&t, N, buf);
+	for (int i = 1; i < N - 1; i++) {
+		double ax = buf[2 * i] - buf[2 * i - 2], ay = buf[2 * i + 1] - buf[2 * i - 1];
+		double bx = buf[2 * i + 2] - buf[2 * i], by = buf[2 * i + 3] - buf[2 * i + 1];
+		tn[i] = hypot(ax, ay) < 1e-9 || hypot(bx, by) < 1e-9 ? 0 : atan2(ax * by - ay * bx, ax * bx + ay * by);
+	}
+	for (int i = 2; i < N - 2; i++) {
+		double d = tn[i] - (tn[i - 1] + 2 * tn[i] + tn[i + 1]) / 4;
+		e += d * d;
+	}
+	return e;
+}
+
 /* a shape from joints o[idx[0 .. n)]: their ends' mean, their way in their chords' frames
- * averaged onto it; curved only where it beats a straight line left out one at a time */
+ * averaged onto it; curved only where it beats a straight line left out one at a time and
+ * is smooth (no rougher than HW_JOIN_ROUGH: a straight line has none) */
 static void jshape_make(struct hw_jshape *t, const struct jobs *o, const size_t *idx, size_t n)
 {
 	enum { N = HW_JOIN_N };
@@ -2872,6 +2958,11 @@ static void jshape_make(struct hw_jshape *t, const struct jobs *o, const size_t 
 		straight += join_apart(j->x, j->y, lx, ly);
 	}
 	int bent = nf >= 2 && curved < straight;
+	if (bent) {
+		double mx[N], my[N];
+		for (int q = 0; q < N; q++) { mx[q] = su[q] / nf; my[q] = sv[q] / nf; }
+		bent = join_rough(mx, my) <= HW_JOIN_ROUGH;
+	}
 	for (int q = 0; q < N; q++) {
 		double f = (double)q / (N - 1), a = bent ? su[q] / nf : f, b = bent ? sv[q] / nf : 0;
 		t->x[q] = round((a * ex - b * ey) * 1e4) / 1e4;

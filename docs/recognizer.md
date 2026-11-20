@@ -485,14 +485,22 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   its leftmost glyph point where Strong leaves its leftmost ink, on the line's baseline, at
   the line's x-height, with the lean the glyphs have. Each character's ink (a joined pair's
   two letters' together), its pieces in the order written, runs along its glyph's strokes
-  one after another, each point at its share of the ink's length: as many pieces as the
-  glyph has strokes, one each; otherwise a pen lift moves to the end of a glyph's stroke
-  within 0.2 of the glyph's length (each end once, in order). Where the person didn't lift
-  the pen between two letters the ink runs along the join between them (FR-044): the font's
-  two halves where the font joins the pair, else the pair's learned join shape (or its
-  kind's) fitted from the first glyph's exit to the second's entry where the font sets them
-  and split where the halves would meet; each half is added to its letter's stroke (after
-  the exit stroke's end, before the entry stroke's start), so the letter's ink runs along
+  one after another, each point at its share of the ink's length. A letter is set onto a
+  version with as many strokes as its ink has pieces, one each: the font's there when it has
+  that many, else the letter's version with that many made from the most samples (the
+  spacing and the joins as the font sets that one); with none its ink stays as Strong leaves
+  it, moved along the line to the middle of the font's box for it, and the letter is
+  `no-structure` (a piece run over two strokes would draw the pen's lift from one to the
+  other, and a stroke no piece runs along would not be drawn). A joined pair's ink keeps the
+  rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
+  to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
+  Only where the person didn't lift the pen between two letters the ink runs along a join
+  between them (FR-044): from the end of the stroke the first letter's piece that runs on is
+  set along to the start of the one the second's is; the font's two halves where the font
+  joins the pair from and to those strokes, else the pair's learned join shape (or its
+  kind's) fitted between those ends where the font sets them and split where the halves
+  would meet; each half is added to its letter's stroke (after the one's end, before the
+  other's start), so the letter's ink runs along
   the glyph and its half by length as along any glyph. Only without a learned join the two points
   either side are joined by a straight line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
   along the line to the middle of the font's box for it (`.notdef`, one x-height wide), and
@@ -814,7 +822,14 @@ accented letter goes to the nearest one up to two of its heights (or a fifth of 
 line) to either side. Of several, the one whose ink its middle is over, then one it lies
 across, then one it touches; among those the one it is centred over. That covers an i's or
 j's dot, the bar of a t or an f, the arms of an E, the bar of an H and the second stroke of an
-x or a k, in words as well as alone. A stroke that is all a character has stays with it.
+x or a k, in words as well as alone. A stroke that is all a character has stays with it, and so
+does one longer than 0.8 of the rest of its character's ink (an H's second stem is no late
+stroke). Then a character's strokes are its own only when no stroke of a neighbour in its word
+(the next two characters either side) crosses its ink or starts or ends within 0.1 of its
+height of it: an f's or a t's bar written on into the next letter, a p's, b's or d's bowl begun
+on its stem and run on into it, a lead-in through the letter before. Such a letter has a part
+in the other's ink and the other a part of it, so neither is usable there (no way of writing a
+letter lacks its bar or its bowl, and none of the next letter starts with one).
 **Letters written joined (FR-007).** The versions are made in two passes. The first takes the
 samples written apart alone. Then each stroke that the spans give two or more letters of one word
 (and no other) is cut where its parts best match those letters' versions from the first pass:
@@ -1021,8 +1036,9 @@ their middle point, `points` from the joint's start (x-heights, y up).
 **Joins (FR-044).** A joint is the stroke of letters written joined (above) from where the
 first letter's own ink ends to where the second's begins (more than 3 x-heights apart: none),
 13 points along its length. A version's exit is the end of its exit stroke (the stroke its
-`exit` leaves from, else its last), its entry the start of its entry stroke (its `entry`'s,
-else its first); the exit class is the band of the exit's height (below −0.25, below 0.5,
+`exit` leaves from, else its last of the main body), its entry the start of its entry stroke
+(its `entry`'s, else its first of the main body); the main body is its strokes at least half as
+long as its longest, so a join never leaves or enters a dot, a bar or an arm; the exit class is the band of the exit's height (below −0.25, below 0.5,
 below 1.25, above: 0–3), the entry class twice the entry's band plus 1 when it is right of
 the version's middle (0–7). A pair with at least 5 joints gets a shape, a kind with at least 4
 joints one (its joints' letters' classes from the versions they're written like). A shape is
@@ -1031,7 +1047,9 @@ over its length; a joint shorter than 0.02 counts only for the mean end) set ont
 end: it keeps that curve only when, each joint left out in turn, the others' mean set between
 its ends is nearer to it than the straight line, summed over the joints (nearness: the mean
 distance of each one's points, 4 times as dense, to the other, both ways); else its points lie
-on the line to the mean end. A shape is set between two ends turned and scaled so its ends
+on the line to the mean end; and only when that curve is smooth: its roughness (the turning at
+each of its points, resampled evenly by length, less its local mean, squared and summed, as for
+the versions) at most 0.01 (a straight line has none, a joint's wobble many times that). A shape is set between two ends turned and scaled so its ends
 land on them, its bow across the line scaled by no more than 1.5 times its own length.
 
 **Neighbour rules (FR-038).** For each character and each character written right before it

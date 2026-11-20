@@ -618,6 +618,46 @@ class Neaten(unittest.TestCase):
             self.assertLess(max(bases) - min(bases), 0.3, (text, bases))
         self.assertEqual(words, 10)
 
+    def test_neatest_draws_every_stroke_apart(self):
+        """at Neatest (FR-043) a letter is set onto a variant with as many strokes as its ink
+        has pieces, each piece along its own stroke: an i's dot stays a dot and a p's bowl a
+        bowl (no line drawn from the stem to them, nothing of them lost), and an F written in
+        two strokes, its glyph in three, keeps its ink as written (set over the glyph, its pen
+        lift would be drawn from its top bar to its middle one)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        rnd = random.Random(91)
+        s = TL.sample("Fip", rnd, shapes=TL.WHOLE_SHAPES)
+        # the F in two: the stem up and on along the top bar, then the middle bar
+        f0, f1, f2 = (s["strokes"][j] for j in s["spans"][0])
+        s["strokes"][s["spans"][0][0]] = list(reversed(f0)) + f1
+        del s["strokes"][s["spans"][0][1]]
+        s["spans"] = [[0, 1], [2, 3], [4, 5]]
+        TL.retime_sample(s)
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fip"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["no-structure", "set", "set"])
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+
+        def box(j):
+            xs, ys = [p[0] for p in xy[j]], [p[1] for p in xy[j]]
+            return max(xs) - min(xs), max(ys) - min(ys)
+
+        def ink(j):
+            xs, ys = [p[0] for p in s["strokes"][j]], [p[1] for p in s["strokes"][j]]
+            return max(xs) - min(xs), max(ys) - min(ys)
+        stem_i, dot, stem_p, bowl = box(2), box(3), box(4), box(5)
+        self.assertLess(max(dot), 0.2 * stem_i[1])
+        self.assertGreater(bowl[0], 0.25 * stem_p[1])
+        self.assertGreater(bowl[1], 0.25 * stem_p[1])
+        # the F's ink as written (only moved, scaled and set upright with its line): its
+        # strokes' sizes about as they were
+        sc = box(0)[1] / ink(0)[1]
+        for j in (0, 1):
+            self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
+
     @unittest.skipIf(TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"), "needs fontTools and hb-shape")
     def test_neatest_runs_along_the_join(self):
         """at Neatest the ink the person didn't lift between two letters the font joins runs
