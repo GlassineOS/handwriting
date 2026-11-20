@@ -627,9 +627,9 @@ class Neaten(unittest.TestCase):
         lift would be drawn from its top bar to its middle one)"""
         self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
         rnd = random.Random(91)
-        # (the T a word of its own: the line's spacing would pull its bar's start onto the
-        # end of the E's top bar, and the two would keep their ink as written)
-        s = TL.sample("FipjtbdfE T", rnd, shapes=TL.WHOLE_SHAPES)
+        # (the line's spacing pulls the T's bar's start onto the end of the E's top bar; as
+        # written they are apart, so neither keeps its ink)
+        s = TL.sample("FipjtbdfET", rnd, shapes=TL.WHOLE_SHAPES)
         # the F in two: the stem up and on along the top bar, then the middle bar
         f0, f1, f2 = (s["strokes"][j] for j in s["spans"][0])
         s["strokes"][s["spans"][0][0]] = list(reversed(f0)) + f1
@@ -639,9 +639,9 @@ class Neaten(unittest.TestCase):
         align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
         c = self.e.start()
         self.begin(c, s)
-        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("FipjtbdfE T"), align), why=True)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("FipjtbdfET"), align), why=True)
         c.close()
-        self.assertEqual(why, ["no-structure"] + ["set"] * 8 + ["space", "set"])
+        self.assertEqual(why, ["no-structure"] + ["set"] * 9)
         xy = {o[0]: EV.to_xy(o[2]) for o in out}
 
         def box(j):
@@ -670,6 +670,34 @@ class Neaten(unittest.TestCase):
         sc = box(0)[1] / ink(0)[1]
         for j in (0, 1):
             self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
+
+    def test_neatest_runs_on_from_kept_ink_into_a_set_letter(self):
+        """an f's bar written into the o, and the o joined on into the n in the same stroke:
+        the f and o keep their ink as written, the n is set, and the stroke goes on from the
+        o into the n as written, with no line drawn between where each was placed (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("fon", random.Random(94), shapes=TL.WHOLE_SHAPES)
+        st, sp = s["strokes"], s["spans"]
+        bar, o, n0 = st[sp[0][1]], st[sp[1][0]], st[sp[2][0]]
+        a, b = o[-1], n0[0]
+        bridge = [[round(a[0] + (b[0] - a[0]) * z / 4, 3), round(a[1] + (b[1] - a[1]) * z / 4, 3), 0, 0.5] for z in range(1, 4)]
+        one = bar + o + bridge + n0
+        rest = [st[j] for j in sp[2][1:]]
+        s["strokes"] = [st[sp[0][0]], one] + rest
+        TL.retime_sample(s)
+        nb, no = len(bar), len(o) + len(bridge)
+        align = ";".join([f"0:0-{len(st[sp[0][0]]) - 1}", f"1:0-{nb + no - 1}",
+                          ",".join([f"1:{nb + no}-{len(one) - 1}"] + [f"{2 + z}:0-{len(r) - 1}" for z, r in enumerate(rest)])])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["no-structure", "no-structure", "set"])
+        xy = {q[0]: EV.to_xy(q[2]) for q in out}
+        i = nb + no
+        raw = math.hypot(one[i][0] - one[i - 1][0], one[i][1] - one[i - 1][1])
+        step = math.hypot(xy[1][i][0] - xy[1][i - 1][0], xy[1][i][1] - xy[1][i - 1][1])
+        self.assertLess(step, raw + 0.25 * 30)
 
     def test_neatest_gives_an_exit_tail_back(self):
         """a's exit tail the reading gives the t, whose own strokes start after a pen lift:
