@@ -1144,7 +1144,8 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 	}
 	/* the alignment's edges spill a few points of a stroke over to a neighbour: a run of a
 	 * stroke's points of one character shorter than HW_NEAT_SPILL x-heights (along the
-	 * stroke) goes to the run next to it (the longer one), the shortest first. A longer run
+	 * stroke) goes to the run next to it (the longer one), the shortest first, unless (with
+	 * ALIGN) it is all of its character's ink (no character is left out). A longer run
 	 * is a joint, where the stroke passes from one letter to the next: each keeps its part.
 	 * ALIGN is as given. */
 	double xh0 = q->xh;
@@ -1169,6 +1170,15 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 			for (size_t i = 0; i < k->n; i++) { if (ow[i] >= 0 && (size_t)ow[i] < nc) last = ow[i]; else if (last >= 0) ow[i] = last; }
 			last = -1;
 			for (size_t i = k->n; i-- > 0;) { if (ow[i] >= 0) last = ow[i]; else ow[i] = last; }
+		}
+		size_t *cnt = q->fit && xh0 > 0 ? calloc(nc + 1, sizeof *cnt) : NULL;
+		if (q->fit && xh0 > 0 && !cnt) { free(C); free(nown); hw_neat_free(q); return -1; }
+		for (size_t j = 0; cnt && j < n; j++)
+			for (size_t i = 0; i < q->ink[j].n; i++)
+				if (q->own[j][i] >= 0 && (size_t)q->own[j][i] < nc) cnt[q->own[j][i]]++;
+		for (size_t j = 0; cnt && j < n; j++) {
+			const struct hw_ink *k = &q->ink[j];
+			int *ow = q->own[j];
 			for (size_t step = 0; step < k->n; step++) {
 				/* the runs: [a, b) of one character, and their lengths */
 				size_t best = SIZE_MAX, ba = 0, bb = 0, runs = 0;
@@ -1180,7 +1190,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 						runs++;
 						double l = 0;
 						for (size_t i = a + 1; i < b; i++) l += hypot(k->x[i] - k->x[i - 1], k->y[i] - k->y[i - 1]);
-						if (l < bl) { bl = l; best = a; ba = a; bb = b; }
+						if (l < bl && (!q->share || (size_t)ow[a] >= nc || cnt[ow[a]] > b - a)) { bl = l; best = a; ba = a; bb = b; }
 					}
 					a = b;
 				}
@@ -1196,9 +1206,12 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 				if (i < k->n) { hi = ow[i]; for (size_t z = i + 1; z < k->n && ow[z] == hi; z++) lh += hypot(k->x[z] - k->x[z - 1], k->y[z] - k->y[z - 1]); }
 				int to = lo < 0 ? hi : hi < 0 ? lo : ll >= lh ? lo : hi;
 				if (to < 0) break;
+				if ((size_t)ow[ba] < nc) cnt[ow[ba]] -= bb - ba;
+				if ((size_t)to < nc) cnt[to] += bb - ba;
 				for (size_t z = ba; z < bb; z++) ow[z] = to;
 			}
 		}
+		free(cnt);
 	}
 	/* and by the letter model: a character with a count of pieces of ink no version of it has
 	 * (and more than some), one of them a run of a stroke it shares with a neighbour, gives

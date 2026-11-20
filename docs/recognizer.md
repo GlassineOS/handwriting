@@ -414,7 +414,8 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   Medium on, as the cut only matters to the pull.
   Then the alignment's edges are put right: points of no character
   go with their neighbours, a run of one character shorter than 0.35 x-heights along the stroke
-  goes to the run next to it (the longer one), and a character with a count of pieces no
+  goes to the run next to it (the longer one), unless (with `ALIGN`) it is all of that
+  character's ink (no character is left out), and a character with a count of pieces no
   version of it has (more than some) gives a run it shares with a neighbour to that neighbour.
   Such a move is a guess at where the alignment is off (it can be off by a whole letter, the
   joints shifted along the word): the characters that gave or took a run are pulled only when
@@ -428,8 +429,11 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   characters (a joined word: it says which letters the stroke holds, not where one ends): that
   stroke is cut among the letters it lists, in order, where its parts best match their glyphs
   (as above; without a glyph for each, the alignment of `TEXT` with the ink splits it, a point
-  it aligns with another character going with its neighbours), and the edges are put right as
-  without `ALIGN`. Its structure is tested coarsely, the shapes
+  it aligns with another character going with its neighbours; a letter it lists that no point
+  aligns with gets the point where the stroke passes from the letter before it to the one
+  after, never another letter's only point), and the edges are put right as without `ALIGN`. A
+  letter whose ink is all in a stroke kept as written (drawing), or in a stroke `ALIGN` lists
+  for it that is so kept, is `drawing`, not `no-ink`. Its structure is tested coarsely, the shapes
   don't matter: as many pieces as the glyph has strokes, each about where its stroke lies in
   the glyph (its middle within 0.45 x-heights, both about their middles), and its ink's
   middle within 0.75 x-heights of the glyph's above the baseline (so ink the alignment gave

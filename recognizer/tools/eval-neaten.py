@@ -305,6 +305,7 @@ def main():
                    "better": 0, "worse": 0, "werr_o": 0, "werr_n": 0} for s in strengths}
         read_ms = []
         setw, setr = {}, {"err": 0, "werr": 0, "chars": 0}
+        dropped = {"letters": 0, "dropped": 0, "noread": 0}
         closer = {"n": 0, "closer": 0, "before": [], "after": []}
         spacing = next((m["spacing"] for m in model if "spacing" in m), None)
         learned = {(p[0], p[1]): p[2] for p in spacing["pairs"]} if spacing else {}
@@ -356,6 +357,16 @@ def main():
             _, how, out = parse_neaten(r)
             for x, v in why_counts(w0).items():
                 setw[x] = setw.get(x, 0) + v
+            # a letter the reading gives ink but Neatest leaves without ink of its own: dropped
+            wy = WHY[-1] if len(WHY) > w0 else []
+            for k, c in enumerate(text):
+                if c.isspace() or k >= len(wy):
+                    continue
+                if k < len(spans) and spans[k]:
+                    dropped["letters"] += 1
+                    dropped["dropped"] += wy[k] == "no-ink"
+                else:
+                    dropped["noread"] += 1
             nxy = [to_xy(p) for p in out]
             session(rec, s, out)
             n = rec.ask("read", "s", "1", "raw")
@@ -413,6 +424,8 @@ def main():
         print(f"Neatest with the text (words set in the font): character error {100 * setr['err'] / max(1, setr['chars']):.1f}%, "
               f"with words {100 * setr['werr'] / max(1, setr['chars']):.1f}%; why: "
               + ", ".join(f"{k} {v}" for k, v in sorted(setw.items())))
+        print(f"  characters with ink in the reading {dropped['letters']}, left without ink of their own "
+              f"(dropped) {dropped['dropped']}; characters the reading gives no ink {dropped['noread']}")
         if read_ms:
             rm = sorted(read_ms)
             print(f"a read of the same lines: median {rm[len(rm) // 2]:.1f} ms, max {rm[-1]:.1f} ms")
