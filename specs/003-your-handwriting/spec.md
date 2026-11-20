@@ -445,11 +445,15 @@ size, spacing) and keep their shape.
   samples; a letter with none keeps its written ink as the line-level corrections leave it,
   moved to its place in the set word (a piece set over two strokes would draw the pen's
   lift between them, and a stroke no piece runs along would not be drawn); so does a letter
-  a piece of a neighbour in its word, in another stroke, crosses or starts on as written,
-  and that neighbour, their ink as written moved as one (an f's bar written on into the
-  next letter would be lost in that one's glyph); where such letters run on into a set
-  letter in one stroke, the stroke goes on from one into the other as written, with no
-  line drawn between where each is placed.
+  whose version there was made from very few samples and doesn't fit the height of its ink
+  (set, it would leave its place on the line). Where kept ink runs on into a set letter in
+  one stroke, the kept letter moves only along the line so the stroke goes on as written,
+  with no line drawn between where each is placed. A bar written on into the next letter
+  (the start of that letter's stroke crossing, or starting on, the letter before as
+  written, along the line) is the letter before's, so it is not lost in the next letter's
+  glyph; the next letter keeps the rest of its ink. No letter of the reading is left out:
+  each keeps ink of its own. Between two words the gap stays at least as wide as written,
+  or as the font's word gap where that is less; the word on the right moves along the line.
   A letter's tail that the reading gives the next letter (it lies wholly before that
   letter's own strokes and is shorter and lower than they are) stays the letter's, and a lead-in the
   reading gives the letter before stays the next letter's: the pen was lifted there, so the

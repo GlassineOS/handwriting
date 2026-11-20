@@ -327,10 +327,10 @@ class Neaten(unittest.TestCase):
     def tearDown(self):
         TR.shutil.rmtree(self.e.dir, ignore_errors=True)
 
-    def letters(self, seed=1, change=None, shapes=None, more=()):
-        """a letter model from synthetic prompted samples of separate letters (each stroke
-        changed by change(stroke) first), and more samples"""
-        ss = TL.alphabet_samples(seed=seed, per=4, shapes=shapes) + list(more)
+    def letters(self, seed=1, change=None, shapes=None, more=(), per=4):
+        """a letter model from synthetic prompted samples of separate letters, each `per`
+        times (each stroke changed by change(stroke) first), and more samples"""
+        ss = TL.alphabet_samples(seed=seed, per=per, shapes=shapes) + list(more)
         if change:
             for s in ss:
                 s["strokes"] = [change(st) for st in s["strokes"]]
@@ -671,6 +671,69 @@ class Neaten(unittest.TestCase):
         for j in (0, 1):
             self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
 
+    def test_neatest_keeps_a_rare_version_off_the_ink_on_the_line(self):
+        """a letter whose version there was made from fewer than 3 samples and sits far
+        higher than its ink (here every M of the model written twice as tall): the letter
+        keeps its ink as Strong leaves it, no higher or lower, and the rest of the word is set
+        (FR-043)"""
+        n = [0]
+
+        def tall(c, style, rnd):
+            # (two ways of writing it, each twice: two versions of 2 samples each)
+            n[0] += 1
+            return [[(x, 2 * y) for x, y in st] for st in TL.shape(c, n[0] % 2, rnd)]
+        model = self.letters(seed=9, shapes={"M": tall})
+        # (Strong pulling nothing, so its ink is the ink as written, on the line)
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "pull=0"
+        s = TL.sample("Moon", random.Random(96))
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Moon"), align), why=True)
+        c.close()
+        m = [v["members"] for v in model["M"]["variants"]]
+        self.assertLess(max(m), 3, m)
+        self.assertEqual(why[0], "no-structure")
+        self.assertEqual(why[1:], ["set"] * 3)
+        # (its ink where Strong leaves it, to a tenth of an x-height, top and bottom)
+        c = self.e.start()
+        self.begin(c, s)
+        _, strong, _ = parse(c.ask("neaten", "s", "0.75", TR.esc("Moon"), align), why=True)
+        c.close()
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        xs = {o[0]: EV.to_xy(o[2]) for o in strong}
+        ys = [p[1] for j in s["spans"][0] for p in xy[j]]
+        yi = [p[1] for j in s["spans"][0] for p in xs[j]]
+        self.assertLess(abs(min(ys) - min(yi)), 0.1 * 30)
+        self.assertLess(abs(max(ys) - max(yi)), 0.1 * 30)
+
+    def test_neatest_keeps_the_word_gap(self):
+        """two words, the first written narrower than the font sets it: set, it would reach
+        into the second; the gap stays at least as wide as written or the font's word gap,
+        whichever is less (FR-043)"""
+        self.letters(seed=9)
+        s = TL.sample("nun nun", random.Random(97))
+        x0 = min(p[0] for j in s["spans"][0] for p in s["strokes"][j])
+        for sp in s["spans"][:3]:
+            for j in sp:
+                s["strokes"][j] = [[round(x0 + 0.7 * (p[0] - x0), 3)] + p[1:] for p in s["strokes"][j]]
+        # (the second word moved up to the first, a third of an x-height from it)
+        r1 = max(p[0] for sp in s["spans"][:3] for j in sp for p in s["strokes"][j])
+        l2 = min(p[0] for sp in s["spans"][4:] for j in sp for p in s["strokes"][j])
+        for sp in s["spans"][4:]:
+            for j in sp:
+                s["strokes"][j] = [[round(p[0] - (l2 - r1) + 10.0, 3)] + p[1:] for p in s["strokes"][j]]
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("nun nun"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["set"] * 3 + ["space"] + ["set"] * 3)
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        a = max(p[0] for sp in s["spans"][:3] for j in sp for p in xy[j])
+        b = min(p[0] for sp in s["spans"][4:] for j in sp for p in xy[j])
+        self.assertGreater(b - a, 10.0 - 0.5)
+
     def test_neatest_keeps_a_stem_joined_into(self):
         """an a joined on into the stem of a b, p, k or t whose other stroke is its own just
         right of the stem (a t's bar written long, wholly right of it): the stem is the
@@ -705,31 +768,29 @@ class Neaten(unittest.TestCase):
                 self.assertEqual(why, ["set", "set"])
 
     def test_neatest_runs_on_from_kept_ink_into_a_set_letter(self):
-        """an f's bar written into the o, and the o joined on into the n in the same stroke:
-        the f and o keep their ink as written, the n is set, and the stroke goes on from the
-        o into the n as written, with no line drawn between where each was placed (FR-043)"""
+        """an F written in two strokes (its glyph in three: it keeps its ink), its middle bar
+        run on into the o in one stroke: the o is set, and the stroke goes on from the F into
+        the o as written, with no line drawn between where each was placed (FR-043)"""
         self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
-        s = TL.sample("fon", random.Random(94), shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("Fo", random.Random(94), shapes=TL.WHOLE_SHAPES)
         st, sp = s["strokes"], s["spans"]
-        bar, o, n0 = st[sp[0][1]], st[sp[1][0]], st[sp[2][0]]
-        a, b = o[-1], n0[0]
+        f0, f1, f2 = (st[j] for j in sp[0])
+        o = st[sp[1][0]]
+        a, b = f2[-1], o[0]
         bridge = [[round(a[0] + (b[0] - a[0]) * z / 4, 3), round(a[1] + (b[1] - a[1]) * z / 4, 3), 0, 0.5] for z in range(1, 4)]
-        one = bar + o + bridge + n0
-        rest = [st[j] for j in sp[2][1:]]
-        s["strokes"] = [st[sp[0][0]], one] + rest
+        one = f2 + bridge + o
+        s["strokes"] = [list(reversed(f0)) + f1, one]
         TL.retime_sample(s)
-        nb, no = len(bar), len(o) + len(bridge)
-        align = ";".join([f"0:0-{len(st[sp[0][0]]) - 1}", f"1:0-{nb + no - 1}",
-                          ",".join([f"1:{nb + no}-{len(one) - 1}"] + [f"{2 + z}:0-{len(r) - 1}" for z, r in enumerate(rest)])])
+        nf = len(f2) + len(bridge)
+        align = f"0:0-{len(s['strokes'][0]) - 1},1:0-{nf - 1};1:{nf}-{len(one) - 1}"
         c = self.e.start()
         self.begin(c, s)
-        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fo"), align), why=True)
         c.close()
-        self.assertEqual(why, ["no-structure", "no-structure", "set"])
+        self.assertEqual(why, ["no-structure", "set"])
         xy = {q[0]: EV.to_xy(q[2]) for q in out}
-        i = nb + no
-        raw = math.hypot(one[i][0] - one[i - 1][0], one[i][1] - one[i - 1][1])
-        step = math.hypot(xy[1][i][0] - xy[1][i - 1][0], xy[1][i][1] - xy[1][i - 1][1])
+        raw = math.hypot(one[nf][0] - one[nf - 1][0], one[nf][1] - one[nf - 1][1])
+        step = math.hypot(xy[1][nf][0] - xy[1][nf - 1][0], xy[1][nf][1] - xy[1][nf - 1][1])
         self.assertLess(step, raw + 0.25 * 30)
 
     def test_neatest_gives_an_exit_tail_back(self):
@@ -759,7 +820,7 @@ class Neaten(unittest.TestCase):
     def test_neatest_keeps_a_bar_written_into_the_next_letter(self):
         """an f's bar written on into the next letter (the start of that one's stroke, which
         the reading gives it alone): set over the next letter's glyph it would be lost, so
-        both keep their ink as written (FR-043)"""
+        it is the f's, and both letters are set, the f with its bar (FR-043)"""
         self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
         s = TL.run_on("f", "o", random.Random(92), 1)
         align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
@@ -767,7 +828,7 @@ class Neaten(unittest.TestCase):
         self.begin(c, s)
         _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fo"), align), why=True)
         c.close()
-        self.assertEqual(why, ["no-structure", "no-structure"])
+        self.assertEqual(why, ["set", "set"])
         # the o's stroke still starts with the bar, from left of the f's stem at its height
         xy = {o[0]: EV.to_xy(o[2]) for o in out}
         stem, bar = xy[0], xy[1][0]
