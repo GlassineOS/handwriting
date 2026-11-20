@@ -796,13 +796,14 @@ uv run python -m glassine_train.alignrun data --out build/align
 uv run python -m glassine_train.alignrun train --data build/align --out build/align/aligner.pt --ce 1.0
 ```
 
-**The chain loss alone does not find the boundaries.** Trained on it alone (2 000 steps), the
-network learns a likelihood as good with the wrong cuts: it gives most frames a common
-letter and squeezes the others into a frame or two at the ends, so the best path holds 10 %
-of the frames right with the true target. With a frame cross-entropy on the generator's
-point labels at weight 0.1 it did the same after 2 250 steps; at weight 1.0 (8 000 steps, 67 minutes on 8
-threads) it labels the points. So the chain is what decodes, and the labels are learned
-from the generator's truth.
+**The chain loss alone did not find the boundaries within 2 000 of 8 000 steps.** Trained on
+it alone, the network reached a likelihood as good with the wrong cuts: it gave most frames
+a common letter and squeezed the others into a frame or two, so the best path held 10 % of
+the frames right with the true target. With a frame cross-entropy on the generator's point
+labels at weight 0.1 it did the same after 2 250 steps; at weight 1.0 (8 000 steps, 67
+minutes on 8 threads) it labels the points. So the model below is supervised by the
+generator's labels; the chain is what decodes it. Whether the chain loss alone gets there
+with longer training is not measured.
 
 **Synthetic joined ink** (the 14 held-out writers, 3359 strokes with 6078 joins between
 letters; the distance along the stroke from the cut to the join, in x-heights, 0 inside it;
@@ -822,9 +823,12 @@ straight bridges between glyph strokes, the kind the aligner was trained on, so 
 favours it.
 
 **One writer's real prompted ink** (the fixed test session, 113 samples with exact spans,
-1043 strokes, 292 of them shared by several letters; spans are stroke-level, so only which
-letters a stroke holds can be checked, not where it is cut; the spans were kept where the
-recognizer's own alignment passed, which favours the recognizer):
+1043 strokes, 292 of them shared by several letters). These spans are not an independent
+truth: the recognizer makes them at confirm from its own alignment (a stroke is listed for
+each character the alignment gave points of it), with the model of the time, and keeps them
+`exact` when that alignment fits. So the table measures agreement with an earlier
+recognizer alignment, at stroke level only (not where a stroke is cut), and it favours the
+recognizer:
 
 | | strokes with their letters exactly | shared strokes exactly | letters lost in shared strokes |
 |---|---|---|---|
@@ -832,10 +836,10 @@ recognizer's own alignment passed, which favours the recognizer):
 | shape cut, text alone | 48 % | 72 % | 2.7 % |
 | aligner, text alone | 64 % | 31 % | 30 % |
 
-The aligner places separate strokes better but loses a letter in a real joined stroke three
-times in ten: real joins are not the generator's bridges. Not better where it matters, so
-not wired in and not merged. Next would be training on real joined ink with point labels
-(none of ours has them), or joins drawn as real hands join.
+The aligner agrees more on whole strokes but gives a different set of letters to most
+shared strokes, a letter missing in three in ten. Which of the two is right there can't be
+told from these spans; real ink with point labels would tell. Until then it is not wired in
+and not merged.
 
 ## What limits accuracy
 
