@@ -505,11 +505,11 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   beside a letter kept as written with more pieces than any version of that one has (it
   holds this letter's body) keeps its ink as written too: set, it would be drawn twice.
   Each two letters side by side in a set word, one of them kept as written or set on its
-  ink's height as above (the font's sides and advance don't fit it), or one set on a version
-  of fewer than 3 samples where the font leaves the pair more than 0.3 x-heights further
-  apart than the person writes it,
-  are set at the gap the person writes them at (spacing.c: between their ink profiles as
-  set, the narrowest across the bands), never wider than the word gap; the letters after
+  ink's height as above (the font's sides and advance don't fit it), are placed as the
+  line-level spacing places letters (`hw_spacing_place`: from their ink profiles and
+  middles as set, at the gap and the middles' distance the person writes the pair at, never
+  closer than that gap, or half the typical one, between the baseline and the x-height),
+  never wider than the word gap; the letters after
   move along the line with the second (not where kept ink runs on into its neighbour as
   written, nor beside a letter kept for the rule just above). Letters kept so that run on
   into a set letter in one stroke move along the line, never up or down, until the stroke

@@ -448,8 +448,7 @@ size, spacing) and keep their shape.
   version there was made from very few samples and doesn't fit the height of its ink is set
   scaled to its ink's top and bottom, so it keeps its place on the line. No letter is drawn
   twice: a letter whose ink is only a scrap of a neighbour's, beside a kept letter that
-  holds its body, keeps its ink too. Beside a kept letter, one set on its ink's height, or
-  one from very few samples the font sets much too far off,
+  holds its body, keeps its ink too. Beside a kept letter, or one set on its ink's height,
   the next letter sits at the gap the person writes the pair at. Where kept ink runs on into a set letter in
   one stroke, the kept letter moves only along the line so the stroke goes on as written,
   with no line drawn between where each is placed. A bar written on into the next letter

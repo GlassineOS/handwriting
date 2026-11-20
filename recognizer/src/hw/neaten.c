@@ -2458,15 +2458,14 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 		}
 		free(sh); free(has);
 	}
-	/* each two letters side by side in a set word, one of them kept as written, set on its
-	 * ink's height (the font's sides and advance don't fit it), or set on a version of
-	 * fewer than HW_NEAT_SET_RARE samples where the font leaves them more than
-	 * HW_NEAT_SPACE_WIDE further apart than the person does (so rare a version's sides say
-	 * little): the gap between their ink profiles as set (spacing.c:
-	 * the narrowest across the bands) the one the person sets the pair at, never wider than
-	 * the font's word gap; the letters after it move along the line with it
-	 * (not where kept ink runs on into its neighbour as written, nor beside a letter kept
-	 * as a fragment or one holding a neighbour's body) */
+	/* each two letters side by side in a set word, one of them kept as written or set on its
+	 * ink's height (the font's sides and advance don't fit it): the second where the
+	 * line-level spacing would place it beside the first (hw_spacing_place: from their ink
+	 * profiles and middles as set, at the gap and middles' distance the person writes the
+	 * pair at, never closer than that gap, or half the typical one, between the baseline
+	 * and the x-height), never further than the font's word gap; the letters after it move
+	 * along the line with it (not where kept ink runs on into its neighbour as written, nor
+	 * beside a letter kept as a fragment or one holding a neighbour's body) */
 	for (size_t k0 = 0; k0 < nc;) {
 		if (word[k0] < 0) { k0++; continue; }
 		size_t k1 = k0;
@@ -2475,13 +2474,12 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 		for (size_t k = k0; ok[w] && k + 1 < k1; k++) {
 			size_t o = k + 1;
 			if (gjo[k] >= 0 || gjo[o] >= 0 || gv[k] < 0 || gv[o] < 0 || kept[k] == 2 || kept[o] == 2) continue;
-			const struct hw_letter *lk = letter_of(V, q->cp[k]), *lo = letter_of(V, q->cp[o]);
 			int odd = kept[k] || kept[o] || fa[k] != 1 || fa[o] != 1;
-			int rare = lk->var[gv[k]].members < HW_NEAT_SET_RARE || lo->var[gv[o]].members < HW_NEAT_SET_RARE;
-			if ((!odd && !rare) || (ron[k] && (kept[k] || kept[o]))) continue;
+			if (!odd || (ron[k] && (kept[k] || kept[o]))) continue;
 			/* (a join drawn between them stays as drawn) */
 			if (ron[k] && !kept[k] && !kept[o] && fa[k] == 1 && fa[o] == 1) continue;
 			struct hw_profile pa, pb;
+			struct hw_mid ma = { 0, 0 }, mb = { 0, 0 };
 			hw_profile_clear(&pa);
 			hw_profile_clear(&pb);
 			for (size_t j = 0; j < n; j++) {
@@ -2490,19 +2488,20 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 					int c = q->own[j][i];
 					if (c != (int)k && c != (int)o) continue;
 					struct hw_profile *pp = c == (int)k ? &pa : &pb;
+					struct hw_mid *mm = c == (int)k ? &ma : &mb;
 					double x = X[j][i] / xh, y = (base - X[n + 1 + j][i]) / xh;
 					int on = i && q->own[j][i - 1] == c;
 					double px = on ? X[j][i - 1] / xh : x, py = on ? (base - X[n + 1 + j][i - 1]) / xh : y;
 					hw_profile_seg(pp, px, py, x, y);
+					if (on) hw_mid_seg(mm, px, py, x, y);
 				}
 			}
 			if (hw_profile_empty(&pa) || hw_profile_empty(&pb)) continue;
-			double want = hw_spacing_gap(&V->sp, q->cp[k], &pa, hw_spacing_side(&V->sp, &pa, 1), q->cp[o], &pb,
-						     hw_spacing_side(&V->sp, &pb, 0));
+			double mv = hw_spacing_place(&V->sp, q->cp[k], &pa, hw_mid_of(&ma), hw_spacing_side(&V->sp, &pa, 1),
+						     q->cp[o], &pb, hw_mid_of(&mb), hw_spacing_side(&V->sp, &pb, 0));
 			double g = hw_profile_gap(&pa, &pb, 0);
-			if (!isfinite(want) || !isfinite(g)) continue;
-			double mv = fmin(want, V->sp.word) - g;
-			if (!odd && mv > -HW_NEAT_SPACE_WIDE) continue;
+			if (!isfinite(mv) || !isfinite(g)) continue;
+			if (g + mv > V->sp.word) mv = V->sp.word - g;
 			for (size_t j = 0; j < n; j++)
 				for (size_t i = 0; X[j] && sw[j] == w && i < q->ink[j].n; i++)
 					if (q->own[j][i] > (int)k && (size_t)q->own[j][i] < k1) X[j][i] += mv * xh;
