@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 14     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 16     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
