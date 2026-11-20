@@ -451,7 +451,7 @@ size, spacing) and keep their shape.
   letter in one stroke, the stroke goes on from one into the other as written, with no
   line drawn between where each is placed.
   A letter's tail that the reading gives the next letter (it lies wholly before that
-  letter's own strokes and is shorter than they are) stays the letter's, and a lead-in the
+  letter's own strokes and is shorter and lower than they are) stays the letter's, and a lead-in the
   reading gives the letter before stays the next letter's: the pen was lifted there, so the
   two aren't joined. Two letters are joined only where the person didn't lift the pen between them: the ink runs along the
   join from the end of the stroke the first letter's piece is set along to the start of the

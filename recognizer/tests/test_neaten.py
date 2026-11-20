@@ -671,6 +671,39 @@ class Neaten(unittest.TestCase):
         for j in (0, 1):
             self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
 
+    def test_neatest_keeps_a_stem_joined_into(self):
+        """an a joined on into the stem of a b, p, k or t whose other stroke is its own just
+        right of the stem (a t's bar written long, wholly right of it): the stem is the
+        letter's (taller than its other stroke), no exit tail of the a, and both letters are
+        set (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        for c in "bpkt":
+            with self.subTest(c=c):
+                s = TL.sample("a" + c, random.Random(95), shapes=TL.WHOLE_SHAPES)
+                st, sp = s["strokes"], s["spans"]
+                a, stem = st[sp[0][-1]], st[sp[1][0]]
+                if c == "t":
+                    # (the bar from just right of the stem, longer than it)
+                    x0 = max(q[0] for q in stem) + 1.5
+                    y = st[sp[1][1]][0][1]
+                    st[sp[1][1]] = [[round(x0 + 3.0 * z, 3), y, 0, 0.5] for z in range(18)]
+                u, v = a[-1], stem[0]
+                bridge = [[round(u[0] + (v[0] - u[0]) * z / 4, 3), round(u[1] + (v[1] - u[1]) * z / 4, 3), 0, 0.5] for z in range(1, 4)]
+                one = a + bridge + stem
+                rest = [st[j] for j in sp[1][1:]]
+                firsts = [st[j] for j in sp[0][:-1]]
+                s["strokes"] = firsts + [one] + rest
+                TL.retime_sample(s)
+                k = len(firsts)
+                na = len(a) + len(bridge)
+                align = ";".join([",".join([f"{j}:0-{len(f) - 1}" for j, f in enumerate(firsts)] + [f"{k}:0-{na - 1}"]),
+                                  ",".join([f"{k}:{na}-{len(one) - 1}"] + [f"{k + 1 + z}:0-{len(r) - 1}" for z, r in enumerate(rest)])])
+                e = self.e.start()
+                self.begin(e, s)
+                _, out, why = parse(e.ask("neaten", "s", "1", TR.esc("a" + c), align), why=True)
+                e.close()
+                self.assertEqual(why, ["set", "set"])
+
     def test_neatest_runs_on_from_kept_ink_into_a_set_letter(self):
         """an f's bar written into the o, and the o joined on into the n in the same stroke:
         the f and o keep their ink as written, the n is set, and the stroke goes on from the
