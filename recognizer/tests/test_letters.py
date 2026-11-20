@@ -579,6 +579,17 @@ class LetterModel(unittest.TestCase):
         self.assertGreater(stubs, 3)
         self.e.run("letters", "build", "-r")
         self.assertEqual(self.e.model(), after_text)
+        # one character learned again (its neighbours cut by the model's variants): the others
+        # as they were, its own samples and ways, its entry and exit kept
+        lines = lambda t: {json.loads(x).get("char"): x for x in t.splitlines() if x.startswith('{"char"')}
+        for c in "as":
+            was = lines(self.e.model())
+            self.e.run("letters", "build", "-c", c)
+            now = lines(self.e.model())
+            self.assertEqual({k: v for k, v in now.items() if k != c}, {k: v for k, v in was.items() if k != c})
+            d = json.loads(now[c])
+            self.assertTrue(any("entry" in v or "exit" in v for v in d["variants"]), c)
+            self.assertEqual([(v["ids"], v["use"]) for v in d["variants"]], [(v["ids"], v["use"]) for v in after[c]["variants"]])
 
     def test_sc001_forty_careful_samples(self):
         rnd = random.Random(5)
