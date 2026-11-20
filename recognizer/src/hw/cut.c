@@ -52,10 +52,38 @@ double hw_cut_cost(const double *x, const double *y, size_t a, size_t b, const d
 	return sqrt(e / HW_CUT_N) + HW_CUT_LEN * fabs(log(fmax(len, 0.02) / fmax(g->len, 0.02)));
 }
 
+static int cut_dp(const double *x, const double *y, size_t m, double xh, size_t R, const struct hw_cut_ref *refs,
+		  const size_t *off, size_t *at, int *which, double *cost);
+
 int hw_cut_shape(const double *x, const double *y, size_t m, double xh, size_t R, const struct hw_cut_ref *refs,
 		 const size_t *off, size_t *at, int *which, double *cost)
 {
 	if (!R || m < 2 * R || !(xh > 0)) return 1;
+	/* the cut is placed at no more than HW_CUT_PTS points (and HW_CUT_PER per letter) of the
+	 * stroke: every step-th and the last (the work grows with the cube of the points) */
+	size_t cap = HW_CUT_PTS > HW_CUT_PER * R ? HW_CUT_PTS : HW_CUT_PER * R;
+	if (m <= cap) return cut_dp(x, y, m, xh, R, refs, off, at, which, cost);
+	size_t step = (m + cap - 1) / cap, nd = 0;
+	size_t *idx = malloc((m / step + 2) * sizeof *idx);
+	double *dx = malloc((m / step + 2) * 2 * sizeof *dx);
+	if (!idx || !dx) { free(idx); free(dx); return -1; }
+	for (size_t i = 0; i < m; i += step) idx[nd++] = i;
+	if (idx[nd - 1] != m - 1) idx[nd++] = m - 1;
+	double *dy = dx + nd;
+	for (size_t i = 0; i < nd; i++) { dx[i] = x[idx[i]]; dy[i] = y[idx[i]]; }
+	int r = cut_dp(dx, dy, nd, xh, R, refs, off, at, which, cost);
+	if (!r) {
+		for (size_t k = 0; k < R; k++) at[k] = idx[at[k]];
+		at[R] = m;
+	}
+	free(idx); free(dx);
+	return r;
+}
+
+static int cut_dp(const double *x, const double *y, size_t m, double xh, size_t R, const struct hw_cut_ref *refs,
+		  const size_t *off, size_t *at, int *which, double *cost)
+{
+	if (m < 2 * R) return 1;
 	for (size_t r = 0; r < R; r++) if (off[r + 1] <= off[r]) return 1;
 	double *cum = malloc((m + 1) * sizeof *cum), *D = malloc((R + 1) * (m + 1) * sizeof *D);
 	size_t *P = malloc((R + 1) * (m + 1) * sizeof *P);

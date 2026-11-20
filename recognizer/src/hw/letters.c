@@ -2541,7 +2541,6 @@ static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const st
  * Within its part each letter's own ink is where its part matches that stroke best with the
  * ends at a joint let go (up to half the part at each joint end): the rest of the part is the
  * joining stroke, its entry before it and its exit after it. */
-#define JOIN_CUT_PTS 96         /* a joined stroke is cut at most at this many of its points */
 #define JOIN_LET_GO 0.5         /* of its part a letter's entry or exit takes at most this much */
 static hw_cut_fn join_cut = hw_cut_shape;
 /* the model the cut looks up a letter in that the build doesn't make (one character's build:
@@ -2626,8 +2625,10 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 				if (nref == off[r]) ok = 0;
 			}
 			off[R] = nref;
-			/* (at most JOIN_CUT_PTS of its points: every step-th and the last) */
-			size_t m2 = ink->n, step = (m2 + JOIN_CUT_PTS - 1) / JOIN_CUT_PTS, nd = 0;
+			/* (at most as many of its points as hw_cut_shape cuts at: every step-th and the
+			 * last; the parts are trimmed at them too) */
+			size_t cap = HW_CUT_PTS > HW_CUT_PER * R ? HW_CUT_PTS : HW_CUT_PER * R;
+			size_t m2 = ink->n, step = (m2 + cap - 1) / cap, nd = 0;
 			for (size_t i = 0; i < m2; i += step) idx[nd++] = i;
 			if (idx[nd - 1] != m2 - 1) idx[nd++] = m2 - 1;
 			double *dy = dx + nd;

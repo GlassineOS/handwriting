@@ -403,7 +403,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   one go) is cut among them where its parts best match their glyphs, when each has one (no pair
   the font joins): in order, each letter's part its glyph's stroke as its pieces come in writing
   order, each part and its glyph stroke at 24 points along them, centred, at the line's
-  x-height (their RMS distance and a quarter of the log of their lengths' ratio). The
+  x-height (their RMS distance and a quarter of the log of their lengths' ratio), the cut
+  placed at no more than 96 of the stroke's points (12 per letter for more than 8 letters:
+  every so many and the last; the cost grows with the cube of the points). The
   alignment's frames put an edge a letter off often enough that joined letters lose their own
   ink; without `ALIGN` the letters are those it gives the stroke points and those between,
   and a neighbour it gives fewer pieces than its glyph has strokes, its others after the
@@ -813,7 +815,7 @@ samples written apart alone. Then each stroke that the spans give two or more le
 in order, each part against the stroke of a version with the letter's stroke count that it takes
 the place of (the best of them: centred RMS at the sample's x-height plus a quarter of the log of
 the lengths' ratio), the least total, the cut placed at no more than 96 of the stroke's points
-(the cut is a function of its own, so another way of matching can take its place). Within its
+(12 per letter for more than 8 letters), as neatening's shape cut is (the cut is a function of its own, so another way of matching can take its place). Within its
 part a letter's own ink is where that part matches the version's stroke best when up to half
 the part at a joint end is let go: what is let go is the joining stroke, the letter's entry
 before it and its exit after it. A letter whose strokes are all its own or cut so, not left out

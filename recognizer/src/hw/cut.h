@@ -11,6 +11,8 @@
 
 #define HW_CUT_N 24             /* points a part and a reference stroke are compared at */
 #define HW_CUT_LEN 0.25         /* the weight of the log of the lengths' ratio */
+#define HW_CUT_PTS 96           /* hw_cut_shape cuts a stroke at most at this many of its points, */
+#define HW_CUT_PER 12           /* or this many per letter */
 
 /* a reference stroke: x-heights, y up, resampled to HW_CUT_N points by arc length; len its
  * length */
@@ -36,7 +38,9 @@ typedef int (*hw_cut_fn)(const double *x, const double *y, size_t m, double xh, 
 			 const size_t *off, size_t *at, int *which, double *cost);
 
 /* the shape cut: each part against its letter's references (hw_cut_cost, the best
- * candidate), the least total, by dynamic programming over the cut points */
+ * candidate), the least total, by dynamic programming over the cut points (a stroke of more
+ * than HW_CUT_PTS points, HW_CUT_PER per letter, at every step-th of them: the parts end at
+ * points of the stroke all the same) */
 int hw_cut_shape(const double *x, const double *y, size_t m, double xh, size_t R, const struct hw_cut_ref *refs,
 		 const size_t *off, size_t *at, int *which, double *cost);
 
