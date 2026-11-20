@@ -291,17 +291,18 @@ def near_seg(x, y, segs):
     return bp
 
 
-def on_set(pts, glyphs, rounds=60):
+def on_set(pts, glyphs, rounds=60, size=None):
     """how far points (device units, y down) lie from a set word's glyph strokes (x-heights,
     y up; per point the strokes it should lie on) once scaled and moved onto them at best (one
-    scale, no stretch): (RMS in x-heights, the scale: device units per x-height, the
-    baseline's y, the x of the glyphs' 0)"""
+    scale, no stretch; near size, device units per x-height, when given, else near the
+    boxes'): (RMS in x-heights, the scale: device units per x-height, the baseline's y, the x
+    of the glyphs' 0)"""
     P = [(x, -y) for x, y in pts]
     segs = [[(a, b) for st in g for a, b in (zip(st, st[1:]) if len(st) > 1 else [(st[0], st[0])])] for g in glyphs]
     gx = [p[0] for g in glyphs for st in g for p in st]
     gy = [p[1] for g in glyphs for st in g for p in st]
     px, py = [p[0] for p in P], [p[1] for p in P]
-    sc = (max(gx) - min(gx) + max(gy) - min(gy)) / ((max(px) - min(px) + max(py) - min(py)) or 1)
+    sc = 1 / size if size else (max(gx) - min(gx) + max(gy) - min(gy)) / ((max(px) - min(px) + max(py) - min(py)) or 1)
     tx, ty = min(gx) - sc * min(px), min(gy) - sc * min(py)
     sc0 = sc
     mx, my = sum(px) / len(P), sum(py) / len(P)
@@ -427,8 +428,12 @@ class Neaten(unittest.TestCase):
         self.letters()
         self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
         n = 0
+        # (which characters this random-weight model's alignment leaves with ink of their own
+        # to check moves with each change to how joined strokes are cut: enough texts that
+        # more than ten are checked)
         for seed, text in enumerate(("the there", "he he", "see the tree", "then when", "her here",
-                                     "wet ewe", "the wet hen", "three trees")):
+                                     "wet ewe", "the wet hen", "three trees", "tee hee", "where were",
+                                     "het the ether")):
             rnd = random.Random(70 + seed)
             s = TL.sample(text, rnd)
             # one letter in two strokes, as a hasty hand lifts the pen
@@ -1033,17 +1038,26 @@ class Neaten(unittest.TestCase):
         share = {key: p / n for key, (p, n) in rate.items()}
         # (with ALIGN by points: whole or without ALIGN the strokes are cut by the
         # recognizer's alignment, of a model with random weights here)
-        for lv in (0.75, 1):
-            self.assertGreaterEqual(share[(lv, "points")], share[(lv, "apart")] - 0.05, share)
+        # (at Strong within 0.06: a joined letter whose matched places stop short of its
+        # glyph's end at the joint is traced by the length along it, and these synthetic
+        # letters have 12 points to a stroke, about 0.2 x-heights apart; where the version
+        # keeps its samples' sharp turn (FR-006) that trace turns by more than a right angle
+        # at one point where the coarse ink turns by less, so the flow rule holds it back:
+        # two t's in this set. Written apart the same points match the turn whole.)
+        for lv, slack in ((0.75, 0.06), (1, 0.05)):
+            self.assertGreaterEqual(share[(lv, "points")], share[(lv, "apart")] - slack, share)
 
     def test_joined_pairs_and_marks(self):
         """letters written joined in one stroke (st, ch, ri, as inside words), ALIGN by points:
-        at Strong and Neatest each letter of such a pair is pulled (the stroke cut where its
-        letters meet, the join drawn anew; at Strong the shape guard may hold back one whose
-        pull part of the way passes nearer another letter's versions), with no new kink or
-        step back, every letter kept and in order, and at Neatest each glyph drawn whole in
-        its letter's ink; an i's dot, written aside, sits at Strong where Neatest has it on
-        the pulled stem"""
+        at Strong and Neatest each letter of such a pair is pulled or set (the stroke cut where
+        its letters meet, the join drawn anew; at Strong the shape guard may hold back one whose
+        pull part of the way passes nearer another letter's versions), with no new kink or step
+        back and every letter kept and in order; at Neatest each word set in the font (FR-043:
+        each letter's points on the glyph the font sets for it, each of the word's glyph strokes
+        reached at both ends by the word's ink); the full pull (Neatest without setting the
+        words, set=0, the place every pull is part of the way to) draws each glyph whole in its
+        letter's ink; an i's dot, written aside, sits at Medium and Strong where the full pull
+        has it on the pulled stem (FR-036)"""
         sh = {"i": TL.dotted_i}
         self.letters(shapes=sh)
 
@@ -1055,30 +1069,30 @@ class Neaten(unittest.TestCase):
         xh = 30.0
         words = ["past", "chin", "brim", "has", "rich", "cast", "arise", "chase", "first", "this"]
         pairs = ("st", "ch", "ri", "as")
-        n = drawn = held = 0
+        n = drawn = held = setw = 0
         mark = {}
         for i in range(0, len(words), 5):
             s, at, _ = joined_line(rnd, words[i:i + 5], shapes={"i": aside})
             text = s["text"]
             align = ";".join(",".join(f"{j}:{a}-{b}" for j, a, b in m) for m in at)
             glyphs = self.glyphs(text)
-            for lv in ("0.75", "1"):
-                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+            lay, how_laid = self.set_layout(text)
+            for lv, knob in (("0.5", ""), ("0.75", ""), ("1", ""), ("full", "set=0")):
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = knob
                 c = self.e.start()
                 self.begin(c, s)
-                _, out, why = parse(c.ask("neaten", "s", lv, TR.esc(text), align), why=True)
+                _, out, why = parse(c.ask("neaten", "s", "1" if lv == "full" else lv, TR.esc(text), align), why=True)
                 c.close()
                 xy = [EV.to_xy(o[2]) for o in out]
                 for j, st in enumerate(s["strokes"]):
                     self.assertEqual(sum(flow([(p[0], p[1]) for p in st], xy[j], xh)), 0, (lv, j))
                 for k in range(len(text) - 1):
-                    if text[k:k + 2] not in pairs:
+                    if text[k:k + 2] not in pairs or lv == "0.5":
                         continue
                     for z in (k, k + 1):
                         # (the shape guard may hold back one whose pull, part of the way,
                         # passes nearer another letter's versions: one in this line)
-                        # (at Neatest a word whose text is given is set: its letters are the font's)
-                        if why[z] not in ("pulled", "set"):
+                        if why[z] != ("set" if lv == "1" else "pulled"):
                             self.assertEqual((lv, why[z]), ("0.75", "shape-guard"), text[k:k + 2])
                             held += 1
                         else:
@@ -1092,13 +1106,13 @@ class Neaten(unittest.TestCase):
                     pts = [xy[j][z] for j, a, b in m for z in range(a, b + 1)]
                     mids.append((min(p[0] for p in pts) + max(p[0] for p in pts)) / 2)
                     g = glyphs[k]
-                    if g is None or why[k] not in ("pulled", "set"):
+                    if g is None or why[k] != "pulled":
                         continue
-                    # at Neatest its glyph is drawn whole in its ink (each point of the glyph
-                    # on the ink, once moved and scaled onto it; the joining stroke drawn
+                    # in the full pull its glyph is drawn whole in its ink (each point of the
+                    # glyph on the ink, once moved and scaled onto it; the joining stroke drawn
                     # anew beside it isn't the glyph's)
                     full = [[(xy[j][z][0] / xh, -xy[j][z][1] / xh) for z in range(a, b + 1)] for j, a, b in m]
-                    if lv == "1" and len(full) == len(g["strokes"]):
+                    if lv == "full" and len(full) == len(g["strokes"]):
                         rev = on_curve([[(p[0], -p[1]) for p in st] for st in g["strokes"]], {"strokes": full})
                         self.assertLess(rev, 0.05, text[k])
                         drawn += 1
@@ -1114,19 +1128,49 @@ class Neaten(unittest.TestCase):
                         offs = [mark_offset(pts, m[an], m[z]) for pts in (xy, s["strokes"])]
                         mark.setdefault((i, k), {})[lv] = offs
                 self.assertEqual(mids, sorted(mids), lv)
-        # at Strong where Neatest (its glyph drawn whole) has it, the dot written aside (the
-        # dot's own pull part of the way would leave it a tenth of an x-height off)
+                if lv != "1":
+                    continue
+                # each word set: its letters' points on their glyphs where the font sets them,
+                # each glyph stroke's ends reached by the word's ink (all the line's words at
+                # one size: fitted at the words' median, as a word's box can mislead its own)
+                k0, fits = 0, []
+                for w in text.split(" "):
+                    ks = range(k0, k0 + len(w))
+                    k0 += len(w) + 1
+                    self.assertEqual([why[k] for k in ks], ["set"] * len(w), (w, why))
+                    wp = [xy[j][z] for k in ks for j, a, b in at[k] for z in range(a, b + 1)]
+                    wg = [lay[k] for k in ks for j, a, b in at[k] for z in range(a, b + 1)]
+                    fits.append((w, ks, wp, wg, on_set(wp, wg)[1]))
+                med = sorted(f[4] for f in fits)[len(fits) // 2]
+                for w, ks, wp, wg, _ in fits:
+                    rms, size, base, x0 = on_set(wp, wg, size=med)
+                    self.assertLess(rms, 0.003, (w, how_laid))
+                    ink = [((p[0] - x0) / size, (base - p[1]) / size)
+                           for j in sorted({j for k in ks for j, _, _ in at[k]}) for p in xy[j]]
+                    for k in ks:
+                        for gs in lay[k]:
+                            for e in (gs[0], gs[-1]):
+                                self.assertLess(min(math.hypot(e[0] - p[0], e[1] - p[1]) for p in ink), 0.1, (w, text[k]))
+                    setw += 1
+        # at Medium and Strong where the full pull (its glyph drawn whole) has it, the dot
+        # written aside (the dot's own pull part of the way would leave it a tenth of an
+        # x-height off)
         dev = []
         for (i, k), o in mark.items():
-            (st, raw), (nt, _) = o["0.75"], o["1"]
-            dev.append(math.hypot(st[0] - nt[0], st[1] - nt[1]) / xh)
-            self.assertLess(dev[-1], 0.06, (i, k))
-            self.assertGreater(math.hypot(raw[0] - nt[0], raw[1] - nt[1]), 0.2 * xh, (i, k))
+            ft, raw = o["full"]
+            for lv in ("0.5", "0.75"):
+                if lv not in o:
+                    continue
+                st = o[lv][0]
+                dev.append(math.hypot(st[0] - ft[0], st[1] - ft[1]) / xh)
+                self.assertLess(dev[-1], 0.06, (i, k, lv))
+            self.assertGreater(math.hypot(raw[0] - ft[0], raw[1] - ft[1]), 0.2 * xh, (i, k))
         self.assertLess(sum(dev) / len(dev), 0.04)
         self.assertGreater(n, 40)
         self.assertLessEqual(held, 1)
         self.assertGreater(drawn, 30)
         self.assertGreater(len(mark), 2)
+        self.assertEqual(setw, 10)
 
     def test_joined_pairs_whole_stroke_align(self):
         """the same joined words with ALIGN of whole strokes (a joined stroke listed for each
