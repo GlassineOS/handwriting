@@ -10,9 +10,11 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 18     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 19     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_LATE_SHARE 0.8 /* a stroke longer than this of the rest of its character's ink is no late stroke */
+#define HW_LETTERS_TOUCH 0.1    /* a neighbour's stroke starting or ending this near (of a character's height) its ink is part of it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
-#define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
+#define HW_LETTERS_USABLE 6     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
 #define HW_LETTERS_VARIANTS 5   /* variants per character at most (FR-006) */
 #define HW_LETTERS_SLOTS 10     /* the font's cycle of variants along the text (FR-010): a tenth each */
@@ -54,7 +56,7 @@
  * mean of its joints each turned and scaled onto its own ends (the ones less than
  * HW_JOIN_SHORT apart have no direction and count for its ends alone); it stays curved only
  * where, left out one at a time, the mean of the others comes nearer each joint than a
- * straight line does, else it is straight. */
+ * straight line does and it is no rougher than HW_JOIN_ROUGH, else it is straight. */
 #define HW_JOIN_N 13            /* points of a join along its length */
 #define HW_JOIN_MID 6           /* the point its two halves meet at */
 #define HW_JOIN_PAIR_MIN 5
@@ -64,6 +66,7 @@
 #define HW_JOIN_KIND_SEEN 10
 #define HW_JOIN_FAR 3.0
 #define HW_JOIN_SHORT 0.02
+#define HW_JOIN_ROUGH 0.01      /* a shape this rough at most stays curved (a smooth curve has about none) */
 #define HW_JOIN_BOW 1.5         /* a shape set longer than it is: its bow grows this much at most */
 #define HW_JOIN_HALF_MIN 0.02   /* x-heights a half runs forwards at least (from its letter) */
 #define HW_JOIN_RUN_MIN 0.1     /* x-heights a joined pair's letters' ends are apart at least */
@@ -265,7 +268,11 @@ struct hw_letters {
 };
 
 /* The joins (FR-044). A variant's exit is the end of its stroke its exit leaves from (its
- * last without one), its entry the start of the stroke its entry leads into (its first). */
+ * last of the main body without one), its entry the start of the stroke its entry leads into
+ * (its first of the main body): never a mark (a dot, a bar, an arm), a stroke shorter than
+ * HW_JOIN_BODY of its longest. hw_join_body says whether stroke j is of the main body. */
+#define HW_JOIN_BODY 0.5
+int hw_join_body(const struct hw_variant *v, size_t j);
 size_t hw_join_exit_stroke(const struct hw_variant *v);
 size_t hw_join_entry_stroke(const struct hw_variant *v);
 int hw_join_exit_class(const struct hw_variant *v);
