@@ -1021,7 +1021,10 @@ class Neaten(unittest.TestCase):
                             new += b + kk
                             if b + kk:
                                 where[(lv, ch)] = where.get((lv, ch), 0) + b + kk
-            self.assertGreater(pulled, 30, versions)
+            # (with the loop added to the versions, registered versions keep it whole, so a few
+            # characters written without it no longer share the versions' structure and are
+            # left as written, "no-structure", where averaged ones were pulled: 35 then, 30 now)
+            self.assertGreater(pulled, 25, versions)
             self.assertEqual(new, 0, (bool(versions), where))
 
     def test_same_strokes_as_the_glyph(self):
