@@ -560,6 +560,29 @@ def cmd_writereval(a):
         Path(a.out).write_text(json.dumps(res, indent=1))
 
 
+def cmd_writerseval(a):
+    """Many writers' ink read as new people, per writer (writerseval.py). The dataset is the
+    user's own copy (a path; nothing is downloaded), the results go to a private --out."""
+    from . import writerseval as W
+    from .lines import CHARS4
+    path = Path(a.dataset)
+    charset = {"common": W.COMMON, "model4": CHARS4}[a.charset]
+    if a.format == "brush":
+        conv = {"line_scale": a.line_scale, "pause": a.pause, "step": a.step}
+        data = W.load_brush(path, a.per_writer, a.seed, charset, conv)
+    else:
+        data = W.load_samples(path, a.per_writer, a.seed, charset)
+    if a.writers:
+        data = dict(list(data.items())[:a.writers])
+    models = []
+    for spec in a.models:  # NAME=NOCHARS_DIR,CHARS_DIR
+        name, dirs = spec.split("=", 1)
+        nc, ch = (Path(d).resolve() for d in dirs.split(","))
+        models.append((name, nc, ch))
+    s = W.run(data, models, a.modes, Path(a.out), Path(a.predict).resolve(), a.workers)
+    print(W.report(s), flush=True)
+
+
 def cmd_inkread(a):
     """Synthetic ink sets through the recognizer program (realeval.py ink_samples): the
     readings of one model directory in one mode, with the letter height known or the line
@@ -1000,6 +1023,22 @@ def main(argv=None):
     we.add_argument("--predict", default="build/predict")
     we.add_argument("--base", default="0.6666667", help="the guides' place in each line of the area")
     we.add_argument("--out", help="aggregates as JSON")
+    wv = sub.add_parser("writerseval", help="many writers' ink read as new people, per writer (evaluation only)")
+    wv.add_argument("dataset", help="the dataset as you obtained it (BRUSH: its directory or ZIP; see brush.py)")
+    wv.add_argument("--format", choices=["brush", "samples"], default="brush")
+    wv.add_argument("--models", nargs="+", required=True, help="NAME=NOCHARS_DIR,CHARS_DIR; the first is the baseline")
+    wv.add_argument("--modes", nargs="+", default=["words+chars"], choices=["ink", "chars", "words", "words+chars"])
+    wv.add_argument("--out", required=True, help="a PRIVATE directory: per-sample ink and readings go here")
+    wv.add_argument("--predict", default="build/predict")
+    wv.add_argument("--per-writer", type=int, default=40, help="lines per writer, drawn at random (0 = all)")
+    wv.add_argument("--writers", type=int, help="only the first N writers")
+    wv.add_argument("--charset", choices=["common", "model4"], default="common",
+                    help="keep lines whose text every model can write (common) or model 4 can")
+    wv.add_argument("--seed", type=int, default=0)
+    wv.add_argument("--line-scale", type=float, default=1.0, help="brush: the area's line over the box height")
+    wv.add_argument("--pause", type=float, default=0.11, help="brush: seconds between strokes")
+    wv.add_argument("--step", type=float, default=0.0, help="brush: densify points to this many pixels apart")
+    wv.add_argument("--workers", type=int, default=8)
     re_ = sub.add_parser("realeval", help="real held-back ink through the recognizer program")
     re_.add_argument("--run", default="")
     re_.add_argument("--ckpt", default="best.pt")
@@ -1116,7 +1155,7 @@ def main(argv=None):
     ic.add_argument("--sheet", help="a PNG of some lines")
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
-    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
+    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "writerseval": cmd_writerseval, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
      "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
