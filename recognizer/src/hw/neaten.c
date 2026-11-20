@@ -1947,8 +1947,62 @@ static int set_fits(const struct hw_neat *q, const struct hw_letters *V, const i
 	return 1;
 }
 
+/* The join between characters k and k + 1 set (FR-044), side 0 k's part (from its exit), 1
+ * k + 1's (to its entry), in that letter's variant's coordinates: the font's halves where the
+ * font joins them, else the learned shape between where the two are set split where the
+ * font's halves would meet; the points' count, 0 none (a straight line then). */
+static int set_join(const struct hw_letters *V, const struct hw_font_joins *J, const unsigned *cp, const int *gvar, const int *jk,
+		    const double *pen, double bear, size_t k, int side, double *x, double *y)
+{
+	enum { N = HW_JOIN_N, M = HW_JOIN_MID };
+	const struct hw_letter *la = letter_of(V, cp[k]), *lb = letter_of(V, cp[k + 1]);
+	if (!la || !lb || gvar[k] < 0 || gvar[k + 1] < 0 || gvar[k] >= la->nvar || gvar[k + 1] >= lb->nvar) return 0;
+	const struct hw_variant *va = &la->var[gvar[k]], *vb = &lb->var[gvar[k + 1]];
+	if (jk && jk[k] >= 0)
+		return hw_font_join_half(V, J, jk[k], (size_t)((side ? lb : la) - V->l), gvar[k + side], side, x, y) ? 0 : side ? N - M : M + 1;
+	const struct hw_jshape *t = hw_join_shape(V, la->cp, va, lb->cp, vb);
+	if (!t || !va->nstrokes || !vb->nstrokes) return 0;
+	const struct hw_lstroke *te = &va->s[hw_join_exit_stroke(va)], *tn = &vb->s[hw_join_entry_stroke(vb)];
+	if (!te->n || !tn->n) return 0;
+	double cx[N], cy[N], o = pen[k] + bear, ob = pen[k + 1] + bear;
+	hw_join_curve(t, o + te->x[te->n - 1], te->y[te->n - 1], ob + tn->x[0], tn->y[0], cx, cy);
+	int i0 = side ? M : 0, i1 = side ? N - 1 : M;
+	for (int i = i0; i <= i1; i++) { x[i - i0] = cx[i] - (side ? ob : o); y[i - i0] = cy[i]; }
+	return i1 - i0 + 1;
+}
+
+/* v with the join parts set_join gives: hx (hn points from its exit) after its exit stroke,
+ * ex (en points to its entry) before its entry stroke; the strokes it changes in buf[0..2) */
+static int join_variant(struct hw_variant *e, struct hw_lstroke *s, double *buf[4], const struct hw_variant *v, const double *hx,
+			const double *hy, int hn, const double *ex, const double *ey, int en)
+{
+	*e = *v;
+	memcpy(s, v->s, v->nstrokes * sizeof *s);
+	e->s = s;
+	size_t xs = hw_join_exit_stroke(v), es = hw_join_entry_stroke(v);
+	for (int side = 0; side < 2; side++) {
+		int m = side ? en : hn;
+		if (m < 2) continue;
+		size_t j = side ? es : xs;
+		size_t n0 = s[j].n, n1 = n0 + (size_t)m - 1;
+		double *nx = malloc(n1 * sizeof *nx), *ny = malloc(n1 * sizeof *ny);
+		if (!nx || !ny) { free(nx); free(ny); return -1; }
+		if (!side) {
+			memcpy(nx, s[j].x, n0 * sizeof *nx); memcpy(ny, s[j].y, n0 * sizeof *ny);
+			for (int i = 1; i < m; i++) { nx[n0 + (size_t)i - 1] = hx[i]; ny[n0 + (size_t)i - 1] = hy[i]; }
+		} else {
+			for (int i = 0; i + 1 < m; i++) { nx[i] = ex[i]; ny[i] = ey[i]; }
+			memcpy(nx + m - 1, s[j].x, n0 * sizeof *nx); memcpy(ny + m - 1, s[j].y, n0 * sizeof *ny);
+		}
+		buf[2 * side] = nx; buf[2 * side + 1] = ny;
+		s[j].x = nx; s[j].y = ny; s[j].n = n1;
+	}
+	return 0;
+}
+
 /* the words set: per character 1 when its word is set; how far (f: 0 Strong's ink, 1 set) */
-static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *gvar, const long *gjo, double f)
+static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct hw_font_joins *J, const int *gvar, const long *gjo,
+		     const int *gjk, double f)
 {
 	size_t nc = q->nc, n = q->n;
 	double xh = q->line_xh, base = q->line_base;
@@ -1958,10 +2012,14 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 	double *pen = malloc((nc + 1) * sizeof *pen), **X = NULL;
 	int *word = malloc((nc + 1) * sizeof *word), *sw = malloc((n + 1) * sizeof *sw);
 	long *npts = calloc(nc + 1, sizeof *npts);
-	unsigned char *ok = NULL;
-	if (!pen || !word || !sw || !npts) goto out;
+	unsigned char *ok = NULL, *ron = calloc(nc + 1, 1);
+	if (!pen || !word || !sw || !npts || !ron) goto out;
 	double bear;
-	hw_font_layout(V, q->cp, nc, gvar, gjo, pen, &bear);
+	hw_font_layout(V, J, q->cp, nc, gvar, gjo, gjk, pen, &bear);
+	/* where the ink runs on from one character into the next */
+	for (size_t j = 0; j < n; j++)
+		for (size_t i = 0; i + 1 < q->ink[j].n; i++)
+			if (q->own[j][i] >= 0 && (size_t)q->own[j][i] + 1 < nc && q->own[j][i + 1] == q->own[j][i] + 1) ron[q->own[j][i]] = 1;
 	int nw = 0;
 	for (size_t k = 0; k < nc; k++) {
 		if (is_space(q->cp[k])) { word[k] = -1; if (k && !is_space(q->cp[k - 1])) nw++; continue; }
@@ -2049,6 +2107,20 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 						if (OWNS(q->own[j][i])) { X[j][i] = q->x[j][i] + dx; X[n + 1 + j][i] = q->y[j][i]; }
 				continue;
 			}
+			/* its joins to the letters beside it where the ink runs on (FR-043, FR-044) */
+			struct hw_variant jv;
+			struct hw_lstroke *js = NULL;
+			double *jbuf[4] = { 0 }, hx[HW_JOIN_N], hy[HW_JOIN_N], ex[HW_JOIN_N], ey[HW_JOIN_N];
+			int hn = 0, en = 0;
+			if (!pair && gjo[k] < 0 && gvar[k] >= 0) {
+				if (k + 1 < k1 && ron[k] && gjo[k + 1] < 0) hn = set_join(V, J, q->cp, gvar, gjk, pen, bear, k, 0, hx, hy);
+				if (k > k0 && ron[k - 1] && gjo[k - 1] < 0) en = set_join(V, J, q->cp, gvar, gjk, pen, bear, k - 1, 1, ex, ey);
+			}
+			if (hn || en) {
+				js = malloc((v->nstrokes + 1) * sizeof *js);
+				if (!js || join_variant(&jv, js, jbuf, v, hx, hy, hn, ex, ey, en)) { free(js); for (int b = 0; b < 4; b++) free(jbuf[b]); goto outx; }
+				v = &jv;
+			}
 			/* its pieces in writing order, their lengths along the ink as written */
 			int np = 0;
 			for (size_t j = 0; j < n; j++)
@@ -2056,7 +2128,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 					np += OWNS(q->own[j][i]) && (!i || !OWNS(q->own[j][i - 1]));
 			double *plen = calloc((size_t)np + 1, sizeof *plen), *T = malloc(((size_t)np + 2) * sizeof *T),
 			       *len = malloc((v->nstrokes + 1) * sizeof *len);
-			if (!plen || !T || !len) { free(plen); free(T); free(len); goto outx; }
+			if (!plen || !T || !len) { free(plen); free(T); free(len); free(js); for (int b = 0; b < 4; b++) free(jbuf[b]); goto outx; }
 			double tot = 0;
 			for (size_t t = 0; t < v->nstrokes; t++) { len[t] = arc(v->s[t].x, v->s[t].y, v->s[t].n, NULL); tot += len[t]; }
 			int a = -1;
@@ -2081,6 +2153,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 					X[n + 1 + j][i] = base - gy * xh;
 				}
 			free(plen); free(T); free(len);
+			free(js); for (int b = 0; b < 4; b++) free(jbuf[b]);
 #undef OWNS
 		}
 		for (size_t k = k0; k < k1; k++) {
@@ -2101,7 +2174,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const int *g
 outx:
 	for (size_t j = 0; j < 2 * (n + 1); j++) free(X[j]);
 out:
-	free(pen); free(word); free(sw); free(npts); free(ok); free(X);
+	free(pen); free(word); free(sw); free(npts); free(ok); free(ron); free(X);
 	return ret;
 }
 
@@ -2114,14 +2187,16 @@ int hw_neaten(struct hw_neat *q)
 	/* doubt: the characters whose ink the letter model moved (kept over the rounds: a round
 	 * starts from the ink as the one before left it) */
 	unsigned char *mask = calloc(q->nc + 1, 1), *fail = calloc(q->nc + 1, 1), *doubt = calloc(q->nc + 1, 1);
-	int *gvar = calloc(q->nc + 1, sizeof *gvar);
+	int *gvar = calloc(q->nc + 1, sizeof *gvar), *gjk = calloc(q->nc + 1, sizeof *gjk);
 	long *gjo = calloc(q->nc + 1, sizeof *gjo);
 	struct hw_letters V, *vp = NULL;
-	int ret = mask && fail && doubt && gvar && gjo ? 0 : -1;
-	/* the glyphs the font draws for the text (FR-035): the targets */
+	struct hw_font_joins J = { 0 };
+	int ret = mask && fail && doubt && gvar && gjo && gjk ? 0 : -1;
+	/* the glyphs the font draws for the text (FR-035): the targets, and its joins (FR-044) */
 	if (!ret && q->L) {
 		if (hw_letters_view(q->L, &V)) ret = -1;
-		else { vp = &V; hw_letters_glyphs(vp, q->cp, q->nc, gvar, gjo); }
+		else if (vp = &V, hw_font_joins_prepare(vp, &J)) ret = -1;
+		else hw_letters_glyphs(vp, &J, q->cp, q->nc, gvar, gjo, gjk);
 	}
 	/* above Strong the words that can be set go that far towards being set (FR-043), the
 	 * others keep Strong's pull */
@@ -2139,9 +2214,10 @@ int hw_neaten(struct hw_neat *q)
 	q->strength = s;
 	if (!ret && q->nc && !(q->set = calloc(q->nc + 1, 1))) ret = -1;
 	if (!ret && vp && s > HW_NEAT_STRONG && on.set && !q->line_only && q->why && q->pulled)
-		ret = set_words(q, vp, gvar, gjo, (s - HW_NEAT_STRONG) / (1 - HW_NEAT_STRONG));
+		ret = set_words(q, vp, &J, gvar, gjo, gjk, (s - HW_NEAT_STRONG) / (1 - HW_NEAT_STRONG));
 	if (ret) hw_neat_free(q);
+	hw_font_joins_free(&J);
 	if (vp) hw_letters_view_free(vp);
-	free(mask); free(fail); free(doubt); free(gvar); free(gjo);
+	free(mask); free(fail); free(doubt); free(gvar); free(gjo); free(gjk);
 	return ret;
 }

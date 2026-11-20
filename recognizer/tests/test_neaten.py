@@ -327,10 +327,10 @@ class Neaten(unittest.TestCase):
     def tearDown(self):
         TR.shutil.rmtree(self.e.dir, ignore_errors=True)
 
-    def letters(self, seed=1, change=None, shapes=None):
+    def letters(self, seed=1, change=None, shapes=None, more=()):
         """a letter model from synthetic prompted samples of separate letters (each stroke
-        changed by change(stroke) first)"""
-        ss = TL.alphabet_samples(seed=seed, per=4, shapes=shapes)
+        changed by change(stroke) first), and more samples"""
+        ss = TL.alphabet_samples(seed=seed, per=4, shapes=shapes) + list(more)
         if change:
             for s in ss:
                 s["strokes"] = [change(st) for st in s["strokes"]]
@@ -617,6 +617,72 @@ class Neaten(unittest.TestCase):
                 words += 1
             self.assertLess(max(bases) - min(bases), 0.3, (text, bases))
         self.assertEqual(words, 10)
+
+    @unittest.skipIf(TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"), "needs fontTools and hb-shape")
+    def test_neatest_runs_along_the_join(self):
+        """at Neatest the ink the person didn't lift between two letters the font joins runs
+        along the font's join (FR-043, FR-044): the set word's points lie in the ink the font
+        draws for it, its halves of the join with it (the font's glyphs for it the join's
+        alternates); without the model's joins it is set otherwise"""
+        rnd = random.Random(71)
+        more = [TL.joined(TL.sample("er", rnd), [0]) for _ in range(5)] + [TL.sample("er", rnd) for _ in range(3)]
+        self.letters(seed=7, more=more)
+        model = self.e.store / "letters" / "model"
+        self.assertIn('"pair":"er"', model.read_text())
+        s = TL.joined(TL.sample("er", random.Random(72)), [0])
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+
+        def inside():
+            from fontTools.ttLib import TTFont
+            from fontTools.pens.recordingPen import DecomposingRecordingPen
+            ttf = self.e.dir / "join.ttf"
+            self.e.run("font", "build", "-n", "Join Test", str(ttf))
+            f = TTFont(str(ttf))
+            gs, order = f.getGlyphSet(), f.getGlyphOrder()
+            rings, x = [], 0
+            for g in TL.hb(ttf, "er"):
+                pen = DecomposingRecordingPen(gs)
+                gs[order[g["g"]]].draw(pen)
+                for op, a in pen.value:
+                    if op == "moveTo":
+                        rings.append([])
+                    rings[-1] += [((x + g["dx"] + px) / 500, py / 500) for px, py in a]
+                x += g["ax"]
+            c = self.e.start()
+            self.begin(c, s)
+            _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("er"), align), why=True)
+            c.close()
+            self.assertEqual(why, ["set", "set"])
+            pts = [(px, -py) for o in out for px, py in EV.to_xy(o[2])]
+            ink = next(json.loads(ln)["metrics"].get("ink_width", 0.07) for ln in model.read_text().splitlines() if '"metrics"' in ln)
+            r = max(ink / 2, 0.012)
+            # the points' box onto the ink's box less the ink's half width all round
+            ox = [p[0] for rg in rings for p in rg]
+            oy = [p[1] for rg in rings for p in rg]
+            px, py = [p[0] for p in pts], [p[1] for p in pts]
+            sc = ((max(ox) - min(ox) - 2 * r) / (max(px) - min(px)) + (max(oy) - min(oy) - 2 * r) / (max(py) - min(py))) / 2
+
+            def wind(qx, qy):
+                w = 0
+                for rg in rings:
+                    for (ax, ay), (bx, by) in zip(rg, rg[1:] + rg[:1]):
+                        if ay <= qy < by and (bx - ax) * (qy - ay) - (qx - ax) * (by - ay) > 0:
+                            w += 1
+                        elif by <= qy < ay and (bx - ax) * (qy - ay) - (qx - ax) * (by - ay) < 0:
+                            w -= 1
+                return w
+            mx, my = (min(ox) + max(ox)) / 2, (min(oy) + max(oy)) / 2
+            cx, cy = (min(px) + max(px)) / 2, (min(py) + max(py)) / 2
+            alts = all(g["g"] > max(TL.font_glyphs(model.read_text())) for g in TL.hb(ttf, "er"))
+            return sum(wind(mx + (a - cx) * sc, my + (b - cy) * sc) != 0 for a, b in pts) / len(pts), alts, pts
+        joined, alts, pj = inside()
+        lines = model.read_text().splitlines()
+        model.write_text("".join(ln + "\n" for ln in lines if not ln.startswith('{"joins"')))
+        _, alts2, ps = inside()
+        self.assertTrue(alts)
+        self.assertFalse(alts2)
+        self.assertGreater(joined, 0.95)
+        self.assertGreater(max(math.hypot(a[0] - b[0], a[1] - b[1]) for a, b in zip(pj, ps)), 0.5)
 
     def test_neatest_keeps_what_the_font_lacks(self):
         """a character the letter model doesn't cover (here punctuation) keeps its ink as

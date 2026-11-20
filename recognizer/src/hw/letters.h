@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 17     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 18     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -44,6 +44,33 @@
 #define HW_JOINED_SHARE_NUM 3
 #define HW_JOINED_SHARE_DEN 4
 #define HW_JOINED_MAX 256       /* joined pairs in a model at most */
+/* joins (FR-044): the stroke between two letters written joined, from where the first
+ * letter's own ink ends to where the second's begins. A shape per letter pair joined at least
+ * HW_JOIN_PAIR_MIN times and per kind of join (hw_join_exit_class, hw_join_entry_class) joined
+ * at least HW_JOIN_KIND_MIN times. The font joins a pair written at least HW_JOIN_SEEN times
+ * with known strokes, joined at least HW_JOIN_TWICE times and in at least half of them; a
+ * rarer pair where its kind is written at least HW_JOIN_KIND_SEEN times, joined in at least
+ * half. A joint whose ends are more than HW_JOIN_FAR x-heights apart is none. A shape is the
+ * mean of its joints each turned and scaled onto its own ends (the ones less than
+ * HW_JOIN_SHORT apart have no direction and count for its ends alone); it stays curved only
+ * where, left out one at a time, the mean of the others comes nearer each joint than a
+ * straight line does, else it is straight. */
+#define HW_JOIN_N 13            /* points of a join along its length */
+#define HW_JOIN_MID 6           /* the point its two halves meet at */
+#define HW_JOIN_PAIR_MIN 5
+#define HW_JOIN_KIND_MIN 4
+#define HW_JOIN_SEEN 3
+#define HW_JOIN_TWICE 2
+#define HW_JOIN_KIND_SEEN 10
+#define HW_JOIN_FAR 3.0
+#define HW_JOIN_SHORT 0.02
+#define HW_JOIN_BOW 1.5         /* a shape set longer than it is: its bow grows this much at most */
+#define HW_JOIN_HALF_MIN 0.02   /* x-heights a half runs forwards at least (from its letter) */
+#define HW_JOIN_RUN_MIN 0.1     /* x-heights a joined pair's letters' ends are apart at least */
+#define HW_JOIN_HALF_MAX 1.5    /* and long at most */
+#define HW_JOIN_EXITS 4         /* where a way ends: below the baseline, near it, at the x-height, above */
+#define HW_JOIN_ENTRIES 8       /* where it starts: those heights, each in its left or right half */
+#define HW_JOIN_MAX 512         /* join shapes in a model at most */
 /* the best version's weights (FR-035), times a sample's own weight: */
 #define HW_BEST_FAVOURITE 4.0   /* marked favourite */
 #define HW_BEST_CAREFUL 2.0     /* written to "Write it your best" (quick: 1 / this) */
@@ -211,6 +238,14 @@ struct hw_spacing {
 	double lshape[HW_SIDE_CLASSES][HW_PROF_BANDS], rshape[HW_SIDE_CLASSES][HW_PROF_BANDS];
 };
 
+/* A join shape (FR-044): a letter pair's (a, b; ec, nc -1) or a kind's (a, b 0), the mean of
+ * n joins: HW_JOIN_N points along it by its length from its start (x-heights, y up), mid the
+ * height above the baseline its middle point is at on average */
+struct hw_jshape { unsigned a, b; int ec, nc, n; double mid; double x[HW_JOIN_N], y[HW_JOIN_N]; };
+/* how often a letter pair (or a kind of join) was written with known strokes, and joined */
+struct hw_jpair { unsigned a, b; int seen, joined; };
+struct hw_jkind { int seen, joined; };
+
 struct hw_letters {
 	char inputs[17];                /* hash of what it was built from */
 	long samples;                   /* usable samples */
@@ -221,7 +256,33 @@ struct hw_letters {
 	struct hw_spacing sp;
 	size_t njoined;                 /* joined pairs, sorted by a, b */
 	struct hw_joined *joined;
+	/* joins (FR-044), none without a shape: the shapes, the letter pairs (sorted by a, b) and
+	 * the kinds ([exit class][entry class]) */
+	size_t njshape, njpair;
+	struct hw_jshape *jshape;
+	struct hw_jpair *jpair;
+	struct hw_jkind jkind[HW_JOIN_EXITS][HW_JOIN_ENTRIES];
 };
+
+/* The joins (FR-044). A variant's exit is the end of its stroke its exit leaves from (its
+ * last without one), its entry the start of the stroke its entry leads into (its first). */
+size_t hw_join_exit_stroke(const struct hw_variant *v);
+size_t hw_join_entry_stroke(const struct hw_variant *v);
+int hw_join_exit_class(const struct hw_variant *v);
+int hw_join_entry_class(const struct hw_variant *v);
+/* a character joins can join: a letter (no digit, mark or symbol) */
+int hw_join_letter(unsigned cp);
+/* the learned shape for a pair of variants: the letter pair's, else its kind's; NULL none */
+const struct hw_jshape *hw_join_shape(const struct hw_letters *L, unsigned a, const struct hw_variant *va, unsigned b,
+				      const struct hw_variant *vb);
+/* a shape's points i0 .. i1 set from (px, py) to (qx, qy): turned and scaled so that its
+ * points i0 and i1 land there, its bow away from that line scaled by no more than HW_JOIN_BOW
+ * times its own length's share; hw_join_curve all of it (HW_JOIN_N points) */
+void hw_join_map(const struct hw_jshape *s, int i0, int i1, double px, double py, double qx, double qy, double *x, double *y);
+void hw_join_curve(const struct hw_jshape *s, double px, double py, double qx, double qy, double *x, double *y);
+/* whether a pair of letters is written joined often enough to be joined (FR-044): 1 joined,
+ * 0 apart, -1 the pair decides nothing (written too rarely) */
+int hw_join_pair_decides(const struct hw_letters *L, unsigned a, unsigned b);
 
 /* the side shape of a profile's left (side 0) or right (1) side: the nearest typical one */
 int hw_spacing_side(const struct hw_spacing *sp, const struct hw_profile *p, int side);
@@ -319,8 +380,11 @@ int hw_letters_step(int prev);
  * cycle's step; samples fontview.py glyphs()): per character of cp[0..n) the variant of V (a
  * view, hw_letters_view) the font draws there, -1 for a space, a character it lacks or a
  * letter of a joined pair; jo[k] the joined pair (V->joined) drawn for k and k + 1 (both
- * set), else -1 */
-void hw_letters_glyphs(const struct hw_letters *V, const unsigned *cp, size_t n, int *var, long *jo);
+ * set), else -1; jk[k] (jk may be NULL) the join (J's, FR-044: after the rules) from k to
+ * k + 1, -1 none (J NULL: none) */
+struct hw_font_joins;
+void hw_letters_glyphs(const struct hw_letters *V, const struct hw_font_joins *J, const unsigned *cp, size_t n, int *var,
+		       long *jo, int *jk);
 
 /* The font's styles (FR-034): one family, the same letters, spacing and kerning; only the
  * ink's width along each stroke differs. */
@@ -349,8 +413,30 @@ unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name,
  * letters both the pair's; var and jo as hw_letters_glyphs gives them, V a view
  * (hw_letters_view). bear: the glyphs' left side bearing (x-heights), their strokes' x
  * from the pen at bear + x. */
-void hw_font_layout(const struct hw_letters *V, const unsigned *cp, size_t n, const int *var, const long *jo, double *pen,
-		    double *bear);
+void hw_font_layout(const struct hw_letters *V, const struct hw_font_joins *J, const unsigned *cp, size_t n, const int *var,
+		    const long *jo, const int *jk, double *pen, double *bear);
+/* The joins the font draws (FR-044; ttf.c): every shape of V a join, and per join and each
+ * variant of a letter in the font where its half meets the other letter's, in font units: A
+ * right of the first letter's origin, B the second's origin right of it (so the second is
+ * set A + B after the first), LONG_MIN where the variant takes no part in that join */
+struct hw_font_joins {
+	int nk;                 /* the joins: V->jshape[0 .. nk) */
+	size_t nl;              /* V's letters */
+	int *voff;              /* per letter of V its first variant's index, -1 not in the font */
+	int nv;
+	long *A, *B;            /* [variant * nk + join] */
+	int any_general;        /* some kind joins the pairs written too rarely to decide */
+};
+/* 0, -1 out of memory (J then empty); with no shape J has no joins */
+int hw_font_joins_prepare(const struct hw_letters *V, struct hw_font_joins *J);
+void hw_font_joins_free(struct hw_font_joins *J);
+/* the join from variant va of V's letter la to variant vb of lb, as the font chooses it; -1 none */
+int hw_font_join_key(const struct hw_letters *V, const struct hw_font_joins *J, size_t la, int va, size_t lb, int vb);
+/* a variant's half of join k (side 0: its exit, from its exit to the meeting place; 1 its
+ * entry, from the meeting place to its entry): HW_JOIN_MID + 1 points in the variant's
+ * coordinates (x-heights from its left edge, y up); 0, -1 when it takes no part */
+int hw_font_join_half(const struct hw_letters *V, const struct hw_font_joins *J, int k, size_t li, int v, int side, double *x,
+		      double *y);
 /* The ink's width (x-heights) at each point of a variant's stroke j in a style (ttf.c, the
  * rules in docs/recognizer.md); Calligraphy: from the stroke's direction at each point. */
 void hw_font_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, int style, double nib, double *w);

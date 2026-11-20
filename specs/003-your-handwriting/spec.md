@@ -296,7 +296,8 @@ size, spacing) and keep their shape.
   alternates that text shaping applies by default (no setting in the app). The preview,
   spaced as the font spaces it,
   (Scenario 3) shows the same variants as the installed font for the same text, and the
-  same neighbour rules (FR-038), joined pairs (FR-039) and joins (FR-044).
+  same neighbour rules (FR-038) and joined pairs (FR-039); it sets joined letters (FR-044)
+  as two letters, apart.
 - **FR-038**: Where the person's samples show that they write a character a particular way
   next to a particular neighbour (the character before it or after it), the font uses that
   way there, by contextual alternates that text shaping applies by default. A rule needs
@@ -325,7 +326,11 @@ size, spacing) and keep their shape.
   the way's last stroke and the start of its first (or the stroke the person's exits leave
   from and their entries lead into, FR-007). A letter pair joined at least 5 times has a
   join shape of its own, a kind joined at least 4 times one for the kind: the mean of its
-  joins, matched point by point along their length. The font joins two neighbouring letters
+  joins, matched point by point along their length, each turned and scaled onto its own
+  ends (a join whose ends nearly meet has no direction and counts for the ends alone). The
+  shape keeps its curve only where it fits the person's joins better than a straight line
+  does, each of them tried against the mean of the others; else the join is straight. The
+  font joins two neighbouring letters
   of a word (letters only, no digits, marks or symbols) where the person writes that pair
   joined: in at least half of the samples with the pair written with known strokes (at
   least 3 of them, and joined at least twice); a pair written fewer than 3 times is joined
@@ -334,10 +339,14 @@ size, spacing) and keep their shape.
   of either, or one the person writes apart, stays as two letters set apart. Each joined
   letter is drawn with its half of the join, by contextual alternates that text shaping
   applies by default, the two halves meeting exactly: the join runs from the first letter's
-  end to the second's start along the learned shape, fitted between those ends. The cycle
+  end to the second's start along the learned shape, turned and scaled to fit between those
+  ends (its curve grown by no more than half again its own), the halves meeting at the
+  height the person's joins pass halfway. The cycle
   (FR-010), the neighbour rules (FR-038) and the joined pairs (FR-039) choose the letters'
   ways as without joins. Joined letters are set where the spacing places them (FR-007) as
-  closely as one meeting place for each way of writing a letter and join allows; a way
+  closely as one meeting place for each way of writing a letter and join allows, but never
+  so near that the second letter's start comes before the first one's end plus the way the
+  join runs across (at least a tenth of an x-height); a way
   whose half would run backwards or longer than 1.5 x-heights isn't joined with that join.
   In Regular and Calligraphy the join is drawn as any stroke; in Brush as a thin line (the
   brush's thinnest width that isn't a taper). A store without letters written joined gives
