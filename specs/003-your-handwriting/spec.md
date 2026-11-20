@@ -324,8 +324,8 @@ size, spacing) and keep their shape.
   writing it ends (below the baseline, near it, at the x-height or above) and where the
   second's starts (the same heights, in its left or its right half), each from the end of
   the way's last stroke and the start of its first (or the stroke the person's exits leave
-  from and their entries lead into, FR-007). A letter pair joined at least 5 times has a
-  join shape of its own, a kind joined at least 4 times one for the kind: the mean of its
+  from and their entries lead into, FR-007). A letter pair with at least 5 joins has a
+  join shape of its own, a kind with at least 4 joins one for the kind: the mean of its
   joins, matched point by point along their length, each turned and scaled onto its own
   ends (a join whose ends nearly meet has no direction and counts for the ends alone). The
   shape keeps its curve only where it fits the person's joins better than a straight line

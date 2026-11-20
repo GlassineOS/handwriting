@@ -493,7 +493,7 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   kind's) fitted from the first glyph's exit to the second's entry where the font sets them
   and split where the halves would meet; each half is added to its letter's stroke (after
   the exit stroke's end, before the entry stroke's start), so the letter's ink runs along
-  the glyph and its half by length as before. Only without a learned join the two points
+  the glyph and its half by length as along any glyph. Only without a learned join the two points
   either side are joined by a straight line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
   along the line to the middle of the font's box for it (`.notdef`, one x-height wide), and
   stays `not-covered`. Only with `TEXT`: without it no word is set (on real ink even the
@@ -1024,8 +1024,8 @@ first letter's own ink ends to where the second's begins (more than 3 x-heights 
 `exit` leaves from, else its last), its entry the start of its entry stroke (its `entry`'s,
 else its first); the exit class is the band of the exit's height (below −0.25, below 0.5,
 below 1.25, above: 0–3), the entry class twice the entry's band plus 1 when it is right of
-the version's middle (0–7). A pair joined at least 5 times gets a shape, a kind joined at least
-4 times one (its joints' letters' classes from the versions they're written like). A shape is
+the version's middle (0–7). A pair with at least 5 joints gets a shape, a kind with at least 4
+joints one (its joints' letters' classes from the versions they're written like). A shape is
 the mean of its joints in each one's chord frame (along the chord over its length, across it
 over its length; a joint shorter than 0.02 counts only for the mean end) set onto the mean
 end: it keeps that curve only when, each joint left out in turn, the others' mean set between
@@ -1131,8 +1131,8 @@ through a rule or a joined pair and the letters around them show what they show 
   entered by that join (exiting as it already does). A joined pair's ligature takes part in
   none. Regular and Calligraphy draw the halves as any stroke, Brush at its thinnest width
   that isn't a taper (at least 0.012). The font holds at most 65000 glyphs: when the joins
-  would make more the last joins are left out. A model without joins gives the font it gave
-  before them, byte for byte.
+  would make more the last joins are left out. A model without joins has no join glyphs,
+  lookups or kerning changes: its font is the one the rest of the model makes.
 
 A preview that lays text out from the model (the samples app) applies the cycle, the joined
 pairs and the rules the same way and spaces it the same way; it sets joined letters (FR-044)
