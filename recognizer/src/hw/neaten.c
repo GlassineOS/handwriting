@@ -2078,10 +2078,11 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 	memcpy(gv, gvar, nc * sizeof *gv);
 	for (size_t k = 0; k < nc; k++) jk[k] = gjk ? gjk[k] : -1;
 	/* a letter's part of a stroke run on from the one before that lies wholly before the
-	 * letter's own strokes (its ink in strokes of no other letter) and is shorter than they
-	 * are is the one before's exit tail, and the one before's part so after its own strokes
-	 * the letter's lead-in: the pen was lifted between the two, they aren't joined there (a
-	 * dot is too short to be a letter's own body) */
+	 * letter's own strokes (its ink in strokes of no other letter) and is shorter and lower
+	 * than they are is the one before's exit tail, and the one before's part so after its
+	 * own strokes the letter's lead-in: the pen was lifted between the two, they aren't
+	 * joined there (a dot is too short to be a letter's own body, a bowl or a bar too low
+	 * beside its stem) */
 	for (size_t k = 0; k + 1 < nc; k++) {
 		if (is_space(q->cp[k]) || is_space(q->cp[k + 1])) continue;
 		for (size_t j = 0; j < n; j++) {
@@ -2094,19 +2095,22 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 			for (int side = 0; side < 2; side++) {
 				size_t who = k + (size_t)side, p0 = side ? b : a, p1 = side ? c : b;
 				double lo = INFINITY, hi = -INFINITY, px0 = INFINITY, px1 = -INFINITY, ol = 0, pl = 0;
+				double oy0 = INFINITY, oy1 = -INFINITY, py0 = INFINITY, py1 = -INFINITY;
 				for (size_t j2 = 0; j2 < n; j2++) {
 					int alone = q->ink[j2].n > 0;
 					for (size_t i = 0; i < q->ink[j2].n && alone; i++) alone = q->own[j2][i] == (int)who;
 					for (size_t i = 0; alone && i < q->ink[j2].n; i++) {
 						lo = fmin(lo, q->x[j2][i]); hi = fmax(hi, q->x[j2][i]);
+						oy0 = fmin(oy0, q->y[j2][i]); oy1 = fmax(oy1, q->y[j2][i]);
 						if (i) ol += hypot(q->x[j2][i] - q->x[j2][i - 1], q->y[j2][i] - q->y[j2][i - 1]);
 					}
 				}
 				for (size_t i = p0; i < p1; i++) {
 					px0 = fmin(px0, q->x[j][i]); px1 = fmax(px1, q->x[j][i]);
+					py0 = fmin(py0, q->y[j][i]); py1 = fmax(py1, q->y[j][i]);
 					if (i > p0) pl += hypot(q->x[j][i] - q->x[j][i - 1], q->y[j][i] - q->y[j][i - 1]);
 				}
-				if (!(lo <= hi) || !(px0 <= px1) || !(pl < ol)) continue;
+				if (!(lo <= hi) || !(px0 <= px1) || !(pl < ol) || !(py1 - py0 < oy1 - oy0)) continue;
 				if (side ? px1 < lo : px0 > hi) {
 					for (size_t i = p0; i < p1; i++) ow[i] = (int)(side ? k : k + 1);
 					break;

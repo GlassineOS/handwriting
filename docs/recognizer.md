@@ -503,9 +503,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   one stroke move along the line until the stroke goes on from the one into the other as
   written (the run on into the letter after first), so no line is drawn between them. And before any of this, a letter's part of a
   stroke run on from the letter before that lies wholly left of the letter's own strokes
-  (its ink in strokes of no other letter) and is shorter than they are is the one before's
-  exit tail, and the one before's part so right of its own strokes the letter's lead-in (a
-  dot is no letter's body): the pen was lifted between them, so they aren't joined there.
+  (its ink in strokes of no other letter) and is shorter and lower than they are is the
+  one before's exit tail, and the one before's part so right of its own strokes the letter's lead-in (a
+  dot is no letter's body, nor a bowl or bar lower than the stem beside it): the pen was lifted between them, so they aren't joined there.
   A joined pair's ink keeps the rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
   to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
   Only where the person didn't lift the pen between two letters the ink runs along a join
