@@ -51,6 +51,7 @@ enum {
 /* a pen lift in a set character's ink moves to the end of a glyph's stroke within this
  * share of the glyph's length */
 #define HW_NEAT_SET_SNAP 0.2
+#define HW_NEAT_SET_ON 0.1     /* (of a letter's height) a neighbour's piece starting or ending this near its ink is on it */
 /* a stroke taller than this many x-heights is drawing, not writing */
 #define HW_NEAT_DRAWING 3.5
 

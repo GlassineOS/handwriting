@@ -489,9 +489,14 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   version with as many strokes as its ink has pieces, one each: the font's there when it has
   that many, else the letter's version with that many made from the most samples (the
   spacing and the joins as the font sets that one); with none its ink stays as Strong leaves
-  it, moved along the line to the middle of the font's box for it, and the letter is
+  it, moved along the line to the middle of the font's glyph there (set where the font
+  sets it, with its spacing), and the letter is
   `no-structure` (a piece run over two strokes would draw the pen's lift from one to the
-  other, and a stroke no piece runs along would not be drawn). A joined pair's ink keeps the
+  other, and a stroke no piece runs along would not be drawn). So do a letter and its
+  neighbour (the next two letters of its word) when a piece of the neighbour crosses the
+  letter's ink or starts or ends within 0.1 of its height of it, other than where the ink
+  runs on from the one into the other: an f's bar written on into the next letter, set over
+  that one's glyph, would be lost (the letter model leaves such letters out, FR-007). A joined pair's ink keeps the
   rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
   to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
   Only where the person didn't lift the pen between two letters the ink runs along a join

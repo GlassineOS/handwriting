@@ -444,7 +444,9 @@ size, spacing) and keep their shape.
   font's there when it has that many, else the one with that many made from the most
   samples; a letter with none keeps its written ink as the line-level corrections leave it,
   moved to its place in the set word (a piece set over two strokes would draw the pen's
-  lift between them, and a stroke no piece runs along would not be drawn). Two letters are
+  lift between them, and a stroke no piece runs along would not be drawn); so does a letter
+  a piece of a neighbour in its word crosses or starts or ends on, and that neighbour (an
+  f's bar written on into the next letter would be lost in that one's glyph). Two letters are
   joined only where the person didn't lift the pen between them: the ink runs along the
   join from the end of the stroke the first letter's piece is set along to the start of the
   one the second's is: the font's join where the font joins the two from and to those
