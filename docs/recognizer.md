@@ -787,7 +787,8 @@ for each character, a version for each way they write it often enough (up to 5).
 when its spans are exact (`spans_source` `exact`, as the samples app stores them), or the sample
 is one character alone kept with `keep` after a failed check (its strokes can only be that
 character's: lone full stops and commas fail the check most often), and its strokes
-are its own (not shared with a neighbour, so joined letters are never cut apart); a character is
+are its own (not shared with a neighbour; letters written joined count as below, but never
+towards coverage); a character is
 covered with 3 usable samples (unless none of its versions can be measured: no baseline or
 x-height to put it on). The spans follow the order of writing, split halfway between where the
 recognizer saw two characters, so before a character's strokes count as its own they are put
@@ -806,6 +807,28 @@ line) to either side. Of several, the one whose ink its middle is over, then one
 across, then one it touches; among those the one it is centred over. That covers an i's or
 j's dot, the bar of a t or an f, the arms of an E, the bar of an H and the second stroke of an
 x or a k, in words as well as alone. A stroke that is all a character has stays with it.
+**Letters written joined (FR-007).** The versions are made in two passes. The first takes the
+samples written apart alone. Then each stroke that the spans give two or more letters of one word
+(and no other) is cut where its parts best match those letters' versions from the first pass:
+in order, each part against the stroke of a version with the letter's stroke count that it takes
+the place of (the best of them: centred RMS at the sample's x-height plus a quarter of the log of
+the lengths' ratio), the least total, the cut placed at no more than 96 of the stroke's points
+(the cut is a function of its own, so another way of matching can take its place). Within its
+part a letter's own ink is where that part matches the version's stroke best when up to half
+the part at a joint end is let go: what is let go is the joining stroke, the letter's entry
+before it and its exit after it. A letter whose strokes are all its own or cut so, not left out
+by the person, becomes a version of the character, weighted as one written apart is (how it was
+written, how well it was read); it joins the way of its stroke count whose versions it is
+written like (within 0.6 x-heights of the way's first sample), the nearest, else none, and only
+a way that gives a version. The second pass makes the versions again with these: the ways,
+which ways give versions, the character's samples and coverage, the versions' use and samples
+(`use`, `ids`), the marks and the neighbour rules stay those of the samples written apart; the
+letters written joined join the versions' averages and best versions. Each version keeps the
+entry and the exit of the joined letters written like it: the mean of theirs (8 points along
+each by its length, from the version stroke's first or last point), at the stroke most of them
+have one at. Without joined ink the second pass isn't made (with `GLASSINE_HANDWRITING_LETTERS_STATS`
+it is, and makes what the first does). One character's build cuts by the model's versions of
+its neighbours.
 Its samples are grouped by stroke count, each resampled by arc length (strokes in the order
 written) and centred; within a stroke count, the ways of writing it are the samples within 0.6
 x-heights (RMS) of each other, taken greedily from the one with the most such company, so a
@@ -958,13 +981,17 @@ medians, 0 when none), then
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
 "members":N,"use":N,"lc":L,"rc":R,"left_out":true,"favourite":true,"ids":["ID",…],"left":[…8],
 "right":[…8],"middle":…,"strokes":[[[x,y],…],…],"best":[[[x,y],…],…],"pressure":[[…16],…],
-"speed":[[…16],…]}],
+"speed":[[…16],…],"entry":{"stroke":S,"n":N,"points":[[x,y],…8]},"exit":{…}}],
 "slots":[V,…],"rules":[{"prev":"o","variant":V,"n":N,"same":N,"hits":…,"cycle":…},…]}` (x from the version's left
 edge, y up from the baseline, in x-heights; `left` and `right` its profile, null for a band
 without ink, `middle` its middle (null without one), `pressure` and `speed` how it was written,
 16 values per stroke (above; each left out when the version has none),
 `lc` and `rc` its side shapes; `best` its best version, as `strokes` (only when it differs; the
-font draws `strokes`, so it doesn't change the font); `left_out` and `favourite` only when so;
+font draws `strokes`, so it doesn't change the font); `entry` and `exit` how it is joined when
+written joined (above: `stroke` the version's stroke it leads into or out of, `n` the joined
+letters it is the mean of, `points` from that stroke's first point (an entry ends there) or its
+last (an exit starts there), x-heights, y up; only when it has one; not in the font, which
+doesn't draw them); `left_out` and `favourite` only when so;
 `ids` the samples written
 this way, those its `use` counts, sorted; no versions when not covered). A character with marks
 has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the

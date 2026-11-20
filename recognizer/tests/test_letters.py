@@ -521,6 +521,65 @@ class LetterModel(unittest.TestCase):
         self.e.run("letters", "build", "-r")
         self.assertEqual(self.e.status()["chars"], {})
 
+    def test_joined_letters_join_their_variants(self):
+        """letters written joined (FR-007): a stroke shared by the letters of a word is cut
+        where its parts match those letters' variants from their samples written apart; each
+        letter's part joins the variant it is written like (more members), with the joining
+        stroke as that variant's entry and exit; the covered characters, the samples, the
+        ways and the marks' samples stay those written apart, a character written only joined
+        isn't covered; the same store gives the same model; without joined ink the model is
+        the one a single pass makes"""
+        rnd = random.Random(41)
+        apart = alphabet_samples(seed=1, per=4)
+        words = ["mane", "sun", "ace", "rose", "nose", "can", "ßa"]
+        ink = []
+        for w in words * 3:
+            ink.append(joined(sample(w, rnd), range(len(w) - 1)))
+        self.e.put(apart)
+        stats = self.e.dir / "stats"
+        self.e.env["GLASSINE_HANDWRITING_LETTERS_STATS"] = str(stats)
+        self.e.run("letters", "build", "-r")
+        two = self.e.model()
+        del self.e.env["GLASSINE_HANDWRITING_LETTERS_STATS"]
+        self.e.run("letters", "build", "-r")
+        one = self.e.model()
+        # (no joined ink: the second pass makes what the first does)
+        self.assertEqual(one, two)
+        before = {d["char"]: d for d in map(json.loads, one.splitlines()) if "char" in d}
+        st0 = self.e.status()
+        self.e.put(ink)
+        self.e.run("letters", "build", "-r")
+        after_text = self.e.model()
+        after = {d["char"]: d for d in map(json.loads, after_text.splitlines()) if "char" in d}
+        st1 = self.e.status()
+        self.assertEqual({c for c, d in before.items() if d.get("covered")}, {c for c, d in after.items() if d.get("covered")})
+        self.assertNotIn("ß", {c for c, d in after.items() if d.get("covered")})
+        self.assertEqual(st0["chars"], {c: v for c, v in st1["chars"].items() if c != "ß"})
+        gained = stubs = 0
+        for c, d in after.items():
+            b0 = before.get(c)
+            if not b0 or not d.get("covered"):
+                continue
+            self.assertEqual(len(d["variants"]), len(b0["variants"]), c)
+            for v1, v0 in zip(d["variants"], b0["variants"]):
+                self.assertEqual((v1["ids"], v1["use"]), (v0["ids"], v0["use"]), c)
+                self.assertGreaterEqual(v1["members"], v0["members"], c)
+                gained += v1["members"] - v0["members"]
+                for e in ("entry", "exit"):
+                    if e not in v1:
+                        continue
+                    t = v1[e]
+                    self.assertTrue(0 <= t["stroke"] < len(v1["strokes"]) and t["n"] >= 1, (c, e))
+                    self.assertEqual(len(t["points"]), 8)
+                    # an entry ends at the variant's stroke, an exit starts there
+                    end = t["points"][-1] if e == "entry" else t["points"][0]
+                    self.assertLess(math.hypot(*end), 1e-3, (c, e))
+                    stubs += 1
+        self.assertGreater(gained, 10)
+        self.assertGreater(stubs, 3)
+        self.e.run("letters", "build", "-r")
+        self.assertEqual(self.e.model(), after_text)
+
     def test_sc001_forty_careful_samples(self):
         rnd = random.Random(5)
         # 40 samples of 7 characters, the alphabet in both cases and the digits over and over:
@@ -1450,8 +1509,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 16))
-            old = dict(head, inputs=hw_inputs(ids, 15))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 17))
+            old = dict(head, inputs=hw_inputs(ids, 16))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
