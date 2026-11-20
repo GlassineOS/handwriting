@@ -843,6 +843,22 @@ each model reads the same lines.
   punctuation at their true size relative to the line (synthetic lines with lone marks and
   letters, and real samples' area line). This changes the features and so the model file:
   a new ghm version that says how its input is scaled, read beside version 1.
+- **Size against the reference, for the base model after model 4.** `features_ref`
+  resamples at a fixed step of the reference height, so ink much smaller than the
+  reference reaches the model with too few points per letter; below about two frames per
+  character the readings drop letters. Almost all of model 4's training lines have small
+  letters at 0.4 of the reference or more, and `augment()` stretches the features without
+  resampling, so it never changes points per letter. People writing in a device's area
+  often reach 0.3 or less with the line alone. The next base model should:
+  - resample by the ink's own height (points per letter constant), and keep the size
+    only in y and the size column;
+  - or, with resampling tied to the reference, train with small letters well below 0.4
+    of it: `XH_LINE` reaching lower, a larger line-alone share, and a size augmentation
+    that resamples;
+  - be trained with references made as the recognizer makes them, including its rule
+    for small writing on the line alone (`docs/recognizer.md`, Size), or make that rule
+    unnecessary;
+  - check how it reads with the person's letters as the reference, against the line.
 - **Open requirement for the next base model (spec 001 FR-020): training text with real
   character statistics.** The text above mixes random word sequences, numbers and codes (1
   in 12) and random letter strings with every letter equally likely (1 in 12). With CTC,
