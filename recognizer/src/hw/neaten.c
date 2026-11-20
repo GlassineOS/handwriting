@@ -21,18 +21,20 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
 
 /* $GLASSINE_HANDWRITING_NEATEN (measurements): "base=0,slant=0,size=0,space=0,pull=0"
  * leaves a correction out, "trace=0" the check of the glyph traced on the ink's points,
+ * "set=0" the words set at Neatest (above Strong the pull goes on, all the way at 1),
  * "margin=M" sets the shape guard's margin */
-static struct { int base, slant, size, space, pull, trace; double margin; } on;
+static struct { int base, slant, size, space, pull, trace, set; double margin; } on;
 static void knobs(void)
 {
-	on.base = on.slant = on.size = on.space = on.pull = on.trace = 1;
+	on.base = on.slant = on.size = on.space = on.pull = on.trace = on.set = 1;
 	on.margin = HW_NEAT_GUARD_MARGIN;
 	const char *e = getenv("GLASSINE_HANDWRITING_NEATEN");
 	if (!e) return;
 	const char *m = strstr(e, "margin=");
 	if (m && atof(m + 7) > 0) on.margin = atof(m + 7);
 	struct { const char *k; int *v; } kv[] = { { "base=", &on.base }, { "slant=", &on.slant }, { "size=", &on.size },
-						 { "space=", &on.space }, { "pull=", &on.pull }, { "trace=", &on.trace } };
+						 { "space=", &on.space }, { "pull=", &on.pull }, { "trace=", &on.trace },
+						 { "set=", &on.set } };
 	for (size_t i = 0; i < sizeof kv / sizeof *kv; i++) {
 		const char *p = strstr(e, kv[i].k);
 		if (p) *kv[i].v = atoi(p + strlen(kv[i].k)) != 0;
@@ -771,7 +773,17 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 		double cj = s > HW_NEAT_JOIN ? HW_NEAT_COVER_JOINED : HW_NEAT_COVER_JOINT;
 		int whole = cover[2 * a] <= (pc->joint0 ? cj : HW_NEAT_COVER) &&
 			    cover[2 * a + 1] >= 1 - (pc->joint1 ? cj : HW_NEAT_COVER);
-		if (whole && !new_corner(sx[a], sx[np + a], px, py, m, xh, 1) && !new_corner(sx[a], sx[np + a], px, py, m, xh, c->pull)) continue;
+		/* (above Medium a joint's connecting part is drawn anew, or, where it isn't, the
+		 * flow check of the whole stroke holds the letters back: the letter's own points
+		 * here, from the first to the last) */
+		size_t t0 = 0, t1 = m;
+		if (s > HW_NEAT_JOIN && pc->l > pc->f) {
+			if (pc->joint0) t0 = pc->f - pc->a;
+			if (pc->joint1) t1 = pc->l - pc->a;
+		}
+#define TRACE_KINKS() (new_corner(sx[a] + t0, sx[np + a] + t0, px + t0, py + t0, t1 - t0, xh, 1) || \
+		       new_corner(sx[a] + t0, sx[np + a] + t0, px + t0, py + t0, t1 - t0, xh, c->pull))
+		if (whole && !TRACE_KINKS()) continue;
 		const struct hw_lstroke *t = &c->t[a];
 		double *ic = malloc((m + 1 + t->n + 1) * sizeof *ic), *tc = ic + m + 1;
 		if (!ic) goto out;
@@ -794,12 +806,13 @@ static int pull_prepare(struct hw_neat *q, struct ch *C, size_t k, const int *no
 		for (size_t i = 0; i < f0; i++) { px[i] = px[f0]; py[i] = py[f0]; }
 		for (size_t i = l0; i < m; i++) { px[i] = px[l0 - 1]; py[i] = py[l0 - 1]; }
 		free(ic);
-		if (on.trace && (new_corner(sx[a], sx[np + a], px, py, m, xh, 1) || new_corner(sx[a], sx[np + a], px, py, m, xh, c->pull))) {
+		if (on.trace && TRACE_KINKS()) {
 			c->pull = 0;
 			ret = 0;
 			goto out;
 		}
 	}
+#undef TRACE_KINKS
 	c->off = acx / xh - vcx + sh[0];
 	c->why = HW_NEAT_WHY_PULLED;
 	ret = 0;
@@ -851,6 +864,25 @@ static int joint_redrawn(const struct hw_neat *q, const struct ch *C, size_t j, 
 	if (*A <= p1->a) *A = p1->a + 1;
 	if (*B >= p2->b) *B = p2->b - 1;
 	return *A > p1->a && *B < p2->b && *B > *A;
+}
+
+/* the ink of stroke j as moved turns back (more than a right angle) at a point from the end of
+ * a redrawn join's first glyph stroke to the start of its second's (A - 1 to B) where the ink
+ * as written turns by no more than 45 degrees within 5 points */
+static int join_folds(const struct hw_neat *q, size_t j, size_t A, size_t B, double xh)
+{
+	const struct hw_ink *k = &q->ink[j];
+	size_t m = k->n;
+	for (size_t z = A > 1 ? A - 1 : 1; z <= B && z + 1 < m; z++) {
+		double ax = q->x[j][z] - q->x[j][z - 1], ay = q->y[j][z] - q->y[j][z - 1];
+		double bx = q->x[j][z + 1] - q->x[j][z], by = q->y[j][z + 1] - q->y[j][z];
+		double na = hypot(ax, ay), nb = hypot(bx, by);
+		if (na < 0.01 * xh || nb < 0.01 * xh || (ax * bx + ay * by) / (na * nb) > 0) continue;
+		int raw = 0;
+		for (size_t w = z > 5 ? z - 5 : 1; w <= z + 5 && w + 1 < m && !raw; w++) raw = turn_at(k->x, k->y, w, 0.01 * xh) > 45;
+		if (!raw) return 1;
+	}
+	return 0;
 }
 
 /* the move of point i of stroke j as character o's: the line-level map as far as la, and o's
@@ -1744,17 +1776,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 			}
 			/* (a cubic that turns sharply where the ink doesn't, two glyph ends facing apart:
 			 * the moves go from the one end's to the other's along the connecting part) */
-			int sharp = 0;
-			for (size_t z = A > 1 ? A - 1 : 1; z <= B && z + 1 < m && !sharp; z++) {
-				double ax = q->x[j][z] - q->x[j][z - 1], ay = q->y[j][z] - q->y[j][z - 1];
-				double bx = q->x[j][z + 1] - q->x[j][z], by = q->y[j][z + 1] - q->y[j][z];
-				double na = hypot(ax, ay), nb = hypot(bx, by);
-				if (na < 0.01 * xh || nb < 0.01 * xh || (ax * bx + ay * by) / (na * nb) > 0) continue;
-				sharp = 1;
-				for (size_t w = z > 5 ? z - 5 : 1; w <= z + 5 && w + 1 < m && sharp; w++)
-					if (turn_at(k->x, k->y, w, 0.01 * xh) > 45) sharp = 0;
-			}
-			if (sharp) {
+			if (join_folds(q, j, A, B, xh)) {
 				double m0x = x0 - k->x[A - 1], m0y = y0 - k->y[A - 1], m1x = x1 - k->x[B], m1y = y1 - k->y[B];
 				for (size_t z = A; z < B; z++) {
 					double u = il > 0 ? (cum[z] - cum[A - 1]) / il : (double)(z - A + 1) / (double)(B - A + 1);
@@ -1763,6 +1785,9 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 				}
 			}
 			for (size_t z = A; z < B; z++) q->own[j][z] = z < mid ? o1 : o2;
+			/* (a join that folds even so, the glyph ends themselves turned back on each other:
+			 * not a join drawn smooth, so the flow check holds its letters back) */
+			if (join_folds(q, j, A, B, xh)) continue;
 			if (!rdr[j]) rdr[j] = calloc(m + 1, 1);
 			if (!rdr[j]) { free(cum); free(hw); free(seg); ret = -1; goto done; }
 			for (size_t z = A > 2 ? A - 2 : 0; z < B + 2 && z < m; z++) rdr[j][z] = z >= A && z < B ? 2 : rdr[j][z] ? rdr[j][z] : 1;
@@ -2154,7 +2179,8 @@ int hw_neaten(struct hw_neat *q)
 	/* above Strong the words that can be set go that far towards being set (FR-043), the
 	 * others keep Strong's pull */
 	double s = q->strength;
-	if (vp && s > HW_NEAT_STRONG) q->strength = HW_NEAT_STRONG;
+	knobs();
+	if (vp && s > HW_NEAT_STRONG && on.set) q->strength = HW_NEAT_STRONG;
 	for (int r = 0; !ret; r++) {
 		memset(fail, 0, q->nc + 1);
 		ret = neaten_once(q, mask, r < NEAT_GUARD_ROUNDS ? fail : NULL, vp, gvar, gjo, doubt);
@@ -2165,7 +2191,7 @@ int hw_neaten(struct hw_neat *q)
 	}
 	q->strength = s;
 	if (!ret && q->nc && !(q->set = calloc(q->nc + 1, 1))) ret = -1;
-	if (!ret && vp && s > HW_NEAT_STRONG && !q->line_only && q->why && q->pulled)
+	if (!ret && vp && s > HW_NEAT_STRONG && on.set && !q->line_only && q->why && q->pulled)
 		ret = set_words(q, vp, gvar, gjo, (s - HW_NEAT_STRONG) / (1 - HW_NEAT_STRONG));
 	if (ret) hw_neat_free(q);
 	if (vp) hw_letters_view_free(vp);

@@ -449,7 +449,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   don't reach its glyph stroke's ends (within a tenth of its length; at a joint 0.3 up to
   Medium, 0.02 above it, where the joining stroke is drawn anew from the glyph's very end) is
   traced by the length along it too (a joint's connecting part left as it is): the glyph is drawn whole, not a part of it on all of the
-  piece's points.
+  piece's points. Above Medium the turns and steps back are looked for in the letter's own
+  points only, not in a joint's connecting part: that is drawn anew, or, where it isn't,
+  the flow check below holds the letters back.
 - **Along the stroke (FR-036).** Each point goes to a place on its stroke of the glyph, as a
   share of that stroke's length: both are resampled every 0.04 x-heights (8 to 128 points) and
   matched in order (dynamic time warping) by where the points are, the direction of the stroke
@@ -511,7 +513,11 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   along it by their length along the ink (each keeps its time and pressure); each letter's
   own points stay on its glyph, and the joint's cut goes to the middle of the connecting
   part (where the glyphs' ends leave no connecting part, the points within 0.15 x-heights of
-  the cut). A joint with a letter that isn't pulled is blended as at Medium.
+  the cut). A joint with a letter that isn't pulled is blended as at Medium. A join that
+  still turns back by more than a right angle where the ink doesn't (two glyph ends that
+  face each other, so that the cubic has nowhere to go) isn't drawn anew: the moves go from
+  the one end's to the other's along the connecting part, and the flow check holds such a
+  join's letters back.
 - **The flow (FR-036).** The neatened strokes are checked as they come out: a turn over 90
   degrees where the ink turns by less than 55 within five points, or a step back (against the
   way the stroke goes over three points to either side) where the ink has none, measured at
@@ -519,7 +525,8 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   a joint's blend (0.8 x-heights along the stroke) of one goes back to the line level
   (`no-structure`) and the line is neatened again, as for the shape guard (below). Above
   Medium a join is no reason to keep a letter back: one in a joining stroke drawn anew (or
-  two points from it) holds none back, one in a letter's own points that letter. An alignment that cuts a
+  two points from it) holds none back, one in a letter's own points that letter, and one at
+  a join that turns back (above) the letters on either side. An alignment that cuts a
   joined stroke elsewhere than the letters meet so gives none of the letters a kink.
 - **Spacing with the pull.** A pulled character's profile and middle for the spacing above go
   towards its glyph's as far as it is pulled (a joined pair's two letters towards the pair's).
@@ -1292,7 +1299,7 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_HANDWRITING_CALIB` | for measurements: `off` reads with no calibration, a number in [0.5, 4] with that temperature (Calibration) |
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
+| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
 | `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
 | `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV RM RV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), RM those samples' mean roughness (per stroke, evenly spaced along it, the squared turning at each point less its neighbours' turning, summed: how much it wobbles rather than bends), HV, AV and RV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
