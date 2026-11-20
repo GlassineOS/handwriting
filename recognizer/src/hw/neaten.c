@@ -2021,8 +2021,8 @@ static int set_pieces(const struct hw_neat *q, const int *sw, int w, size_t k, i
 }
 
 /* whether a piece of character o in word w, in a stroke of none of k's ink, crosses k's ink
- * or starts or ends on it (within HW_NEAT_SET_ON of k's height): a stroke joined through
- * both is the person's joined writing, not a part of the one in the other's ink */
+ * or starts on it (within HW_NEAT_SET_ON of k's height): a stroke joined through both is the
+ * person's joined writing, not a part of the one in the other's ink */
 static int set_on(const struct hw_neat *q, const int *sw, int w, size_t k, size_t o)
 {
 	double y0 = INFINITY, y1 = -INFINITY;
@@ -2038,7 +2038,7 @@ static int set_on(const struct hw_neat *q, const int *sw, int w, size_t k, size_
 		for (size_t i = 0; sw[j] == w && i < m && !both; i++) both = ow[i] == (int)k;
 		for (size_t i = 0; sw[j] == w && !both && i < m; i++) {
 			if (ow[i] != (int)o) continue;
-			int end = (!i || ow[i - 1] != (int)o) || i + 1 == m || ow[i + 1] != (int)o;
+			int end = !i || ow[i - 1] != (int)o;
 			for (size_t j2 = 0; j2 < q->n; j2++)
 				for (size_t i2 = 0; sw[j2] == w && i2 < q->ink[j2].n; i2++) {
 					if (q->own[j2][i2] != (int)k) continue;
@@ -2070,10 +2070,49 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 	unsigned char *ok = NULL, *ron = calloc(nc + 1, 1);
 	int *gv = malloc((nc + 1) * sizeof *gv), *jk = malloc((nc + 1) * sizeof *jk);
 	unsigned char *kept = calloc(nc + 1, 1);
-	if (!pen || !word || !sw || !npts || !ron || !gv || !jk || !kept) goto out;
+	size_t *grp = malloc((nc + 1) * sizeof *grp);
+	if (!pen || !word || !sw || !npts || !ron || !gv || !jk || !kept || !grp) goto out;
+	for (size_t k = 0; k < nc; k++) grp[k] = k;
 	double bear;
 	memcpy(gv, gvar, nc * sizeof *gv);
 	for (size_t k = 0; k < nc; k++) jk[k] = gjk ? gjk[k] : -1;
+	/* a letter's part of a stroke run on from the one before that lies wholly before the
+	 * letter's own strokes (its ink in strokes of no other letter) and is shorter than they
+	 * are is the one before's exit tail, and the one before's part so after its own strokes
+	 * the letter's lead-in: the pen was lifted between the two, they aren't joined there (a
+	 * dot is too short to be a letter's own body) */
+	for (size_t k = 0; k + 1 < nc; k++) {
+		if (is_space(q->cp[k]) || is_space(q->cp[k + 1])) continue;
+		for (size_t j = 0; j < n; j++) {
+			int *ow = q->own[j];
+			size_t m = q->ink[j].n, a = m, b = m, c = m;
+			for (size_t i = 0; i + 1 < m; i++) if (ow[i] == (int)k && ow[i + 1] == (int)k + 1) { b = i + 1; break; }
+			if (b == m) continue;
+			for (a = b; a > 0 && ow[a - 1] == (int)k; a--) ;
+			for (c = b; c < m && ow[c] == (int)k + 1; c++) ;
+			for (int side = 0; side < 2; side++) {
+				size_t who = k + (size_t)side, p0 = side ? b : a, p1 = side ? c : b;
+				double lo = INFINITY, hi = -INFINITY, px0 = INFINITY, px1 = -INFINITY, ol = 0, pl = 0;
+				for (size_t j2 = 0; j2 < n; j2++) {
+					int alone = q->ink[j2].n > 0;
+					for (size_t i = 0; i < q->ink[j2].n && alone; i++) alone = q->own[j2][i] == (int)who;
+					for (size_t i = 0; alone && i < q->ink[j2].n; i++) {
+						lo = fmin(lo, q->x[j2][i]); hi = fmax(hi, q->x[j2][i]);
+						if (i) ol += hypot(q->x[j2][i] - q->x[j2][i - 1], q->y[j2][i] - q->y[j2][i - 1]);
+					}
+				}
+				for (size_t i = p0; i < p1; i++) {
+					px0 = fmin(px0, q->x[j][i]); px1 = fmax(px1, q->x[j][i]);
+					if (i > p0) pl += hypot(q->x[j][i] - q->x[j][i - 1], q->y[j][i] - q->y[j][i - 1]);
+				}
+				if (!(lo <= hi) || !(px0 <= px1) || !(pl < ol)) continue;
+				if (side ? px1 < lo : px0 > hi) {
+					for (size_t i = p0; i < p1; i++) ow[i] = (int)(side ? k : k + 1);
+					break;
+				}
+			}
+		}
+	}
 	/* where the ink runs on from one character into the next */
 	for (size_t j = 0; j < n; j++)
 		for (size_t i = 0; i + 1 < q->ink[j].n; i++)
@@ -2134,12 +2173,12 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 		jk[k] = -1;
 		if (k) jk[k - 1] = -1;
 	}
-	/* and a letter a piece of a neighbour in its word crosses or starts or ends on (an f's
+	/* and a letter a piece of a neighbour in its word crosses or starts on (an f's
 	 * bar written on into the next letter: set over that one's glyph it would be lost) keeps
 	 * its ink as written, the neighbour too (as the letter model has it, FR-007) */
 	for (size_t k = 0; k < nc; k++)
 		for (size_t o = k + 1; o <= k + 2 && o < nc && word[o] == word[k] && word[k] >= 0; o++)
-			if (gjo[k] < 0 && gjo[o] < 0 && set_on(q, sw, word[k], k, o)) kept[k] = kept[o] = 1;
+			if (gjo[k] < 0 && gjo[o] < 0 && set_on(q, sw, word[k], k, o)) { kept[k] = kept[o] = 2; grp[o] = grp[k]; }
 	hw_font_layout(V, J, q->cp, nc, gv, gjo, jk, pen, &bear);
 	/* the set points, per stroke */
 	X = calloc(2 * (n + 1), sizeof *X);
@@ -2186,16 +2225,45 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 				for (size_t j = 0; j < n; j++)
 					for (size_t i = 0; sw[j] == word[k0] && i < q->ink[j].n; i++)
 						if (OWNS(q->own[j][i])) { a = fmin(a, q->x[j][i]); b = fmax(b, q->x[j][i]); }
+				/* (letters kept together, one's ink on the other's, move together as written:
+				 * the ink as the person wrote it moved as the line-level corrections move it
+				 * on average, their ink's middle to their glyphs') */
+				int rigid = kept[k] == 2 && v && v->nstrokes;
+				double mx = 0, my = 0;
+				long mn = 0;
 				if (v && v->nstrokes) {
 					double c = INFINITY, d = -INFINITY;
-					for (size_t t = 0; t < v->nstrokes; t++)
-						for (size_t i = 0; i < v->s[t].n; i++) { c = fmin(c, v->s[t].x[i]); d = fmax(d, v->s[t].x[i]); }
-					if (c <= d) mid = pen[k] + bear + (c + d) / 2;
+					a = INFINITY; b = -INFINITY;
+					for (size_t g = k0; g < k1; g++) {
+						if (grp[g] != grp[k] || kept[g] != kept[k] || gjo[g] >= 0 || gv[g] < 0) continue;
+						const struct hw_variant *w = &letter_of(V, q->cp[g])->var[gv[g]];
+						for (size_t t = 0; t < w->nstrokes; t++)
+							for (size_t i = 0; i < w->s[t].n; i++) { c = fmin(c, pen[g] + bear + w->s[t].x[i]); d = fmax(d, pen[g] + bear + w->s[t].x[i]); }
+						for (size_t j = 0; j < n; j++)
+							for (size_t i = 0; sw[j] == word[k0] && i < q->ink[j].n; i++)
+								if (q->own[j][i] == (int)g) {
+									mx += q->x[j][i] - q->ink[j].x[i]; my += q->y[j][i] - q->ink[j].y[i]; mn++;
+								}
+					}
+					if (mn) { mx /= (double)mn; my /= (double)mn; }
+					for (size_t g = k0; g < k1; g++) {
+						if (grp[g] != grp[k] || kept[g] != kept[k] || gjo[g] >= 0 || gv[g] < 0) continue;
+						for (size_t j = 0; j < n; j++)
+							for (size_t i = 0; sw[j] == word[k0] && i < q->ink[j].n; i++)
+								if (q->own[j][i] == (int)g) {
+									double x = rigid ? q->ink[j].x[i] + mx : q->x[j][i];
+									a = fmin(a, x); b = fmax(b, x);
+								}
+					}
+					if (c <= d) mid = (c + d) / 2;
 				}
 				double dx = ox + mid * xh - (a + b) / 2;
 				for (size_t j = 0; j < n; j++)
 					for (size_t i = 0; sw[j] == word[k0] && i < q->ink[j].n; i++)
-						if (OWNS(q->own[j][i])) { X[j][i] = q->x[j][i] + dx; X[n + 1 + j][i] = q->y[j][i]; }
+						if (OWNS(q->own[j][i])) {
+							X[j][i] = (rigid ? q->ink[j].x[i] + mx : q->x[j][i]) + dx;
+							X[n + 1 + j][i] = rigid ? q->ink[j].y[i] + my : q->y[j][i];
+						}
 				continue;
 			}
 			/* its joins to the letters beside it where the ink runs on (FR-043, FR-044): from
@@ -2278,7 +2346,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 outx:
 	for (size_t j = 0; j < 2 * (n + 1); j++) free(X[j]);
 out:
-	free(pen); free(word); free(sw); free(npts); free(ok); free(ron); free(X); free(gv); free(jk); free(kept);
+	free(pen); free(word); free(sw); free(npts); free(ok); free(ron); free(X); free(gv); free(jk); free(kept); free(grp);
 	return ret;
 }
 

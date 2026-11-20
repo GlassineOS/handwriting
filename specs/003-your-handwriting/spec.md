@@ -433,9 +433,9 @@ size, spacing) and keep their shape.
   its shape would come closer to another character (FR-037), in a word read with
   low confidence (FR-017), or drawing or a gesture (FR-020).
 - **FR-043**: At Neatest each word whose text is known is set anew in the person's font,
-  exactly as the font sets that text: the same glyph for each character (the cycle, the
-  neighbour rules, the joined pairs: FR-035, FR-038, FR-039) and the font's advances and
-  kerning, placed on the line where the written word starts, on the line's baseline, at
+  as the font sets that text: the font's glyph for each character (the cycle, the
+  neighbour rules, the joined pairs: FR-035, FR-038, FR-039) unless the ink calls for
+  another way of writing it (below), and the font's advances and kerning, placed on the line where the written word starts, on the line's baseline, at
   the line's x-height, with the slant the font draws. The strokes stay the person's (FR-013):
   each character's ink, its pieces in the order written, is drawn along the centre lines of
   its glyph's strokes, each point by its share of the ink's length, so the timing and
@@ -445,11 +445,16 @@ size, spacing) and keep their shape.
   samples; a letter with none keeps its written ink as the line-level corrections leave it,
   moved to its place in the set word (a piece set over two strokes would draw the pen's
   lift between them, and a stroke no piece runs along would not be drawn); so does a letter
-  a piece of a neighbour in its word crosses or starts or ends on, and that neighbour (an
-  f's bar written on into the next letter would be lost in that one's glyph). Two letters are
+  a piece of a neighbour in its word, in another stroke, crosses or starts on, and that
+  neighbour, their ink as written moved as one (an f's bar written on into the next letter
+  would be lost in that one's glyph).
+  A letter's tail that the reading gives the next letter (it lies wholly before that
+  letter's own strokes) stays the letter's, and a lead-in the reading gives the letter
+  before stays the next letter's: the pen was lifted there, so the two aren't joined. Two letters are
   joined only where the person didn't lift the pen between them: the ink runs along the
   join from the end of the stroke the first letter's piece is set along to the start of the
-  one the second's is: the font's join where the font joins the two from and to those
+  one the second's is (it follows the ink: a bar the person writes on into the next letter
+  is joined from the bar): the font's join where the font joins the two from and to those
   strokes (FR-044), else the pair's learned join shape (or its kind's) fitted between them,
   each letter's ink along its glyph and its half of the join; only where there is no learned
   join a straight line runs from the one to the other. A character the letter model doesn't cover
