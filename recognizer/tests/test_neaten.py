@@ -792,6 +792,59 @@ class Neaten(unittest.TestCase):
         raw = math.hypot(one[nf][0] - one[nf - 1][0], one[nf][1] - one[nf - 1][1])
         step = math.hypot(xy[1][nf][0] - xy[1][nf - 1][0], xy[1][nf][1] - xy[1][nf - 1][1])
         self.assertLess(step, raw + 0.25 * 30)
+        # the F moved only along the line: its top and bottom where Strong leaves them
+        c = self.e.start()
+        self.begin(c, s)
+        _, strong, _ = parse(c.ask("neaten", "s", "0.75", TR.esc("Fo"), align), why=True)
+        c.close()
+        xs = {q[0]: EV.to_xy(q[2]) for q in strong}
+        fy = [p[1] for p in xy[0]] + [p[1] for p in xy[1][:nf]]
+        sy = [p[1] for p in xs[0]] + [p[1] for p in xs[1][:nf]]
+        self.assertLess(abs(min(fy) - min(sy)), 0.1 * 30)
+        self.assertLess(abs(max(fy) - max(sy)), 0.1 * 30)
+
+    def test_neatest_never_drops_a_letter(self):
+        """the reading gives the o only an f's bar written on towards it (the o's own ink went
+        to the letter after): the o is still drawn, set on its glyph, as tall as an o, never
+        left as a bare bar on the f (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("fon", random.Random(98), shapes=TL.WHOLE_SHAPES)
+        st, sp = s["strokes"], s["spans"]
+        bar, o = st[sp[0][1]], st[sp[1][0]]
+        a, b = bar[-1], o[0]
+        on = [[round(a[0] + (b[0] - a[0]) * z / 6, 3), round(a[1] + (b[1] - a[1]) * z / 6, 3), 0, 0.5] for z in range(1, 7)]
+        s["strokes"] = [st[sp[0][0]], bar + on, o[1:] + [p for j in sp[2] for p in st[j]]]
+        s["spans"] = [[0], [1], [2]]
+        TL.retime_sample(s)
+        nb = len(bar)
+        align = "0;1;2"
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertEqual(why[:2], ["set", "set"], why)
+        xy = {q[0]: EV.to_xy(q[2]) for q in out}
+        h = max(p[1] for p in xy[1][nb:]) - min(p[1] for p in xy[1][nb:])
+        self.assertGreater(h, 0.5 * 30)
+
+    def test_every_letter_keeps_ink_of_its_own(self):
+        """words written in one stroke, ALIGN listing that stroke for every letter (the
+        points split between them, a short run spilled over to a neighbour): no letter of
+        the text is left without ink of its own, at any strength (FR-043)"""
+        self.letters(seed=9)
+        rnd = random.Random(99)
+        for text in ("minimum.", "a.b.c", "it.is", "loop;", "fix.it"):
+            s = TL.sample(text, rnd)
+            one = [p for st in s["strokes"] for p in st]
+            s["strokes"] = [one]
+            TL.retime_sample(s)
+            align = ";".join("0" for _ in text)
+            for st in ("0.5", "1"):
+                c = self.e.start()
+                self.begin(c, s)
+                _, _, why = parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
+                c.close()
+                self.assertNotIn("no-ink", why, (text, st, why))
 
     def test_neatest_gives_an_exit_tail_back(self):
         """a's exit tail the reading gives the t, whose own strokes start after a pen lift:
