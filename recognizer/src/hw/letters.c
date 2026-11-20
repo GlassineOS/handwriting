@@ -2930,10 +2930,10 @@ static int build_chars(struct hw_letters *L, struct inst *in, size_t nin, struct
 			x->w *= c < 0.15 ? 0.15 : c;
 		}
 		for (int i = 0; i < nv; i++) if (way[v[i]] >= 0) W[way[v[i]]].w += in[v[i]].w;
-		/* a way gives a variant when it is used often enough: 3 versions and a tenth of
-		 * them (a slip, a lead-in or a neighbour's part stays out); with none, the most used */
+		/* a way gives a variant when it is used often enough: 3 versions and a tenth of those
+		 * written apart (a slip, a lead-in or a neighbour's part stays out); with none, the most used */
 		int ord[64], nq = 0;
-		for (int k = 0; k < nw; k++) if (W[k].n >= HW_LETTERS_MIN && W[k].n * HW_LETTERS_WAY_SHARE >= nv) ord[nq++] = k;
+		for (int k = 0; k < nw; k++) if (W[k].n >= HW_LETTERS_MIN && W[k].n * HW_LETTERS_WAY_SHARE >= napart) ord[nq++] = k;
 		if (!nq) for (int k = 0; k < nw; k++) if (!nq || W[k].n > W[ord[0]].n) { ord[0] = k; nq = 1; }
 		for (int a2 = 1; a2 < nq; a2++)
 			for (int b2 = a2; b2 > 0; b2--) {
@@ -2990,7 +2990,7 @@ static int build_chars(struct hw_letters *L, struct inst *in, size_t nin, struct
 					for (int q2 = 0; q2 < gr->n; q2++)
 						if (!in[gr->members[q2]].joined && rdist(in[x].rs, in[gr->members[q2]].rs, gr->total) <= 2 * SIGMA) sup++;
 					if (sup < 2) continue;
-					double score = in[x].w * dmin * wy->n / nv;
+					double score = in[x].w * dmin * wy->n / napart;
 					if (score > bs + 1e-12) { bs = score; bi = x; bg = wy->g; }
 				}
 			}
