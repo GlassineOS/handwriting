@@ -775,6 +775,68 @@ to +0.55, part numbers +0.03 to +0.56, phone numbers −0.48 to −0.04. Model 2
 sets far worse than its own (43 % here), so this is a rough check, not a measure of model
 2 on the device.
 
+### A point-labelling aligner (`aligner.py`, `alignrun.py`; prototype, not in the product)
+
+A small network (two convolutions, a two-layer bidirectional LSTM of 128, 0.77 M parameters)
+gives every point of a line its character. Its loss is a CTC variant for labelling every
+point: no blank runs, a one-frame blank only (and always) between two equal letters in a
+row, the states one chain (`chain_loss`, checked against a brute-force sum over the allowed
+paths). It reads the ink as `features.py` does (frames every 0.2 core heights, plus the
+move's direction) and is decoded by the best path through the chain of the text (text
+alone), or stroke by stroke over the letters a sample's spans list for it (spans known).
+
+**Data.** `gen.Generator.line(points=True)` gives each point's character and the pen-down
+joins between letters (the same ink as without). 20 000 lines of the training fonts (prose,
+words, pseudo-words), writers drawn per line with a join chance of 0.5 to 1 (the generator's
+writers: 0.15 to 0.7); test: one writer per held-out font (all 14), 40 joined lines each,
+and 60 lines written apart for that writer's letter model (the shape cut needs one).
+
+```sh
+uv run python -m glassine_train.alignrun data --out build/align
+uv run python -m glassine_train.alignrun train --data build/align --out build/align/aligner.pt --ce 1.0
+```
+
+**The chain loss alone does not find the boundaries.** Trained on it alone (2 000 steps), the
+network learns a likelihood as good with the wrong cuts: it gives most frames a common
+letter and squeezes the others into a frame or two at the ends, so the best path holds 10 %
+of the frames right with the true target. With a frame cross-entropy on the generator's
+point labels at weight 0.1 it did the same after 2 250 steps; at weight 1.0 (8 000 steps, 67 minutes on 8
+threads) it labels the points. So the chain is what decodes, and the labels are learned
+from the generator's truth.
+
+**Synthetic joined ink** (the 14 held-out writers, 3359 strokes with 6078 joins between
+letters; the distance along the stroke from the cut to the join, in x-heights, 0 inside it;
+a letter lost: the cut gives one of the two letters no point of the stroke):
+
+| | in the join | within 0.25 | median | mean | letter lost |
+|---|---|---|---|---|---|
+| recognizer's alignment (`align`, model 4) | 22 % | 37 % | 0.45 | 0.60 | 4.3 % |
+| shape cut (PR 115), text alone | 40 % | 53 % | 0.18 | 0.91 | 3.7 % |
+| shape cut, whole-stroke `ALIGN` (spans known) | 46 % | 55 % | 0.08 | 1.07 | 1.3 % |
+| aligner, text alone | 86 % | 93 % | 0 | 0.11 | 3.1 % |
+| aligner, spans known | 85 % | 92 % | 0 | 0.12 | 1.4 % |
+
+On the strokes the shape cut changed (2502 of 3359) it is 47 to 48 % in the join, the
+aligner 85 to 86 %. Lines without delayed strokes alike. The joins are the generator's
+straight bridges between glyph strokes, the kind the aligner was trained on, so this
+favours it.
+
+**One writer's real prompted ink** (the fixed test session, 113 samples with exact spans,
+1043 strokes, 292 of them shared by several letters; spans are stroke-level, so only which
+letters a stroke holds can be checked, not where it is cut; the spans were kept where the
+recognizer's own alignment passed, which favours the recognizer):
+
+| | strokes with their letters exactly | shared strokes exactly | letters lost in shared strokes |
+|---|---|---|---|
+| recognizer's alignment | 50 % | 73 % | 1.0 % |
+| shape cut, text alone | 48 % | 72 % | 2.7 % |
+| aligner, text alone | 64 % | 31 % | 30 % |
+
+The aligner places separate strokes better but loses a letter in a real joined stroke three
+times in ten: real joins are not the generator's bridges. Not better where it matters, so
+not wired in and not merged. Next would be training on real joined ink with point labels
+(none of ours has them), or joins drawn as real hands join.
+
 ## What limits accuracy
 
 1. **Generator realism.** Fonts give tidy, repeatable glyphs laid out letter by letter;

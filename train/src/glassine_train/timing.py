@@ -351,6 +351,7 @@ class Timing:
         d = np.r_[0, np.cumsum(np.linalg.norm(np.diff(s, axis=0), axis=1))]
         L = d[-1] / xh
         if len(s) < 2 or L <= 1e-4:
+            self.last_pos = np.zeros(1)
             return np.c_[s[:1], [t0]]
         k = max(1, int(round(L * w.rate_scale * np.exp(rng.normal(f.rate_mean, f.rate_sd * self.res)))))
         k = min(k, max(1, len(s) - 1), 16)
@@ -387,6 +388,7 @@ class Timing:
         if len(ts) < 2:
             ts = np.array([tt[a], tt[b]])
         pos = np.clip(np.interp(ts, tt, S), 0, 1) * d[-1]
+        self.last_pos = pos  # each point's place along the path (em), for gen.Generator.line(points=True)
         x = np.interp(pos, d, s[:, 0])
         y = np.interp(pos, d, s[:, 1])
         return np.c_[x, y, t0 + (ts - ts[0]) * scale]
