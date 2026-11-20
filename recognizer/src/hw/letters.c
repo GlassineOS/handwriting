@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "adapt.h"
+#include "cut.h"
 #include "letters.h"
 #include "sample.h"
 #include "neaten.h"
@@ -199,6 +200,20 @@ static void variant_out(struct sbuf *b, const struct hw_variant *x, int with_bes
 			sput(b, "]");
 		}
 		sput(b, "]");
+	}
+	/* its entry and exit (FR-007), with the model's other inputs to neatening, not the font's */
+	for (int e = 0; with_best && e < 2; e++) {
+		const struct hw_stub *t = e ? &x->exit : &x->entry;
+		if (t->n <= 0) continue;
+		sput(b, ",\"%s\":{\"stroke\":%d,\"n\":%d,\"points\":[", e ? "exit" : "entry", t->stroke, t->n);
+		for (int q = 0; q < HW_STUB_N; q++) {
+			sput(b, "%s[", q ? "," : "");
+			num(b, t->x[q]);
+			sput(b, ",");
+			num(b, t->y[q]);
+			sput(b, "]");
+		}
+		sput(b, "]}");
 	}
 	sput(b, "}");
 }
@@ -456,6 +471,25 @@ static void variant_in(json_object *x, struct hw_variant *w)
 		}
 		if (!good) { free(pv); continue; }
 		if (pk) w->speed = pv; else w->pres = pv;
+	}
+	/* its entry and exit: HW_STUB_N points, at a stroke it has */
+	for (int e = 0; e < 2 && w->s; e++) {
+		json_object *o, *f2, *pa;
+		struct hw_stub *t = e ? &w->exit : &w->entry;
+		if (!json_object_object_get_ex(x, e ? "exit" : "entry", &o) || !json_object_is_type(o, json_type_object) ||
+		    !json_object_object_get_ex(o, "points", &pa) || !json_object_is_type(pa, json_type_array) ||
+		    json_object_array_length(pa) != HW_STUB_N) continue;
+		int stroke = json_object_object_get_ex(o, "stroke", &f2) ? json_object_get_int(f2) : -1;
+		int n = json_object_object_get_ex(o, "n", &f2) ? json_object_get_int(f2) : 0;
+		if (stroke < 0 || (size_t)stroke >= w->nstrokes || n <= 0) continue;
+		int good = 1;
+		for (int q = 0; q < HW_STUB_N && good; q++) {
+			json_object *pt = json_object_array_get_idx(pa, (size_t)q);
+			good = json_object_is_type(pt, json_type_array) && json_object_array_length(pt) == 2;
+			if (good) { t->x[q] = json_object_get_double(json_object_array_get_idx(pt, 0)); t->y[q] = json_object_get_double(json_object_array_get_idx(pt, 1)); }
+		}
+		if (good) { t->stroke = stroke; t->n = n; }
+		else memset(t, 0, sizeof *t);
 	}
 	/* its profiles and middle, from its strokes as the build makes them */
 	variant_measure(w);
@@ -749,6 +783,11 @@ struct inst {
 	int dropped;
 	int slip;                       /* far from the character's other versions in size */
 	int var;                        /* the variant it is written like, -1 none */
+	int joined;                     /* cut from a stroke it shares with its neighbours (FR-007) */
+	double w0;                      /* its weight before a pass of build_chars */
+	/* written joined: the joining stroke into it and out of it (entry, exit), HW_STUB_N points
+	 * as struct hw_stub has them, at its stroke stroke; n 0 none */
+	struct hw_stub stub[2];
 	int occ;                        /* its occurrence record (one character's build), -1 none */
 	unsigned prev, next;            /* the characters beside it in its sample's text, 0 none or a space */
 	double *rs;                     /* resampled, centred: 2 * total points (per group) */
@@ -768,6 +807,8 @@ struct smp {
 	double guide;                   /* the area guide's baseline, NAN when none */
 	double read[512];               /* readability per character (first 512) */
 	int pressure;                   /* its pen gave pressure that varies (not one value throughout) */
+	char *own;                      /* per character: strokes of its own (own_chars) */
+	int *cnt;                       /* per stroke: the characters it is with */
 };
 
 static int cmp_smp(const void *a, const void *b) { return strcmp(((const struct smp *)a)->id, ((const struct smp *)b)->id); }
@@ -1330,6 +1371,11 @@ static void variant_narrow(struct hw_variant *v, double k)
 			v->best[j].x[i] = round((c + (v->best[j].x[i] - c) * k - lo) * 1e4) / 1e4;
 	}
 	v->width = round((hi - lo) * 1e4) / 1e4;
+	/* (an entry or exit runs from a point of the variant: narrowed with it) */
+	for (int e = 0; e < 2; e++) {
+		struct hw_stub *t = e ? &v->exit : &v->entry;
+		for (int q = 0; t->n > 0 && q < HW_STUB_N; q++) t->x[q] = round(t->x[q] * k * 1e4) / 1e4;
+	}
 	variant_measure(v);
 }
 
@@ -1734,7 +1780,9 @@ int hw_letters_place(const struct hw_ink *ink, size_t n, double line, const unsi
 
 /* A sample's characters with strokes of their own (FR-007), after the spans are put right
  * by where the ink lies (above): own[k] for each of the nc characters. The spans change. */
-static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *own)
+/* per character whether its strokes are its own (own[k]); with cnt_out, how many characters
+ * each stroke is with, as they are counted here (the caller frees it) */
+static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *own, int **cnt_out)
 {
 	int *cnt = calloc(s->nstrokes + 1, sizeof *cnt);
 	if (!cnt) return -1;
@@ -1753,7 +1801,8 @@ static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *
 		}
 		own[k] = (char)(ok && ink);
 	}
-	free(cnt);
+	if (cnt_out) *cnt_out = cnt;
+	else free(cnt);
 	return 0;
 }
 
@@ -1868,7 +1917,7 @@ static char *usable_of_line(const char *json)
 		if (cps && own) {
 			size_t nc = hw_utf8_decode(s.text, cps, 4096);
 			if (nc > 4096) nc = 4096;
-			if (!own_chars(&s, cps, nc, own)) out = usable_cps(cps, nc, own);
+			if (!own_chars(&s, cps, nc, own, NULL)) out = usable_cps(cps, nc, own);
 		}
 		free(cps); free(own);
 	}
@@ -2483,6 +2532,573 @@ static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const st
 	return ret;
 }
 
+/* ---------------------------------------------------------------- letters written joined (FR-007) */
+
+/* A stroke shared by several letters of a word is cut where its parts best match those
+ * letters' variants, made from their samples written apart (the first pass): each part
+ * against the stroke of a variant with the letter's stroke count that it takes the place of,
+ * the best of them. The cut is join_cut (hw_cut_shape; another matching can take its place).
+ * Within its part each letter's own ink is where its part matches that stroke best with the
+ * ends at a joint let go (up to half the part at each joint end): the rest of the part is the
+ * joining stroke, its entry before it and its exit after it. */
+#define JOIN_LET_GO 0.5         /* of its part a letter's entry or exit takes at most this much */
+static hw_cut_fn join_cut = hw_cut_shape;
+/* the model the cut looks up a letter in that the build doesn't make (one character's build:
+ * the model as it was) */
+static const struct hw_letters *build_ref;
+
+/* points [a, b] of ink k (sample units, y down) as a stub: HW_STUB_N points along them by
+ * length, x-heights, y up, from point at */
+static void stub_make(const struct hw_ink *k, size_t a, size_t b, size_t at, double xh, int stroke, struct hw_stub *t)
+{
+	double out[2 * HW_STUB_N];
+	struct hw_lstroke ls = { b - a + 1, k->x + a, k->y + a };
+	resample(&ls, HW_STUB_N, out);
+	for (int q = 0; q < HW_STUB_N; q++) {
+		t->x[q] = (out[2 * q] - k->x[at]) / xh;
+		t->y[q] = (k->y[at] - out[2 * q + 1]) / xh;
+	}
+	t->stroke = stroke;
+	t->n = 1;
+}
+
+/* a letter's part of a joined stroke: points [a, b), its own ink [f, l) */
+struct jpart { int k, j; size_t a, f, l, b; int entry, exit; };
+
+/* the letters written joined of the samples, as instances (normalized as the others are, the
+ * pressure and speed relative to pm, vm) after in's nin, cut by the letters of L (else
+ * build_ref); *added how many. 0, -1 out of memory. */
+static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct smp *S, size_t ns, const struct hw_letters *L,
+			const struct hw_mark *MK, size_t nmk, double pm, double vm, size_t *added)
+{
+	unsigned *cps = malloc(4097 * sizeof *cps);
+	struct jpart *P = NULL;
+	size_t np = 0, cp_ = 0;
+	int ret = -1;
+	*added = 0;
+	if (!cps) return -1;
+	for (size_t si = 0; si < ns; si++) {
+		struct smp *m = &S[si];
+		struct hw_sample *s = &m->s;
+		if (!m->own || !m->cnt || !(m->xh > 0) || isnan(m->base)) continue;
+		size_t nc = hw_utf8_decode(s->text, cps, 4096);
+		if (nc > 4096) nc = 4096;
+		if (nc < 2) continue;
+		np = 0;
+		/* the strokes shared by letters next to each other in a word, cut */
+		for (size_t j = 0; j < s->nstrokes; j++) {
+			const struct hw_ink *ink = &s->strokes[j];
+			if (m->cnt[j] < 2 || ink->n < 4) continue;
+			int k0 = -1, k1 = -1, nk = 0;
+			for (size_t k = 0; k < s->nspans && k < nc; k++)
+				if (span_has(s->spans[k], (int)j)) { if (k0 < 0) k0 = (int)k; k1 = (int)k; nk++; }
+			if (nk < 2 || nk != k1 - k0 + 1 || nk != m->cnt[j]) continue;
+			size_t R = (size_t)nk, nref = 0;
+			struct hw_cut_ref *refs = malloc(R * HW_LETTERS_VARIANTS * sizeof *refs);
+			size_t *off = malloc((R + 1) * sizeof *off), *at = malloc((R + 1) * sizeof *at), *idx = malloc((ink->n + 1) * sizeof *idx);
+			int *which = malloc((R + 1) * sizeof *which);
+			double *dx = malloc((2 * ink->n + 2) * sizeof *dx), *cum = malloc((ink->n + 1) * sizeof *cum);
+			if (!refs || !off || !at || !idx || !which || !dx || !cum) {
+				free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum);
+				goto out;
+			}
+			int ok = 1;
+			for (size_t r = 0; r < R && ok; r++) {
+				size_t k = (size_t)k0 + r;
+				off[r] = nref;
+				const struct hw_letter *le = letter_get(L, cps[k]);
+				if ((!le || !le->covered) && build_ref) le = letter_get(build_ref, cps[k]);
+				if (cps[k] == ' ' || !le || !le->covered || !le->nvar) { ok = 0; break; }
+				/* its inked strokes in writing order, this one's place among them */
+				int n2 = 0, pos = -1;
+				for (int *q = s->spans[k]; *q >= 0; q++) {
+					if ((size_t)*q >= s->nstrokes || !s->strokes[*q].n) continue;
+					if (*q < (int)j) pos++;
+					n2++;
+				}
+				pos++;
+				for (int v = 0; v < le->nvar; v++) {
+					const struct hw_variant *va = &le->var[v];
+					if (va->out || va->nstrokes != (size_t)n2 || pos >= n2 || va->s[pos].n < 2) continue;
+					hw_cut_ref_make(va->s[pos].x, va->s[pos].y, va->s[pos].n, &refs[nref++]);
+				}
+				if (nref == off[r]) ok = 0;
+			}
+			off[R] = nref;
+			/* (at most as many of its points as hw_cut_shape cuts at: every step-th and the
+			 * last; the parts are trimmed at them too) */
+			size_t cap = HW_CUT_PTS > HW_CUT_PER * R ? HW_CUT_PTS : HW_CUT_PER * R;
+			size_t m2 = ink->n, step = (m2 + cap - 1) / cap, nd = 0;
+			for (size_t i = 0; i < m2; i += step) idx[nd++] = i;
+			if (idx[nd - 1] != m2 - 1) idx[nd++] = m2 - 1;
+			double *dy = dx + nd;
+			for (size_t i = 0; i < nd; i++) { dx[i] = ink->x[idx[i]]; dy[i] = ink->y[idx[i]]; }
+			double cost;
+			int rc = ok ? join_cut(dx, dy, nd, m->xh, R, refs, off, at, which, &cost) : 1;
+			if (rc < 0) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); goto out; }
+			hw_cut_arc(dx, dy, nd, cum);
+			for (size_t r = 0; !rc && r < R; r++) {
+				size_t a = at[r], b = at[r + 1], f = a, l = b;
+				double best = INFINITY;
+				size_t fmax = r > 0 ? a + (size_t)((double)(b - a) * JOIN_LET_GO) : a;
+				size_t lmin = r + 1 < R ? b - (size_t)((double)(b - a) * JOIN_LET_GO) : b;
+				for (size_t f2 = a; f2 <= fmax; f2++)
+					for (size_t l2 = b; l2 >= lmin && l2 >= f2 + 2; l2--) {
+						double e = hw_cut_cost(dx, dy, f2, l2, cum, &refs[which[r]], m->xh);
+						if (e < best) { best = e; f = f2; l = l2; }
+						if (l2 == 0) break;
+					}
+				if (!isfinite(best)) continue;
+				if (np == cp_) {
+					cp_ = cp_ ? 2 * cp_ : 64;
+					struct jpart *x = realloc(P, cp_ * sizeof *x);
+					if (!x) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); goto out; }
+					P = x;
+				}
+				/* (as points of the stroke: the last of the cut's ends is its end) */
+				size_t A = idx[a], B = b == nd ? m2 : idx[b], F = idx[f], Lo = l == nd ? m2 : idx[l];
+				P[np++] = (struct jpart){ k0 + (int)r, (int)j, A, F, Lo, B, r > 0, r + 1 < R };
+			}
+			free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum);
+		}
+		if (!np) continue;
+		/* each letter whose strokes are its own or cut here: an instance */
+		for (size_t k = 0; k < nc && k < s->nspans; k++) {
+			int *sp = s->spans[k];
+			if (m->own[k] || cps[k] == ' ' || !sp || sp[0] < 0) continue;
+			if (hw_mark_of(MK, nmk, m->id, cps[k]) == HW_MARK_OUT) continue;
+			int ord[256], no = 0, good = 1, shared = 0;
+			for (int *q = sp; *q >= 0 && no < 256; q++) ord[no++] = *q;
+			for (int a = 1; a < no; a++) for (int b = a; b > 0 && ord[b] < ord[b - 1]; b--) { int t = ord[b]; ord[b] = ord[b - 1]; ord[b - 1] = t; }
+			const struct jpart *pt[256];
+			for (int a = 0; a < no && good; a++) {
+				pt[a] = NULL;
+				if ((size_t)ord[a] >= s->nstrokes) { good = 0; break; }
+				if (m->cnt[ord[a]] == 1) continue;
+				for (size_t q = 0; q < np && !pt[a]; q++) if (P[q].k == (int)k && P[q].j == ord[a]) pt[a] = &P[q];
+				if (!pt[a] || pt[a]->l < pt[a]->f + 2) good = 0;
+				shared++;
+			}
+			if (!good || !shared) continue;
+			if (*pnin == *pcin) {
+				*pcin = *pcin ? *pcin * 2 : 1024;
+				struct inst *x = realloc(*pin, *pcin * sizeof *x);
+				if (!x) goto out;
+				*pin = x;
+			}
+			struct inst *x = &(*pin)[*pnin];
+			memset(x, 0, sizeof *x);
+			x->cp = cps[k]; x->sample = (int)si; x->pos = (int)k;
+			x->var = -1; x->occ = -1; x->joined = 1;
+			x->prev = k > 0 && cps[k - 1] != ' ' ? cps[k - 1] : 0;
+			x->next = k + 1 < nc && cps[k + 1] != ' ' ? cps[k + 1] : 0;
+			x->x0 = x->y0 = INFINITY; x->x1 = x->y1 = -INFINITY;
+			x->s = calloc((size_t)no + 1, sizeof *x->s);
+			x->pp = malloc(((size_t)no + 1) * HW_LETTERS_PROFILE * sizeof *x->pp);
+			x->pv = malloc(((size_t)no + 1) * HW_LETTERS_PROFILE * sizeof *x->pv);
+			if (!x->s || !x->pp || !x->pv) { free(x->s); free(x->pp); free(x->pv); goto out; }
+			for (int a = 0; a < no; a++) {
+				const struct hw_ink *k2 = &s->strokes[ord[a]];
+				size_t f = pt[a] ? pt[a]->f : 0, l = pt[a] ? pt[a]->l : k2->n;
+				if (l <= f) continue;
+				struct hw_ink sub = *k2;
+				sub.n = l - f;
+				sub.x = k2->x + f; sub.y = k2->y + f; sub.t = k2->t + f; sub.p = k2->p + f;
+				int at = (int)x->nstrokes;
+				struct hw_lstroke *t = &x->s[x->nstrokes++];
+				t->n = sub.n;
+				t->x = malloc(sub.n * sizeof(double)); t->y = malloc(sub.n * sizeof(double));
+				if (!t->x || !t->y) { free(t->x); free(t->y); x->nstrokes--; continue; }
+				memcpy(t->x, sub.x, sub.n * sizeof(double)); memcpy(t->y, sub.y, sub.n * sizeof(double));
+				stroke_profile(&sub, m->pressure, x->pp + at * HW_LETTERS_PROFILE, x->pv + at * HW_LETTERS_PROFILE);
+				for (size_t q = 0; q < sub.n; q++) {
+					if (sub.x[q] < x->x0) x->x0 = sub.x[q];
+					if (sub.x[q] > x->x1) x->x1 = sub.x[q];
+					if (sub.y[q] < x->y0) x->y0 = sub.y[q];
+					if (sub.y[q] > x->y1) x->y1 = sub.y[q];
+				}
+				/* its entry: the first joint it is entered at; its exit: the last it leaves at */
+				if (pt[a] && pt[a]->entry && !x->stub[0].n && pt[a]->f > pt[a]->a)
+					stub_make(k2, pt[a]->a, pt[a]->f, pt[a]->f, m->xh, at, &x->stub[0]);
+				if (pt[a] && pt[a]->exit && pt[a]->b > pt[a]->l)
+					stub_make(k2, pt[a]->l - 1, pt[a]->b - 1, pt[a]->l - 1, m->xh, at, &x->stub[1]);
+			}
+			if (x->nstrokes != (size_t)no) {
+				for (size_t j = 0; j < x->nstrokes; j++) { free(x->s[j].x); free(x->s[j].y); }
+				free(x->s); free(x->pp); free(x->pv);
+				continue;
+			}
+			/* weight: careful marking, readability (as for the letters written apart) */
+			double w = !strcmp(s->written, "careful") ? 1.5 : !strcmp(s->written, "quick") ? 0.6 : 1.0;
+			x->w = x->w0 = w * (0.25 + (k < 512 ? m->read[k] : 0.6));
+			int mk = hw_mark_of(MK, nmk, m->id, cps[k]);
+			double bw = !strcmp(s->written, "careful") ? HW_BEST_CAREFUL : !strcmp(s->written, "quick") ? 1 / HW_BEST_CAREFUL : 1;
+			if (mk == HW_MARK_FAVOURITE) bw *= HW_BEST_FAVOURITE;
+			x->bw = mk == HW_MARK_WAY_OUT ? 0 : clampd(bw, 0.01, 100);
+			/* normalized as the letters written apart are */
+			for (size_t j = 0; j < x->nstrokes; j++)
+				for (size_t q = 0; q < x->s[j].n; q++) {
+					x->s[j].x[q] = (x->s[j].x[q] - x->x0) / m->xh;
+					x->s[j].y[q] = (m->base - x->s[j].y[q]) / m->xh;
+				}
+			for (size_t q = 0; q < x->nstrokes * HW_LETTERS_PROFILE; q++) {
+				x->pv[q] /= m->xh;
+				x->pp[q] = pm > 0 ? x->pp[q] / pm : NAN;
+				x->pv[q] = vm > 0 ? x->pv[q] / vm : NAN;
+			}
+			double X0 = x->x0, Y0 = x->y0, Y1 = x->y1;
+			x->x1 = (x->x1 - X0) / m->xh; x->x0 = 0;
+			x->y0 = (m->base - Y1) / m->xh;
+			x->y1 = (m->base - Y0) / m->xh;
+			if (x->x1 > 6 || x->y1 - x->y0 > 6) x->dropped = 1;
+			(*pnin)++;
+			(*added)++;
+		}
+	}
+	ret = 0;
+out:
+	free(cps); free(P);
+	return ret;
+}
+
+/* a variant's entry and exit (FR-007): the mean of those of its letters written joined, at
+ * the stroke most of them have one at (the first of equal counts), weighted as they are */
+static void variant_stubs(struct hw_variant *va, const struct inst *in, const int *v, int nv, int k)
+{
+	for (int e = 0; e < 2; e++) {
+		struct hw_stub *t = e ? &va->exit : &va->entry;
+		memset(t, 0, sizeof *t);
+		int cnt[64] = { 0 }, bs = -1;
+		for (int i = 0; i < nv; i++) {
+			const struct inst *x = &in[v[i]];
+			if (!x->joined || x->var != k || x->stub[e].n <= 0 || x->stub[e].stroke < 0 || x->stub[e].stroke >= 64 ||
+			    (size_t)x->stub[e].stroke >= va->nstrokes) continue;
+			cnt[x->stub[e].stroke]++;
+		}
+		for (int q = 0; q < 64; q++) if (cnt[q] && (bs < 0 || cnt[q] > cnt[bs])) bs = q;
+		if (bs < 0) continue;
+		double sx[HW_STUB_N] = { 0 }, sy[HW_STUB_N] = { 0 }, ws = 0;
+		for (int i = 0; i < nv; i++) {
+			const struct inst *x = &in[v[i]];
+			if (!x->joined || x->var != k || x->stub[e].n <= 0 || x->stub[e].stroke != bs || !(x->w > 0)) continue;
+			for (int q = 0; q < HW_STUB_N; q++) { sx[q] += x->w * x->stub[e].x[q]; sy[q] += x->w * x->stub[e].y[q]; }
+			ws += x->w;
+			t->n++;
+		}
+		if (!(ws > 0)) { memset(t, 0, sizeof *t); continue; }
+		t->stroke = bs;
+		for (int q = 0; q < HW_STUB_N; q++) { t->x[q] = round(sx[q] / ws * 1e4) / 1e4; t->y[q] = round(sy[q] / ws * 1e4) / 1e4; }
+	}
+}
+
+/* The characters of the model (FR-006, FR-007) from the instances: per character its
+ * variants. Instances written joined (in->joined) only join the variants their character's
+ * samples written apart give: they count for neither coverage, the ways nor the variants'
+ * use, the marks or the neighbour rules. final: the build's last pass (its measures go out).
+ * 0, -1 out of memory. */
+static int build_chars(struct hw_letters *L, struct inst *in, size_t nin, struct smp *S, const struct hw_mark *MK, size_t nmk,
+		       int final)
+{
+	/* the characters */
+	size_t nu = 0;
+	unsigned *uc = malloc((nin + 1) * sizeof *uc);
+	for (size_t k = 0; uc && k < nin; k++) if (!in[k].joined) uc[nu++] = in[k].cp;
+	if (uc) qsort(uc, nu, sizeof *uc, cmp_uint);
+	size_t nd = 0;
+	for (size_t k = 0; k < nu; k++) if (!nd || uc[nd - 1] != uc[k]) uc[nd++] = uc[k];
+	L->l = calloc(nd + 1, sizeof *L->l);
+	if (!L->l || !uc) { free(uc); return -1; }
+	for (size_t c = 0; c < nd; c++) {
+		if (build_only && uc[c] != build_only) continue;
+		struct hw_letter *l = &L->l[L->n++];
+		l->cp = uc[c];
+		marks_hash_of(MK, nmk, l->cp, l->marks);
+		/* its versions, in sample order */
+		int *v = NULL, nv = 0;
+		v = malloc((nin + 1) * sizeof *v);
+		if (!v) continue;
+		/* usable samples: those with it written with strokes of its own (FR-007), as
+		 * letters status counts them; the versions are those that can be measured */
+		int last = -1;
+		for (size_t k = 0; k < nin; k++)
+			if (in[k].cp == uc[c] && !in[k].joined && in[k].sample != last) { l->samples++; last = in[k].sample; }
+		for (size_t k = 0; k < nin; k++) if (!in[k].dropped && in[k].cp == uc[c]) v[nv++] = (int)k;
+		/* a size far from the character's others is more likely a slip than a style */
+		int napart = 0;
+		for (int i = 0; i < nv; i++) napart += !in[v[i]].joined;
+		if (napart >= 3) {
+			double *hs = malloc((size_t)nv * sizeof *hs);
+			size_t nh = 0;
+			for (int i = 0; hs && i < nv; i++) if (!in[v[i]].joined) hs[nh++] = in[v[i]].y1 - in[v[i]].y0 + (in[v[i]].x1 - in[v[i]].x0);
+			double mh = hs ? median(hs, nh, 0) : 0;
+			free(hs);
+			int w = 0;
+			for (int i = 0; i < nv; i++) {
+				double hh = in[v[i]].y1 - in[v[i]].y0 + (in[v[i]].x1 - in[v[i]].x0);
+				if (mh <= 0 || (hh >= 0.4 * mh && hh <= 2.5 * mh)) v[w++] = v[i];
+				else in[v[i]].slip = 1;
+			}
+			nv = w;
+		}
+		napart = 0;
+		for (int i = 0; i < nv; i++) napart += !in[v[i]].joined;
+		/* (written joined, a letter adds to its variants, never covers it: FR-007) */
+		l->covered = l->samples >= HW_LETTERS_MIN && napart > 0;
+		if (!l->covered) { free(v); continue; }
+		/* groups by stroke count */
+		struct group G[16];
+		int ng = 0;
+		for (int i = 0; i < 2 * nv; i++) {
+			const struct inst *xi = &in[v[i % nv]];
+			if (xi->joined != (i >= nv)) continue;
+			size_t sc = xi->nstrokes;
+			int g = 0;
+			while (g < ng && G[g].nstrokes != sc) g++;
+			if (g == ng && xi->joined) continue;
+			if (g == ng) {
+				if (ng == 16) continue;
+				G[ng] = (struct group){ sc, calloc((size_t)nv, sizeof(int)), 0, calloc(sc, sizeof(int)), 0 };
+				ng++;
+			}
+			if (G[g].members) G[g].members[G[g].n++] = v[i % nv];
+		}
+		for (int g = 0; g < ng; g++) {
+			struct group *gr = &G[g];
+			if (!gr->members || !gr->pts) continue;
+			/* points per stroke: from the median length of each stroke */
+			for (size_t j = 0; j < gr->nstrokes; j++) {
+				double *ls = malloc((size_t)gr->n * sizeof *ls);
+				if (!ls) continue;
+				size_t nl = 0;
+				for (int i = 0; i < gr->n; i++) if (!in[gr->members[i]].joined) ls[nl++] = slen(&in[gr->members[i]].s[j]);
+				double ml = median(ls, nl, 0);
+				free(ls);
+				int n = (int)lround(ml / 0.04);
+				gr->pts[j] = n < 4 ? 4 : n > 64 ? 64 : n;
+				gr->total += gr->pts[j];
+			}
+			for (int i = 0; i < gr->n; i++) {
+				struct inst *x = &in[gr->members[i]];
+				free(x->rs);
+				x->rs = malloc((size_t)gr->total * 2 * sizeof(double));
+				if (!x->rs) continue;
+				int o = 0;
+				for (size_t j = 0; j < gr->nstrokes; j++) { resample(&x->s[j], (size_t)gr->pts[j], x->rs + 2 * o); o += gr->pts[j]; }
+				double cx = 0, cy = 0;
+				for (int q = 0; q < gr->total; q++) { cx += x->rs[2 * q]; cy += x->rs[2 * q + 1]; }
+				cx /= gr->total; cy /= gr->total;
+				for (int q = 0; q < gr->total; q++) { x->rs[2 * q] -= cx; x->rs[2 * q + 1] -= cy; }
+			}
+		}
+		/* the ways of writing it (FR-006): within a stroke count, versions of one rough shape
+		 * and stroke order (within WAY_TAU of each other), the most supported first */
+		struct way { int g, seed, n; double w; } W[64];
+		int nw = 0;
+		int *way = malloc((size_t)nin * sizeof *way);
+		if (!way) { for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); } free(v); continue; }
+		for (int i = 0; i < nv; i++) way[v[i]] = -1;
+		for (int g = 0; g < ng; g++) {
+			struct group *gr = &G[g];
+			if (!gr->members || !gr->pts || !gr->total) continue;
+			for (;;) {
+				int bi = -1, bs = 0;
+				for (int i = 0; i < gr->n; i++) {
+					int x = gr->members[i];
+					if (way[x] >= 0 || !in[x].rs || in[x].joined) continue;
+					int sup = 0;
+					for (int k = 0; k < gr->n; k++) {
+						int y = gr->members[k];
+						if (way[y] < 0 && in[y].rs && !in[y].joined && rdist(in[x].rs, in[y].rs, gr->total) <= WAY_TAU) sup++;
+					}
+					if (sup > bs || (sup == bs && bi >= 0 && in[x].w > in[bi].w + 1e-12)) { bs = sup; bi = x; }
+				}
+				if (bi < 0 || nw == 64) break;
+				W[nw] = (struct way){ g, bi, 0, 0 };
+				for (int k = 0; k < gr->n; k++) {
+					int y = gr->members[k];
+					if (way[y] < 0 && in[y].rs && !in[y].joined && rdist(in[bi].rs, in[y].rs, gr->total) <= WAY_TAU) { way[y] = nw; W[nw].n++; }
+				}
+				nw++;
+			}
+		}
+		/* consistency: closeness to the typical shape of its way */
+		for (int i = 0; i < nv; i++) {
+			struct inst *x = &in[v[i]];
+			if (way[v[i]] < 0) continue;
+			const struct way *wy = &W[way[v[i]]];
+			double d = rdist(x->rs, in[wy->seed].rs, G[wy->g].total);
+			double c = exp(-(d / (2 * TAU / 3)) * (d / (2 * TAU / 3)));
+			x->w *= c < 0.15 ? 0.15 : c;
+		}
+		for (int i = 0; i < nv; i++) if (way[v[i]] >= 0) W[way[v[i]]].w += in[v[i]].w;
+		/* a way gives a variant when it is used often enough: 3 versions and a tenth of those
+		 * written apart (a slip, a lead-in or a neighbour's part stays out); with none, the most used */
+		int ord[64], nq = 0;
+		for (int k = 0; k < nw; k++) if (W[k].n >= HW_LETTERS_MIN && W[k].n * HW_LETTERS_WAY_SHARE >= napart) ord[nq++] = k;
+		if (!nq) for (int k = 0; k < nw; k++) if (!nq || W[k].n > W[ord[0]].n) { ord[0] = k; nq = 1; }
+		for (int a2 = 1; a2 < nq; a2++)
+			for (int b2 = a2; b2 > 0; b2--) {
+				const struct way *x = &W[ord[b2]], *y = &W[ord[b2 - 1]];
+				if (x->n > y->n || (x->n == y->n && x->w > y->w + 1e-12)) { int t = ord[b2]; ord[b2] = ord[b2 - 1]; ord[b2 - 1] = t; }
+				else break;
+			}
+		/* the letters written joined (FR-007): each into the way of its strokes that gives a
+		 * variant and that it is written like (within WAY_TAU of its seed), the nearest; one
+		 * written like none is no version of the character */
+		for (int g = 0; g < ng; g++) {
+			struct group *gr = &G[g];
+			int w2 = 0;
+			for (int i = 0; gr->members && i < gr->n; i++) {
+				int x = gr->members[i];
+				if (in[x].joined) {
+					int bk = -1;
+					double bd = INFINITY;
+					for (int k = 0; in[x].rs && k < nq; k++) {
+						if (W[ord[k]].g != g) continue;
+						double d = rdist(in[x].rs, in[W[ord[k]].seed].rs, gr->total);
+						if (d <= WAY_TAU && d < bd - 1e-12) { bd = d; bk = ord[k]; }
+					}
+					way[x] = bk;
+					if (bk < 0) continue;
+					double c = exp(-(bd / (2 * TAU / 3)) * (bd / (2 * TAU / 3)));
+					in[x].w *= c < 0.15 ? 0.15 : c;
+				}
+				gr->members[w2++] = x;
+			}
+			gr->n = w2;
+		}
+		/* seeds: one per way, the most used first; then, up to three, further shapes of the
+		 * ways (repeated letters don't look stamped) */
+		int seeds[HW_LETTERS_VARIANTS], nsd = 0, sgr[HW_LETTERS_VARIANTS];
+		for (int k = 0; k < nq && nsd < HW_LETTERS_VARIANTS; k++) { seeds[nsd] = W[ord[k]].seed; sgr[nsd] = W[ord[k]].g; nsd++; }
+		while (nsd < 3) {
+			double bs = -1;
+			int bi = -1, bg = -1;
+			for (int k = 0; k < nq; k++) {
+				const struct way *wy = &W[ord[k]];
+				const struct group *gr = &G[wy->g];
+				for (int i = 0; i < gr->n; i++) {
+					int x = gr->members[i];
+					if (way[x] != ord[k] || in[x].joined) continue;
+					double dmin = 1;
+					for (int q2 = 0; q2 < nsd; q2++) {
+						if (seeds[q2] == x) dmin = 0;
+						else if (sgr[q2] == wy->g) { double d = rdist(in[x].rs, in[seeds[q2]].rs, gr->total) / TAU; if (d < dmin) dmin = d; }
+					}
+					if (dmin * TAU < DIFF_MIN) continue;
+					/* support: other versions of the group near it */
+					int sup = 0;
+					for (int q2 = 0; q2 < gr->n; q2++)
+						if (!in[gr->members[q2]].joined && rdist(in[x].rs, in[gr->members[q2]].rs, gr->total) <= 2 * SIGMA) sup++;
+					if (sup < 2) continue;
+					double score = in[x].w * dmin * wy->n / napart;
+					if (score > bs + 1e-12) { bs = score; bi = x; bg = wy->g; }
+				}
+			}
+			if (bi < 0) break;
+			seeds[nsd] = bi; sgr[nsd] = bg; nsd++;
+		}
+		/* use: each version of a way that gives variants counts for the nearest seed with its
+		 * strokes */
+		int use[HW_LETTERS_VARIANTS] = { 0 };
+		for (int i = 0; i < nv; i++) {
+			int x = v[i], q = 0;
+			if (way[x] < 0 || in[x].joined) continue;
+			for (int k = 0; k < nq; k++) q |= ord[k] == way[x];
+			if (!q) continue;
+			int bk = -1;
+			double bd = INFINITY;
+			for (int k = 0; k < nsd; k++) {
+				if (sgr[k] != W[way[x]].g) continue;
+				double d = rdist(in[x].rs, in[seeds[k]].rs, G[sgr[k]].total);
+				if (d < bd - 1e-12) { bd = d; bk = k; }
+			}
+			if (bk >= 0) use[bk]++;
+		}
+		/* the most used first (the font's own glyph for the character) */
+		for (int a2 = 1; a2 < nsd; a2++)
+			for (int b2 = a2; b2 > 0 && use[b2] > use[b2 - 1]; b2--) {
+				int t = seeds[b2]; seeds[b2] = seeds[b2 - 1]; seeds[b2 - 1] = t;
+				t = sgr[b2]; sgr[b2] = sgr[b2 - 1]; sgr[b2 - 1] = t;
+				t = use[b2]; use[b2] = use[b2 - 1]; use[b2 - 1] = t;
+			}
+		int vix[HW_LETTERS_VARIANTS];
+		double vxm[HW_LETTERS_VARIANTS];
+		struct vstat vst[HW_LETTERS_VARIANTS];
+		stats_cp = l->cp;
+		for (int k = 0; k < nsd; k++) {
+			vix[k] = -1;
+			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar], &vxm[k], &vst[k])) { vix[k] = l->nvar; l->var[l->nvar++].use = use[k]; }
+			else variant_free(&l->var[l->nvar]);
+		}
+		/* the samples written like each variant (as use counts them), and the person's marks
+		 * on them: a variant is left out when a third of its samples say so; the favourite is
+		 * the one with the most samples marked so */
+		for (int i = 0; i < nv; i++) {
+			int x = v[i], q = 0;
+			if (way[x] < 0) continue;
+			for (int k = 0; k < nq; k++) q |= ord[k] == way[x];
+			if (!q) continue;
+			int bk = -1;
+			double bd = INFINITY;
+			for (int k = 0; k < nsd; k++) {
+				if (sgr[k] != W[way[x]].g) continue;
+				double d = rdist(in[x].rs, in[seeds[k]].rs, G[sgr[k]].total);
+				if (d < bd - 1e-12) { bd = d; bk = k; }
+			}
+			if (bk >= 0) in[x].var = vix[bk];
+		}
+		/* the build's measures (variant_stats): each variant against the samples written like it */
+		for (int k = 0; final && getenv("GLASSINE_HANDWRITING_LETTERS_STATS") && k < nsd; k++) {
+			if (vix[k] < 0) continue;
+			const struct group *gr = &G[sgr[k]];
+			char *sel = calloc((size_t)gr->n + 1, 1);
+			for (int a = 0; sel && a < gr->n; a++) sel[a] = in[gr->members[a]].var == vix[k];
+			if (sel) variant_stats(in, gr, sel, &l->var[vix[k]], &vst[k]);
+			free(sel);
+		}
+		int fav = -1, favn = 0;
+		for (int k = 0; k < l->nvar; k++) {
+			struct hw_variant *va = &l->var[k];
+			int cnt = 0, nout = 0, nfav = 0;
+			for (int i = 0; i < nv; i++) cnt += in[v[i]].var == k && !in[v[i]].joined;
+			va->ids = calloc((size_t)cnt + 1, sizeof *va->ids);
+			for (int i = 0; va->ids && i < nv; i++) {
+				if (in[v[i]].var != k || in[v[i]].joined) continue;
+				const char *id = S[in[v[i]].sample].id;
+				int dup = 0;
+				for (size_t q = 0; q < va->nids && !dup; q++) dup = !strcmp(va->ids[q], id);
+				if (!dup) memcpy(va->ids[va->nids++], id, 17);
+				int mk = hw_mark_of(MK, nmk, id, l->cp);
+				nout += mk == HW_MARK_WAY_OUT;
+				nfav += mk == HW_MARK_FAVOURITE;
+			}
+			if (va->ids) qsort(va->ids, va->nids, sizeof *va->ids, cmp_id17);
+			/* left out while a third of its samples are marked so: samples written that way
+			 * later join it without bringing it back */
+			va->out = nout && 3 * nout >= cnt;
+			if (!va->out && nfav > favn) { fav = k; favn = nfav; }
+		}
+		if (fav >= 0) l->var[fav].favourite = 1;
+		/* the best versions, the target of neatening (FR-035): none for one left out */
+		for (int k = 0; k < nsd; k++)
+			if (vix[k] >= 0 && !l->var[vix[k]].out) make_best(in, &G[sgr[k]], seeds[k], vix[k], vxm[k], &l->var[vix[k]]);
+		/* each variant's entry and exit, from the letters written joined like it */
+		for (int k = 0; k < l->nvar; k++) variant_stubs(&l->var[k], in, v, nv, k);
+		letter_slots(l);
+		/* (the neighbour rules from the letters written apart) */
+		int na2 = 0;
+		for (int i = 0; i < nv; i++) if (!in[v[i]].joined) v[na2++] = v[i];
+		letter_rules(l, in, v, na2);
+		free(way);
+		if (!l->nvar) l->covered = 0;
+		for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); }
+		free(v);
+	}
+	free(uc);
+	return 0;
+}
+
 int hw_letters_build(struct hw_letters *L)
 {
 	memset(L, 0, sizeof *L);
@@ -2563,7 +3179,7 @@ int hw_letters_build(struct hw_letters *L)
 		m->pressure = varied_pressure(&m->s);
 		m->first = (int)nin;
 		char *own = malloc(nc + 1);
-		if (!own || own_chars(&m->s, cps, nc, own)) { free(own); continue; }
+		if (!own || own_chars(&m->s, cps, nc, own, &m->cnt)) { free(own); continue; }
 		for (size_t k = 0; k < nu0; k++)
 			if (!strcmp(U[k].id, m->id)) { free(U[k].cps); U[k].cps = usable_cps(cps, nc, own); break; }
 		for (size_t k = 0; k < nc; k++) {
@@ -2647,7 +3263,7 @@ int hw_letters_build(struct hw_letters *L)
 			nin++;
 		}
 		m->ninst = (int)nin - m->first;
-		free(own);
+		m->own = own;
 	}
 	free(pr);
 	for (size_t k = 0; k < nu0; k++) if (!U[k].cps) U[k].cps = strdup("-");
@@ -2765,262 +3381,22 @@ int hw_letters_build(struct hw_letters *L)
 	L->m.ink = clampd(median(ink.v, ink.n, 0.07), 0.02, 0.25);
 	free(cap.v); free(asc.v); free(desc.v); free(ink.v);
 
-	/* the characters */
-	size_t nu = 0;
-	unsigned *uc = malloc((nin + 1) * sizeof *uc);
-	for (size_t k = 0; uc && k < nin; k++) uc[nu++] = in[k].cp;
-	if (uc) qsort(uc, nu, sizeof *uc, cmp_uint);
-	size_t nd = 0;
-	for (size_t k = 0; k < nu; k++) if (!nd || uc[nd - 1] != uc[k]) uc[nd++] = uc[k];
-	L->l = calloc(nd + 1, sizeof *L->l);
-	if (!L->l || !uc) { free(uc); goto fail; }
-	for (size_t c = 0; c < nd; c++) {
-		if (build_only && uc[c] != build_only) continue;
-		struct hw_letter *l = &L->l[L->n++];
-		l->cp = uc[c];
-		marks_hash_of(MK, nmk, l->cp, l->marks);
-		/* its versions, in sample order */
-		int *v = NULL, nv = 0;
-		v = malloc((nin + 1) * sizeof *v);
-		if (!v) continue;
-		/* usable samples: those with it written with strokes of its own (FR-007), as
-		 * letters status counts them; the versions are those that can be measured */
-		int last = -1;
-		for (size_t k = 0; k < nin; k++)
-			if (in[k].cp == uc[c] && in[k].sample != last) { l->samples++; last = in[k].sample; }
-		for (size_t k = 0; k < nin; k++) if (!in[k].dropped && in[k].cp == uc[c]) v[nv++] = (int)k;
-		/* a size far from the character's others is more likely a slip than a style */
-		if (nv >= 3) {
-			double *hs = malloc((size_t)nv * sizeof *hs);
-			for (int i = 0; hs && i < nv; i++) hs[i] = in[v[i]].y1 - in[v[i]].y0 + (in[v[i]].x1 - in[v[i]].x0);
-			double mh = hs ? median(hs, (size_t)nv, 0) : 0;
-			free(hs);
-			int w = 0;
-			for (int i = 0; i < nv; i++) {
-				double hh = in[v[i]].y1 - in[v[i]].y0 + (in[v[i]].x1 - in[v[i]].x0);
-				if (mh <= 0 || (hh >= 0.4 * mh && hh <= 2.5 * mh)) v[w++] = v[i];
-				else in[v[i]].slip = 1;
-			}
-			nv = w;
-		}
-		l->covered = l->samples >= HW_LETTERS_MIN && nv > 0;
-		if (!l->covered) { free(v); continue; }
-		/* groups by stroke count */
-		struct group G[16];
-		int ng = 0;
-		for (int i = 0; i < nv; i++) {
-			size_t sc = in[v[i]].nstrokes;
-			int g = 0;
-			while (g < ng && G[g].nstrokes != sc) g++;
-			if (g == ng) {
-				if (ng == 16) continue;
-				G[ng] = (struct group){ sc, calloc((size_t)nv, sizeof(int)), 0, calloc(sc, sizeof(int)), 0 };
-				ng++;
-			}
-			if (G[g].members) G[g].members[G[g].n++] = v[i];
-		}
-		for (int g = 0; g < ng; g++) {
-			struct group *gr = &G[g];
-			if (!gr->members || !gr->pts) continue;
-			/* points per stroke: from the median length of each stroke */
-			for (size_t j = 0; j < gr->nstrokes; j++) {
-				double *ls = malloc((size_t)gr->n * sizeof *ls);
-				if (!ls) continue;
-				for (int i = 0; i < gr->n; i++) ls[i] = slen(&in[gr->members[i]].s[j]);
-				double ml = median(ls, (size_t)gr->n, 0);
-				free(ls);
-				int n = (int)lround(ml / 0.04);
-				gr->pts[j] = n < 4 ? 4 : n > 64 ? 64 : n;
-				gr->total += gr->pts[j];
-			}
-			for (int i = 0; i < gr->n; i++) {
-				struct inst *x = &in[gr->members[i]];
-				free(x->rs);
-				x->rs = malloc((size_t)gr->total * 2 * sizeof(double));
-				if (!x->rs) continue;
-				int o = 0;
-				for (size_t j = 0; j < gr->nstrokes; j++) { resample(&x->s[j], (size_t)gr->pts[j], x->rs + 2 * o); o += gr->pts[j]; }
-				double cx = 0, cy = 0;
-				for (int q = 0; q < gr->total; q++) { cx += x->rs[2 * q]; cy += x->rs[2 * q + 1]; }
-				cx /= gr->total; cy /= gr->total;
-				for (int q = 0; q < gr->total; q++) { x->rs[2 * q] -= cx; x->rs[2 * q + 1] -= cy; }
-			}
-		}
-		/* the ways of writing it (FR-006): within a stroke count, versions of one rough shape
-		 * and stroke order (within WAY_TAU of each other), the most supported first */
-		struct way { int g, seed, n; double w; } W[64];
-		int nw = 0;
-		int *way = malloc((size_t)nin * sizeof *way);
-		if (!way) { for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); } free(v); continue; }
-		for (int i = 0; i < nv; i++) way[v[i]] = -1;
-		for (int g = 0; g < ng; g++) {
-			struct group *gr = &G[g];
-			if (!gr->members || !gr->pts || !gr->total) continue;
-			for (;;) {
-				int bi = -1, bs = 0;
-				for (int i = 0; i < gr->n; i++) {
-					int x = gr->members[i];
-					if (way[x] >= 0 || !in[x].rs) continue;
-					int sup = 0;
-					for (int k = 0; k < gr->n; k++) {
-						int y = gr->members[k];
-						if (way[y] < 0 && in[y].rs && rdist(in[x].rs, in[y].rs, gr->total) <= WAY_TAU) sup++;
-					}
-					if (sup > bs || (sup == bs && bi >= 0 && in[x].w > in[bi].w + 1e-12)) { bs = sup; bi = x; }
-				}
-				if (bi < 0 || nw == 64) break;
-				W[nw] = (struct way){ g, bi, 0, 0 };
-				for (int k = 0; k < gr->n; k++) {
-					int y = gr->members[k];
-					if (way[y] < 0 && in[y].rs && rdist(in[bi].rs, in[y].rs, gr->total) <= WAY_TAU) { way[y] = nw; W[nw].n++; }
-				}
-				nw++;
-			}
-		}
-		/* consistency: closeness to the typical shape of its way */
-		for (int i = 0; i < nv; i++) {
-			struct inst *x = &in[v[i]];
-			if (way[v[i]] < 0) continue;
-			const struct way *wy = &W[way[v[i]]];
-			double d = rdist(x->rs, in[wy->seed].rs, G[wy->g].total);
-			double c = exp(-(d / (2 * TAU / 3)) * (d / (2 * TAU / 3)));
-			x->w *= c < 0.15 ? 0.15 : c;
-		}
-		for (int i = 0; i < nv; i++) if (way[v[i]] >= 0) W[way[v[i]]].w += in[v[i]].w;
-		/* a way gives a variant when it is used often enough: 3 versions and a tenth of
-		 * them (a slip, a lead-in or a neighbour's part stays out); with none, the most used */
-		int ord[64], nq = 0;
-		for (int k = 0; k < nw; k++) if (W[k].n >= HW_LETTERS_MIN && W[k].n * HW_LETTERS_WAY_SHARE >= nv) ord[nq++] = k;
-		if (!nq) for (int k = 0; k < nw; k++) if (!nq || W[k].n > W[ord[0]].n) { ord[0] = k; nq = 1; }
-		for (int a2 = 1; a2 < nq; a2++)
-			for (int b2 = a2; b2 > 0; b2--) {
-				const struct way *x = &W[ord[b2]], *y = &W[ord[b2 - 1]];
-				if (x->n > y->n || (x->n == y->n && x->w > y->w + 1e-12)) { int t = ord[b2]; ord[b2] = ord[b2 - 1]; ord[b2 - 1] = t; }
-				else break;
-			}
-		/* seeds: one per way, the most used first; then, up to three, further shapes of the
-		 * ways (repeated letters don't look stamped) */
-		int seeds[HW_LETTERS_VARIANTS], nsd = 0, sgr[HW_LETTERS_VARIANTS];
-		for (int k = 0; k < nq && nsd < HW_LETTERS_VARIANTS; k++) { seeds[nsd] = W[ord[k]].seed; sgr[nsd] = W[ord[k]].g; nsd++; }
-		while (nsd < 3) {
-			double bs = -1;
-			int bi = -1, bg = -1;
-			for (int k = 0; k < nq; k++) {
-				const struct way *wy = &W[ord[k]];
-				const struct group *gr = &G[wy->g];
-				for (int i = 0; i < gr->n; i++) {
-					int x = gr->members[i];
-					if (way[x] != ord[k]) continue;
-					double dmin = 1;
-					for (int q2 = 0; q2 < nsd; q2++) {
-						if (seeds[q2] == x) dmin = 0;
-						else if (sgr[q2] == wy->g) { double d = rdist(in[x].rs, in[seeds[q2]].rs, gr->total) / TAU; if (d < dmin) dmin = d; }
-					}
-					if (dmin * TAU < DIFF_MIN) continue;
-					/* support: other versions of the group near it */
-					int sup = 0;
-					for (int q2 = 0; q2 < gr->n; q2++) if (rdist(in[x].rs, in[gr->members[q2]].rs, gr->total) <= 2 * SIGMA) sup++;
-					if (sup < 2) continue;
-					double score = in[x].w * dmin * wy->n / nv;
-					if (score > bs + 1e-12) { bs = score; bi = x; bg = wy->g; }
-				}
-			}
-			if (bi < 0) break;
-			seeds[nsd] = bi; sgr[nsd] = bg; nsd++;
-		}
-		/* use: each version of a way that gives variants counts for the nearest seed with its
-		 * strokes */
-		int use[HW_LETTERS_VARIANTS] = { 0 };
-		for (int i = 0; i < nv; i++) {
-			int x = v[i], q = 0;
-			if (way[x] < 0) continue;
-			for (int k = 0; k < nq; k++) q |= ord[k] == way[x];
-			if (!q) continue;
-			int bk = -1;
-			double bd = INFINITY;
-			for (int k = 0; k < nsd; k++) {
-				if (sgr[k] != W[way[x]].g) continue;
-				double d = rdist(in[x].rs, in[seeds[k]].rs, G[sgr[k]].total);
-				if (d < bd - 1e-12) { bd = d; bk = k; }
-			}
-			if (bk >= 0) use[bk]++;
-		}
-		/* the most used first (the font's own glyph for the character) */
-		for (int a2 = 1; a2 < nsd; a2++)
-			for (int b2 = a2; b2 > 0 && use[b2] > use[b2 - 1]; b2--) {
-				int t = seeds[b2]; seeds[b2] = seeds[b2 - 1]; seeds[b2 - 1] = t;
-				t = sgr[b2]; sgr[b2] = sgr[b2 - 1]; sgr[b2 - 1] = t;
-				t = use[b2]; use[b2] = use[b2 - 1]; use[b2 - 1] = t;
-			}
-		int vix[HW_LETTERS_VARIANTS];
-		double vxm[HW_LETTERS_VARIANTS];
-		struct vstat vst[HW_LETTERS_VARIANTS];
-		stats_cp = l->cp;
-		for (int k = 0; k < nsd; k++) {
-			vix[k] = -1;
-			if (!make_variant(in, &G[sgr[k]], seeds[k], &l->var[l->nvar], &vxm[k], &vst[k])) { vix[k] = l->nvar; l->var[l->nvar++].use = use[k]; }
-			else variant_free(&l->var[l->nvar]);
-		}
-		/* the samples written like each variant (as use counts them), and the person's marks
-		 * on them: a variant is left out when a third of its samples say so; the favourite is
-		 * the one with the most samples marked so */
-		for (int i = 0; i < nv; i++) {
-			int x = v[i], q = 0;
-			if (way[x] < 0) continue;
-			for (int k = 0; k < nq; k++) q |= ord[k] == way[x];
-			if (!q) continue;
-			int bk = -1;
-			double bd = INFINITY;
-			for (int k = 0; k < nsd; k++) {
-				if (sgr[k] != W[way[x]].g) continue;
-				double d = rdist(in[x].rs, in[seeds[k]].rs, G[sgr[k]].total);
-				if (d < bd - 1e-12) { bd = d; bk = k; }
-			}
-			if (bk >= 0) in[x].var = vix[bk];
-		}
-		/* the build's measures (variant_stats): each variant against the samples written like it */
-		for (int k = 0; getenv("GLASSINE_HANDWRITING_LETTERS_STATS") && k < nsd; k++) {
-			if (vix[k] < 0) continue;
-			const struct group *gr = &G[sgr[k]];
-			char *sel = calloc((size_t)gr->n + 1, 1);
-			for (int a = 0; sel && a < gr->n; a++) sel[a] = in[gr->members[a]].var == vix[k];
-			if (sel) variant_stats(in, gr, sel, &l->var[vix[k]], &vst[k]);
-			free(sel);
-		}
-		int fav = -1, favn = 0;
-		for (int k = 0; k < l->nvar; k++) {
-			struct hw_variant *va = &l->var[k];
-			int cnt = 0, nout = 0, nfav = 0;
-			for (int i = 0; i < nv; i++) cnt += in[v[i]].var == k;
-			va->ids = calloc((size_t)cnt + 1, sizeof *va->ids);
-			for (int i = 0; va->ids && i < nv; i++) {
-				if (in[v[i]].var != k) continue;
-				const char *id = S[in[v[i]].sample].id;
-				int dup = 0;
-				for (size_t q = 0; q < va->nids && !dup; q++) dup = !strcmp(va->ids[q], id);
-				if (!dup) memcpy(va->ids[va->nids++], id, 17);
-				int mk = hw_mark_of(MK, nmk, id, l->cp);
-				nout += mk == HW_MARK_WAY_OUT;
-				nfav += mk == HW_MARK_FAVOURITE;
-			}
-			if (va->ids) qsort(va->ids, va->nids, sizeof *va->ids, cmp_id17);
-			/* left out while a third of its samples are marked so: samples written that way
-			 * later join it without bringing it back */
-			va->out = nout && 3 * nout >= cnt;
-			if (!va->out && nfav > favn) { fav = k; favn = nfav; }
-		}
-		if (fav >= 0) l->var[fav].favourite = 1;
-		/* the best versions, the target of neatening (FR-035): none for one left out */
-		for (int k = 0; k < nsd; k++)
-			if (vix[k] >= 0 && !l->var[vix[k]].out) make_best(in, &G[sgr[k]], seeds[k], vix[k], vxm[k], &l->var[vix[k]]);
-		letter_slots(l);
-		letter_rules(l, in, v, nv);
-		free(way);
-		if (!l->nvar) l->covered = 0;
-		for (int g = 0; g < ng; g++) { free(G[g].members); free(G[g].pts); }
-		free(v);
+	/* first from the letters written apart; then, with the letters written joined cut by
+	 * those variants and added to them (FR-007), again (the measures from the last pass) */
+	for (size_t k = 0; k < nin; k++) in[k].w0 = in[k].w;
+	int stats = getenv("GLASSINE_HANDWRITING_LETTERS_STATS") != NULL;
+	if (build_chars(L, in, nin, S, MK, nmk, 0)) goto fail;
+	size_t added = 0;
+	if (joined_insts(&in, &nin, &cin, S, ns, L, MK, nmk, L->m.pres_mid, L->m.speed_mid, &added)) goto fail;
+	if (added || stats) {
+		for (size_t i = 0; i < L->n; i++)
+			for (int k = 0; k < L->l[i].nvar; k++) variant_free(&L->l[i].var[k]);
+		free(L->l);
+		L->l = NULL;
+		L->n = 0;
+		for (size_t k = 0; k < nin; k++) { in[k].w = in[k].w0; in[k].var = -1; in[k].slip = 0; }
+		if (build_chars(L, in, nin, S, MK, nmk, 1)) goto fail;
 	}
-	free(uc);
 
 	/* letter widths (FR-006): per character its median width in running text (a sample of
 	 * several words) over that in single words; one character's build takes the model's */
@@ -3033,7 +3409,7 @@ int hw_letters_build(struct hw_letters *L)
 			size_t a = 0, b = 0;
 			for (size_t k = 0; k < nin; k++) {
 				const struct inst *x = &in[k];
-				if (x->cp != L->l[c].cp || x->dropped || x->slip) continue;
+				if (x->cp != L->l[c].cp || x->dropped || x->slip || x->joined) continue;
 				if (strchr(S[x->sample].s.text, ' ')) wr[a++] = x->x1;
 				else ww[b++] = x->x1;
 			}
@@ -3134,7 +3510,7 @@ measured:
 		free(in[k].s); free(in[k].rs); free(in[k].pp); free(in[k].pv);
 	}
 	free(in);
-	for (size_t si = 0; si < ns; si++) hw_sample_free(&S[si].s);
+	for (size_t si = 0; si < ns; si++) { hw_sample_free(&S[si].s); free(S[si].own); free(S[si].cnt); }
 	free(S);
 	return 0;
 fail:
@@ -3143,7 +3519,7 @@ fail:
 		free(in[k].s); free(in[k].rs); free(in[k].pp); free(in[k].pv);
 	}
 	free(in);
-	for (size_t si = 0; si < ns; si++) hw_sample_free(&S[si].s);
+	for (size_t si = 0; si < ns; si++) { hw_sample_free(&S[si].s); free(S[si].own); free(S[si].cnt); }
 	free(S);
 	free(MK);
 	free(with);
@@ -3288,12 +3664,15 @@ int hw_letters_relearn(unsigned cp, int verbose)
 	if (r <= 0) return r;
 	build_m = old.m;
 	build_narrow = old.sp.narrow;
-	hw_letters_free(&old);
 	unsigned long gen = hw_store_generation();
 	struct hw_letters one;
 	build_only = cp;
 	build_progress = verbose > 1;
+	/* (its neighbours written joined with it cut by their variants in the model) */
+	build_ref = &old;
 	int b = hw_letters_build(&one);
+	build_ref = NULL;
+	hw_letters_free(&old);
 	build_only = 0;
 	build_progress = 0;
 	occ_free();

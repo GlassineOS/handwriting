@@ -399,22 +399,37 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
 - **The pull (FR-014, FR-035, FR-036).** From above Light, a character with a fit of 0.5 or
   more (or from `ALIGN`) goes towards its target. Its
   pieces are its runs of points: a stroke of its own, or its part of a stroke joined with a
-  neighbour. Without `ALIGN` the alignment's edges are put right first: points of no character
+  neighbour. A stroke the alignment gives several letters of a word (a joined word written in
+  one go) is cut among them where its parts best match their glyphs, when each has one (no pair
+  the font joins): in order, each letter's part its glyph's stroke as its pieces come in writing
+  order, each part and its glyph stroke at 24 points along them, centred, at the line's
+  x-height (their RMS distance and a quarter of the log of their lengths' ratio), the cut
+  placed at no more than 96 of the stroke's points (12 per letter for more than 8 letters:
+  every so many and the last; the cost grows with the cube of the points). The
+  alignment's frames put an edge a letter off often enough that joined letters lose their own
+  ink; without `ALIGN` the letters are those it gives the stroke points and those between,
+  and a neighbour it gives fewer pieces than its glyph has strokes, its others after the
+  stroke (or before, for one before), and not when one of them alone matches the whole stroke
+  as well as the parts do on the mean (one letter's stroke the alignment spread); from
+  Medium on, as the cut only matters to the pull.
+  Then the alignment's edges are put right: points of no character
   go with their neighbours, a run of one character shorter than 0.35 x-heights along the stroke
   goes to the run next to it (the longer one), and a character with a count of pieces no
   version of it has (more than some) gives a run it shares with a neighbour to that neighbour.
   Such a move is a guess at where the alignment is off (it can be off by a whole letter, the
   joints shifted along the word): the characters that gave or took a run are pulled only when
-  their ink as written is nearer their own versions than any other character's, so no
-  character's glyph is drawn over its neighbour's ink.
+  their own ink as written (a joint's connecting parts left out, which no version has) is
+  nearer their own versions than any other character's, so no character's glyph is
+  drawn over its neighbour's ink.
   Then the strokes are put right by where the ink lies as for the letter model, so a dot or
   bar written after the word belongs to the letter it lies across, not to the word's last one
   (five x-heights standing in for the area's line); a stroke joined from two characters' parts
   keeps its parts. `ALIGN` is used as given, except a stroke it lists whole for several
-  characters (a joined word: it says which letters the stroke holds, not where one ends): the
-  alignment of `TEXT` with the ink splits that stroke among them (a point it aligns with
-  another character goes with its neighbours), and the edges are put right as without
-  `ALIGN`. Its structure is tested coarsely, the shapes
+  characters (a joined word: it says which letters the stroke holds, not where one ends): that
+  stroke is cut among the letters it lists, in order, where its parts best match their glyphs
+  (as above; without a glyph for each, the alignment of `TEXT` with the ink splits it, a point
+  it aligns with another character going with its neighbours), and the edges are put right as
+  without `ALIGN`. Its structure is tested coarsely, the shapes
   don't matter: as many pieces as the glyph has strokes, each about where its stroke lies in
   the glyph (its middle within 0.45 x-heights, both about their middles), and its ink's
   middle within 0.75 x-heights of the glyph's above the baseline (so ink the alignment gave
@@ -433,9 +448,12 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   the ink has none (a loop or a turn the ink doesn't have, drawn with too few points), the
   piece is traced again by the length along it (its points spread over the glyph's stroke as
   over the ink's); still so, the letter stays at the line level. A piece whose matched places
-  don't reach its glyph stroke's ends (within a tenth of its length, 0.3 at a joint) is traced
-  by the length along it too: the glyph is drawn whole, not a part of it on all of the
-  piece's points.
+  don't reach its glyph stroke's ends (within a tenth of its length; at a joint 0.3 up to
+  Medium, 0.02 above it, where the joining stroke is drawn anew from the glyph's very end) is
+  traced by the length along it too (a joint's connecting part left as it is): the glyph is drawn whole, not a part of it on all of the
+  piece's points. Above Medium the turns and steps back are looked for in the letter's own
+  points only, not in a joint's connecting part: that is drawn anew, or, where it isn't,
+  the flow check below holds the letters back.
 - **Along the stroke (FR-036).** Each point goes to a place on its stroke of the glyph, as a
   share of that stroke's length: both are resampled every 0.04 x-heights (8 to 128 points) and
   matched in order (dynamic time warping) by where the points are, the direction of the stroke
@@ -444,7 +462,8 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   points and spread at most 2.5 times as fast as evenly (a part the stroke lacks is traced, not
   cut across). A hook, loop or overshoot at a start or end the glyph doesn't have (up to a
   quarter of the stroke's length, at most 0.6 x-heights) goes to the glyph's end, so it is
-  folded in, not dragged across the letter. The matching is done twice: the second time against the glyph
+  folded in, not dragged across the letter. The size and place tests above take the letter's
+  own ink, without a joint's connecting part (below). The matching is done twice: the second time against the glyph
   mapped onto the ink as the first gives it (moved, stretched and sheared, not mirrored; this
   map only finds the places). The glyph itself is only moved and scaled: placed on the straight
   baseline at the character's middle (moved by the matched points' mean offset, at most 0.5
@@ -453,6 +472,11 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   − where the corrections put it): 0.5 at Medium, 0.85 at Strong, going between them
   linearly (from 0.25 to Medium, Medium to Strong); above Strong a word that isn't set
   keeps Strong's pull.
+  A pulled letter's separate mark (a stroke of its own beside its tallest one, the stem: an
+  i's or j's dot, a t's bar written apart) goes where the full pull puts it, moved by as much
+  as the stem's own points ended up from where the full pull puts them, so it sits on its
+  stem as the glyph has it however far the stem was pulled, not just its own way towards its
+  place.
 - **Setting the word (Neatest, FR-043).** A word (between spaces) whose text is known is set
   anew: the glyph the font draws for each character there (the cycle, the neighbour rules,
   the joined pairs, chosen over the whole text as the font chooses them) at the font's
@@ -478,24 +502,40 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   `set`; the shape guard and the flow check below are for the pull and don't apply to it.
   Between Strong and Neatest its points go that far from Strong's ink to the set word.
 - **Joined letters (FR-036).** Where a stroke passes from one character to the next, the
-  joint's ends are matched with the glyph's ends left open (a lead-in or lead-out the
-  glyph doesn't have follows the matched point next to it), and each point near the joint
+  joint's ends are matched with the glyph's ends left open: the points beyond where the first
+  letter's glyph stroke ends and before where the second's starts are the joint's connecting
+  part (they follow the matched point next to them). Up to Medium each point near the joint
   takes the moves of both characters, weighted by how near it is to each one's points (over
   0.15 x-heights to either side, wider where the two characters' moves differ more: the move
   changes by at most half the length along the stroke, up to 0.8 x-heights), so the stroke
-  doesn't jump, kink or step back where they meet.
+  doesn't jump, kink or step back where they meet. Above Medium (Strong, Neatest), where both
+  letters are pulled, the joining stroke is drawn anew instead: a cubic from the end of the
+  first glyph's stroke to the start of the second's, along the directions both have there
+  (over 0.08 x-heights of their points), the person's points of the connecting part spread
+  along it by their length along the ink (each keeps its time and pressure); each letter's
+  own points stay on its glyph, and the joint's cut goes to the middle of the connecting
+  part (where the glyphs' ends leave no connecting part, the points within 0.15 x-heights of
+  the cut). A joint with a letter that isn't pulled is blended as at Medium. A join that
+  still turns back by more than a right angle where the ink doesn't (two glyph ends that
+  face each other, so that the cubic has nowhere to go) isn't drawn anew: the moves go from
+  the one end's to the other's along the connecting part, and the flow check holds such a
+  join's letters back.
 - **The flow (FR-036).** The neatened strokes are checked as they come out: a turn over 90
   degrees where the ink turns by less than 55 within five points, or a step back (against the
   way the stroke goes over three points to either side) where the ink has none, measured at
-  0.75 of the line's x-height, is new; each pulled character with points within a joint's
-  blend (0.8 x-heights along the stroke) of one goes back to the line level (`no-structure`)
-  and the line is neatened again, as for the shape guard (below). An alignment that cuts a
+  0.75 of the line's x-height, is new; up to Medium each pulled character with points within
+  a joint's blend (0.8 x-heights along the stroke) of one goes back to the line level
+  (`no-structure`) and the line is neatened again, as for the shape guard (below). Above
+  Medium a join is no reason to keep a letter back: one in a joining stroke drawn anew (or
+  two points from it) holds none back, one in a letter's own points that letter, and one at
+  a join that turns back (above) the letters on either side. An alignment that cuts a
   joined stroke elsewhere than the letters meet so gives none of the letters a kink.
 - **Spacing with the pull.** A pulled character's profile and middle for the spacing above go
   towards its glyph's as far as it is pulled (a joined pair's two letters towards the pair's).
 - **Without a letter model** only the line-level corrections apply (FR-022).
 - **The shape guard (SC-004, FR-037).** Each pulled character's neatened ink must be nearer one
-  of its own versions than any version of another character, whatever their strokes: each as
+  of its own versions (the glyph it is pulled to among them) than any version of another
+  character, whatever their strokes (its ink without a joining stroke drawn anew): each as
   one sequence of 48 points along its strokes in writing order (each stroke as many as its
   share of their length, a pen lift no part of it), centred, at the line's x-height, compared
   point by point (RMS). Ink written nearer another character already (a hasty letter can be)
@@ -749,7 +789,8 @@ for each character, a version for each way they write it often enough (up to 5).
 when its spans are exact (`spans_source` `exact`, as the samples app stores them), or the sample
 is one character alone kept with `keep` after a failed check (its strokes can only be that
 character's: lone full stops and commas fail the check most often), and its strokes
-are its own (not shared with a neighbour, so joined letters are never cut apart); a character is
+are its own (not shared with a neighbour; letters written joined count as below, but never
+towards coverage); a character is
 covered with 3 usable samples (unless none of its versions can be measured: no baseline or
 x-height to put it on). The spans follow the order of writing, split halfway between where the
 recognizer saw two characters, so before a character's strokes count as its own they are put
@@ -768,6 +809,28 @@ line) to either side. Of several, the one whose ink its middle is over, then one
 across, then one it touches; among those the one it is centred over. That covers an i's or
 j's dot, the bar of a t or an f, the arms of an E, the bar of an H and the second stroke of an
 x or a k, in words as well as alone. A stroke that is all a character has stays with it.
+**Letters written joined (FR-007).** The versions are made in two passes. The first takes the
+samples written apart alone. Then each stroke that the spans give two or more letters of one word
+(and no other) is cut where its parts best match those letters' versions from the first pass:
+in order, each part against the stroke of a version with the letter's stroke count that it takes
+the place of (the best of them: centred RMS at the sample's x-height plus a quarter of the log of
+the lengths' ratio), the least total, the cut placed at no more than 96 of the stroke's points
+(12 per letter for more than 8 letters), as neatening's shape cut is (the cut is a function of its own, so another way of matching can take its place). Within its
+part a letter's own ink is where that part matches the version's stroke best when up to half
+the part at a joint end is let go: what is let go is the joining stroke, the letter's entry
+before it and its exit after it. A letter whose strokes are all its own or cut so, not left out
+by the person, becomes a version of the character, weighted as one written apart is (how it was
+written, how well it was read); it joins the way of its stroke count whose versions it is
+written like (within 0.6 x-heights of the way's first sample), the nearest, else none, and only
+a way that gives a version. The second pass makes the versions again with these: the ways,
+which ways give versions, the character's samples and coverage, the versions' use and samples
+(`use`, `ids`), the marks and the neighbour rules stay those of the samples written apart; the
+letters written joined join the versions' averages and best versions. Each version keeps the
+entry and the exit of the joined letters written like it: the mean of theirs (8 points along
+each by its length, from the version stroke's first or last point), at the stroke most of them
+have one at. Without joined ink the second pass isn't made (with `GLASSINE_HANDWRITING_LETTERS_STATS`
+it is, and makes what the first does). One character's build cuts by the model's versions of
+its neighbours.
 Its samples are grouped by stroke count, each resampled by arc length (strokes in the order
 written) and centred; within a stroke count, the ways of writing it are the samples within 0.6
 x-heights (RMS) of each other, taken greedily from the one with the most such company, so a
@@ -920,13 +983,17 @@ medians, 0 when none), then
 character seen `{"char":"a","samples":N,"covered":true,"variants":[{"width":…,"weight":…,
 "members":N,"use":N,"lc":L,"rc":R,"left_out":true,"favourite":true,"ids":["ID",…],"left":[…8],
 "right":[…8],"middle":…,"strokes":[[[x,y],…],…],"best":[[[x,y],…],…],"pressure":[[…16],…],
-"speed":[[…16],…]}],
+"speed":[[…16],…],"entry":{"stroke":S,"n":N,"points":[[x,y],…8]},"exit":{…}}],
 "slots":[V,…],"rules":[{"prev":"o","variant":V,"n":N,"same":N,"hits":…,"cycle":…},…]}` (x from the version's left
 edge, y up from the baseline, in x-heights; `left` and `right` its profile, null for a band
 without ink, `middle` its middle (null without one), `pressure` and `speed` how it was written,
 16 values per stroke (above; each left out when the version has none),
 `lc` and `rc` its side shapes; `best` its best version, as `strokes` (only when it differs; the
-font draws `strokes`, so it doesn't change the font); `left_out` and `favourite` only when so;
+font draws `strokes`, so it doesn't change the font); `entry` and `exit` how it is joined when
+written joined (above: `stroke` the version's stroke it leads into or out of, `n` the joined
+letters it is the mean of, `points` from that stroke's first point (an entry ends there) or its
+last (an exit starts there), x-heights, y up; only when it has one; not in the font, which
+doesn't draw them); `left_out` and `favourite` only when so;
 `ids` the samples written
 this way, those its `use` counts, sorted; no versions when not covered). A character with marks
 has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the
@@ -1261,7 +1328,7 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_HANDWRITING_CALIB` | for measurements: `off` reads with no calibration, a number in [0.5, 4] with that temperature (Calibration) |
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
+| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
 | `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
 | `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV RM RV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), RM those samples' mean roughness (per stroke, evenly spaced along it, the squared turning at each point less its neighbours' turning, summed: how much it wobbles rather than bends), HV, AV and RV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |

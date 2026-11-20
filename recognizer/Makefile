@@ -9,7 +9,7 @@ PREFIX ?= /usr
 # -ffp-contract=fast: fused multiply-add in the engine (-std=c11 would turn it off)
 XCFLAGS = -std=c11 -ffp-contract=fast -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE $(shell pkg-config --cflags json-c)
 LIBS = $(shell pkg-config --libs json-c) -lm
-HW = model ctc sample recog store adapt gesture words chars letters spacing ttf size neaten lookalike calib
+HW = model ctc sample recog store adapt gesture words chars letters spacing ttf size neaten lookalike calib cut
 OBJ = $(OUT)/featurize.o $(HW:%=$(OUT)/%.o)
 HDR = $(wildcard src/hw/*.h)
 PY ?= python3

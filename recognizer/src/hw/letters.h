@@ -10,7 +10,7 @@
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 16     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_BUILD 17     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
 #define HW_LETTERS_USABLE 5     /* how the usable samples are counted (letters/usable): a change recounts */
 #define HW_LETTERS_MIN 3        /* usable samples for a character to be covered */
@@ -89,6 +89,13 @@ struct hw_mid { double sx, sw; };
 void hw_mid_seg(struct hw_mid *m, double x0, double y0, double x1, double y1);
 double hw_mid_of(const struct hw_mid *m);
 
+/* A variant's entry or exit (FR-007): the joining stroke that leads into it or out of it as
+ * the person writes it joined, the mean over the joined samples it was made from with one;
+ * HW_STUB_N points along it by its length, x-heights, y up, from the variant stroke's first
+ * point (an entry ends there) or its last point (an exit starts there); n 0 none */
+#define HW_STUB_N 8
+struct hw_stub { int n, stroke; double x[HW_STUB_N], y[HW_STUB_N]; };
+
 struct hw_variant {
 	double width;                   /* of the ink, x-heights */
 	double weight;                  /* the sum of its samples' weights */
@@ -111,6 +118,7 @@ struct hw_variant {
 	 * HW_LETTERS_PROFILE values along its normalised arc length, the averaged pressure and
 	 * speed, 1 the person's median; NULL when none of its samples gave one */
 	double *pres, *speed;
+	struct hw_stub entry, exit;     /* how it is joined to its neighbours, when written joined */
 };
 
 /* A neighbour rule (FR-038): after (side 0: the neighbour is the character before) or
