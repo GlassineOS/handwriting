@@ -496,10 +496,22 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   leaves it, moved along the line to the middle of the font's glyph there (set where the
   font sets it, with its spacing), and the letter is
   `no-structure` (a piece run over two strokes would draw the pen's lift from one to the
-  other, and a stroke no piece runs along would not be drawn). So does a letter whose
-  version there was made from fewer than 3 samples, when that version's top or bottom is
-  more than 0.75 x-heights from its ink's (so rare a version may not be how the letter is
-  written; set, the letter would leave its place on the line). Letters kept so that run on
+  other, and a stroke no piece runs along would not be drawn). A letter whose version there
+  was made from fewer than 3 samples, when that version's top or bottom is more than 0.75
+  x-heights from its ink's, is set with the version scaled (the same along and across the
+  line, about its middle) so its top and bottom are the ink's: so few samples don't say
+  where on the line the letter sits, the ink does; no join is drawn to it. A letter whose
+  ink is under half its version's height (a neighbour's bar or tail the reading gave it)
+  beside a letter kept as written with more pieces than any version of that one has (it
+  holds this letter's body) keeps its ink as written too: set, it would be drawn twice.
+  Each two letters side by side in a set word, one of them kept as written or set on its
+  ink's height as above (the font's sides and advance don't fit it), or one set on a version
+  of fewer than 3 samples where the font leaves the pair more than 0.3 x-heights further
+  apart than the person writes it,
+  are set at the gap the person writes them at (spacing.c: between their ink profiles as
+  set, the narrowest across the bands), never wider than the word gap; the letters after
+  move along the line with the second (not where kept ink runs on into its neighbour as
+  written, nor beside a letter kept for the rule just above). Letters kept so that run on
   into a set letter in one stroke move along the line, never up or down, until the stroke
   goes on from the one into the other as written (the run on into the letter after first),
   so no line is drawn between them. Before any of this, the ink is given back where the
