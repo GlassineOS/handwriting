@@ -488,15 +488,22 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   one after another, each point at its share of the ink's length. A letter is set onto a
   version with as many strokes as its ink has pieces, one each: the font's there when it has
   that many, else the letter's version with that many made from the most samples (the
-  spacing and the joins as the font sets that one); with none its ink stays as Strong leaves
-  it, moved along the line to the middle of the font's glyph there (set where the font
-  sets it, with its spacing), and the letter is
+  spacing and the joins as the font sets that one); with none its ink stays as Strong
+  leaves it, moved along the line to the middle of the font's glyph there (set where the
+  font sets it, with its spacing), and the letter is
   `no-structure` (a piece run over two strokes would draw the pen's lift from one to the
   other, and a stroke no piece runs along would not be drawn). So do a letter and its
-  neighbour (the next two letters of its word) when a piece of the neighbour crosses the
-  letter's ink or starts or ends within 0.1 of its height of it, other than where the ink
-  runs on from the one into the other: an f's bar written on into the next letter, set over
-  that one's glyph, would be lost (the letter model leaves such letters out, FR-007). A joined pair's ink keeps the
+  neighbour (the next two letters of its word) when a piece of the neighbour in a stroke of
+  none of the letter's ink crosses the letter's ink or starts within 0.1 of its height of
+  it: an f's bar written on into the next letter, set over that one's glyph, would be lost
+  (the letter model leaves such letters out, FR-007); their ink stays as written, moved as
+  one by how the line-level corrections move its points on average (so the one's stays on
+  the other's), its middle at their glyphs'. And before any of this, a letter's
+  part of a stroke run on from the letter before that lies wholly left of the letter's own
+  strokes (its ink in strokes of no other letter) and is shorter than they are is the one
+  before's exit tail, and the one before's part so right of its own strokes the letter's
+  lead-in (a dot is no letter's body): the pen was lifted
+  between them, so they aren't joined there. A joined pair's ink keeps the
   rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
   to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
   Only where the person didn't lift the pen between two letters the ink runs along a join

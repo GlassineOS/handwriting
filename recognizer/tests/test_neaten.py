@@ -626,19 +626,19 @@ class Neaten(unittest.TestCase):
         lift would be drawn from its top bar to its middle one)"""
         self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
         rnd = random.Random(91)
-        s = TL.sample("Fip", rnd, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("Fipjtbd", rnd, shapes=TL.WHOLE_SHAPES)
         # the F in two: the stem up and on along the top bar, then the middle bar
         f0, f1, f2 = (s["strokes"][j] for j in s["spans"][0])
         s["strokes"][s["spans"][0][0]] = list(reversed(f0)) + f1
         del s["strokes"][s["spans"][0][1]]
-        s["spans"] = [[0, 1], [2, 3], [4, 5]]
+        s["spans"] = [[0, 1]] + [[j - 1 for j in sp] for sp in s["spans"][1:]]
         TL.retime_sample(s)
         align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
         c = self.e.start()
         self.begin(c, s)
-        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fip"), align), why=True)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fipjtbd"), align), why=True)
         c.close()
-        self.assertEqual(why, ["no-structure", "set", "set"])
+        self.assertEqual(why, ["no-structure"] + ["set"] * 6)
         xy = {o[0]: EV.to_xy(o[2]) for o in out}
 
         def box(j):
@@ -648,15 +648,43 @@ class Neaten(unittest.TestCase):
         def ink(j):
             xs, ys = [p[0] for p in s["strokes"][j]], [p[1] for p in s["strokes"][j]]
             return max(xs) - min(xs), max(ys) - min(ys)
-        stem_i, dot, stem_p, bowl = box(2), box(3), box(4), box(5)
-        self.assertLess(max(dot), 0.2 * stem_i[1])
-        self.assertGreater(bowl[0], 0.25 * stem_p[1])
-        self.assertGreater(bowl[1], 0.25 * stem_p[1])
+        # each letter's strokes: stem (or body) first, then its mark
+        for c, (a, b) in zip("ipjtbd", ((2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13))):
+            with self.subTest(c=c):
+                stem, mark = box(a), box(b)
+                if c in "ij":       # a dot stays a dot
+                    self.assertLess(max(mark), 0.2 * stem[1])
+                elif c == "t":      # a bar stays a bar, across the stem
+                    self.assertGreater(mark[0], 0.25 * stem[1])
+                    self.assertLess(mark[1], 0.15 * stem[1])
+                else:               # a bowl stays a bowl
+                    self.assertGreater(mark[0], 0.2 * stem[1])
+                    self.assertGreater(mark[1], 0.2 * stem[1])
         # the F's ink as written (only moved, scaled and set upright with its line): its
         # strokes' sizes about as they were
         sc = box(0)[1] / ink(0)[1]
         for j in (0, 1):
             self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
+
+    def test_neatest_keeps_a_bar_written_into_the_next_letter(self):
+        """an f's bar written on into the next letter (the start of that one's stroke, which
+        the reading gives it alone): set over the next letter's glyph it would be lost, so
+        both keep their ink as written (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.run_on("f", "o", random.Random(92), 1)
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fo"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["no-structure", "no-structure"])
+        # the o's stroke still starts with the bar, from left of the f's stem at its height
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        stem, bar = xy[0], xy[1][0]
+        h = max(p[1] for p in stem) - min(p[1] for p in stem)
+        at = [p[0] for p in stem if abs(p[1] - bar[1]) < 0.15 * h]
+        self.assertTrue(at)
+        self.assertLess(bar[0], min(at))
 
     @unittest.skipIf(TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"), "needs fontTools and hb-shape")
     def test_neatest_runs_along_the_join(self):
