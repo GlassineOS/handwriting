@@ -1300,6 +1300,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 	unsigned char *keep = calloc(s->n + 1, 1);
 	int **own = calloc(s->n + 1, sizeof *own);
 	double *fit = NULL;
+	unsigned char *whole = NULL;
 	char used[4 * HW_MAX_LABELS + 1] = "";
 	int fail = !keep || !own;
 	for (size_t i = 0; !fail && i < s->n; i++) {
@@ -1325,12 +1326,11 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		free(ge); free(all); free(np);
 		hw_neat_drawing(s->ink, s->n, xh, keep);
 		if (align && cp) {
-			unsigned char *whole = calloc(s->n * nc + 1, 1);
+			whole = calloc(s->n * nc + 1, 1);
 			if (!whole) goto oom;
-			if (parse_align(s, align, nc, own, whole)) { free(whole); reply("error\t%s\tbad-align", id); goto out; }
+			if (parse_align(s, align, nc, own, whole)) { reply("error\t%s\tbad-align", id); goto out; }
 			snprintf(used, sizeof used, "%s", text);
 			int r = l ? split_joined(l, s, keep, &ref, cp, nc, own, whole) : 0;
-			free(whole);
 			if (r < 0) goto oom;
 			/* split: the points of a joined stroke go to its letters as the alignment has
 			 * them, and neatening puts the joints' edges right as without ALIGN */
@@ -1392,6 +1392,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		q.nc = used[0] ? nc : 0;
 		q.fit = fit;
 		q.own = own;
+		q.share = fit ? whole : NULL;
 		q.strength = st;
 		q.L = letters_now();
 		q.xh = xh;
@@ -1454,7 +1455,7 @@ out:
 	free(b.s);
 	hw_neat_free(&q);
 	if (own) for (size_t i = 0; i < s->n; i++) free(own[i]);
-	free(own); free(keep); free(fit); free(cp);
+	free(own); free(keep); free(fit); free(whole); free(cp);
 }
 
 static int nfields(char **f, int max, char *line)

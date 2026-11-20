@@ -169,8 +169,13 @@ size, spacing) and keep their shape.
 - **FR-007**: A character is covered when it has at least 3 usable samples: written to a
   prompt with its fit check passed (spans exact) or, for a prompt of one character alone,
   kept on the person's confirmation after a failed check (its strokes can only be that
-  character's: a lone full stop or comma counts), and with strokes of its own (a stroke
-  shared with a neighbour, as in joined writing, is not cut). Which strokes are a
+  character's: a lone full stop or comma counts), and with strokes of its own. A covered
+  character written joined counts as well: a stroke shared among the letters of a word is
+  cut where its parts best match those letters' variants from their samples written apart,
+  each letter taking its own part into its variants, and the bits of the joining stroke
+  that lead into the letter and out of it are kept with it as its entry and exit (so the
+  letter can be drawn joined as the person joins it); joined samples alone don't make a
+  character covered. Which strokes are a
   character's goes by where the ink lies as well as by the order of writing: a stroke written
   after the rest (an i's dot, the bar of a t or an f, the arms of an E, the second stroke of
   an x) is part of the character it lies across or stands over, in words as well as alone,
@@ -331,7 +336,10 @@ size, spacing) and keep their shape.
 
 - **FR-013**: Neatening takes ink and returns ink: the same strokes in the same order, each
   point moved, with timing, pressure and tilt kept. The text it is read as comes from the
-  recognizer (spec 001), which also tells which strokes form which character.
+  recognizer (spec 001), which also tells which strokes form which character; where a
+  stroke holds several letters (a joined word), each letter's part of it is where the
+  stroke best matches that letter's glyph, so a joined letter reaches the pull with its own
+  ink.
 - **FR-014**: Neatening has four levels, from the least to the most change, each doing
   what the one before it does and more:
   - **Light**: line-level corrections only: a straight baseline, a steady slant, even letter
@@ -367,7 +375,9 @@ size, spacing) and keep their shape.
   joining stroke between them is drawn anew from the end of the first letter's glyph to
   the start of the second's, as a smooth connection, carrying the timing and pressure of
   the person's own joining stroke, so a joined word keeps every letter and its joins stay
-  smooth. A set word (FR-043) follows its glyphs instead.
+  smooth. A set word (FR-043) follows its glyphs instead. A letter's separate mark (the dot
+  of an i or j, a bar written apart) keeps the place the glyph gives it relative to the
+  letter's pulled main stroke, at every strength.
 - **FR-037**: Each pulled or replaced character is checked on its own, by its shape: its new
   ink (centred, at x-height) must be closer to that character's own versions than to any
   version of any other character, whatever their stroke counts; when it isn't, that character alone stays as the
