@@ -964,7 +964,7 @@ static double rdist(const double *a, const double *b, int total)
 #define REG_BAND 0.25   /* the match stays within this share of the stroke's points of the diagonal */
 #define REG_ITER 3      /* rounds of registering and averaging */
 #define REG_WARP_SMOOTH 2 /* passes of [1 2 1] / 4 over each match's warp */
-#define REG_CUSP 0.5      /* radians a point turns by at least to be a cusp, not a wobble */
+#define REG_CUSP 0.8      /* radians a point turns by at least to be a cusp, not a wobble */
 #define REG_SMOOTH_MAX 7  /* further passes over the average at most, while it is rougher than the pointwise mean */
 #define REG_SMOOTH_KEEP 4 /* of which the first this many keep its size (Taubin) */
 enum { AVG_MEAN, AVG_DBA };
@@ -979,6 +979,25 @@ static int avg_method(void)
 static int avg_mean(void) { return avg_method() == AVG_MEAN; }
 struct group;
 static double shape_rough(const double *p, const struct group *g, double cusp);
+/* shape_rough of p after the one pass of [1 2 1] / 4 every version gets (make_variant):
+ * the jitter from point to point that pass takes off isn't counted, the wobble it leaves is */
+static double shape_rough_smoothed(const double *p, const struct group *g, double cusp, double *tmp)
+{
+	int T = 0;
+	for (size_t j = 0; j < g->nstrokes; j++) T += g->pts[j];
+	memcpy(tmp, p, (size_t)T * 2 * sizeof *tmp);
+	int o = 0;
+	for (size_t j = 0; j < g->nstrokes; j++) {
+		int n = g->pts[j];
+		double px = tmp[2 * o], py = tmp[2 * o + 1];
+		for (int i = 1; i < n - 1; i++) {
+			double *c = tmp + 2 * (o + i), nx = (px + 2 * c[0] + c[2]) / 4, ny = (py + 2 * c[1] + c[3]) / 4;
+			px = c[0]; py = c[1]; c[0] = nx; c[1] = ny;
+		}
+		o += n;
+	}
+	return shape_rough(tmp, g, cusp);
+}
 
 /* per point the direction (radians) and the turning (radians per point) of a stroke */
 static void reg_feat(const double *p, int n, double *th, double *ka)
@@ -1162,14 +1181,15 @@ static double shape_mean(const struct inst *in, const struct group *g, int seed,
 				}
 			}
 		}
-		/* not more wobbly than the samples averaged point by point: smoothed further (up to
-		 * REG_SMOOTH_MAX passes) while it is, its cusps (where it turns by more than REG_CUSP
-		 * at a point) left as they are and not counted */
-		double *pm = calloc((size_t)T * 2, sizeof *pm);
+		/* not more wobbly than the samples averaged point by point, both measured after the
+		 * one pass every version gets: smoothed further (up to REG_SMOOTH_MAX passes) while it
+		 * is, its cusps (where it turns by more than REG_CUSP at a point) left as they are and
+		 * not counted */
+		double *pm = calloc((size_t)T * 4, sizeof *pm), *tmp = pm + 2 * T;
 		for (int k = 0; pm && k < g->n; k++)
 			for (int i = 0; kw[k] > 0 && i < 2 * T; i++) pm[i] += kw[k] * in[g->members[k]].rs[i] / wsum;
-		double rough = pm ? shape_rough(pm, g, REG_CUSP) : INFINITY;
-		for (int pass = 0; pass < REG_SMOOTH_MAX && shape_rough(out, g, REG_CUSP) > rough; pass++) {
+		double rough = pm ? shape_rough_smoothed(pm, g, REG_CUSP, tmp) : INFINITY;
+		for (int pass = 0; pm && pass < REG_SMOOTH_MAX && shape_rough_smoothed(out, g, REG_CUSP, tmp) > rough; pass++) {
 			/* first passes that don't shrink (Taubin: a step to the neighbours' middle, then
 			 * back a little more), then plain ones */
 			for (int half = 0; half < (pass < REG_SMOOTH_KEEP ? 2 : 1); half++) {

@@ -791,10 +791,10 @@ back and forth along the sample, which bends a smooth curve) and the sample move
 fit; the version is the weighted average of the matched samples, starting from its seed, its
 points spaced evenly along each stroke again, matched again to that average and averaged again,
 three times (DTW barycentre averaging). Where it still wobbles more than the samples averaged
-point by point would (its roughness: the turning at each point less its neighbours', points
-that turn by more than half a radian, its cusps, left out), it is smoothed further until it
-doesn't, at most seven passes, the first four of them ones that keep its size, its cusps left
-where they are. Then it is smoothed once more, so a single sample's jitter is gone; its `use`
+point by point would, both after the one smoothing pass below (its roughness: the turning at
+each point less its neighbours', points that turn by more than 0.8 radians, its cusps, left
+out), it is smoothed further until it doesn't, at most seven passes, the first four of them
+ones that keep its size, its cusps left where they are. Then it is smoothed once more, so a single sample's jitter is gone; its `use`
 is how many samples of its ways are nearest to it of the versions with their strokes, and the
 versions are stored most used first. Sizes are in x-heights from the baseline of each sample's area (or of its
 own letters); the line metrics (cap height, ascender, descender, slant, ink width as the app's
