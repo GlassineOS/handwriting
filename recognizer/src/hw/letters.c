@@ -2698,20 +2698,34 @@ int hw_join_body(const struct hw_variant *v, size_t j)
 	return lstroke_len(&v->s[j]) >= HW_JOIN_BODY * m;
 }
 
+/* the first (side 0) or last (1) stroke of v's main body, its lengths measured once */
+static size_t body_end(const struct hw_variant *v, int last)
+{
+	enum { MAXS = 64 };
+	size_t ns = v->nstrokes;
+	if (ns < 2) return 0;
+	if (ns > MAXS) {
+		size_t j = last ? ns - 1 : 0;
+		while (last ? j > 0 && !hw_join_body(v, j) : j + 1 < ns && !hw_join_body(v, j)) j += last ? (size_t)-1 : 1;
+		return j;
+	}
+	double len[MAXS], m = 0;
+	for (size_t q = 0; q < ns; q++) { len[q] = lstroke_len(&v->s[q]); m = fmax(m, len[q]); }
+	size_t j = last ? ns - 1 : 0;
+	while (last ? j > 0 && len[j] < HW_JOIN_BODY * m : j + 1 < ns && len[j] < HW_JOIN_BODY * m) j += last ? (size_t)-1 : 1;
+	return j;
+}
+
 size_t hw_join_exit_stroke(const struct hw_variant *v)
 {
 	if (v->exit.n > 0 && v->exit.stroke >= 0 && hw_join_body(v, (size_t)v->exit.stroke)) return (size_t)v->exit.stroke;
-	size_t j = v->nstrokes ? v->nstrokes - 1 : 0;
-	while (j > 0 && !hw_join_body(v, j)) j--;
-	return j;
+	return body_end(v, 1);
 }
 
 size_t hw_join_entry_stroke(const struct hw_variant *v)
 {
 	if (v->entry.n > 0 && v->entry.stroke >= 0 && hw_join_body(v, (size_t)v->entry.stroke)) return (size_t)v->entry.stroke;
-	size_t j = 0;
-	while (j + 1 < v->nstrokes && !hw_join_body(v, j)) j++;
-	return j;
+	return body_end(v, 0);
 }
 
 /* a height's band: below the baseline, near it, at the x-height, above */

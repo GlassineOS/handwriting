@@ -1192,7 +1192,7 @@ static int key_of(const struct hw_letters *V, const struct hw_font_joins *J, con
 	int d = hw_join_pair_decides(V, a, b), k;
 	if (!d) return -1;
 	if (d > 0 && (k = shape_pair(V, a, b)) >= 0 && ok[0][ga * nk + (size_t)k] && ok[1][gb * nk + (size_t)k]) return k;
-	k = shape_kind(V, hw_join_exit_class(&V->l[la].var[va]), hw_join_entry_class(&V->l[lb].var[vb]));
+	k = shape_kind(V, J->ec[ga], J->nc[gb]);
 	if (k < 0 || (d < 0 && !kind_general(V, &V->jshape[k]))) return -1;
 	return ok[0][ga * nk + (size_t)k] && ok[1][gb * nk + (size_t)k] ? k : -1;
 }
@@ -1220,7 +1220,7 @@ static int cmp_jfit(const void *x, const void *y)
 
 void hw_font_joins_free(struct hw_font_joins *J)
 {
-	free(J->voff); free(J->A); free(J->B);
+	free(J->voff); free(J->A); free(J->B); free(J->ec); free(J->nc);
 	memset(J, 0, sizeof *J);
 }
 
@@ -1256,18 +1256,27 @@ int hw_font_joins_prepare(const struct hw_letters *V, struct hw_font_joins *J)
 	size_t nf = 0, cf = 0;
 	double *sa = NULL, *sb = NULL;
 	int *ca = NULL, *cb = NULL;
-	if (!J->A || !J->B || !ok[0] || !ok[1]) goto oomf;
+	J->ec = malloc(((size_t)nv + 1) * sizeof *J->ec);
+	J->nc = malloc(((size_t)nv + 1) * sizeof *J->nc);
+	if (!J->A || !J->B || !J->ec || !J->nc || !ok[0] || !ok[1]) goto oomf;
 	for (size_t q = 0; q < (size_t)nv * nk; q++) J->A[q] = J->B[q] = LONG_MIN;
+	for (size_t i = 0; i < V->n; i++)
+		for (int v = 0; J->voff[i] >= 0 && v < V->l[i].nvar; v++) {
+			J->ec[J->voff[i] + v] = hw_join_exit_class(&V->l[i].var[v]);
+			J->nc[J->voff[i] + v] = hw_join_entry_class(&V->l[i].var[v]);
+		}
 	/* who could join by what: a pair's shape its letters, a kind's the variants of that kind */
 	for (size_t i = 0; i < V->n; i++) {
 		if (J->voff[i] < 0 || !hw_join_letter(V->l[i].cp)) continue;
-		for (int v = 0; v < V->l[i].nvar; v++)
+		for (int v = 0; v < V->l[i].nvar; v++) {
+			int ec = J->ec[J->voff[i] + v], nc = J->nc[J->voff[i] + v];
 			for (size_t k = 0; k < nk; k++) {
 				const struct hw_jshape *t = &V->jshape[k];
 				size_t g = (size_t)(J->voff[i] + v) * nk + k;
-				ok[0][g] = t->a || t->b ? t->a == V->l[i].cp : t->ec == hw_join_exit_class(&V->l[i].var[v]);
-				ok[1][g] = t->a || t->b ? t->b == V->l[i].cp : t->nc == hw_join_entry_class(&V->l[i].var[v]);
+				ok[0][g] = t->a || t->b ? t->a == V->l[i].cp : t->ec == ec;
+				ok[1][g] = t->a || t->b ? t->b == V->l[i].cp : t->nc == nc;
 			}
+		}
 	}
 	const unsigned char *cok[2] = { ok[0], ok[1] };
 	for (size_t la = 0; la < V->n; la++) {
@@ -1392,7 +1401,7 @@ int hw_font_join_key(const struct hw_letters *V, const struct hw_font_joins *J, 
 	int d = hw_join_pair_decides(V, a, b), k;
 	if (!d) return -1;
 	if (d > 0 && (k = shape_pair(V, a, b)) >= 0 && joins_ok(J, ga, k, 0) && joins_ok(J, gb, k, 1)) return k;
-	k = shape_kind(V, hw_join_exit_class(&V->l[la].var[va]), hw_join_entry_class(&V->l[lb].var[vb]));
+	k = shape_kind(V, J->ec[ga], J->nc[gb]);
 	if (k < 0 || (d < 0 && !kind_general(V, &V->jshape[k]))) return -1;
 	return joins_ok(J, ga, k, 0) && joins_ok(J, gb, k, 1) ? k : -1;
 }

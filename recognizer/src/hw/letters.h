@@ -432,6 +432,7 @@ struct hw_font_joins {
 	int *voff;              /* per letter of V its first variant's index, -1 not in the font */
 	int nv;
 	long *A, *B;            /* [variant * nk + join] */
+	int *ec, *nc;           /* per variant its kind of exit and entry (hw_join_*_class) */
 	int any_general;        /* some kind joins the pairs written too rarely to decide */
 };
 /* 0, -1 out of memory (J then empty); with no shape J has no joins */
