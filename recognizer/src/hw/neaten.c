@@ -2021,14 +2021,15 @@ static int set_pieces(const struct hw_neat *q, const int *sw, int w, size_t k, i
 }
 
 /* whether a piece of character o in word w, in a stroke of none of k's ink, crosses k's ink
- * or starts on it (within HW_NEAT_SET_ON of k's height): a stroke joined through both is the
- * person's joined writing, not a part of the one in the other's ink */
+ * or starts on it (within HW_NEAT_SET_ON of k's height) as written (the line's corrections
+ * may move two letters together): a stroke joined through both is the person's joined
+ * writing, not a part of the one in the other's ink */
 static int set_on(const struct hw_neat *q, const int *sw, int w, size_t k, size_t o)
 {
 	double y0 = INFINITY, y1 = -INFINITY;
 	for (size_t j = 0; j < q->n; j++)
 		for (size_t i = 0; sw[j] == w && i < q->ink[j].n; i++)
-			if (q->own[j][i] == (int)k) { y0 = fmin(y0, q->y[j][i]); y1 = fmax(y1, q->y[j][i]); }
+			if (q->own[j][i] == (int)k) { y0 = fmin(y0, q->ink[j].y[i]); y1 = fmax(y1, q->ink[j].y[i]); }
 	if (!(y0 <= y1)) return 0;
 	double near = HW_NEAT_SET_ON * (y1 - y0);
 	for (size_t j = 0; j < q->n; j++) {
@@ -2042,10 +2043,10 @@ static int set_on(const struct hw_neat *q, const int *sw, int w, size_t k, size_
 			for (size_t j2 = 0; j2 < q->n; j2++)
 				for (size_t i2 = 0; sw[j2] == w && i2 < q->ink[j2].n; i2++) {
 					if (q->own[j2][i2] != (int)k) continue;
-					if (end && hypot(q->x[j][i] - q->x[j2][i2], q->y[j][i] - q->y[j2][i2]) <= near) return 1;
+					if (end && hypot(q->ink[j].x[i] - q->ink[j2].x[i2], q->ink[j].y[i] - q->ink[j2].y[i2]) <= near) return 1;
 					if (!i || ow[i - 1] != (int)o || !i2 || q->own[j2][i2 - 1] != (int)k) continue;
-					double ax = q->x[j][i - 1], ay = q->y[j][i - 1], bx = q->x[j][i], by = q->y[j][i];
-					double cx = q->x[j2][i2 - 1], cy = q->y[j2][i2 - 1], dx = q->x[j2][i2], dy = q->y[j2][i2];
+					double ax = q->ink[j].x[i - 1], ay = q->ink[j].y[i - 1], bx = q->ink[j].x[i], by = q->ink[j].y[i];
+					double cx = q->ink[j2].x[i2 - 1], cy = q->ink[j2].y[i2 - 1], dx = q->ink[j2].x[i2], dy = q->ink[j2].y[i2];
 					double d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax), d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
 					double d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx), d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
 					if (d1 * d2 < 0 && d3 * d4 < 0) return 1;
@@ -2333,6 +2334,37 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 			else if (gjo[k] >= 0 || gv[k] >= 0) { q->why[k] = HW_NEAT_WHY_SET; q->pulled[k] = 1; }
 		}
 		k0 = k1;
+	}
+	/* letters kept as written that run on into a set letter in one stroke: moved along the
+	 * line so the stroke goes on from one into the other as written, not by a line drawn
+	 * between where each was placed (the run on into the letter after first) */
+	{
+		double *sh = calloc(nc + 1, sizeof *sh);
+		unsigned char *has = calloc(nc + 1, 1);
+		if (!sh || !has) { free(sh); free(has); goto outx; }
+		for (int pass = 0; pass < 2; pass++)
+			for (size_t j = 0; j < n; j++) {
+				if (!X[j] || !ok[sw[j]]) continue;
+				for (size_t i = 1; i < q->ink[j].n; i++) {
+					int a = q->own[j][i - 1], b = q->own[j][i];
+					if (a == b || a < 0 || b < 0 || (size_t)a >= nc || (size_t)b >= nc) continue;
+					int ka = kept[a] && !kept[b] && (gjo[b] >= 0 || gv[b] >= 0), kb = kept[b] && !kept[a] && (gjo[a] >= 0 || gv[a] >= 0);
+					if (pass ? !kb : !ka) continue;
+					size_t g = grp[pass ? b : a];
+					if (has[g]) continue;
+					double d = (X[j][i] - X[j][i - 1]) - (q->ink[j].x[i] - q->ink[j].x[i - 1]);
+					sh[g] = pass ? -d : d;
+					has[g] = 1;
+				}
+			}
+		for (size_t j = 0; j < n; j++) {
+			if (!X[j] || !ok[sw[j]]) continue;
+			for (size_t i = 0; i < q->ink[j].n; i++) {
+				int o = q->own[j][i];
+				if (o >= 0 && (size_t)o < nc && kept[o] && has[grp[o]]) X[j][i] += sh[grp[o]];
+			}
+		}
+		free(sh); free(has);
 	}
 	for (size_t j = 0; j < n; j++) {
 		if (!X[j] || !ok[sw[j]]) continue;

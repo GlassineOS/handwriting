@@ -495,10 +495,13 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   other, and a stroke no piece runs along would not be drawn). So do a letter and its
   neighbour (the next two letters of its word) when a piece of the neighbour in a stroke of
   none of the letter's ink crosses the letter's ink or starts within 0.1 of its height of
-  it: an f's bar written on into the next letter, set over that one's glyph, would be lost
-  (the letter model leaves such letters out, FR-007); their ink stays as written, moved as
-  one by how the line-level corrections move its points on average (so the one's stays on
-  the other's), its middle at their glyphs'. And before any of this, a letter's part of a
+  it, as written (the line-level corrections can move two letters together): an f's bar
+  written on into the next letter, set over that one's glyph, would be lost (the letter
+  model leaves such letters out, FR-007); their ink stays as written, moved as one by how
+  the line-level corrections move its points on average (so the one's stays on the
+  other's), its middle at their glyphs'. Letters kept so that run on into a set letter in
+  one stroke move along the line until the stroke goes on from the one into the other as
+  written (the run on into the letter after first), so no line is drawn between them. And before any of this, a letter's part of a
   stroke run on from the letter before that lies wholly left of the letter's own strokes
   (its ink in strokes of no other letter) and is shorter than they are is the one before's
   exit tail, and the one before's part so right of its own strokes the letter's lead-in (a
