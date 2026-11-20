@@ -45,9 +45,9 @@
 #define HW_JOINED_SHARE_DEN 4
 #define HW_JOINED_MAX 256       /* joined pairs in a model at most */
 /* joins (FR-044): the stroke between two letters written joined, from where the first
- * letter's own ink ends to where the second's begins. A shape per letter pair joined at least
- * HW_JOIN_PAIR_MIN times and per kind of join (hw_join_exit_class, hw_join_entry_class) joined
- * at least HW_JOIN_KIND_MIN times. The font joins a pair written at least HW_JOIN_SEEN times
+ * letter's own ink ends to where the second's begins. A shape per letter pair with at least
+ * HW_JOIN_PAIR_MIN joints and per kind of join (hw_join_exit_class, hw_join_entry_class) with
+ * at least HW_JOIN_KIND_MIN. The font joins a pair written at least HW_JOIN_SEEN times
  * with known strokes, joined at least HW_JOIN_TWICE times and in at least half of them; a
  * rarer pair where its kind is written at least HW_JOIN_KIND_SEEN times, joined in at least
  * half. A joint whose ends are more than HW_JOIN_FAR x-heights apart is none. A shape is the

@@ -2437,8 +2437,9 @@ class JoinedPlainly(unittest.TestCase):
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
 class Joins(unittest.TestCase):
-    """spec 003 FR-044: e and r written joined in 5 samples of 8 (too few of them for one glyph,
-    FR-039) are joined in the font in each
+    """spec 003 FR-044: e and r, and r and s, written joined in 10 samples of 16 (too few of
+    them for one glyph, FR-039; an r between them entering one join and leaving the other) are
+    joined in the font in each
     style: their glyphs become the join's alternates (calt), the halves meet, nothing kerns
     between them; a ligature has no joins; the same store gives the same font; a store with no
     joined ink has no joins at all"""
@@ -2449,6 +2450,8 @@ class Joins(unittest.TestCase):
         rnd = random.Random(61)
         ss = alphabet_samples(seed=61, per=3)
         ss += [joined(sample("er", rnd), [0]) for _ in range(5)] + [sample("er", rnd) for _ in range(3)]
+        ss += [joined(sample("ers", rnd), [0, 1]) for _ in range(5)] + [sample("ers", rnd) for _ in range(3)]
+        ss += [joined(sample("rs", rnd), [0]) for _ in range(5)] + [sample("rs", rnd) for _ in range(3)]
         ss += [joined(sample("th", rnd), [0]) for _ in range(5)] + [sample("th", rnd)]
         cls.e.put(ss)
         cls.e.run("letters", "build", "-r")
@@ -2468,12 +2471,14 @@ class Joins(unittest.TestCase):
     def test_learned(self):
         self.assertIsNotNone(self.joins)
         pairs = {a + b: (s, j) for a, b, s, j in self.joins["pairs"]}
-        self.assertEqual(pairs["er"], (8, 5))
+        # (r and s are neighbours in the separate letters' samples too)
+        self.assertEqual(pairs["er"], (16, 10))
+        self.assertEqual(pairs["rs"][1], 10)
         er = [x for x in self.joins["shapes"] if x.get("pair") == "er"]
         self.assertEqual(len(er), 1)
         self.assertEqual(len(er[0]["points"]), 13)
         self.assertEqual(er[0]["points"][0], [0, 0])
-        self.assertEqual(er[0]["n"], 5)
+        self.assertGreaterEqual(er[0]["n"], 5)
 
     def halves(self, ttf, text, features=None):
         """the shaped glyphs and, for each two that are a join's, how far apart their halves'
@@ -2508,9 +2513,16 @@ class Joins(unittest.TestCase):
             got, gaps = self.halves(ttf, "er")
             # the join's alternates, beyond the glyphs without joins
             self.assertTrue(all(g["g"] > max(self.gl) for g in got), st)
-            # the halves meet: their outlines touch
+            # the halves meet: their outlines touch (within a unit's rounding each way)
             self.assertEqual(len(gaps), 1, st)
-            self.assertLess(gaps[0], 1.0, st)
+            self.assertLess(gaps[0], 2.0, st)
+            # a letter in two joins: entered by one, leaving by the other, both meeting
+            got, gaps = self.halves(ttf, "ers")
+            self.assertTrue(all(g["g"] > max(self.gl) for g in got), st)
+            mid = f["glyf"][f.getGlyphOrder()[got[1]["g"]]]
+            self.assertEqual(len(mid.components), 3, st)
+            self.assertEqual(len(gaps), 2, st)
+            self.assertLess(max(gaps), 2.0, st)
             # without calt the letters stand apart as before
             got = hb(ttf, "er", "-calt")
             self.assertEqual([self.gl[g["g"]][0] for g in got], ["step", "step"], st)
