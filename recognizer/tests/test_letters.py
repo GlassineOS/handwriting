@@ -432,8 +432,15 @@ class LetterModel(unittest.TestCase):
 
     def test_registered_stays_fluid(self):
         """matching the samples point by point doesn't make a fluid curve wobble (FR-006):
-        an s after lead-ins of different lengths, with the pen's jitter, comes out no rougher
-        against its samples registered than averaged as they come"""
+        an s after lead-ins of different lengths, with a little or a lot of the pen's jitter,
+        comes out no rougher against its samples registered than averaged as they come"""
+        for jitter in (0.004, 0.008, 0.015):
+            with self.subTest(jitter=jitter):
+                self.fluid_s(jitter)
+
+    def fluid_s(self, jitter):
+        self.e.close()
+        self.e = Env()
         rnd = random.Random(11)
 
         def ess(lead):
@@ -444,7 +451,7 @@ class LetterModel(unittest.TestCase):
             for i in range(1, 41):
                 y = i / 40
                 pts.append((0.2 * math.sin(2 * math.pi * y), y))
-            return [[(x + rnd.gauss(0, 0.004), y + rnd.gauss(0, 0.004)) for x, y in pts]]
+            return [[(x + rnd.gauss(0, jitter), y + rnd.gauss(0, jitter)) for x, y in pts]]
 
         ss = []
         for k in range(12):
