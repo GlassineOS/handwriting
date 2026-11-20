@@ -90,6 +90,8 @@ void hw_letters_free(struct hw_letters *L)
 	free(L->l);
 	for (size_t i = 0; i < L->njoined; i++) variant_free(&L->joined[i].v);
 	free(L->joined);
+	free(L->jshape);
+	free(L->jpair);
 	hw_spacing_free(&L->sp);
 	memset(L, 0, sizeof *L);
 }
@@ -233,6 +235,9 @@ static int model_chars_ok(const struct hw_letters *L)
 		for (int r = 0; r < L->l[i].nrules; r++) if (!cp_ok(L->l[i].rule[r].nb)) return 0;
 	}
 	for (size_t i = 0; i < L->njoined; i++) if (!cp_ok(L->joined[i].a) || !cp_ok(L->joined[i].b)) return 0;
+	for (size_t i = 0; i < L->njpair; i++) if (!cp_ok(L->jpair[i].a) || !cp_ok(L->jpair[i].b)) return 0;
+	for (size_t i = 0; i < L->njshape; i++)
+		if ((L->jshape[i].a || L->jshape[i].b) && (!cp_ok(L->jshape[i].a) || !cp_ok(L->jshape[i].b))) return 0;
 	return 1;
 }
 
@@ -366,6 +371,50 @@ static char *format_model(const struct hw_letters *L, size_t *len, int with_best
 		json_object_put(js);
 		variant_out(&b, &j->v, 0);
 		sput(&b, "}\n");
+	}
+	/* the joins (FR-044), only with a shape */
+	if (L->njshape) {
+		sput(&b, "{\"joins\":{\"pairs\":[");
+		for (size_t i = 0; i < L->njpair; i++) {
+			sput(&b, "%s[", i ? "," : "");
+			char_out(&b, L->jpair[i].a);
+			sput(&b, ",");
+			char_out(&b, L->jpair[i].b);
+			sput(&b, ",%d,%d]", L->jpair[i].seen, L->jpair[i].joined);
+		}
+		sput(&b, "],\"kinds\":[");
+		int first = 1;
+		for (int e = 0; e < HW_JOIN_EXITS; e++)
+			for (int c = 0; c < HW_JOIN_ENTRIES; c++) {
+				if (!L->jkind[e][c].seen) continue;
+				sput(&b, "%s[%d,%d,%d,%d]", first ? "" : ",", e, c, L->jkind[e][c].seen, L->jkind[e][c].joined);
+				first = 0;
+			}
+		sput(&b, "],\"shapes\":[");
+		for (size_t i = 0; i < L->njshape; i++) {
+			const struct hw_jshape *t = &L->jshape[i];
+			if (i) sput(&b, ",");
+			if (t->a || t->b) {
+				char u[16];
+				size_t k = hw_utf8_encode(t->a, u);
+				u[k + hw_utf8_encode(t->b, u + k)] = 0;
+				json_object *js = json_object_new_string(u);
+				sput(&b, "{\"pair\":%s", json_object_to_json_string_ext(js, JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE));
+				json_object_put(js);
+			} else sput(&b, "{\"kind\":[%d,%d]", t->ec, t->nc);
+			sput(&b, ",\"n\":%d,\"middle\":", t->n);
+			num(&b, t->mid);
+			sput(&b, ",\"points\":[");
+			for (int q = 0; q < HW_JOIN_N; q++) {
+				sput(&b, "%s[", q ? "," : "");
+				num(&b, t->x[q]);
+				sput(&b, ",");
+				num(&b, t->y[q]);
+				sput(&b, "]");
+			}
+			sput(&b, "]}");
+		}
+		sput(&b, "]}}\n");
 	}
 	if (len) *len = b.n;
 	return b.s;
@@ -679,6 +728,63 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 				j->of = (int)jnum(o, "of", 0);
 				variant_in(jv, &j->v);
 				if (!j->v.nstrokes) { variant_free(&j->v); L->njoined--; }
+			}
+		} else if (json_object_object_get_ex(o, "joins", &v) && json_object_is_type(v, json_type_object) && !L->njshape) {
+			json_object *a;
+			if (json_object_object_get_ex(v, "pairs", &a) && json_object_is_type(a, json_type_array)) {
+				size_t na = json_object_array_length(a);
+				L->jpair = calloc(na + 1, sizeof *L->jpair);
+				for (size_t i = 0; L->jpair && i < na; i++) {
+					json_object *e = json_object_array_get_idx(a, i);
+					unsigned c1[2], c2[2];
+					if (!json_object_is_type(e, json_type_array) || json_object_array_length(e) < 4) continue;
+					if (!model_chars(json_object_get_string(json_object_array_get_idx(e, 0)), c1, 1) ||
+					    !model_chars(json_object_get_string(json_object_array_get_idx(e, 1)), c2, 1)) { model_skip(at, "a join's pair"); continue; }
+					L->jpair[L->njpair++] = (struct hw_jpair){ c1[0], c2[0], json_object_get_int(json_object_array_get_idx(e, 2)),
+										   json_object_get_int(json_object_array_get_idx(e, 3)) };
+				}
+			}
+			if (json_object_object_get_ex(v, "kinds", &a) && json_object_is_type(a, json_type_array)) {
+				for (size_t i = 0; i < json_object_array_length(a); i++) {
+					json_object *e = json_object_array_get_idx(a, i);
+					if (!json_object_is_type(e, json_type_array) || json_object_array_length(e) < 4) continue;
+					int ec = json_object_get_int(json_object_array_get_idx(e, 0)), nc = json_object_get_int(json_object_array_get_idx(e, 1));
+					if (ec < 0 || ec >= HW_JOIN_EXITS || nc < 0 || nc >= HW_JOIN_ENTRIES) continue;
+					L->jkind[ec][nc] = (struct hw_jkind){ json_object_get_int(json_object_array_get_idx(e, 2)),
+									      json_object_get_int(json_object_array_get_idx(e, 3)) };
+				}
+			}
+			if (json_object_object_get_ex(v, "shapes", &a) && json_object_is_type(a, json_type_array)) {
+				size_t na = json_object_array_length(a);
+				L->jshape = calloc(na + 1, sizeof *L->jshape);
+				for (size_t i = 0; L->jshape && i < na && L->njshape < HW_JOIN_MAX; i++) {
+					json_object *e = json_object_array_get_idx(a, i), *f, *pa;
+					struct hw_jshape t;
+					memset(&t, 0, sizeof t);
+					t.ec = t.nc = -1;
+					if (!json_object_is_type(e, json_type_object)) continue;
+					unsigned c2[3];
+					if (json_object_object_get_ex(e, "pair", &f)) {
+						if (!model_chars(json_object_get_string(f), c2, 2)) { model_skip(at, "a join's pair"); continue; }
+						t.a = c2[0]; t.b = c2[1];
+					} else if (json_object_object_get_ex(e, "kind", &f) && json_object_is_type(f, json_type_array) &&
+						   json_object_array_length(f) == 2) {
+						t.ec = json_object_get_int(json_object_array_get_idx(f, 0));
+						t.nc = json_object_get_int(json_object_array_get_idx(f, 1));
+						if (t.ec < 0 || t.ec >= HW_JOIN_EXITS || t.nc < 0 || t.nc >= HW_JOIN_ENTRIES) continue;
+					} else continue;
+					t.n = (int)jnum(e, "n", 0);
+					t.mid = jnum(e, "middle", 0);
+					if (!json_object_object_get_ex(e, "points", &pa) || !json_object_is_type(pa, json_type_array) ||
+					    json_object_array_length(pa) != HW_JOIN_N || t.n <= 0) continue;
+					int good = 1;
+					for (int q = 0; q < HW_JOIN_N && good; q++) {
+						json_object *pt = json_object_array_get_idx(pa, (size_t)q);
+						good = json_object_is_type(pt, json_type_array) && json_object_array_length(pt) == 2;
+						if (good) { t.x[q] = json_object_get_double(json_object_array_get_idx(pt, 0)); t.y[q] = json_object_get_double(json_object_array_get_idx(pt, 1)); }
+					}
+					if (good) L->jshape[L->njshape++] = t;
+				}
 			}
 		}
 		json_object_put(o);
@@ -2532,6 +2638,353 @@ static int joined_pairs(struct hw_letters *L, struct smp *S, size_t ns, const st
 	return ret;
 }
 
+/* ---------------------------------------------------------------- joins (FR-044) */
+
+size_t hw_join_exit_stroke(const struct hw_variant *v)
+{
+	return v->exit.n > 0 && v->exit.stroke >= 0 && (size_t)v->exit.stroke < v->nstrokes ? (size_t)v->exit.stroke : v->nstrokes - 1;
+}
+
+size_t hw_join_entry_stroke(const struct hw_variant *v)
+{
+	return v->entry.n > 0 && v->entry.stroke >= 0 && (size_t)v->entry.stroke < v->nstrokes ? (size_t)v->entry.stroke : 0;
+}
+
+/* a height's band: below the baseline, near it, at the x-height, above */
+static int join_band(double y) { return y < -0.25 ? 0 : y < 0.5 ? 1 : y < 1.25 ? 2 : 3; }
+
+int hw_join_exit_class(const struct hw_variant *v)
+{
+	if (!v->nstrokes) return -1;
+	const struct hw_lstroke *t = &v->s[hw_join_exit_stroke(v)];
+	return t->n ? join_band(t->y[t->n - 1]) : -1;
+}
+
+int hw_join_entry_class(const struct hw_variant *v)
+{
+	if (!v->nstrokes) return -1;
+	const struct hw_lstroke *t = &v->s[hw_join_entry_stroke(v)];
+	return t->n ? 2 * join_band(t->y[0]) + (t->x[0] > v->width / 2) : -1;
+}
+
+int hw_join_letter(unsigned cp) { return hw_is_letter(cp); }
+
+static const struct hw_jshape *jshape_pair(const struct hw_letters *L, unsigned a, unsigned b)
+{
+	for (size_t i = 0; i < L->njshape; i++) if (L->jshape[i].a == a && L->jshape[i].b == b && (a || b)) return &L->jshape[i];
+	return NULL;
+}
+
+static const struct hw_jshape *jshape_kind(const struct hw_letters *L, int ec, int nc)
+{
+	for (size_t i = 0; i < L->njshape; i++)
+		if (!L->jshape[i].a && !L->jshape[i].b && L->jshape[i].ec == ec && L->jshape[i].nc == nc) return &L->jshape[i];
+	return NULL;
+}
+
+const struct hw_jshape *hw_join_shape(const struct hw_letters *L, unsigned a, const struct hw_variant *va, unsigned b,
+				      const struct hw_variant *vb)
+{
+	if (!L->njshape || !hw_join_letter(a) || !hw_join_letter(b)) return NULL;
+	const struct hw_jshape *t = jshape_pair(L, a, b);
+	return t ? t : jshape_kind(L, hw_join_exit_class(va), hw_join_entry_class(vb));
+}
+
+void hw_join_map(const struct hw_jshape *s, int i0, int i1, double px, double py, double qx, double qy, double *x, double *y)
+{
+	/* along the shape's own chord u, beside it v (both over its length), then onto the new one;
+	 * a shape too short to have a direction: the straight line */
+	double cx = s->x[i1] - s->x[i0], cy = s->y[i1] - s->y[i0], c2 = cx * cx + cy * cy, cl = sqrt(c2);
+	double dx = qx - px, dy = qy - py, dl = hypot(dx, dy), bv = dl > 0 && cl > 0 ? fmin(dl, HW_JOIN_BOW * cl) / dl : 0;
+	for (int i = i0; i <= i1; i++) {
+		double f = (double)(i - i0) / (i1 - i0), u = f, v = 0;
+		if (cl >= 1e-3) {
+			double ax = s->x[i] - s->x[i0], ay = s->y[i] - s->y[i0];
+			u = (ax * cx + ay * cy) / c2; v = (-ax * cy + ay * cx) / c2;
+		}
+		x[i - i0] = px + u * dx - v * bv * dy;
+		y[i - i0] = py + u * dy + v * bv * dx;
+	}
+}
+
+void hw_join_curve(const struct hw_jshape *s, double px, double py, double qx, double qy, double *x, double *y)
+{
+	hw_join_map(s, 0, HW_JOIN_N - 1, px, py, qx, qy, x, y);
+}
+
+int hw_join_pair_decides(const struct hw_letters *L, unsigned a, unsigned b)
+{
+	size_t lo = 0, hi = L->njpair;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		const struct hw_jpair *p = &L->jpair[mid];
+		if (p->a < a || (p->a == a && p->b < b)) lo = mid + 1; else hi = mid;
+	}
+	if (lo >= L->njpair || L->jpair[lo].a != a || L->jpair[lo].b != b || L->jpair[lo].seen < HW_JOIN_SEEN) return -1;
+	const struct hw_jpair *p = &L->jpair[lo];
+	return p->joined >= HW_JOIN_TWICE && 2 * p->joined >= p->seen;
+}
+
+/* a joint seen while building: sample si, the first letter at k (a, b the pair), the join
+ * HW_JOIN_N points from where a's own ink ends (x-heights, y up), y0 that point's height */
+struct jobs { unsigned a, b; int si, k, ec, nc; double y0, x[HW_JOIN_N], y[HW_JOIN_N]; };
+#ifndef HW_JOBS_KEEP
+#define HW_JOBS_KEEP 0          /* a measuring harness keeps them after the build */
+#endif
+#ifndef HW_JOBS_SEEN
+#define HW_JOBS_SEEN(o, m)      /* and sees each one's sample */
+#endif
+static struct jobs *build_jobs;
+static size_t build_njobs, build_cjobs;
+
+/* points [a, b] of ink k (sample units, y down) as a joint */
+static void jobs_add(const struct hw_ink *k, size_t a, size_t b, const struct smp *m, unsigned ca, unsigned cb, int si, int pos)
+{
+	if (b <= a || !(m->xh > 0) || isnan(m->base)) return;
+	if (build_njobs == build_cjobs) {
+		size_t c = build_cjobs ? 2 * build_cjobs : 256;
+		struct jobs *x = realloc(build_jobs, c * sizeof *x);
+		if (!x) return;
+		build_jobs = x;
+		build_cjobs = c;
+	}
+	struct jobs *o = &build_jobs[build_njobs];
+	double out[2 * HW_JOIN_N];
+	struct hw_lstroke ls = { b - a + 1, k->x + a, k->y + a };
+	resample(&ls, HW_JOIN_N, out);
+	for (int q = 0; q < HW_JOIN_N; q++) {
+		o->x[q] = (out[2 * q] - k->x[a]) / m->xh;
+		o->y[q] = (k->y[a] - out[2 * q + 1]) / m->xh;
+	}
+	if (hypot(o->x[HW_JOIN_N - 1], o->y[HW_JOIN_N - 1]) > HW_JOIN_FAR) return;
+	o->y0 = (m->base - k->y[a]) / m->xh;
+	o->a = ca; o->b = cb; o->si = si; o->k = pos; o->ec = o->nc = -1;
+	HW_JOBS_SEEN(o, m);
+	build_njobs++;
+}
+
+static int cmp_jobs(const void *x, const void *y)
+{
+	const struct jobs *a = x, *b = y;
+	if (a->a != b->a) return a->a < b->a ? -1 : 1;
+	if (a->b != b->b) return a->b < b->b ? -1 : 1;
+	if (a->si != b->si) return a->si - b->si;
+	return a->k - b->k;
+}
+
+static int cmp_jpair(const void *x, const void *y)
+{
+	const struct hw_jpair *a = x, *b = y;
+	if (a->a != b->a) return a->a < b->a ? -1 : 1;
+	if (a->b != b->b) return a->b < b->b ? -1 : 1;
+	return 0;
+}
+
+/* (sample, place) -> instance */
+struct ipos { int si, pos; size_t i; };
+static int cmp_ipos(const void *x, const void *y)
+{
+	const struct ipos *a = x, *b = y;
+	if (a->si != b->si) return a->si - b->si;
+	if (a->pos != b->pos) return a->pos - b->pos;
+	return a->i < b->i ? -1 : a->i > b->i;
+}
+
+/* the variant an instance is written like (the letter's in L), NULL none */
+static const struct hw_variant *ipos_var(const struct hw_letters *L, const struct inst *in, const struct ipos *ix, size_t nix,
+					 int si, int pos)
+{
+	size_t lo = 0, hi = nix;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		if (ix[mid].si < si || (ix[mid].si == si && ix[mid].pos < pos)) lo = mid + 1; else hi = mid;
+	}
+	for (; lo < nix && ix[lo].si == si && ix[lo].pos == pos; lo++) {
+		const struct inst *x = &in[ix[lo].i];
+		if (x->dropped || x->var < 0) continue;
+		const struct hw_letter *l = letter_get(L, x->cp);
+		if (l && l->covered && x->var < l->nvar) return &l->var[x->var];
+	}
+	return NULL;
+}
+
+/* a joint in its chord's frame: u along the chord, v to its left, over its length; -1 too short */
+static int join_frame(const struct jobs *j, double *u, double *v)
+{
+	double ex = j->x[HW_JOIN_N - 1], ey = j->y[HW_JOIN_N - 1], l2 = ex * ex + ey * ey;
+	if (l2 < HW_JOIN_SHORT * HW_JOIN_SHORT) return -1;
+	for (int q = 0; q < HW_JOIN_N; q++) { u[q] = (j->x[q] * ex + j->y[q] * ey) / l2; v[q] = (-j->x[q] * ey + j->y[q] * ex) / l2; }
+	return 0;
+}
+
+/* how far two lines of HW_JOIN_N points are apart along their whole length: the mean of each
+ * one's points' nearest distance to the other (its points 4 times as dense), both ways */
+static double join_apart(const double *x, const double *y, const double *u, const double *v)
+{
+	enum { D = 4 * (HW_JOIN_N - 1) + 1 };
+	double a[2 * D], b[2 * D];
+	struct hw_lstroke sa = { HW_JOIN_N, (double *)x, (double *)y }, sb = { HW_JOIN_N, (double *)u, (double *)v };
+	resample(&sa, D, a); resample(&sb, D, b);
+	double s = 0;
+	for (int w = 0; w < 2; w++) {
+		const double *p = w ? b : a, *q = w ? a : b;
+		for (int i = 0; i < D; i++) {
+			double m = INFINITY;
+			for (int k = 0; k < D; k++) m = fmin(m, hypot(p[2 * i] - q[2 * k], p[2 * i + 1] - q[2 * k + 1]));
+			s += m;
+		}
+	}
+	return s / (2 * D);
+}
+
+/* a shape from joints o[idx[0 .. n)]: their ends' mean, their way in their chords' frames
+ * averaged onto it; curved only where it beats a straight line left out one at a time */
+static void jshape_make(struct hw_jshape *t, const struct jobs *o, const size_t *idx, size_t n)
+{
+	enum { N = HW_JOIN_N };
+	double su[N] = { 0 }, sv[N] = { 0 }, ex = 0, ey = 0, sm = 0, u[N], v[N];
+	int nf = 0;
+	for (size_t i = 0; i < n; i++) {
+		const struct jobs *j = &o[idx[i]];
+		ex += j->x[N - 1]; ey += j->y[N - 1];
+		sm += j->y0 + j->y[HW_JOIN_MID];
+		if (join_frame(j, u, v)) continue;
+		for (int q = 0; q < N; q++) { su[q] += u[q]; sv[q] += v[q]; }
+		nf++;
+	}
+	ex /= (double)n; ey /= (double)n;
+	t->n = (int)n;
+	t->mid = round(sm / (double)n * 1e4) / 1e4;
+	/* left out one at a time: the others' mean against the straight line, at each joint */
+	double curved = 0, straight = 0;
+	for (size_t i = 0; nf >= 2 && i < n; i++) {
+		const struct jobs *j = &o[idx[i]];
+		if (join_frame(j, u, v)) continue;
+		struct hw_jshape m = { 0 };
+		double lx[N], ly[N], cx[N], cy[N];
+		for (int q = 0; q < N; q++) {
+			double f = (double)q / (N - 1);
+			m.x[q] = (su[q] - u[q]) / (nf - 1); m.y[q] = (sv[q] - v[q]) / (nf - 1);
+			lx[q] = f * j->x[N - 1]; ly[q] = f * j->y[N - 1];
+		}
+		hw_join_curve(&m, 0, 0, j->x[N - 1], j->y[N - 1], cx, cy);
+		curved += join_apart(j->x, j->y, cx, cy);
+		straight += join_apart(j->x, j->y, lx, ly);
+	}
+	int bent = nf >= 2 && curved < straight;
+	for (int q = 0; q < N; q++) {
+		double f = (double)q / (N - 1), a = bent ? su[q] / nf : f, b = bent ? sv[q] / nf : 0;
+		t->x[q] = round((a * ex - b * ey) * 1e4) / 1e4;
+		t->y[q] = round((a * ey + b * ex) * 1e4) / 1e4;
+	}
+}
+
+/* The joins (FR-044) from the joints seen (build_jobs) and the letter pairs of the samples
+ * (with known strokes, a letter left out of a sample counting for neither), their kinds by
+ * the variants the letters are written like. 0, -1 out of memory. */
+static int joins_learn(struct hw_letters *L, const struct inst *in, size_t nin, struct smp *S, size_t ns, const struct hw_mark *MK,
+		       size_t nmk)
+{
+	free(L->jshape); free(L->jpair);
+	L->jshape = NULL; L->jpair = NULL; L->njshape = L->njpair = 0;
+	memset(L->jkind, 0, sizeof L->jkind);
+	if (!build_njobs) return 0;
+	int ret = -1;
+	unsigned *cps = malloc(4097 * sizeof *cps);
+	struct ipos *ix = malloc((nin + 1) * sizeof *ix);
+	struct hw_jpair *pr = NULL;
+	size_t npr = 0, cpr = 0, *idx = malloc((build_njobs + 1) * sizeof *idx);
+	if (!cps || !ix || !idx) goto out;
+	for (size_t i = 0; i < nin; i++) ix[i] = (struct ipos){ in[i].sample, in[i].pos, i };
+	qsort(ix, nin, sizeof *ix, cmp_ipos);
+	/* the letter pairs and the kinds: written with known strokes, and joined (a stroke in both) */
+	for (size_t si = 0; si < ns; si++) {
+		struct smp *m = &S[si];
+		if (m->xh <= 0 || isnan(m->base)) continue;
+		size_t nc = hw_utf8_decode(m->s.text, cps, 4096);
+		if (nc > 4096) nc = 4096;
+		for (size_t k = 0; k + 1 < nc && k + 1 < m->s.nspans; k++) {
+			unsigned a = cps[k], b = cps[k + 1];
+			const int *sa = m->s.spans[k], *sb = m->s.spans[k + 1];
+			if (!hw_join_letter(a) || !hw_join_letter(b) || !span_ink(&m->s, sa) || !span_ink(&m->s, sb)) continue;
+			if (hw_mark_of(MK, nmk, m->id, a) == HW_MARK_OUT || hw_mark_of(MK, nmk, m->id, b) == HW_MARK_OUT) continue;
+			int joined = 0;
+			for (const int *q = sa; *q >= 0 && !joined; q++) joined = span_has(sb, *q);
+			if (npr == cpr) {
+				cpr = cpr ? 2 * cpr : 256;
+				struct hw_jpair *x = realloc(pr, cpr * sizeof *x);
+				if (!x) goto out;
+				pr = x;
+			}
+			pr[npr++] = (struct hw_jpair){ a, b, 1, joined };
+			const struct hw_variant *va = ipos_var(L, in, ix, nin, (int)si, (int)k), *vb = ipos_var(L, in, ix, nin, (int)si, (int)k + 1);
+			int ec = va ? hw_join_exit_class(va) : -1, nc2 = vb ? hw_join_entry_class(vb) : -1;
+			if (ec >= 0 && nc2 >= 0) { L->jkind[ec][nc2].seen++; L->jkind[ec][nc2].joined += joined; }
+		}
+	}
+	qsort(pr, npr, sizeof *pr, cmp_jpair);
+	size_t w = 0;
+	for (size_t i = 0; i < npr;) {
+		size_t j = i;
+		struct hw_jpair t = { pr[i].a, pr[i].b, 0, 0 };
+		while (j < npr && pr[j].a == t.a && pr[j].b == t.b) { t.seen++; t.joined += pr[j].joined; j++; }
+		if (t.seen >= HW_JOIN_SEEN) pr[w++] = t;
+		i = j;
+	}
+	npr = w;
+	/* the shapes: per letter pair, then per kind */
+	qsort(build_jobs, build_njobs, sizeof *build_jobs, cmp_jobs);
+	struct hw_jshape *sh = calloc(build_njobs + HW_JOIN_EXITS * HW_JOIN_ENTRIES + 1, sizeof *sh);
+	size_t nsh = 0;
+	if (!sh) goto out;
+	for (size_t i = 0; i < build_njobs;) {
+		size_t j = i;
+		while (j < build_njobs && build_jobs[j].a == build_jobs[i].a && build_jobs[j].b == build_jobs[i].b) j++;
+		if (j - i >= HW_JOIN_PAIR_MIN && hw_join_letter(build_jobs[i].a) && hw_join_letter(build_jobs[i].b) && nsh < HW_JOIN_MAX) {
+			for (size_t q = i; q < j; q++) idx[q - i] = q;
+			sh[nsh] = (struct hw_jshape){ build_jobs[i].a, build_jobs[i].b, -1, -1, 0, 0, { 0 }, { 0 } };
+			jshape_make(&sh[nsh++], build_jobs, idx, j - i);
+		}
+		i = j;
+	}
+	for (size_t q = 0; q < build_njobs; q++) {
+		struct jobs *o = &build_jobs[q];
+		const struct hw_variant *va = ipos_var(L, in, ix, nin, o->si, o->k), *vb = ipos_var(L, in, ix, nin, o->si, o->k + 1);
+		if (va && vb && hw_join_letter(o->a) && hw_join_letter(o->b)) { o->ec = hw_join_exit_class(va); o->nc = hw_join_entry_class(vb); }
+	}
+	for (int ec = 0; ec < HW_JOIN_EXITS; ec++)
+		for (int nc2 = 0; nc2 < HW_JOIN_ENTRIES; nc2++) {
+			size_t n = 0;
+			for (size_t q = 0; q < build_njobs; q++)
+				if (build_jobs[q].ec == ec && build_jobs[q].nc == nc2) idx[n++] = q;
+			if (n >= HW_JOIN_KIND_MIN && nsh < HW_JOIN_MAX) {
+				sh[nsh] = (struct hw_jshape){ 0, 0, ec, nc2, 0, 0, { 0 }, { 0 } };
+				jshape_make(&sh[nsh++], build_jobs, idx, n);
+			}
+		}
+	if (nsh) { L->jshape = sh; L->njshape = nsh; L->jpair = pr; L->njpair = npr; pr = NULL; }
+	else { free(sh); memset(L->jkind, 0, sizeof L->jkind); }
+	ret = 0;
+out:
+	free(cps); free(ix); free(pr); free(idx);
+	return ret;
+}
+
+static void jobs_reset(void)
+{
+	free(build_jobs);
+	build_jobs = NULL;
+	build_njobs = build_cjobs = 0;
+}
+
+static void jobs_free(void)
+{
+	if (HW_JOBS_KEEP) return;
+	free(build_jobs);
+	build_jobs = NULL;
+	build_njobs = build_cjobs = 0;
+}
+
 /* ---------------------------------------------------------------- letters written joined (FR-007) */
 
 /* A stroke shared by several letters of a word is cut where its parts best match those
@@ -2637,6 +3090,7 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 			int rc = ok ? join_cut(dx, dy, nd, m->xh, R, refs, off, at, which, &cost) : 1;
 			if (rc < 0) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); goto out; }
 			hw_cut_arc(dx, dy, nd, cum);
+			size_t np0 = np;
 			for (size_t r = 0; !rc && r < R; r++) {
 				size_t a = at[r], b = at[r + 1], f = a, l = b;
 				double best = INFINITY;
@@ -2659,6 +3113,10 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 				size_t A = idx[a], B = b == nd ? m2 : idx[b], F = idx[f], Lo = l == nd ? m2 : idx[l];
 				P[np++] = (struct jpart){ k0 + (int)r, (int)j, A, F, Lo, B, r > 0, r + 1 < R };
 			}
+			/* the joints (FR-044): from where a letter's own ink ends to where the next one's begins */
+			for (size_t q = np0; q + 1 < np; q++)
+				if (P[q + 1].k == P[q].k + 1 && P[q].l >= 1)
+					jobs_add(ink, P[q].l - 1, P[q + 1].f, m, cps[P[q].k], cps[P[q + 1].k], (int)si, P[q].k);
 			free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum);
 		}
 		if (!np) continue;
@@ -3102,6 +3560,7 @@ static int build_chars(struct hw_letters *L, struct inst *in, size_t nin, struct
 int hw_letters_build(struct hw_letters *L)
 {
 	memset(L, 0, sizeof *L);
+	jobs_reset();
 	if (hw_letters_inputs(L->inputs)) return -1;
 	struct hw_entry *es;
 	size_t ne;
@@ -3486,6 +3945,7 @@ int hw_letters_build(struct hw_letters *L)
 	L->m.word_gap = L->sp.word;
 	free(obs); free(wgs.v);
 	if (joined_pairs(L, S, ns, MK, nmk)) goto fail;
+	if (joins_learn(L, in, nin, S, ns, MK, nmk)) goto fail;
 measured:
 	/* the occurrences' states from their instances */
 	for (size_t i = 0; i < build_nocc; i++) {
@@ -3512,6 +3972,7 @@ measured:
 	free(in);
 	for (size_t si = 0; si < ns; si++) { hw_sample_free(&S[si].s); free(S[si].own); free(S[si].cnt); }
 	free(S);
+	jobs_free();
 	return 0;
 fail:
 	for (size_t k = 0; k < nin; k++) {
@@ -3524,6 +3985,7 @@ fail:
 	free(MK);
 	free(with);
 	hw_letters_free(L);
+	jobs_free();
 	return -1;
 }
 
@@ -3552,7 +4014,8 @@ static long joined_of(const struct hw_letters *V, unsigned a, unsigned b)
 	return -1;
 }
 
-void hw_letters_glyphs(const struct hw_letters *V, const unsigned *cp, size_t n, int *var, long *jo)
+void hw_letters_glyphs(const struct hw_letters *V, const struct hw_font_joins *J, const unsigned *cp, size_t n, int *var,
+		       long *jo, int *jk)
 {
 	/* every character's step of the cycle (a space takes one, a character the font lacks
 	 * starts the run again) */
@@ -3586,6 +4049,13 @@ void hw_letters_glyphs(const struct hw_letters *V, const unsigned *cp, size_t n,
 			if (cp[j] == ru->nb) v = ru->var;
 		}
 		var[k] = v >= 0 ? v : l->slot[var[k]];
+	}
+	/* the joins (FR-044) between the letters' variants */
+	for (size_t k = 0; jk && k < n; k++) {
+		jk[k] = -1;
+		if (!J || k + 1 >= n || var[k] < 0 || var[k + 1] < 0) continue;
+		const struct hw_letter *a = in_font(V, cp[k]), *b = in_font(V, cp[k + 1]);
+		jk[k] = hw_font_join_key(V, J, (size_t)(a - V->l), var[k], (size_t)(b - V->l), var[k + 1]);
 	}
 }
 

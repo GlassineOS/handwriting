@@ -480,15 +480,21 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
 - **Setting the word (Neatest, FR-043).** A word (between spaces) whose text is known is set
   anew: the glyph the font draws for each character there (the cycle, the neighbour rules,
   the joined pairs, chosen over the whole text as the font chooses them) at the font's
-  advances and kerning, exactly as `hb-shape` places them in the font `font build` makes;
+  advances and kerning (and the joins' spacing, FR-044), exactly as `hb-shape` places them in
+  the font `font build` makes;
   its leftmost glyph point where Strong leaves its leftmost ink, on the line's baseline, at
   the line's x-height, with the lean the glyphs have. Each character's ink (a joined pair's
   two letters' together), its pieces in the order written, runs along its glyph's strokes
   one after another, each point at its share of the ink's length: as many pieces as the
   glyph has strokes, one each; otherwise a pen lift moves to the end of a glyph's stroke
   within 0.2 of the glyph's length (each end once, in order). Where the person didn't lift
-  the pen between two glyphs' strokes the two points either side are joined by a straight
-  line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
+  the pen between two letters the ink runs along the join between them (FR-044): the font's
+  two halves where the font joins the pair, else the pair's learned join shape (or its
+  kind's) fitted from the first glyph's exit to the second's entry where the font sets them
+  and split where the halves would meet; each half is added to its letter's stroke (after
+  the exit stroke's end, before the entry stroke's start), so the letter's ink runs along
+  the glyph and its half by length as before. Only without a learned join the two points
+  either side are joined by a straight line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
   along the line to the middle of the font's box for it (`.notdef`, one x-height wide), and
   stays `not-covered`. Only with `TEXT`: without it no word is set (on real ink even the
   words read with the highest alignment fit were read wrongly more often than not, and a
@@ -992,8 +998,8 @@ without ink, `middle` its middle (null without one), `pressure` and `speed` how 
 font draws `strokes`, so it doesn't change the font); `entry` and `exit` how it is joined when
 written joined (above: `stroke` the version's stroke it leads into or out of, `n` the joined
 letters it is the mean of, `points` from that stroke's first point (an entry ends there) or its
-last (an exit starts there), x-heights, y up; only when it has one; not in the font, which
-doesn't draw them); `left_out` and `favourite` only when so;
+last (an exit starts there), x-heights, y up; only when it has one; not drawn in the font,
+whose joins, below, start and end at the strokes' ends); `left_out` and `favourite` only when so;
 `ids` the samples written
 this way, those its `use` counts, sorted; no versions when not covered). A character with marks
 has `"marks":"HASH"` before `variants`, the hash of its marks when it was built. `slots` is the
@@ -1004,6 +1010,29 @@ neighbour rules, below, the strongest first: `prev` or `next` the neighbour, `va
 version, `n` the times written beside it, `same` those written as that version, `hits` and
 `cycle` the held-back check. Then per joined pair, after the characters, `{"joined":"th",
 "samples":N,"written":N,"of":N,"variant":{…}}` (`variant` as a character's, without `best`).
+Last, only when some join has a shape, the joins (FR-044): `{"joins":{"pairs":[["a","b",S,J],…],
+"kinds":[[E,N,S,J],…],"shapes":[{"pair":"ab"|"kind":[E,N],"n":N,"middle":M,"points":[[x,y],…13]},…]}}`:
+per letter pair written at least 3 times with known strokes (by code point) `S` the times and
+`J` those joined (a stroke in both); per kind (exit class `E`, entry class `N`, below) the same
+counts, only those written; the shapes, the pairs' (code point order) then the kinds', `n` the
+joints each is made from, `middle` the height (x-heights over the baseline) the joints pass at
+their middle point, `points` from the joint's start (x-heights, y up).
+
+**Joins (FR-044).** A joint is the stroke of letters written joined (above) from where the
+first letter's own ink ends to where the second's begins (more than 3 x-heights apart: none),
+13 points along its length. A version's exit is the end of its exit stroke (the stroke its
+`exit` leaves from, else its last), its entry the start of its entry stroke (its `entry`'s,
+else its first); the exit class is the band of the exit's height (below −0.25, below 0.5,
+below 1.25, above: 0–3), the entry class twice the entry's band plus 1 when it is right of
+the version's middle (0–7). A pair joined at least 5 times gets a shape, a kind joined at least
+4 times one (its joints' letters' classes from the versions they're written like). A shape is
+the mean of its joints in each one's chord frame (along the chord over its length, across it
+over its length; a joint shorter than 0.02 counts only for the mean end) set onto the mean
+end: it keeps that curve only when, each joint left out in turn, the others' mean set between
+its ends is nearer to it than the straight line, summed over the joints (nearness: the mean
+distance of each one's points, 4 times as dense, to the other, both ways); else its points lie
+on the line to the mean end. A shape is set between two ends turned and scaled so its ends
+land on them, its bow across the line scaled by no more than 1.5 times its own length.
 
 **Neighbour rules (FR-038).** For each character and each character written right before it
 (`prev`) or right after it (`next`, a space is no neighbour), in the usable samples, the build
@@ -1077,9 +1106,37 @@ through a rule or a joined pair and the letters around them show what they show 
 - **Random alternates** (FR-040, `rand`), only in a font built with them: each letter's step
   glyphs to its versions, the cycle's 10 steps' versions as the alternates, so a random pick
   shows each as often as the cycle does. Without them the font has no `rand` feature.
+- **Joins** (FR-044, two more `calt` lookups, Extension-wrapped, only when some join is in the
+  font). The join of a letter pair: when the pair decides (written at least 3 times) and is
+  joined (at least twice and in at least half), its own shape when both versions take part in
+  it, else its kind's; written apart, none; a pair that decides nothing takes its kind's when
+  that kind is written at least 10 times, joined in at least half. Per join and version the
+  font has a meeting place: `A` (units right of the first version's origin, its advance) and
+  `B` (the second's origin right of it), fitted by least squares (alternating means) to the
+  distance the advance and kerning set each pair of versions it joins at, but never nearer
+  than the second's entry `max(chord's x, 0.1)` x-heights right of the first's exit, then moved
+  so that on average the first half runs the shape's share of the way across (its middle
+  point's along its chord, 0.2–0.8); a version whose half would run less than 0.02 x-heights
+  forwards or more than 1.5 long takes no part in that join. A half runs from the version's
+  exit to the meeting place (`A`, the shape's `middle` high) along the shape's points 0–6, the
+  other from there to the entry along 6–12, each set between its ends as above. Each version
+  has an alternate per entry join, per exit join and per pair of both: a composite of the
+  version (moved right by its entry's `B`) and its halves, its advance its exit's `A` (else
+  `B` plus its own advance); it has no kerning class on a joined side, so nothing kerns inside
+  a join. The first lookup (chain contexts, in the model's pair order: per pair that decides,
+  apart: nothing when some kind joins the rarer pairs; joined: its shape's join, then each
+  kind's, then nothing; then the kinds that join the rarer pairs) turns a letter's step or
+  version glyph followed by one of the next letter that can take the join into its exit
+  alternate; the second turns a glyph after an exit alternate of a join into its alternate
+  entered by that join (exiting as it already does). A joined pair's ligature takes part in
+  none. Regular and Calligraphy draw the halves as any stroke, Brush at its thinnest width
+  that isn't a taper (at least 0.012). The font holds at most 65000 glyphs: when the joins
+  would make more the last joins are left out. A model without joins gives the font it gave
+  before them, byte for byte.
 
 A preview that lays text out from the model (the samples app) applies the cycle, the joined
-pairs and the rules the same way and spaces it the same way. The font is made only on the device
+pairs and the rules the same way and spaces it the same way; it sets joined letters (FR-044)
+apart, as without joins. The font is made only on the device
 and is never donated or exported.
 
 **The styles** (FR-034) differ only in their outlines: the glyphs and their order, `cmap`, `GSUB`,

@@ -1520,8 +1520,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 17))
-            old = dict(head, inputs=hw_inputs(ids, 16))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 18))
+            old = dict(head, inputs=hw_inputs(ids, 17))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
@@ -2433,6 +2433,127 @@ class JoinedPlainly(unittest.TestCase):
         f = valid_font(self, ttf)
         lig = next(g for g, x in gl.items() if x == ("joined", "in"))
         self.assertGreaterEqual(f["glyf"][f.getGlyphOrder()[lig]].numberOfContours, 2)
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class Joins(unittest.TestCase):
+    """spec 003 FR-044: e and r written joined in 5 samples of 8 (too few of them for one glyph,
+    FR-039) are joined in the font in each
+    style: their glyphs become the join's alternates (calt), the halves meet, nothing kerns
+    between them; a ligature has no joins; the same store gives the same font; a store with no
+    joined ink has no joins at all"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(61)
+        ss = alphabet_samples(seed=61, per=3)
+        ss += [joined(sample("er", rnd), [0]) for _ in range(5)] + [sample("er", rnd) for _ in range(3)]
+        ss += [joined(sample("th", rnd), [0]) for _ in range(5)] + [sample("th", rnd)]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.model = cls.e.model()
+        cls.lines = [json.loads(x) for x in cls.model.splitlines()]
+        cls.joins = next((d["joins"] for d in cls.lines if "joins" in d), None)
+        cls.gl = font_glyphs(cls.model)
+        cls.ttf = {}
+        for st in ("Regular", "Calligraphy", "Brush"):
+            cls.ttf[st] = cls.e.dir / ("joins-%s.ttf" % st)
+            cls.e.run("font", "build", "-n", "Joins", "--style", st, str(cls.ttf[st]))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_learned(self):
+        self.assertIsNotNone(self.joins)
+        pairs = {a + b: (s, j) for a, b, s, j in self.joins["pairs"]}
+        self.assertEqual(pairs["er"], (8, 5))
+        er = [x for x in self.joins["shapes"] if x.get("pair") == "er"]
+        self.assertEqual(len(er), 1)
+        self.assertEqual(len(er[0]["points"]), 13)
+        self.assertEqual(er[0]["points"][0], [0, 0])
+        self.assertEqual(er[0]["n"], 5)
+
+    def halves(self, ttf, text, features=None):
+        """the shaped glyphs and, for each two that are a join's, how far apart their halves'
+        outlines are (font units)"""
+        from fontTools.ttLib import TTFont
+        from fontTools.pens.recordingPen import DecomposingRecordingPen
+        f = TTFont(str(ttf))
+        gs, order, glyf = f.getGlyphSet(), f.getGlyphOrder(), f["glyf"]
+        got = hb(ttf, text, features)
+
+        def pts(name, dx):
+            p = DecomposingRecordingPen(gs)
+            gs[name].draw(p)
+            return [(x + dx, y) for op, a in p.value for (x, y) in a]
+        gaps, x = [], 0
+        for i in range(len(got) - 1):
+            a, b = glyf[order[got[i]["g"]]], glyf[order[got[i + 1]["g"]]]
+            xa, xb = x + got[i]["dx"], x + got[i]["ax"] + got[i + 1]["dx"]
+            x += got[i]["ax"]
+            if not (a.isComposite() and len(a.components) >= 2 and b.isComposite() and b.components[0].x):
+                continue
+            pa = pts(a.components[1].glyphName, xa + a.components[1].x)
+            pb = pts(b.components[-1].glyphName, xb + b.components[-1].x)
+            gaps.append(min(math.hypot(p[0] - q[0], p[1] - q[1]) for p in pa for q in pb))
+        return got, gaps
+
+    def test_joined_in_each_style(self):
+        for st, ttf in self.ttf.items():
+            f = valid_font(self, ttf)
+            self.assertEqual(gsub_features(ttf), ["calt", "liga"])
+            self.assertGreater(len(f.getGlyphOrder()), len(self.gl) + 1, st)
+            got, gaps = self.halves(ttf, "er")
+            # the join's alternates, beyond the glyphs without joins
+            self.assertTrue(all(g["g"] > max(self.gl) for g in got), st)
+            # the halves meet: their outlines touch
+            self.assertEqual(len(gaps), 1, st)
+            self.assertLess(gaps[0], 1.0, st)
+            # without calt the letters stand apart as before
+            got = hb(ttf, "er", "-calt")
+            self.assertEqual([self.gl[g["g"]][0] for g in got], ["step", "step"], st)
+
+    def test_no_kerning_inside_a_join(self):
+        from fontTools.ttLib import TTFont
+        ttf = self.ttf["Regular"]
+        f = TTFont(str(ttf))
+        got = hb(ttf, "er")
+        hm = f["hmtx"]
+        # the first glyph's advance is its own: where its half ends
+        self.assertEqual(got[0]["ax"], hm[f.getGlyphOrder()[got[0]["g"]]][0])
+
+    def test_ligature_has_no_joins(self):
+        ttf = self.ttf["Regular"]
+        got = hb(ttf, "ther")
+        kinds = [self.gl.get(g["g"], ("join",))[0] for g in got]
+        self.assertEqual(kinds[0], "joined")
+        # e after the ligature is not entered from it; e and r still join
+        self.assertEqual(kinds[1:], ["join", "join"])
+        _, gaps = self.halves(ttf, "ther")
+        self.assertEqual(len(gaps), 1)
+
+    def test_same_font_again(self):
+        again = self.e.dir / "joins-again.ttf"
+        self.e.run("font", "build", "-n", "Joins", str(again))
+        self.assertEqual(again.read_bytes(), self.ttf["Regular"].read_bytes())
+
+    def test_no_joined_ink_no_joins(self):
+        e = Env()
+        try:
+            rnd = random.Random(62)
+            e.put(alphabet_samples(seed=62, per=3) + [sample("er", rnd) for _ in range(7)])
+            e.run("letters", "build", "-r")
+            self.assertFalse(any('"joins"' in x for x in e.model().splitlines()))
+            ttf = e.dir / "nojoins.ttf"
+            e.run("font", "build", str(ttf))
+            from fontTools.ttLib import TTFont
+            f = TTFont(str(ttf))
+            self.assertEqual(len(f.getGlyphOrder()), len(font_glyphs(e.model())) + 1)
+            self.assertEqual(f["maxp"].maxComponentElements, 1)
+        finally:
+            e.close()
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
