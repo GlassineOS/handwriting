@@ -779,7 +779,17 @@ was read (its stored first reading against the prompt) and how close it is to it
 shape. Each way's seed is its most supported sample, the most used way first; while a character
 has fewer than three versions, further strong samples of its ways that differ from those chosen
 and have company seed more (so repeated letters don't look stamped). A version is the weighted
-average of the samples near its seed, smoothed, so a single sample's jitter is gone; its `use`
+average of the samples near its seed (within 0.3 x-heights RMS by arc length, weighted by a
+Gaussian of 0.15 around it), registered before they are averaged: resampled by arc length, the
+same point of the letter (a loop's top, a cusp) falls at a different place along each sample, and
+averaged point by point the loops would shrink, the cusps round off and the letter come out
+shorter. So each sample is matched to the version point by point along each of its strokes by
+dynamic time warping over position, direction and turning (ends with ends, each step of the
+match at most two points on one side for one on the other, within a quarter of the stroke's
+points of the diagonal) and moved as a whole to fit; the version is the weighted average of the
+matched samples, starting from its seed, matched again to that average and averaged again,
+three times (DTW barycentre averaging). Then it is smoothed, so a single sample's jitter is
+gone; its `use`
 is how many samples of its ways are nearest to it of the versions with their strokes, and the
 versions are stored most used first. Sizes are in x-heights from the baseline of each sample's area (or of its
 own letters); the line metrics (cap height, ascender, descender, slant, ink width as the app's
@@ -830,9 +840,9 @@ bands from −0.05 to 1.05) their profiles come closer than its gap, or than hal
 when that is smaller, moved apart to it. A pair without a distance (or a version without ink
 running up or down in the x-height band) is set at its gap. A version sits on the line where the
 samples it is made from sit on average (with the weights that make its shape), and is as tall
-as they are on average: averaging and smoothing take height off versions that differ a little
-in shape, so its heights are stretched back from its centre (the width as it comes; not when
-under 0.1 x-heights tall or needing more than 1.5 times). Its width then follows running text: every version (a joined
+as they are on average: what averaging versions that differ a little in shape and smoothing
+still take off is given back, its heights stretched from its centre (the width as it comes; not
+when under 0.1 x-heights tall or needing more than 1.5 times). Its width then follows running text: every version (a joined
 pair's too) is narrowed about its middle by `narrow`, the median, over the characters written at
 least 3 times both in samples of several words and in single words (at least 10 of them; 1 with
 fewer), of their median width in running text over that in single words, within 0.85 and 1;
@@ -1247,5 +1257,7 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
+| `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
+| `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), HV and AV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
 | `GLASSINE_HANDWRITING_CHARS` | for tuning: `weight=…,floor=…,bonus=…,margin=…,beam=…` replace the Characters weights |

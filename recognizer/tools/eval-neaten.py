@@ -11,7 +11,7 @@ variant before and after (strength 1, with the sample's own spans), and the time
 (and of a read of the same line, for comparison).
 The store given is only read; everything happens in a temporary copy.
 
-    eval-neaten.py BIN STORE_DIR --models DIR [--strength S ...] [--limit N] [--adaptation] [--no-letters] [--words]
+    eval-neaten.py BIN STORE_DIR --models DIR [--strength S ...] [--limit N] [--adaptation] [--no-letters] [--words] [--tmp DIR]
 
 --words neatens as the pen interface's service does (service/glassine_hwservice/pen.py): the
 line read once, then each word of the best reading on its own (without the reading as its
@@ -127,7 +127,19 @@ def parse_neaten(r):
     for i in range(k):
         how.append(r[5 + 3 * i + 1])
         out.append(r[5 + 3 * i + 2])
+    WHY.append(r[5 + 3 * k].split(" ") if len(r) > 5 + 3 * k and r[5 + 3 * k] else [])
     return text, how, out
+
+
+WHY = []    # the WHY field of each reply, in order (parse_neaten)
+
+
+def why_counts(start):
+    c = {}
+    for w in WHY[start:]:
+        for x in w:
+            c[x] = c.get(x, 0) + 1
+    return c
 
 
 def to_xy(pts):
@@ -253,6 +265,7 @@ def main():
     ap.add_argument("--adaptation", action="store_true", help="read with the store's adaptation (it has seen the train part only when made from the same split)")
     ap.add_argument("--no-letters", action="store_true", help="no letter model: line-level corrections only")
     ap.add_argument("--words", action="store_true", help="word by word, as the pen interface's service")
+    ap.add_argument("--tmp", help="where the temporary copy is made (for a person's store, a directory as private as it)")
     a = ap.parse_args()
     strengths = a.strength or [0.5, 1.0]
     store = Path(a.store)
@@ -262,7 +275,7 @@ def main():
         f = ln.split("\t")
         if len(f) >= 5:
             meta[f[0]] = ln
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(dir=a.tmp) as td:
         os.chmod(td, 0o700)
         data = Path(td) / "data"
         hw = data / "glassine" / "handwriting"
@@ -291,6 +304,7 @@ def main():
         res = {s: {"err_o": 0, "err_n": 0, "chars": 0, "pulled": 0, "line": 0, "kept": 0, "ms": [],
                    "better": 0, "worse": 0, "werr_o": 0, "werr_n": 0} for s in strengths}
         read_ms = []
+        setw, setr = {}, {"err": 0, "werr": 0, "chars": 0}
         closer = {"n": 0, "closer": 0, "before": [], "after": []}
         spacing = next((m["spacing"] for m in model if "spacing" in m), None)
         learned = {(p[0], p[1]): p[2] for p in spacing["pairs"]} if spacing else {}
@@ -307,6 +321,7 @@ def main():
             o = rec.ask("read", "s", "1", "raw")
             ro = unesc(o[4]) if len(o) > 4 and o[2] == "text" and o[3] != "0" else ""
             for st in strengths:
+                w0 = len(WHY)
                 t0 = time.perf_counter()
                 if a.words:
                     how, out = neaten_words(rec, s, strokes, st)
@@ -331,12 +346,26 @@ def main():
                 q["ms"].append(ms)
                 for h in how:
                     q[h] += 1
+                for x, v in why_counts(w0).items():
+                    q.setdefault("why", {})[x] = q.setdefault("why", {}).get(x, 0) + v
             # closeness at strength 1 with the sample's own spans
             spans = s.get("spans") or []
             align = ";".join(",".join(str(j) for j in sp) for sp in spans)
+            w0 = len(WHY)
             r = rec.ask("neaten", "s", "1", esc(text), align)
             _, how, out = parse_neaten(r)
+            for x, v in why_counts(w0).items():
+                setw[x] = setw.get(x, 0) + v
             nxy = [to_xy(p) for p in out]
+            session(rec, s, out)
+            n = rec.ask("read", "s", "1", "raw")
+            rn = unesc(n[4]) if len(n) > 4 and n[2] == "text" and n[3] != "0" else ""
+            n = rec.ask("read", "s", "1")
+            wn = unesc(n[4]) if len(n) > 4 and n[2] == "text" and n[3] != "0" else ""
+            setr["err"] += edit(rn, text)
+            setr["werr"] += edit(wn, text)
+            setr["chars"] += len(text)
+            session(rec, s, strokes)
             xh = line_xh(s)
             cnt = {}
             for sp in spans:
@@ -380,6 +409,10 @@ def main():
                   f"time median {ms[len(ms) // 2]:.1f} ms, max {ms[-1]:.1f} ms, over 300 ms {sum(m > 300 for m in ms)}" if ms else "")
             print(f"  with words: character error original {100 * q['werr_o'] / max(1, q['chars']):.1f}%, "
                   f"neatened {100 * q['werr_n'] / max(1, q['chars']):.1f}%")
+            print("  why: " + ", ".join(f"{k} {v}" for k, v in sorted(q.get("why", {}).items())))
+        print(f"Neatest with the text (words set in the font): character error {100 * setr['err'] / max(1, setr['chars']):.1f}%, "
+              f"with words {100 * setr['werr'] / max(1, setr['chars']):.1f}%; why: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(setw.items())))
         if read_ms:
             rm = sorted(read_ms)
             print(f"a read of the same lines: median {rm[len(rm) // 2]:.1f} ms, max {rm[-1]:.1f} ms")
