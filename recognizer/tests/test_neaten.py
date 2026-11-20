@@ -671,10 +671,11 @@ class Neaten(unittest.TestCase):
         for j in (0, 1):
             self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
 
-    def test_neatest_keeps_a_rare_version_off_the_ink_on_the_line(self):
+    def test_neatest_sets_a_rare_version_on_the_ink_on_the_line(self):
         """a letter whose version there was made from fewer than 3 samples and sits far
-        higher than its ink (here every M of the model written twice as tall): the letter
-        keeps its ink as Strong leaves it, no higher or lower, and the rest of the word is set
+        higher than its ink (here every M of the model written twice as tall): the letter is
+        set, its top and bottom where Strong leaves its ink's, no higher or lower, and the
+        next letter at the gap the person writes the pair at, not the font's tall M's
         (FR-043)"""
         n = [0]
 
@@ -693,8 +694,7 @@ class Neaten(unittest.TestCase):
         c.close()
         m = [v["members"] for v in model["M"]["variants"]]
         self.assertLess(max(m), 3, m)
-        self.assertEqual(why[0], "no-structure")
-        self.assertEqual(why[1:], ["set"] * 3)
+        self.assertEqual(why, ["set"] * 4)
         # (its ink where Strong leaves it, to a tenth of an x-height, top and bottom)
         c = self.e.start()
         self.begin(c, s)
@@ -706,6 +706,63 @@ class Neaten(unittest.TestCase):
         yi = [p[1] for j in s["spans"][0] for p in xs[j]]
         self.assertLess(abs(min(ys) - min(yi)), 0.1 * 30)
         self.assertLess(abs(max(ys) - max(yi)), 0.1 * 30)
+        # (the o beside it: no further than the person's widest gap between letters, and
+        # not on it)
+        a = max(p[0] for j in s["spans"][0] for p in xy[j])
+        b = min(p[0] for j in s["spans"][1] for p in xy[j])
+        self.assertGreater(b - a, -0.1 * 30)
+        self.assertLess(b - a, 1.0 * 30)
+
+    def test_neatest_spaces_a_kept_capital_as_the_person_does(self):
+        """an F written in two strokes (its versions have three: it keeps its ink), once as
+        wide as usual and once two and a half times as wide: kept, it sits on the middle of
+        its glyph, so how far it reaches towards the o set beside it changes with its width;
+        the o is set at the gap the person writes the pair at, the same both times (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        gaps = []
+        for scale in (1.0, 2.5):
+            s = TL.sample("Fon", random.Random(93), shapes=TL.WHOLE_SHAPES)
+            st, sp = s["strokes"], s["spans"]
+            f = [st[j] for j in sp[0]]
+            x0 = min(p[0] for q in f for p in q)
+            wide = [[[round(x0 + scale * (p[0] - x0), 3)] + p[1:] for p in q] for q in f]
+            rest = [[[round(p[0] + (scale - 1) * 18, 3)] + p[1:] for p in st[j]] for j in sp[1] + sp[2]]
+            s["strokes"] = [list(reversed(wide[0])) + wide[1], wide[2]] + rest
+            s["spans"] = [[0, 1], [2], list(range(3, 3 + len(sp[2])))]
+            TL.retime_sample(s)
+            align = ";".join(",".join(map(str, z)) for z in s["spans"])
+            c = self.e.start()
+            self.begin(c, s)
+            _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fon"), align), why=True)
+            c.close()
+            self.assertEqual(why, ["no-structure", "set", "set"], scale)
+            xy = {q[0]: EV.to_xy(q[2]) for q in out}
+            # (between the baseline and the x-height, where both have ink)
+            base = max(p[1] for p in xy[2])
+            band = [p for j in (0, 1) for p in xy[j] if base - 30 <= p[1] <= base]
+            gaps.append((min(p[0] for p in xy[2]) - max(p[0] for p in band)) / 30)
+        self.assertGreater(min(gaps), 0, gaps)
+        self.assertLess(abs(gaps[0] - gaps[1]), 0.05, gaps)
+
+    def test_neatest_draws_no_letter_twice(self):
+        """the reading gives the o only the f's bar and its body to the n (which then has a
+        piece more than any n has, and keeps its ink as written, the o's body in it): the o
+        is not set from the bar as well, so it isn't drawn twice (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("fon", random.Random(92), shapes=TL.WHOLE_SHAPES)
+        st, sp = s["strokes"], s["spans"]
+        # (the bar a little long, out over where the o is: the word still fits the font's)
+        bar = [[round(p[0] + 15, 3)] + p[1:] for p in st[sp[0][1]]]
+        s["strokes"] = [st[sp[0][0]], bar, st[sp[1][0]]] + [st[j] for j in sp[2]]
+        s["spans"] = [[0], [1], list(range(2, 3 + len(sp[2])))]
+        TL.retime_sample(s)
+        align = ";".join(",".join(map(str, z)) for z in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertEqual(why[2], "no-structure", why)
+        self.assertNotEqual(why[1], "set", why)
 
     def test_neatest_keeps_the_word_gap(self):
         """two words, the first written narrower than the font sets it: set, it would reach

@@ -306,6 +306,7 @@ def main():
         read_ms = []
         setw, setr = {}, {"err": 0, "werr": 0, "chars": 0}
         dropped = {"letters": 0, "dropped": 0, "noread": 0}
+        bycls = {}
         closer = {"n": 0, "closer": 0, "before": [], "after": []}
         spacing = next((m["spacing"] for m in model if "spacing" in m), None)
         learned = {(p[0], p[1]): p[2] for p in spacing["pairs"]} if spacing else {}
@@ -362,6 +363,9 @@ def main():
             for k, c in enumerate(text):
                 if c.isspace() or k >= len(wy):
                     continue
+                if c.isalpha():
+                    cls = "upper" if c.isupper() else "lower"
+                    bycls.setdefault(cls, {})[wy[k]] = bycls.setdefault(cls, {}).get(wy[k], 0) + 1
                 if k < len(spans) and spans[k]:
                     dropped["letters"] += 1
                     dropped["dropped"] += wy[k] == "no-ink"
@@ -426,6 +430,8 @@ def main():
               + ", ".join(f"{k} {v}" for k, v in sorted(setw.items())))
         print(f"  characters with ink in the reading {dropped['letters']}, left without ink of their own "
               f"(dropped) {dropped['dropped']}; characters the reading gives no ink {dropped['noread']}")
+        for cls in sorted(bycls):
+            print(f"  {cls}-case letters: " + ", ".join(f"{k} {v}" for k, v in sorted(bycls[cls].items())))
         if read_ms:
             rm = sorted(read_ms)
             print(f"a read of the same lines: median {rm[len(rm) // 2]:.1f} ms, max {rm[-1]:.1f} ms")
