@@ -294,6 +294,15 @@ unweighed). The reference below serves both; the weighing only a version 1 model
   its LINE, else an `em` one in em. Without enough samples in those units, the line alone (the
   area's LINE, or 1 for `em`; small letters 0.2 lines high, capitals 0.5), which only tells
   dots and dashes apart. Without either, nothing below applies.
+  The line's 0.2 is a guess, and people write smaller than it: a version 2 model reads ink at
+  too few points per letter when its letters are much smaller than the reference. So with the
+  line alone, a line of writing is read at twice its own small letters' height when they come
+  out under 0.35 of the line's (but never below a fifth of it, and not for letters under 0.08
+  of it). Its small letters: every stroke resampled evenly by arc length (a 400th of the ink's
+  larger side), the median height of its lowest turns less the median of its highest, over
+  0.84; a line of writing has at least 5 of each and is at least 4 of its letters wide, so a
+  lone character, mark or short pair keeps the line's reference and its size against it. The
+  person's letters, when known, are used as they are.
 - **Glyphs.** Strokes that overlap horizontally (within 0.2 small-letter heights, also through
   other strokes) make one glyph. A glyph no bigger than half a small letter is a dot; one at most
   half a small letter high and at least 2.5 times as wide as high a dash; with the person's
@@ -1280,7 +1289,8 @@ ink scaled by a reference height instead of its own (the trainer's `features_ref
 in reference heights, y above the baseline of the guide the ink sits on, and a sixth input, the
 ink's size, log(max(height, width / 4) / reference), clipped to ±4, the same in every row. The
 reference is the person's small letters in the session's units (Size, below), else 0.2 of the
-area's line (or of 1 em); the baseline the area's guide line whose line holds the median of the
+area's line (or of 1 em), or from a line of writing far smaller than that its own letters (Size,
+Reference); the baseline the area's guide line whose line holds the median of the
 ink's y, each guide's line running from two thirds of a line above it to a third below, so a
 comma or a descender just under its guide stays on it (`BASE`; a stored sample's guides are at
 two thirds of each of its area's lines), else the median of its y. Without any reference the ink's own core height stands in. A version 1 model
