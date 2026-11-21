@@ -248,11 +248,15 @@ app can decide not to start without them.
 
 ### Live ink
 
-- **FR-029**: Ink appears under the pen in a region that takes strokes as fast as anywhere
-  else on the device, from the first point of the stroke, with reading on or off and in a
-  private region alike; declaring the region is all the app does for it. Where no region
-  takes strokes (outside every region, a region in text mode and what it covers) the pen
-  leaves no such ink. The app's own drawing of the stroke follows as FR-024 says.
+- **FR-029**: Ink appears under the pen for every stroke a region takes, as fast as
+  anywhere else on the device, from the first point of the stroke to its last, with
+  reading on or off and in a private region alike; declaring the region is all the app
+  does for it. Like the stroke, the ink belongs to where the stroke starts: it follows the
+  stroke past the region's edge, as far as the app's window is visible (never over
+  anything covering the window, such as a menu, the keyboard or another window). A stroke
+  that starts where no region takes strokes (outside every region, a region in text mode
+  and what it covers) leaves no such ink anywhere, also where it crosses into a region.
+  The app's own drawing of the stroke follows as FR-024 says.
 
 ### Stored ink
 
@@ -336,7 +340,9 @@ Host level:
   words stay as they were;
 - a surface with regions and no other ink areas has ink areas exactly where its regions
   take strokes: they follow a region's move, clip and mode, a region in text mode above
-  another cuts it, and nothing outside the regions is an ink area;
+  another cuts it, and nothing outside the regions is an ink area; a stroke starting in a
+  region shows ink along its whole path over the visible window, past the region's edge,
+  and a stroke starting outside every region shows none, also inside a region;
 - without the service, the capabilities say regions are not available.
 
 Product level: in the images acceptance suite, a demo app with a page of small fields and a
