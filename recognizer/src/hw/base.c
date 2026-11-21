@@ -8,8 +8,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "base.h"
+#include "recog.h"
 #include "sample.h"
+#include "store.h"
 
 static struct hw_base base;
 static int base_state;                  /* 0 not read, 1 read, -1 none */
@@ -160,10 +163,45 @@ static int base_read(const char *path, struct hw_base *B)
 	return 0;
 }
 
+/* a language code as a directory name: letters, then optionally - or _ and letters or digits */
+static int lang_name_ok(const char *l)
+{
+	size_t n = strlen(l);
+	if (n < 2 || n > 35 || !isalpha((unsigned char)l[0])) return 0;
+	for (size_t i = 0; i < n; i++)
+		if (!isalnum((unsigned char)l[i]) && l[i] != '-' && l[i] != '_') return 0;
+	return 1;
+}
+
+/* The base's file: GLASSINE_HANDWRITING_BASE's (a file, `off`, or a directory laid out as
+ * HW_BASE_DIR), else in HW_BASE_DIR: the base of the language the recognizer reads by default
+ * (the first of the default languages with a model, `en-GB` falling back to `en`) when that
+ * language has one of its own (LANG/base.jsonl), else base.jsonl */
 static const char *base_path(void)
 {
-	const char *p = getenv("GLASSINE_HANDWRITING_BASE");
-	return p && *p ? p : HW_BASE_PATH;
+	static char path[4400];
+	if (*path) return path;
+	const char *e = getenv("GLASSINE_HANDWRITING_BASE"), *dir = HW_BASE_DIR;
+	struct stat st;
+	if (e && *e) {
+		if (strcmp(e, "off") && !stat(e, &st) && S_ISDIR(st.st_mode)) dir = e;
+		else return e;
+	}
+	snprintf(path, sizeof path, "%s/%s", dir, HW_BASE_FILE);
+	char langs[256];
+	hw_default_langs(langs, sizeof langs);
+	for (char *save = NULL, *t = strtok_r(langs, ", ", &save); t; t = strtok_r(NULL, ", ", &save)) {
+		char l[36];
+		snprintf(l, sizeof l, "%.*s", (int)strcspn(t, "-_"), t);   /* en-GB -> en */
+		const char *use = hw_lang_get(t) ? t : hw_lang_get(l) ? l : NULL;
+		if (!use) continue;
+		char p[4400];
+		if (lang_name_ok(use) && (size_t)snprintf(p, sizeof p, "%s/%s/%s", dir, use, HW_BASE_FILE) < sizeof p &&
+		    !stat(p, &st) && S_ISREG(st.st_mode))
+			snprintf(path, sizeof path, "%s", p);
+		break;
+	}
+	return path;
 }
 
 int hw_base_licence(char *out, size_t n)
@@ -216,7 +254,12 @@ static int in_font(const struct hw_letters *V, unsigned cp)
  * its x-height and goes to the person's ascender and descender above and below it */
 static int uniform(unsigned cp)
 {
-	return (cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7);
+	if ((cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7)) return 1;
+	/* Latin Extended-A: capital and small in pairs, the capital first (Ÿ alone; ĸ, ŉ, ſ small) */
+	if (cp == 0x178) return 1;
+	if ((cp >= 0x100 && cp <= 0x137) || (cp >= 0x14A && cp <= 0x177)) return cp % 2 == 0;
+	if ((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17E)) return cp % 2 == 1;
+	return 0;
 }
 
 int hw_base_glyphs(const struct hw_letters *V, const struct hw_base *B, struct hw_base_glyph **out, size_t *n)

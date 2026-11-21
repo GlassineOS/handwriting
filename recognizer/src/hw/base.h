@@ -12,9 +12,10 @@
 
 #define HW_BASE_FORMAT "glassine-handwriting-base"
 #define HW_BASE_VERSION 1
-#ifndef HW_BASE_PATH
-#define HW_BASE_PATH "/usr/share/glassine/handwriting/autograph/base.jsonl"
+#ifndef HW_BASE_DIR
+#define HW_BASE_DIR "/usr/share/glassine/handwriting/autograph"
 #endif
+#define HW_BASE_FILE "base.jsonl"           /* in HW_BASE_DIR, and in HW_BASE_DIR/LANG for a language's own */
 
 struct hw_base_char {
 	unsigned cp;
@@ -30,8 +31,10 @@ struct hw_base {
 	struct hw_base_char *c;
 };
 
-/* The base (GLASSINE_HANDWRITING_BASE: a file, `off` none; else HW_BASE_PATH), read once;
- * NULL when there is none or it can't be read */
+/* The base, read once: GLASSINE_HANDWRITING_BASE (a file, `off` none, or a directory laid out
+ * as HW_BASE_DIR), else HW_BASE_DIR's: LANG/base.jsonl for the language the recognizer reads
+ * by default when it has a base of its own, else base.jsonl; NULL when there is none or it
+ * can't be read */
 const struct hw_base *hw_base_get(void);
 /* the base's licence: HW_BASE_LICENCE beside the base's file (the OFL's text, which goes
  * with every font made from it). 0 (out its path), -1 no base. */
