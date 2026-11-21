@@ -53,7 +53,7 @@ with the same `id` and either `"result": {…}` or `"error": {"code", "message"}
 
 | Method | Params | Result |
 |---|---|---|
-| `hello` | | `version` (1), `app` (who the service takes the caller for), `sandboxed`, `neaten`, `text`, `letters`, `languages` |
+| `hello` | | `version` (1), `app` (who the service takes the caller for), `sandboxed`, `neaten`, `text`, `letters` (a letter model has been built: neatening has the person's letters to go by; Autograph is there either way), `languages` |
 | `status` | | `engine` (`running`, `pid`, `starts`), `surfaces` (pen interface surfaces held) |
 | `permission.get` | | the caller's `learn`, `samples` |
 | `permission.set` | `app`, `learn`, `samples` | that app's states; unsandboxed callers only |
@@ -61,7 +61,7 @@ with the same `id` and either `"result": {…}` or `"error": {"code", "message"}
 | `neaten` | `strokes`, `strength` (0–1), `text`, `units`, `area`, `context` | `text`, `strokes`: `how`, `points` |
 | `samples.list` | | `samples` kept through the caller: `id`, `time`, `source`, `language`, `text` (needs `samples`) |
 | `samples.delete` | `id` | `{}`, or `not-yours` (needs `samples`) |
-| `letters.status` | | `state`, `covered`, `font` (needs `samples`) |
+| `letters.status` | | `state` (`current` or `outdated`), `covered`, `font` (`name`, `version`; needs `samples`) |
 
 Strokes are lists of points `[x, y, t]`, `[x, y, t, pressure]` or
 `[x, y, t, pressure, tilt_x, tilt_y]`, with t in ms, pressure 0 to 1 and tilt in degrees.
@@ -78,8 +78,15 @@ say how high a line is). An area that is empty, a line of 0 or less or another t
 Error codes: `bad-request`, `unknown-method`, `permission-needed`, `not-allowed`,
 `not-yours`, `unavailable`, `failed`.
 
+**Autograph (spec 003 FR-009, FR-011).** The service keeps the person's font: at its start and
+then every half hour (`GLASSINE_HANDWRITING_AUTOGRAPH_S` seconds; 0 at start only) it runs the
+recognizer's `font auto` (docs/recognizer.md, Command line), which installs Autograph when there
+is none and, while the device charges and is idle, builds the letter model and the font again
+once new samples changed them, at the lowest priority. Apps see the new version through the font
+cache; `letters.status` gives it.
+
 Not in version 1, still owed for spec 004 FR-013 and FR-015: sample export and show,
-learning control, letter model and font builds with progress notifications, and donation
+learning control, letter model and font builds on request with progress notifications, and donation
 (through the samples app or Settings only). "Donation" is the internal name of what the
 person sees as a contribution.
 
