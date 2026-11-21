@@ -10,7 +10,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "../src/hw/aligner.h"
 #include "../src/hw/chars.h"
+#include "../src/hw/cut.h"
 #include "../src/hw/ctc.h"
 #include "../src/hw/featurize.h"
 #include "../src/hw/letters.h"
@@ -1088,6 +1090,49 @@ static void test_letters_context(void)
 	hw_letters_free(&L);
 }
 
+/* the point aligner's decoding on made-up log-probabilities (no model run): the split of a
+ * stroke's frames, the cut through it, and the whole line's labels with a delayed stroke */
+static void test_aligner(void)
+{
+	struct hw_model m = { 0 };
+	m.cfg.nclass = 4;
+	m.charset[0] = 'a'; m.charset[1] = 'b'; m.charset[2] = 'c';
+	/* 9 frames, classes 1 (a), 2 (b), 3 (c): a a a b b c c, then a a (a dot after the word) */
+	int want[9] = { 1, 1, 1, 2, 2, 3, 3, 1, 1 };
+	float lp[9 * 4];
+	for (int t = 0; t < 9; t++) for (int c = 0; c < 4; c++) lp[t * 4 + c] = c == want[t] ? 0.0f : -20.0f;
+	struct hw_aligned a = { &m, 9, 4, lp, 0, NULL, NULL };
+	int lab[9], cls[3] = { 1, 2, 3 };
+	CHECK(!hw_aligner_split(&a, 0, 6, cls, 3, lab), "split");
+	CHECK(lab[2] == 0 && lab[3] == 1 && lab[4] == 1 && lab[5] == 2, "split at the class changes: %d %d %d %d", lab[2], lab[3], lab[4], lab[5]);
+	int two[2] = { 1, 1 };
+	CHECK(hw_aligner_split(&a, 0, 0, two, 2, lab) == 1, "two equal classes need a blank frame between them");
+	/* the cut: a stroke of 14 points over frames 0..6, two points a frame */
+	double x[14], y[14];
+	int fr[14];
+	for (int i = 0; i < 14; i++) { x[i] = i * 0.1; y[i] = 0; fr[i] = i / 2; }
+	struct hw_cut_ref refs[3];
+	double rx[2] = { 0, 1 }, ry[2] = { 0, 0 };
+	for (int r = 0; r < 3; r++) hw_cut_ref_make(rx, ry, 2, &refs[r]);
+	size_t off[4] = { 0, 1, 2, 3 }, at[4];
+	int which[3];
+	double cost;
+	struct hw_cut_ctx ctx = { &a, fr, cls };
+	CHECK(!hw_cut_aligner(x, y, 14, 1.0, 3, refs, off, at, which, &cost, &ctx), "cut");
+	CHECK(at[0] == 0 && at[1] == 6 && at[2] == 10 && at[3] == 14, "cut where the classes change: %zu %zu %zu", at[1], at[2], at[3]);
+	/* the whole line: three strokes (frames 0-2, 3-6, 7-8), the third a delayed a */
+	int *fs[3], *own[3], f0[6] = { 0, 0, 1, 1, 2, 2 }, f1[8] = { 3, 3, 4, 4, 5, 5, 6, 6 }, f2[4] = { 7, 7, 8, 8 };
+	int o0[6], o1[8], o2[4];
+	size_t np[3] = { 6, 8, 4 };
+	fs[0] = f0; fs[1] = f1; fs[2] = f2; own[0] = o0; own[1] = o1; own[2] = o2;
+	struct hw_aligned b = { &m, 9, 4, lp, 3, fs, np };
+	unsigned cp[3] = { 'a', 'b', 'c' };
+	CHECK(!hw_aligner_label(&b, cp, 3, -3.0, own), "label");
+	CHECK(o0[0] == 0 && o1[0] == 1 && o1[7] == 2 && o2[0] == 0 && o2[3] == 0, "the late stroke goes to the a: %d %d %d", o1[7], o2[0], o2[3]);
+	CHECK(!hw_aligner_label(&b, cp, 3, -1e6, own), "label");
+	CHECK(o2[0] == 2, "at a penalty no stroke pays, the chain's last letter: %d", o2[0]);
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "tests/data";
@@ -1125,6 +1170,7 @@ int main(int argc, char **argv)
 	test_letters_glyphs();
 	test_neaten_joined();
 	test_letters_context();
+	test_aligner();
 	if (fails) { fprintf(stderr, "test-engine: %d failed\n", fails); return 1; }
 	printf("test-engine: ok\n");
 	return 0;

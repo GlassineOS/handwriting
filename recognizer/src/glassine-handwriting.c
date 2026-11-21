@@ -40,9 +40,12 @@
 #include "hw/calib.h"
 #include "hw/gesture.h"
 #include "hw/letters.h"
+#include "hw/local.h"
+#include "hw/aligner.h"
 #include "hw/neaten.h"
 #include "hw/recog.h"
 #include "hw/size.h"
+#include "hw/setword.h"
 #include "hw/lookalike.h"
 #include "hw/sample.h"
 #include "hw/store.h"
@@ -1325,6 +1328,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 	}
 	struct buf b = { 0 };
 	struct hw_neat q = { 0 };
+	struct hw_aligned aligned = { 0 };
 	unsigned char *keep = calloc(s->n + 1, 1);
 	int **own = calloc(s->n + 1, sizeof *own);
 	double *fit = NULL;
@@ -1413,6 +1417,15 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 			if (sw) { free(sw); free(np); }
 			free(ink); free(map);
 		}
+		/* the point aligner, when there is one: it cuts the strokes letters share, and
+		 * without ALIGN it gives every stroke its letters (written after the word or not) */
+		const struct hw_model *am = l && cp && nc && used[0] ? hw_aligner_get(l->lang) : NULL;
+		if (am) {
+			int ar = hw_aligner_run(am, s->ink, s->n, keep, &aligned);
+			if (ar < 0) goto oom;
+			if (!ar && !align && fit && hw_aligner_label(&aligned, cp, nc, HW_ALIGNER_DELAY, own) < 0) goto oom;
+			if (!ar) q.aligned = &aligned;
+		}
 		q.ink = s->ink;
 		q.n = s->n;
 		q.keep = keep;
@@ -1488,6 +1501,43 @@ out:
 	hw_neat_free(&q);
 	if (own) for (size_t i = 0; i < s->n; i++) free(own[i]);
 	free(own); free(keep); free(fit); free(whole); free(cp);
+	hw_aligned_free(&aligned);
+}
+
+/* set ID TEXT (contract 1.7): TEXT set in the person's font as pen strokes (setword.h) */
+static void do_set(const char *id, const char *text)
+{
+	size_t len = strlen(text);
+	unsigned *cp = malloc((len + 1) * sizeof *cp);
+	if (!cp) { reply("error\t%s\tmemory", id); return; }
+	size_t nc = hw_utf8_decode(text, cp, len + 1);
+	if (!nc || nc > HW_MAX_LABELS) { free(cp); reply("error\t%s\tbad-text", id); return; }
+	struct hw_set st;
+	if (hw_set_text(letters_now(), cp, nc, &st)) { free(cp); reply("error\t%s\tmemory", id); return; }
+	struct buf b = { 0 };
+	bfmt(&b, "set\t%s\tok\t", id);
+	bcoord(&b, st.width);
+	bstr(&b, "\t");
+	bcoord(&b, st.xh_mm);
+	bstr(&b, "\t");
+	bcoord(&b, st.ink);
+	bfmt(&b, "\t%zu", st.n);
+	for (size_t i = 0; i < st.n; i++) {
+		bstr(&b, "\t");
+		for (size_t j = 0; j < st.s[i].n; j++) {
+			if (j) bstr(&b, " ");
+			bcoord(&b, st.s[i].x[j]);
+			bstr(&b, ",");
+			bcoord(&b, st.s[i].y[j]);
+		}
+	}
+	if (b.s) {
+		bstr(&out, b.s);
+		bput(&out, "\n", 1);
+	} else reply("error\t%s\tmemory", id);
+	free(b.s);
+	hw_set_free(&st);
+	free(cp);
 }
 
 static int nfields(char **f, int max, char *line)
@@ -1706,6 +1756,11 @@ static void request(char *line, int skip_read)
 		if (n >= 5) UNESC(4);
 		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
 		do_neaten(id, s, f[3], n >= 5 ? f[4] : NULL, n == 6 ? f[5] : NULL);
+	} else if (!strcmp(v, "set")) {
+		NEED(3);
+		UNESC(2);
+		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
+		do_set(id, f[2]);
 	} else if (!strcmp(v, "forget")) {
 		NEED(3);
 		do_forget(id, f[2]);
@@ -1875,7 +1930,9 @@ static void usage(void)
 	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE | widths [--style S] [--nib DEG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n"
-	      "       glassine-handwriting calibrate [-l LANG] FILE\n", stderr);
+	      "       glassine-handwriting calibrate [-l LANG] FILE\n"
+	      "       glassine-handwriting model [status] [-l LANG] | check [-l LANG] [-k KIND] FILE | install [-l LANG] [-k KIND] FILE\n"
+	      "       glassine-handwriting model use recognizer|aligner shipped|local | remove recognizer|aligner [-l LANG]\n", stderr);
 }
 
 static int cmd_samples(int argc, char **argv)
@@ -2574,6 +2631,136 @@ static int cmd_writer(int argc, char **argv)
 	return 2;
 }
 
+/* ---------------------------------------------------------------- the person's own models (spec 006) */
+
+static void put_field(const char *s)
+{
+	if (!*s) { fputs("-", stdout); return; }
+	for (; *s; s++) {
+		if (*s == '\\') fputs("\\\\", stdout);
+		else if (*s == '\t') fputs("\\t", stdout);
+		else if (*s == '\n') fputs("\\n", stdout);
+		else putchar(*s);
+	}
+}
+
+static void put_refused(const char *reason, const char *detail)
+{
+	printf("refused\t%s\t", reason);
+	put_field(detail);
+	putchar('\n');
+}
+
+/* the training data's end recorded in a model file's header, 0 when none */
+static long long model_until(const char *path)
+{
+	uint32_t w[16];
+	FILE *f = fopen(path, "rbe");
+	if (!f) return 0;
+	size_t got = fread(w, 4, 16, f);
+	fclose(f);
+	return got == 16 ? (long long)((uint64_t)w[12] | (uint64_t)w[13] << 32) : 0;
+}
+
+/* src copied to dst through dst.tmp, 0600 */
+static int copy_file(const char *src, const char *dst)
+{
+	char tmp[4400];
+	snprintf(tmp, sizeof tmp, "%s.tmp", dst);
+	int in = open(src, O_RDONLY | O_CLOEXEC), out = in < 0 ? -1 : open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	int ok = in >= 0 && out >= 0;
+	char b[65536];
+	ssize_t r;
+	while (ok && (r = read(in, b, sizeof b)) != 0) {
+		if (r < 0) { ok = errno == EINTR; continue; }
+		for (ssize_t o = 0; ok && o < r;) {
+			ssize_t w = write(out, b + o, (size_t)(r - o));
+			if (w < 0) ok = errno == EINTR; else o += w;
+		}
+	}
+	if (out >= 0 && (fsync(out) || close(out))) ok = 0;
+	if (in >= 0) close(in);
+	if (ok && rename(tmp, dst)) ok = 0;
+	if (!ok) unlink(tmp);
+	return ok ? 0 : -1;
+}
+
+static int cmd_model(int argc, char **argv)
+{
+	int first = argc > 0 && argv[0][0] != '-';
+	const char *lang = "en", *sub = first ? argv[0] : "status", *args[3] = { 0 };
+	int want = 0, na = 0;
+	for (int i = first; i < argc; i++) {
+		if (!strcmp(argv[i], "-l") && i + 1 < argc) lang = argv[++i];
+		else if (!strcmp(argv[i], "-k") && i + 1 < argc) { if (!(want = hw_kind_of(argv[++i]))) { usage(); return 2; } }
+		else if (na < 3) args[na++] = argv[i];
+		else { usage(); return 2; }
+	}
+	if (!valid_lang(lang)) { usage(); return 2; }
+	char reason[32], detail[200];
+	int kind = 0;
+	if (!strcmp(sub, "status") && !na) {
+		for (int k = HW_KIND_RECOGNIZER; k <= HW_KIND_ALIGNER; k++)
+			printf("use\t%s\t%s\n", hw_kind_name(k), hw_local_chosen(k) ? "local" : "shipped");
+		for (int k = HW_KIND_RECOGNIZER; k <= HW_KIND_ALIGNER; k++) {
+			struct hw_resolved r;
+			hw_model_resolve(lang, k, &r);
+			printf("inuse\t%s\t%s\n", hw_kind_name(k), r.local ? "local" : r.st.st_ino ? "shipped" : "none");
+		}
+		for (int k = HW_KIND_RECOGNIZER; k <= HW_KIND_ALIGNER; k++) {
+			char p[4300];
+			struct stat st;
+			if (hw_local_path(p, sizeof p, lang, k) || stat(p, &st)) { printf("local\t%s\tnone\n", hw_kind_name(k)); continue; }
+			printf("local\t%s\t", hw_kind_name(k));
+			if (hw_model_check(p, lang, k, NULL, reason, sizeof reason, detail, sizeof detail)) put_refused(reason, detail);
+			else printf("ready\t%lld\t%lld\t%lld\n", (long long)st.st_size, (long long)st.st_mtim.tv_sec, model_until(p));
+		}
+		return 0;
+	}
+	if (!strcmp(sub, "check") && na == 1) {
+		if (hw_model_check(args[0], lang, want, &kind, reason, sizeof reason, detail, sizeof detail)) {
+			put_refused(reason, detail);
+			return 1;
+		}
+		printf("ok\t%s\n", hw_kind_name(kind));
+		return 0;
+	}
+	if (!strcmp(sub, "install") && na == 1) {
+		if (hw_model_check(args[0], lang, want, &kind, reason, sizeof reason, detail, sizeof detail)) {
+			put_refused(reason, detail);
+			return 1;
+		}
+		char d[4100], p[4300];
+		if (hw_local_dir(d, sizeof d, NULL) || hw_local_path(p, sizeof p, lang, kind)) return 1;
+		/* the directories on the way (the data home, glassine/) made when missing, as the store makes them */
+		for (char *q = d + 1; *q; q++)
+			if (*q == '/') { *q = 0; if (mkdir(d, 0700) && errno != EEXIST) { perror("glassine-handwriting"); return 1; } *q = '/'; }
+		if ((mkdir(d, 0700) && errno != EEXIST) || chmod(d, 0700)) { perror("glassine-handwriting"); return 1; }
+		hw_local_dir(d, sizeof d, lang);
+		if ((mkdir(d, 0700) && errno != EEXIST) || chmod(d, 0700)) { perror("glassine-handwriting"); return 1; }
+		if (copy_file(args[0], p)) { fprintf(stderr, "glassine-handwriting: can't copy to %s\n", p); return 1; }
+		if (hw_conf_set(hw_kind_name(kind), "local")) return 1;
+		printf("installed\t%s\t%s\n", hw_kind_name(kind), lang);
+		return 0;
+	}
+	if (!strcmp(sub, "use") && na == 2 && (kind = hw_kind_of(args[0])) &&
+	    (!strcmp(args[1], "shipped") || !strcmp(args[1], "local")))
+		return hw_conf_set(hw_kind_name(kind), args[1]) ? 1 : 0;
+	if (!strcmp(sub, "remove") && na == 1 && (kind = hw_kind_of(args[0]))) {
+		char p[4300];
+		if (hw_local_path(p, sizeof p, lang, kind)) return 1;
+		if (unlink(p)) {
+			if (errno != ENOENT) { perror("glassine-handwriting"); return 1; }
+			puts("none");
+			return 0;
+		}
+		puts("removed");
+		return 0;
+	}
+	usage();
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	/* --writer WRITER: everything is for that writer's store */
@@ -2585,7 +2772,7 @@ int main(int argc, char **argv)
 		if (argc > 1 && argv[1][0] != '-') {
 			const char *c = argv[1];
 			if (!strcmp(c, "adapt") || !strcmp(c, "adaptation") || !strcmp(c, "letters") || !strcmp(c, "font") ||
-			    !strcmp(c, "learning")) { fputs("writer-store\n", stderr); return 2; }
+			    !strcmp(c, "learning") || !strcmp(c, "model")) { fputs("writer-store\n", stderr); return 2; }
 			if (!strcmp(c, "writer")) { usage(); return 2; }
 		}
 	} else if (argc > 1 && !strcmp(argv[1], "--writer")) { usage(); return 2; }
@@ -2638,6 +2825,7 @@ int main(int argc, char **argv)
 		if (!strcmp(c, "read")) return cmd_read(argc - 2, argv + 2, 0);
 		if (!strcmp(c, "bench")) return cmd_read(argc - 2, argv + 2, 1);
 		if (!strcmp(c, "calibrate")) return cmd_calibrate(argc - 2, argv + 2);
+		if (!strcmp(c, "model")) return cmd_model(argc - 2, argv + 2);
 		usage();
 		return 2;
 	}

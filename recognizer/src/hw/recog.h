@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include "ctc.h"
 #include "featurize.h"
+#include "local.h"
 #include "model.h"
 
 struct hw_lang {
@@ -19,7 +20,8 @@ struct hw_lang {
 	int has_adapted;
 	struct stat adapt_st;           /* the adaptation file as last read */
 	double base_temp;               /* the base model's calibration, 0: none */
-	char dir[4096];
+	char dir[4300];                 /* the directory of the file read */
+	struct hw_resolved res;         /* which file, as it was when read (local.h) */
 };
 
 /* The model directory: $GLASSINE_HANDWRITING_MODELS or /usr/share/glassine/handwriting. */
@@ -27,6 +29,8 @@ const char *hw_models_dir(void);
 /* The language's model (loaded on first use, adaptation re-read when its file changed);
  * NULL when there is no usable model for it. */
 struct hw_lang *hw_lang_get(const char *lang);
+/* 1 when lang reads with the person's own recognizer (local.h) */
+int hw_lang_local(const char *lang);
 const struct hw_head *hw_lang_head(const struct hw_lang *l);
 void hw_lang_forget_all(void);
 

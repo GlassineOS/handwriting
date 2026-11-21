@@ -817,7 +817,7 @@ class Pages(Case):
         u.wizard_done()
         u.start_best()
         self.settle(u)
-        self.assertEqual((u.page, u.tab), ("write", "font"))     # a part of Your font
+        self.assertEqual((u.page, u.tab), ("write", "font"))     # a part of Autograph
         kinds = []
         for _ in range(4):
             sh = self.submit(u)
@@ -929,9 +929,11 @@ class Pages(Case):
         # Export: the three styles under the person's name; the installed one stays
         u.export_font()
         self.assertEqual(u.exporting, {"text": ""})
+        out = Path(self.U.documents_dir()) / "Handwriting"     # (GLib keeps the first test's)
+        for old in out.glob("Noteshand-*.ttf"):
+            old.unlink()
         u.entry_text = lambda: "Notes hand"
         u.export_named()
-        out = Path(self.e.env["HOME"]) / "Documents" / "Handwriting"
         self.settle(u, lambda: not u.busy and (out / "Noteshand-Brush.ttf").exists())
         self.assertEqual(sorted(p.name for p in out.glob("*.ttf")),
                          ["Noteshand-Brush.ttf", "Noteshand-Calligraphy.ttf", "Noteshand-Regular.ttf"])
@@ -1397,6 +1399,93 @@ class Pages(Case):
         s = lambda y: [(0, y - 10, 0), (5, y, 5), (9, y + 10, 9)]
         self.assertEqual(neat.lines([s(80), s(93), s(100), s(200), s(240), s(400)], 150, 93),
                          {0: [0, 1, 2], 1: [3, 4], 2: [5]})
+
+
+class Models(Case):
+    """Learn › Models (spec 006) end to end on the real recognizer: a model written by the
+    export's writer put in Documents › Handwriting, installed from the page, in use, chosen back
+    to shipped, removed; a refused file named in words and nothing installed; not in a guest's
+    session"""
+
+    settle, make = Pages.settle, Pages.make
+
+    def setUp(self):
+        Pages.setUp(self)
+        self.docs = self.e.dir / "docs"
+        (self.docs / "Handwriting").mkdir(parents=True)
+        self.U.documents_dir = lambda: str(self.docs)
+
+    def export(self, name, **kw):
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tools"))
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            self.skipTest("no numpy")
+        import test_local
+        return test_local.export_model(self.docs / "Handwriting" / name, **kw)
+
+    def open(self):
+        u = self.make()
+        u.go("models")
+        self.settle(u, lambda: u.models is not None)
+        return u
+
+    def test_install_use_remove(self):
+        u = self.open()
+        self.assertEqual(u.tab, "learn")
+        self.assertEqual(u.models["local"], {"recognizer": None, "aligner": None})
+        self.assertEqual(u.models["inuse"]["recognizer"], "shipped")
+        f = self.export("replacement.ghm", seed=31)
+        M = sys.modules["glassine_hwsamples.models"]
+        M.install(u)
+        self.settle(u, lambda: u.models["local"]["recognizer"] is not None)
+        self.assertEqual(u.models["local"]["recognizer"][0], "ready")
+        self.assertEqual((u.models["use"]["recognizer"], u.models["inuse"]["recognizer"]), ("local", "local"))
+        self.assertIn("replacement.ghm", u.msg)
+        self.assertTrue(f.exists())
+        installed = self.e.dir / "data" / "glassine" / "handwriting-models" / "en" / "recognizer.ghm"
+        self.assertEqual(installed.read_bytes(), f.read_bytes())
+        M.use(u, "recognizer", "shipped")
+        self.settle(u, lambda: u.models["use"]["recognizer"] == "shipped")
+        self.assertEqual(u.models["inuse"]["recognizer"], "shipped")
+        M.use(u, "recognizer", "local")
+        self.settle(u, lambda: u.models["use"]["recognizer"] == "local")
+        M.ask_remove(u, "recognizer")
+        self.assertEqual(u.confirm[2], "Remove")
+        u.confirm[3]()
+        self.settle(u, lambda: u.models["local"]["recognizer"] is None)
+        self.assertEqual(u.models["inuse"]["recognizer"], "shipped")
+        self.assertFalse(installed.exists())
+        self.assertTrue(f.exists())
+
+    def test_refused_in_words(self):
+        u = self.open()
+        f = self.docs / "Handwriting" / "newer.ghm"
+        b = bytearray((self.e.dir / "models" / "en" / "recognizer.ghm").read_bytes())
+        b[4] = 9                                                # a ghm version this engine doesn't read
+        f.write_bytes(bytes(b))
+        M = sys.modules["glassine_hwsamples.models"]
+        u.msg = ""
+        M.install(u)
+        self.settle(u, lambda: "isn’t installed" in u.msg)
+        self.assertIn("another version", u.msg)
+        self.assertFalse((self.e.dir / "data" / "glassine" / "handwriting-models").exists())
+        self.assertEqual(u.models["use"]["recognizer"], "shipped")
+        f.unlink()
+        u.msg = ""
+        M.install(u)
+        self.assertIn("No model file", u.msg)
+
+    def test_words_for_every_reason(self):
+        M = sys.modules["glassine_hwsamples.models"]
+        for r in ("missing", "unreadable", "too-big", "not-a-model", "format-version", "features", "damaged",
+                  "kind-unknown", "not-finite"):
+            self.assertNotIn("(", M.why(r, "", "en"), r)
+        self.assertIn("neatening", M.why("kind", "aligner", "en"))
+        self.assertIn("the space", M.why("alphabet", "q z space", "en"))
+        self.assertIn("broken", M.why("alphabet", "twice a", "en"))
+        self.assertIn("German", M.why("language", "de", "en"))
 
 
 class Writers(Case):

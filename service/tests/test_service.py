@@ -324,6 +324,81 @@ class Service(unittest.TestCase):
                     self.assertTrue(any(isinstance(b, tuple) for b in x["asks"][:i]), "%s: %s before an area" % (x["name"], a))
         return [b[1] for x in ss for b in x["asks"] if isinstance(b, tuple)]
 
+    def test_regions_through_the_channel(self):
+        """spec 005 over the compositor's channel (GlassineOS/sway docs/handwriting-channel.md)
+        with the real recognizer: two regions on one surface, each with its own value,
+        candidates and report; a region set again for a move or resize reads nothing; a text
+        edit sets the edited word"""
+        self.assertTrue(self.hello["regions"])
+        self.pen_send(op="surface", s=1, sandbox="org.example.Notes", pid=0)
+        for r in (1, 2):
+            self.pen_send(op="region", s=1, r=r, name="field%d" % r)
+            self.pen_send(op="region_set", s=1, r=r, reading=True, neaten=True, strength=0.5, purpose=0, hints=0,
+                          languages="", guides=[0, 0], size=[400, 120], units="device:6.25")
+            self.pen_send(op="region_mode", s=1, r=r, mode="ink")
+        for i, st in enumerate(ink(3)):
+            self.pen_send(op="region_stroke", s=1, r=1, k=i, points=st)
+        for i, st in enumerate(ink(2, seed=5)):
+            self.pen_send(op="region_stroke", s=1, r=2, k=i, points=st)
+        ev = self.pen_events(lambda o: {m.get("r") for m in o if m["op"] == "region_candidates"} >= {1, 2})
+        vals = {m["r"]: m for m in ev if m["op"] == "region_value"}
+        self.assertEqual(set(vals), {1, 2})
+        self.assertEqual(sorted(k for w in vals[1]["words"] for k in w.get("strokes", [])), [0, 1, 2])
+        self.assertEqual(sorted(k for w in vals[2]["words"] for k in w.get("strokes", [])), [0, 1])
+        for v in vals.values():
+            b = v["text"].encode()
+            for w in v["words"]:
+                self.assertLessEqual(w["start"] + w["length"], len(b))
+        self.assertTrue({m["k"] for m in ev if m["op"] == "region_neat" and m["r"] == 1} <= {0, 1, 2})
+        c2 = [m for m in ev if m["op"] == "region_candidates" and m["r"] == 2][-1]
+        self.assertEqual(c2["serial"], vals[2]["serial"])
+        for c in c2["items"]:
+            self.assertEqual(set(c), {"text", "from", "fit"})
+        # a resize (a region_set with only the size changed) reads nothing again
+        self.assertTrue(self.quiet())
+        n = len(self.log.read_text().splitlines())
+        self.pen_send(op="region_set", s=1, r=1, reading=True, neaten=True, strength=0.5, purpose=0, hints=0,
+                      languages="", guides=[0, 0], size=[600, 200], units="device:6.25")
+        self.assertTrue(self.quiet())
+        self.assertEqual(self.log.read_text().splitlines()[n:], [])
+        # a report on region 2's value: not allowed yet; region 1 keeps its writing
+        self.pen_send(op="region_report", s=1, r=2, serial=c2["serial"], action="accepted")
+        r = self.pen_events(lambda o: any(m["op"] == "region_report" for m in o))[-1]
+        self.assertEqual((r["r"], r["serial"], r["result"]), (2, c2["serial"], "not_allowed"))
+        # a text edit: the edited words come set, as a path and a box
+        self.pen_send(op="region_edit", s=1, r=1, text="hello world")
+        v = self.pen_events(lambda o: any(m["op"] == "region_value" and m["r"] == 1 for m in o))[-1]
+        self.assertEqual(v["text"], "hello world")
+        self.assertTrue(all("path" in w or "strokes" in w for w in v["words"]))
+        self.assertTrue(v["state"])
+        # handed back after a restart: the same value
+        self.pen_send(op="region", s=1, r=3, name="again")
+        self.pen_send(op="region_set", s=1, r=3, reading=True, size=[400, 120], units="device:6.25")
+        self.pen_send(op="region_restore", s=1, r=3, strokes=[], value=v["text"], state=v["state"])
+        v3 = self.pen_events(lambda o: any(m["op"] == "region_value" and m["r"] == 3 for m in o))[-1]
+        self.assertEqual(v3["text"], "hello world")
+        self.pen_send(op="region_destroy", s=1, r=1)
+        self.pen_send(op="destroy", s=1)
+
+    def test_many_regions_restored_at_once(self):
+        """a document opened with 70 inked fields (more than the recognizer's 64 sessions):
+        each gets its value, none keeps a session"""
+        self.pen_send(op="surface", s=2, sandbox="org.example.Notes", pid=0)
+        n = 70
+        for r in range(n):
+            self.pen_send(op="region", s=2, r=r, name="f%d" % r)
+            self.pen_send(op="region_set", s=2, r=r, reading=True, size=[400, 100], units="device:6.25")
+            self.pen_send(op="region_restore", s=2, r=r,
+                          strokes=[{"k": k, "points": p} for k, p in enumerate(ink(2, seed=r))])
+        ev = self.pen_events(lambda o: len({m["r"] for m in o if m["op"] == "region_value"}) >= n, timeout=60)
+        self.assertEqual(len({m["r"] for m in ev if m["op"] == "region_value"}), n)
+        self.assertTrue(self.quiet())
+        reqs = [ln.split("\t") for ln in self.log.read_text().splitlines()]
+        begun = {f[2] for f in reqs if f[0] == "begin" and f[2].startswith("g2-")}
+        ended = {f[2] for f in reqs if f[0] == "end" and f[2].startswith("g2-")}
+        self.assertEqual(begun - ended, set())
+        self.pen_send(op="destroy", s=2)
+
     def test_area_and_units_without_an_ink_area(self):
         """no ink area: every session gets an area of the writing's box with no ruled line,
         the size prior, and the units with the px per mm and the pen's rate (7 ms a point:
@@ -472,6 +547,69 @@ class Service(unittest.TestCase):
         self.call("permission.set", app=self.call("hello")["result"]["app"], samples="allowed")
         r = self.call("letters.status")["result"]
         self.assertEqual(r, {"state": "current", "covered": 0, "font": {"name": "Autograph", "version": 1}})
+
+    def installed(self, seed=9):
+        """a replacement recognizer the person installs themselves (spec 006)"""
+        m = self.dir / ("mine%d.ghm" % seed)
+        subprocess.run([sys.executable, str(REC / "tests" / "mkmodel.py"), str(m), "--seed", str(seed), "--kind",
+                        "recognizer"], check=True)
+        return m
+
+    def test_installed_model_no_app_told(self):
+        """spec 006: installing, switching and removing a model changes the next reading of
+        every app, with no restart of the recognizer and nothing on either interface about it"""
+        a = self.app("org.example.A")
+        st = ink(3, seed=2)
+        hello = self.call("hello")["result"]
+        shipped = a("read", strokes=st, count=3)["result"]
+        self.assertTrue(self.quiet(0.5))
+        self.e.run("model", "install", str(self.installed()))
+        mine = a("read", strokes=st, count=3)["result"]
+        self.assertNotEqual(mine, shipped)
+        self.e.run("model", "use", "recognizer", "shipped")
+        self.assertEqual(a("read", strokes=st, count=3)["result"], shipped)
+        self.e.run("model", "use", "recognizer", "local")
+        self.assertEqual(a("read", strokes=st, count=3)["result"], mine)
+        self.e.run("model", "remove", "recognizer")
+        self.assertEqual(a("read", strokes=st, count=3)["result"], shipped)
+        self.assertTrue(self.quiet(1.0))                  # nothing on the pen channel
+        self.assertEqual(self.call("hello")["result"], hello)
+        s = self.call("status")["result"]["engine"]
+        self.assertEqual((s["running"], s["starts"]), (True, 1))
+        self.assertFalse(any("model" in json.dumps(v) for v in (hello, shipped, mine)))
+
+    def test_restore_after_a_model_change_keeps_confirmed_words(self):
+        """spec 005 FR-026 with spec 006: stored ink handed back after the person switched to an
+        installed model keeps its confirmed words; ink alone takes the new reading"""
+        self.pen_send(op="surface", s=1, sandbox="org.example.Notes", pid=0)
+
+        def region(r, **kw):
+            self.pen_send(op="region", s=1, r=r, name="f%d" % r)
+            self.pen_send(op="region_set", s=1, r=r, reading=True, size=[400, 120], units="device:6.25")
+            for k, v in kw.items():
+                self.pen_send(op=k, s=1, r=r, **v)
+
+        def value(r):
+            return self.pen_events(lambda o: any(m["op"] == "region_value" and m["r"] == r for m in o))[-1]
+        strokes = ink(3, seed=7)
+        region(1)
+        for i, p in enumerate(strokes):
+            self.pen_send(op="region_stroke", s=1, r=1, k=i, points=p)
+        ev = self.pen_events(lambda o: any(m["op"] == "region_candidates" and m["r"] == 1 for m in o))
+        v1 = [m for m in ev if m["op"] == "region_value" and m["r"] == 1][-1]
+        self.pen_send(op="region_report", s=1, r=1, serial=v1["serial"], action="accepted")
+        ev = self.pen_events(lambda o: any(m["op"] == "region_report" for m in o))
+        v1 = ([m for m in ev if m["op"] == "region_value" and m["r"] == 1] or [v1])[-1]
+        self.assertTrue(v1["state"])
+        kept = [{"k": k, "points": p} for k, p in enumerate(strokes)]
+        region(2, region_restore={"strokes": kept})
+        alone_before = value(2)
+        self.e.run("model", "install", str(self.installed()))
+        region(3, region_restore={"strokes": kept, "value": v1["text"], "state": v1["state"]})
+        self.assertEqual(value(3)["text"], v1["text"])
+        region(4, region_restore={"strokes": kept})
+        self.assertNotEqual(value(4)["text"], alone_before["text"])
+        self.pen_send(op="destroy", s=1)
 
     def test_example_against_schema(self):
         """the client example (service/examples) talks to the service; every line it sends

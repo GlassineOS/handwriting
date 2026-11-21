@@ -26,7 +26,7 @@ import asyncio
 import json
 import math
 
-from . import area, ident, perms
+from . import area, ident, perms, regions
 
 from .engine import Error, align_strokes, esc, map_align, parse_text, points
 
@@ -122,6 +122,7 @@ class Surface:
         self.line_read = {}         # (line's strokes, their lengths) -> (text, align): its reading
         self.timers = []
         self.lock = asyncio.Lock()      # one piece of work at a time (they share the sessions)
+        self.regions = {}           # the app's writing regions (regions.py), by the compositor's number
 
     @property
     def name(self):
@@ -229,7 +230,7 @@ class Surface:
         follows its strokes, set_area())"""
         e = self.pen.engine
         r = await e.ask(self.app, "begin", name, self.langs or "-", field(self.purpose, self.hints),
-                        self.session_units(), self.before)
+                        self.session_units(), esc(self.before))
         if r[1] != "ok":
             return False
         pr = area.prior(self.own_units())
@@ -454,6 +455,9 @@ class Pen:
         s = self.surfaces.get(sid)
         if s is None:
             return
+        if op.startswith("region"):
+            self.region(s, op, m)
+            return
         if op == "set":
             s.set(m)
         elif op == "stroke":
@@ -464,7 +468,37 @@ class Pen:
             self.spawn(s.report(m))
         elif op == "destroy":
             s.forget()
+            for g in s.regions.values():
+                g.destroy()
             del self.surfaces[sid]
+
+    def region(self, s, op, m):
+        """the writing regions' ops (spec 005; GlassineOS/sway docs/handwriting-channel.md)"""
+        r = m.get("r")
+        if op == "region":
+            if r not in s.regions:      # announced once; again (it shouldn't be): kept as it is
+                s.regions[r] = regions.Region(s, int(r))
+            return
+        g = s.regions.get(r)
+        if g is None:
+            return
+        if op == "region_set":
+            g.set(m)
+        elif op == "region_mode":
+            g.set({"mode": m.get("mode")})
+        elif op == "region_stroke":
+            g.stroke(int(m["k"]), m["points"])
+        elif op == "region_edit":
+            self.spawn(g.set_text(str(m.get("text", ""))))
+        elif op == "region_report":
+            self.spawn(g.report(m))
+        elif op == "region_restore":
+            st = [(int(d["k"]), d["points"]) for d in m.get("strokes", []) if isinstance(d, dict)]
+            if g.restore(st, m.get("state")):
+                self.spawn(g.restored())
+        elif op == "region_destroy":
+            g.destroy()
+            del s.regions[r]
 
     async def serve(self, reader, writer):
         self.writer = writer
@@ -482,4 +516,7 @@ class Pen:
         for s in list(self.surfaces.values()):
             s.session = None        # the recognizer goes with the service: nothing to end
             s.forget()
+            for g in s.regions.values():
+                g.session = None
+                g.forget()
         self.surfaces.clear()

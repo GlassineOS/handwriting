@@ -9,6 +9,7 @@
 #define HW_NEATEN_H
 
 #include <stddef.h>
+#include "aligner.h"
 #include "letters.h"
 #include "sample.h"
 
@@ -79,6 +80,8 @@ struct hw_neat {
 	const unsigned char *nopull;    /* per character: 1 not pulled (FR-037); NULL none */
 	const unsigned char *guard;     /* (tests) per character: 1 fails the shape guard; NULL none */
 	int confirmed;                  /* cp is the confirmed text: its words can be set (FR-043) */
+	const struct hw_aligned *aligned;   /* the point aligner's run over the ink (aligner.h): a
+					 * stroke several letters share is cut by it; NULL: by shape */
 	/* out (malloc'd by hw_neaten; hw_neat_free) */
 	double **x, **y;
 	int *how;
