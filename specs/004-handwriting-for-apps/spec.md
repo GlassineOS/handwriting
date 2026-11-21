@@ -118,24 +118,32 @@ through itself, whatever name it gives itself.
 
 - **FR-016**: Every request the service makes of the recognizer for an app, through either
   interface, carries the units of the ink and a writing area, so a model that reads the
-  ink's size (spec 001 FR-018) has a reference: the app's ink area and ruled lines when it
-  set them; otherwise the bounding box of the writing held, with a line height and guide
-  line found from the writing itself (documented). Writing too little to find a line in
-  (a lone character) gets the line found earlier on the same surface, and none before
-  there is one; ink in em, whose units say how high a line is, gets an area only when the
-  app gives one. Through the service interface an app may give the area itself.
+  ink's size (spec 001 FR-018) judges it in physical size: the ink's points per millimetre
+  (FR-017) and the person's letters in millimetres once there are enough of them; before
+  there are, a typical handwriting size in millimetres is the prior. The area's box is the
+  app's ink area when it set one, otherwise the bounding box of the writing held. A ruled
+  line is a size reference only when the app sets one. No line is ever found from writing
+  too little to show one (a lone character), nor borrowed from writing elsewhere on the
+  surface or in another app. Ink in em, whose units say how high a line is, gets an area
+  only when the app gives one. Through the service interface an app may give the area
+  itself.
 - **FR-017**: The pen interface's units are the surface's points with the points per
-  millimetre of the output the pen writes on, whenever the display server knows the
-  output's size, and the pen's rate measured from the time between its points. Without a
-  known output size the units stay the pen's own, and no size in millimetres is assumed.
+  millimetre of the output the pen writes on, and the pen's rate measured from the time
+  between its points. When the display server doesn't know an output's physical size, the
+  person sets that output's points per millimetre once in Settings, and it is kept for that
+  output. Until they do, the units stay the pen's own and the typical-size prior of FR-016
+  is applied in them at a default density stated in the interface's documentation; no
+  other size in millimetres is assumed.
 
 ## Key entities
 
 - **App identity**: the system's id of the calling app (FR-001).
 - **Writing surface**: an app surface with the pen interface on, its choices and context.
 - **Reading**: partial readings and ranked candidates for a piece of writing.
-- **Writing area**: where a piece of writing lies, its line height and guide line, in the
-  units of its ink (FR-016).
+- **Writing area**: where a piece of writing lies, and its ruled line when the app set one,
+  in the units of its ink (FR-016).
+- **Output density**: an output's points per millimetre, from the display server or set
+  once by the person (FR-017).
 - **Report**: what the person did with a reading (FR-008).
 - **Permission**: per app, whether it may keep samples and read them.
 
@@ -151,6 +159,7 @@ through itself, whatever name it gives itself.
 | Display server pen input and app identity | consumed (the compositor) | — | GlassineOS/sway |
 | Sandbox app identity and permissions | consumed (the sandbox's app id; the system's permission store) | — | — |
 | Permission settings page | consumed by the shell's settings app | — | shell specs |
+| Output density setting (points per millimetre of an output of unknown size) | consumed by the shell's settings app | — | shell specs |
 | Writing paper | consumer: the keyboard uses the pen interface | — | shell spec 006 |
 
 ## Device scope and risk
@@ -171,6 +180,11 @@ Host level:
 - a service request without permission returns the distinct refusal;
 - without an ink area every recognizer request for a surface's writing of a few
   characters carries an area and units with points per millimetre; with one, that area;
+- a lone character carries no line found from itself or from other writing, only the app's
+  ruled line when it set one;
+- on an output of unknown size the units are the pen's own with the documented default
+  density until the person sets the output's points per millimetre, and that setting is
+  kept for the output;
 - a model that reads the ink's size reads the recorded ink through the pen interface about
   as well as through the keyboard's own path, and a model that doesn't reads it no worse
   than before;
