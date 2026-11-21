@@ -226,7 +226,12 @@ class Generator:
         self.p = params or Params(warp=0.025, zones=0.2, asc_scale=1.1)
         self.timing = Timing(fit) if residual is None else Timing(fit, residual)
 
-    def line(self, text: str, rng, style: Style | None = None, letters: LetterWriter | None = None) -> dict:
+    def line(self, text: str, rng, style: Style | None = None, letters: LetterWriter | None = None,
+             points: bool = False) -> dict:
+        """One line of ink. points: also each point's character (`point_owner`: per stroke, the
+        character index of each point, -1 on a pen-down join between two characters) and the
+        joins (`joins`: per stroke, [from arc, to arc, character before, character after] in
+        em along the stroke as written, before noise); the same ink either way."""
         p = self.p
         st = style or (letters.style(rng) if letters else draw_style(rng, self.pool))
         slant = rng.normal(p.slant_mean, p.slant) if letters is None else rng.normal(0, p.slant / 2)
@@ -350,6 +355,7 @@ class Generator:
         # pen-down joins inside a word, never of a delayed stroke
         word_of = {ci: w for ci, w, *_ in placed}
         merged = []
+        pieces = []  # per merged stroke: (points, character or (before, after) for a join)
         for ci, q, dl in seq:
             if merged and not dl and not merged[-1][2]:
                 pq, cis = merged[-1][1], merged[-1][3]
@@ -359,20 +365,29 @@ class Generator:
                     bridge = np.linspace(pq[-1], q[0], n)[1:-1]
                     merged[-1] = (merged[-1][0], np.vstack([pq, bridge, q]), False,
                                   cis + ([ci] if ci not in cis else []))
+                    # (a join inside one character is that character's ink)
+                    pieces[-1] += [(len(bridge), (cis[-1], ci) if cis[-1] != ci else ci), (len(q), ci)]
                     continue
             merged.append((ci, q, dl, [ci]))
+            pieces.append([(len(q), ci)])
 
         # timing, stray lifts, tilt, noise
         rot = np.array([[np.cos(tilt), -np.sin(tilt)], [np.sin(tilt), np.cos(tilt)]])
         out, owner = [], []
+        powner, joins = [], []
         t, last, last_ci = 0.0, None, None
-        for ci, q, dl, cis in merged:
+        for (ci, q, dl, cis), pcs in zip(merged, pieces):
             q = q @ rot.T
             parts = [q]
+            cuts = [(0, len(q))]
             if len(q) > 20 and rng.random() < p.extra_lift:
                 k = int(rng.integers(5, len(q) - 5))
                 parts = [q[:k + 1], q[k:]]
-            for part in parts:
+                cuts = [(0, k + 1), (k, len(q))]
+            if points:  # each path point's character, and the arc where each piece starts
+                lab = np.concatenate([np.full(n, -1 if isinstance(c, tuple) else c) for n, c in pcs])
+                ends = np.cumsum([n for n, _ in pcs])
+            for part, (i0, i1) in zip(parts, cuts):
                 if last is not None:
                     jump = float(np.linalg.norm(part[0] - last)) / XH
                     if dl:
@@ -380,6 +395,23 @@ class Generator:
                     else:
                         t += self.timing.pause("inside" if ci == last_ci else "between", jump, st.timing, rng)
                 arr = self.timing.stroke(part, XH, st.timing, rng, t)
+                if points:
+                    d = np.r_[0, np.cumsum(np.linalg.norm(np.diff(part, axis=0), axis=1))]
+                    pos = self.timing.last_pos
+                    # a point between path points i and i+1 is the character of both, or a join
+                    k = np.clip(np.searchsorted(d, pos, side="right") - 1, 0, len(part) - 1)
+                    k2 = np.minimum(k + 1, len(part) - 1)
+                    near = np.where(pos - d[k] <= d[k2] - pos, k, k2)
+                    powner.append(lab[i0:i1][near].astype(int))
+                    jn = []
+                    start = 0
+                    for (n, c), e in zip(pcs, ends):
+                        if isinstance(c, tuple):
+                            a, b = start - 1 - i0, e - i0  # the bridge runs from the path point before it to the one after
+                            if 0 <= a and b < len(part):
+                                jn.append([float(d[a]), float(d[b]), int(c[0]), int(c[1])])
+                        start = e
+                    joins.append(jn)
                 arr[:, :2] += rng.normal(0, p.noise, arr[:, :2].shape)
                 t = float(arr[-1, 2])
                 out.append(arr)
@@ -390,6 +422,9 @@ class Generator:
             for c in cis:
                 spans[c].append(si)
         fonts = {fid for *_, fid in placed}
-        return {"text": text, "strokes": out, "spans": spans, "xh": XH, "line": XH / st.xh_line, "base": 0.0,
-                "writer": letters.name if letters else (sorted(fonts)[0] if len(fonts) == 1 else "mixed"),
-                "rate": RATE}
+        res = {"text": text, "strokes": out, "spans": spans, "xh": XH, "line": XH / st.xh_line, "base": 0.0,
+               "writer": letters.name if letters else (sorted(fonts)[0] if len(fonts) == 1 else "mixed"),
+               "rate": RATE}
+        if points:
+            res["point_owner"], res["joins"] = powner, joins
+        return res
