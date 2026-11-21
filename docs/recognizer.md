@@ -1315,12 +1315,24 @@ apps, show the random versions; tested with `hb-shape`, `pango-view` and GTK thr
 (HarfBuzz 13.2.1, Pango 1.57.1). Apps that don't apply `rand` keep the cycle; Firefox, Chromium
 and LibreOffice are not tested. The neighbour rules and joined pairs apply either way.
 
-**The base font (FR-045):** `/usr/share/glassine/handwriting/autograph/base.jsonl` (or the
-file in `GLASSINE_HANDWRITING_BASE`), made when the recognizer is packaged by
-`tools/base-font.py` from Edu SA Beginner (SIL Open Font License 1.1; an Edu Beginner school
-print model; the licence goes along in the same directory). JSON lines: first
+**The base font (FR-045):** one per language, in `/usr/share/glassine/handwriting/autograph/`:
+`base.jsonl`, the default (English's), from Edu SA Beginner (an Edu Beginner school print
+model), and `de/base.jsonl`, German's, from Playwrite DE Grund (the German Grundschrift, at the
+weight 320 of its variable axis), both under the SIL Open Font License 1.1, each with its
+licence (`OFL.txt`) and a `README` in its directory, made when the recognizer is packaged by
+`tools/base-font.py`. The base Autograph draws from is that of the language the recognizer reads
+by default (the first of the setting `languages`, else of the locale's language, else English,
+that has a model; `en-GB` falls back to `en`): `LANG/base.jsonl` when that language has one,
+else `base.jsonl`. So a language gets its own base only together with its model. The choice is
+made once per process; the base's hash is part of the font's fingerprint, so Autograph is
+rebuilt on the other base when the language read by default has changed. `GLASSINE_HANDWRITING_BASE` names a file instead, or a directory laid out
+the same way. The default covers ASCII (Edu SA Beginner has no more); German's every
+character of `tools/base-de.chars` (ASCII but `*` and `@`, the Latin-1 and Latin Extended-A
+letters, German and other quotation marks, dashes, `…`, `€`, `§`, `°`), and the build fails
+when the font lacks one. JSON lines: first
 `{"format":"glassine-handwriting-base","version":1,"family","copyright","licence","licence_url","source","sha256","slant","measured_slant","cap_height","ascender","descender","ink_width","letter_spacing","word_spacing"}`
-(the metrics in x-heights, as the letter model's), then `{"char":C,"strokes":[[[x,y],…],…]}` per
+and, for a variable font made at an instance, `"axes"` (`{"wght":320}`; `sha256` stays the
+font file's) (the metrics in x-heights, as the letter model's), then `{"char":C,"strokes":[[[x,y],…],…]}` per
 character: its centre lines, x-heights, y up from the baseline, x from the glyph's left edge,
 upright (the font's slant measured and taken out; `--keep-slant` keeps it). The tool fills
 each glyph at a fine raster, thins it to a one-pixel skeleton, follows the skeleton's branches
@@ -1328,14 +1340,17 @@ each glyph at a fine raster, thins it to a one-pixel skeleton, follows the skele
 paired by the straightest continuation), smooths and simplifies them, orders the strokes as a
 hand writes them (top to bottom, left to right; each from its upper or left end), and checks
 every glyph by drawing its centre lines at the measured ink width back over the outline
-(intersection over union at least 0.8, the dots apart): a glyph below it fails the build.
+(intersection over union at least 0.8, the dots apart): a glyph below it fails the build. A
+part of a glyph that thins to nothing is a dot at its middle, each on its own (a colon's two,
+a diaeresis' two). German's base leaves out `*` and `@`: Playwrite DE Grund draws them with a
+swelling line that no even pen width matches to 0.8 at any weight.
 
 The base is never the person's: only the font, its preview (`font show`) and the fingerprint
 read it, never the letter model, so neatening never pulls towards a base character (FR-014,
 FR-022, FR-035, FR-043: a character only the base draws is one the letters don't cover). A base
 character gets the person's metrics: small letters keep their x-height and go to the person's
-ascender and descender above and below it, capitals, digits and the Latin-1 capitals scale
-uniformly to the person's cap height; it is sheared to the person's slant and drawn in the
+ascender and descender above and below it, capitals, digits and the Latin-1 and Latin
+Extended-A capitals scale uniformly to the person's cap height; it is sheared to the person's slant and drawn in the
 person's ink width, in all three styles (Brush at an even pressure and speed: it has no
 profiles). It has one glyph of its own (no step glyphs: after it the cycle starts again, as
 after a character the font lacks), takes part in no neighbour rule, joined pair or join, and
@@ -1632,7 +1647,7 @@ afterwards is used only after `model use KIND local`. In a writer's store `model
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME` | the store, the writer stores' directory and the settings, as above; never which writer's store |
 | `GLASSINE_HANDWRITING_SYSFS` | for tests: a directory laid out like `/sys/class/power_supply` |
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
-| `GLASSINE_HANDWRITING_BASE` | Autograph's base font file instead of `/usr/share/glassine/handwriting/autograph/base.jsonl`; `off` none (The letter model and the font) |
+| `GLASSINE_HANDWRITING_BASE` | Autograph's base font file instead of the one chosen in `/usr/share/glassine/handwriting/autograph/`, or a directory laid out like it; `off` none (The letter model and the font) |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` or `weigh` (alone or after the letters) the weighing off or on whatever the model (by default a version 1 model is weighed, a version 2 model not) |
