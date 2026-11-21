@@ -36,9 +36,9 @@ jobs:
             # stand-in compositor, the protocol the same in all three repositories
             # GlassineOS/sway 1.10.1-glassine1
             git clone -q https://github.com/GlassineOS/sway /tmp/sway
-            git -C /tmp/sway checkout -q 8fd3cddb5f0d28eeec193fa0b9927b4fba70752e
+            git -C /tmp/sway checkout -q bf6a6e82457b8d03a2e884ebf5c0b712f847fe30
             git clone -q https://github.com/GlassineOS/protocols /tmp/protocols
-            git -C /tmp/protocols checkout -q 04ee8dcccd9ad1637659642b176d3d117796daf6
+            git -C /tmp/protocols checkout -q acbed68c940303eb5ab730f24be331f3d258991f
             cmp client/glassine-handwriting-v1.xml /tmp/protocols/glassine-handwriting-v1.xml
             cmp client/glassine-handwriting-v1.xml /tmp/sway/protocols/glassine-handwriting-v1.xml
             sh /tmp/sway/test/handwriting-standin.sh /tmp/standin
