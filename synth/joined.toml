@@ -1,0 +1,184 @@
+# Connected school fonts for the point aligner's joined ink (train/README.md, "Joined ink";
+# train/src/glassine_train/joined.py): the Playwrite family (TypeTogether, SIL Open Font
+# License), each country's school model. Not the recognizer's fonts (fonts.toml): this list
+# feeds only `alignrun joined`.
+#
+# style: "joined" (every lower-case letter joined to the next: a word one stroke), "semi"
+# (most joined, some letters written apart, e.g. after e, g or k), "print" (written apart; not
+# used by `alignrun joined`, listed for completeness). Measured by rendering words and counting
+# the ink's parts.
+#
+# split: test fonts are those farthest from every other family (glyph-skeleton distance of the
+# letters, mean nearest point, in x-heights: each at least 0.058 from its nearest, where most
+# train fonts have one within 0.03 to 0.05), dev two more; the rest train. Playwrite's
+# families share a design, so held-out writers here are nearer the training ones than the
+# recognizer's held-out fonts are to theirs.
+
+[source]
+repository = "google/fonts"
+ref = "main"
+
+[[family]]
+dir = "playwritear"
+style = "joined"
+[[family]]
+dir = "playwriteat"
+split = "test"
+style = "joined"
+[[family]]
+dir = "playwriteaunsw"
+style = "semi"
+[[family]]
+dir = "playwriteauqld"
+style = "semi"
+[[family]]
+dir = "playwriteausa"
+style = "semi"
+[[family]]
+dir = "playwriteautas"
+style = "semi"
+[[family]]
+dir = "playwriteauvic"
+style = "semi"
+[[family]]
+dir = "playwritebevlg"
+style = "joined"
+[[family]]
+dir = "playwritebewal"
+style = "joined"
+[[family]]
+dir = "playwritebr"
+style = "joined"
+[[family]]
+dir = "playwriteca"
+style = "joined"
+[[family]]
+dir = "playwritecl"
+style = "joined"
+[[family]]
+dir = "playwriteco"
+style = "joined"
+[[family]]
+dir = "playwritecu"
+style = "joined"
+[[family]]
+dir = "playwritecz"
+style = "joined"
+[[family]]
+dir = "playwritedegrund"
+style = "print"
+[[family]]
+dir = "playwritedela"
+style = "joined"
+[[family]]
+dir = "playwritedesas"
+split = "dev"
+style = "joined"
+[[family]]
+dir = "playwritedeva"
+split = "test"
+style = "joined"
+[[family]]
+dir = "playwritedkloopet"
+style = "joined"
+[[family]]
+dir = "playwritedkuloopet"
+style = "joined"
+[[family]]
+dir = "playwritees"
+style = "joined"
+[[family]]
+dir = "playwriteesdeco"
+style = "joined"
+[[family]]
+dir = "playwritefrmoderne"
+style = "joined"
+[[family]]
+dir = "playwritefrtrad"
+style = "joined"
+[[family]]
+dir = "playwritegbj"
+style = "joined"
+[[family]]
+dir = "playwritegbs"
+style = "semi"
+[[family]]
+dir = "playwritehr"
+style = "joined"
+[[family]]
+dir = "playwritehrlijeva"
+split = "dev"
+style = "joined"
+[[family]]
+dir = "playwritehu"
+style = "joined"
+[[family]]
+dir = "playwriteid"
+split = "test"
+style = "joined"
+[[family]]
+dir = "playwriteie"
+style = "joined"
+[[family]]
+dir = "playwritein"
+style = "joined"
+[[family]]
+dir = "playwriteis"
+style = "joined"
+[[family]]
+dir = "playwriteitmoderna"
+style = "joined"
+[[family]]
+dir = "playwriteittrad"
+style = "joined"
+[[family]]
+dir = "playwritemx"
+style = "joined"
+[[family]]
+dir = "playwritengmodern"
+style = "semi"
+[[family]]
+dir = "playwritenl"
+split = "test"
+style = "joined"
+[[family]]
+dir = "playwriteno"
+split = "test"
+style = "joined"
+[[family]]
+dir = "playwritenz"
+style = "joined"
+[[family]]
+dir = "playwritenzbasic"
+style = "print"
+[[family]]
+dir = "playwritepe"
+style = "joined"
+[[family]]
+dir = "playwritepl"
+style = "joined"
+[[family]]
+dir = "playwritept"
+style = "joined"
+[[family]]
+dir = "playwritero"
+style = "joined"
+[[family]]
+dir = "playwritesk"
+style = "joined"
+[[family]]
+dir = "playwritetz"
+style = "joined"
+[[family]]
+dir = "playwriteusmodern"
+style = "semi"
+[[family]]
+dir = "playwriteustrad"
+style = "joined"
+[[family]]
+dir = "playwritevn"
+style = "joined"
+[[family]]
+dir = "playwriteza"
+split = "test"
+style = "joined"
