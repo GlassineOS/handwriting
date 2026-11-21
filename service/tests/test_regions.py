@@ -8,7 +8,9 @@ permission, never set words or handed-back ink), text edits back in ink mode (un
 keep their ink, edited words set in the font at their place, the ink after them moving by the
 difference, the whole value set when no word matches), the saved state and stored ink
 (confirmed and edited words never read again), no reading when a region moves, private
-regions and FR-019 (no `neaten` request carries a text).
+regions and FR-019 (no `neaten` request carries a text), a strike-through over no word staying
+ink, and the display: words with ink shown set in the person's font and back, nothing the
+region holds changing.
 
     python3 tests/test_regions.py
 """
@@ -81,7 +83,7 @@ class FakeEngine:
                 s["strokes"].pop(int(n), None)
             return [verb, "ok", "1"]
         if verb == "read":
-            return self.read(s, int(f[1]))
+            return self.read(s, int(f[1]), "writing" in f[2:])
         if verb == "align":
             t = unesc(f[1])
             return [verb, "0.3" if t in self.fail_fit else "0.9", "0"]
@@ -104,13 +106,13 @@ class FakeEngine:
                 return v
         return "?"
 
-    def read(self, s, count):
+    def read(self, s, count, writing=False):
         st = s["strokes"]
         if not st:
             return ["read", "empty"]
         newest = max(st)
         g = self.word(st[newest])
-        if g.startswith("!"):
+        if g.startswith("!") and not writing:
             del st[newest]
             gp = self._last_gesture
             x0, x1 = min(p[0] for p in gp), max(p[0] for p in gp)
@@ -217,8 +219,17 @@ class Regions(unittest.TestCase):
         for w in v["words"]:
             w["text"] = b[w["start"]:w["start"] + w["length"]].decode()
             w["line"] = b[:w["start"]].count(b"\n")
-            self.assertEqual(("strokes" in w) + ("path" in w), 1)
+            self.assertTrue("strokes" in w or "path" in w)
         return v
+
+    def settle(self):
+        while self.pen.tasks:
+            t, self.pen.tasks = self.pen.tasks, []
+            self.run_(asyncio.gather(*t))
+
+    def display(self, g, d):
+        self.run_(self._set(g, {"display": d}))
+        self.settle()
 
     # ------------------------------------------------------------------ the value
 
@@ -287,6 +298,31 @@ class Regions(unittest.TestCase):
         gs = self.pen.ops("gesture")[-1]
         self.assertEqual((gs["kind"], gs["strokes"], gs["serial"]), ("strike", [s], v["serial"]))
         self.assertEqual(v["words"][0]["strokes"], [a])
+
+    def test_strike_over_no_word_is_ink(self):
+        g = self.region()
+        a = self.write(g, 20, 40, "dentist")
+        self.run_(g.update())
+        s = self.gesture(g, "strike", 20, 70, 150)      # below the writing, over nothing
+        self.run_(g.update())
+        v = self.value()
+        self.assertEqual(self.pen.ops("gesture"), [])
+        self.assertEqual(v["gone"], [])
+        self.assertIn(s, g.strokes)
+        self.assertEqual(sorted(k for w in v["words"] for k in w.get("strokes", [])), sorted([a, s]))
+        self.assertTrue(v["text"].startswith("dentist"))
+        # read with the rest from now on, never as a gesture again
+        reads = [e for e in self.pen.engine.log if e[0] == "read"]
+        self.assertIn("writing", reads[-1])
+        b = self.write(g, 100, 40, "sharp")
+        self.run_(g.pause())
+        v = self.value()
+        self.assertEqual(sorted(k for w in v["words"] for k in w.get("strokes", [])), sorted([a, b, s]))
+        self.assertEqual(self.pen.ops("gesture"), [])
+        # a scratch over nothing stays a gesture (only a strike-through becomes ink)
+        self.gesture(g, "scratch", 300, 320, 150)
+        self.run_(g.update())
+        self.assertEqual(self.pen.ops("gesture")[-1]["kind"], "scratch")
 
     def test_strike_over_a_confirmed_word(self):
         g = self.region()
@@ -539,6 +575,82 @@ class Regions(unittest.TestCase):
         self.assertEqual(self.pen.engine.samples, [])
         self.assertEqual(regions.decode("garbage"), [])
         self.assertEqual(regions.decode(None), [])
+
+    # ------------------------------------------------------------------ the display
+
+    def test_display_set_and_back_changes_nothing_held(self):
+        g = self.region()
+        a = self.write(g, 20, 40, "Meet")
+        b = self.write(g, 60, 40, "the")
+        c = self.write(g, 20, 80, "team")
+        self.run_(g.pause())
+        ink = self.value()
+        n = len(self.pen.engine.log)
+        self.display(g, "set")
+        v = self.value()
+        self.assertEqual(v["serial"], ink["serial"] + 1)
+        self.assertEqual((v["text"], v["state"], v["gone"]), (ink["text"], ink["state"], []))
+        self.assertEqual([w["strokes"] for w in v["words"]], [[a], [b], [c]])
+        self.assertTrue(all(w["path"] and len(w["box"]) == 4 for w in v["words"]))
+        # nothing read again: the font's shapes alone
+        self.assertEqual({e[0] for e in self.pen.engine.log[n:]} - {"set"}, set())
+        # each on its line, from where its ink starts, after the word before it
+        meet, the, team = v["words"]
+        self.assertGreaterEqual(meet["box"][0], 20 - 1)
+        self.assertGreaterEqual(the["box"][0], max(60 - 1, meet["box"][2]))
+        self.assertLess(meet["box"][3], team["box"][1] + XH)
+        # back to ink: the value as it was, word for word
+        self.display(g, "ink")
+        back = self.value()
+        self.assertEqual(back["words"], ink["words"])
+        self.assertEqual((back["text"], back["state"], back["gone"]), (ink["text"], ink["state"], []))
+        self.assertEqual(sorted(g.strokes), [a, b, c])
+        # the same display again sends nothing
+        m = len(self.pen.ops("value"))
+        self.display(g, "ink")
+        self.assertEqual(len(self.pen.ops("value")), m)
+
+    def test_display_set_with_edits_strikes_and_new_writing(self):
+        g = self.region()
+        self.write(g, 20, 40, "Meet")
+        b = self.write(g, 70, 40, "noon")
+        self.run_(g.pause())
+        self.run_(g.set_text("Meet one"))
+        self.display(g, "set")
+        v = self.value()
+        self.assertEqual(v["text"], "Meet one")
+        meet, one = v["words"]
+        self.assertTrue(meet["strokes"] and meet["path"])
+        self.assertNotIn("strokes", one)                   # a typed word stays a set word
+        # new writing comes shown set too
+        c = self.write(g, 140, 40, "sharp")
+        self.run_(g.pause())
+        v = self.value()
+        self.assertEqual(v["text"], "Meet one sharp")
+        self.assertEqual(v["words"][2]["strokes"], [c])
+        self.assertTrue(v["words"][2]["path"])
+        self.assertNotIn(b, g.strokes)
+        # a strike acts on a word where it is shown
+        x0, _, x1, y1 = v["words"][2]["box"]
+        self.gesture(g, "strike", x0 - 1, x1 + 1, y1 - XH / 2)
+        self.run_(g.update())
+        v = self.value()
+        self.assertEqual(v["text"], "Meet one")
+        self.assertIn(c, v["gone"])
+
+    def test_display_set_on_stored_ink(self):
+        g = self.region()
+        self.write(g, 20, 40, "old")
+        self.run_(g.pause())
+        v = self.value()
+        strokes = [(k, g.strokes[k]) for k in g.order]
+        g2 = self.region(2)
+        self.display(g2, "set")
+        self.assertEqual(self.pen.ops("value")[-1]["r"], 1)  # an empty region: nothing to show
+        self.restore(g2, strokes, v["state"])
+        w = self.value()
+        self.assertEqual((w["r"], w["text"]), (2, "old"))
+        self.assertTrue(w["words"][0]["strokes"] and w["words"][0]["path"])
 
     # ------------------------------------------------------------------ cost, privacy, size
 

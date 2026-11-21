@@ -141,6 +141,17 @@ class Binding(TP.Pen):
         serial, text, words, gone, state = [e[1] for e in lst.ev if e[0] == "value"][-1]
         self.assertTrue(text and words and state)
         self.assertEqual(" ".join(x["text"] for x in words), text)
+        # shown set in the person's font: the same words, each with its strokes and its shape
+        n = len([e for e in lst.ev if e[0] == "value"])
+        r.set_display("set")
+        w.pump(lambda: len([e for e in lst.ev if e[0] == "value"]) > n)
+        _, t2, w2, g2, s2 = [e[1] for e in lst.ev if e[0] == "value"][-1]
+        self.assertEqual((t2, g2, s2), (text, [], state))
+        self.assertTrue(all("path" in x and x["strokes"] for x in w2), w2)
+        self.assertEqual([x["strokes"] for x in w2], [x["strokes"] for x in words])
+        r.set_display("ink")
+        w.pump(lambda: len([e for e in lst.ev if e[0] == "value"]) > n + 1)
+        self.assertFalse(any("path" in x for x in [e[1] for e in lst.ev if e[0] == "value"][-1][2]))
         r.edit("hello")
         w.pump(lambda: [e for e in lst.ev if e[0] == "value"][-1][1][1] == "hello")
         _, text, words, gone, state = [e[1] for e in lst.ev if e[0] == "value"][-1]

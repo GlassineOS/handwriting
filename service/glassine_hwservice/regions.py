@@ -15,7 +15,10 @@ it starts in and moves it there), and words:
   to FR-021).
 
 The value is the words in reading order: lines top to bottom, words left to right; a caret
-gesture places the writing after it where it points. With each change of it the region sends
+gesture places the writing after it where it points. A strike-through that covers no word is
+no gesture: its stroke stays ink and is read with the rest. The region's display shows its
+words with ink as their strokes (ink) or set in the person's font (set) without changing
+anything the region holds. With each change of it the region sends
 the value whole, which strokes make each word (and how far kept ink moved along its line), the
 shape of each set word, the strokes that left the region, and the saved state: the kept and set
 words and their places, opaque to the app (FR-008 to FR-010). The reading of a region is one
@@ -161,6 +164,9 @@ class Region:
         self.guides = (0.0, 0.0)
         self.size = None            # (w, h): the region's area in its own coordinates
         self.mode = "ink"
+        self.display = "ink"        # words with ink shown as ink, or set in the person's font
+        self.shown = {}             # display set: a word's strokes -> the box it is shown in
+        self.inked = set()          # strike-throughs over no word: ink, never a gesture again
         self.rate = 0
         self.strokes = {}           # k -> points (region coordinates)
         self.order = []
@@ -221,6 +227,9 @@ class Region:
         sz = m.get("size")
         if isinstance(sz, list) and len(sz) == 2 and sz[0] > 0 and sz[1] > 0:
             self.size = (float(sz[0]), float(sz[1]))
+        redisplay = m.get("display") in ("ink", "set") and m["display"] != self.display
+        if redisplay:
+            self.display = m["display"]
         if m.get("mode") in ("ink", "text"):
             self.mode = m["mode"]
             if self.mode == "text":
@@ -238,6 +247,9 @@ class Region:
             self.area_sent = None
         if (self.neaten, self.strength, self.read_on) != was and self.active() and self.order:
             self.soon(0)
+        elif redisplay and self.read_on and self.active() and self.sent is not None:
+            # how the words are shown: the value again with that layout, nothing read again
+            self.pen.spawn(self.redisplay())
 
     # ------------------------------------------------------------------ strokes in
 
@@ -297,6 +309,7 @@ class Region:
         self.end_session()
         self.strokes, self.order, self.foreign, self.gone, self.gestures = {}, [], set(), set(), set()
         self.words, self.read, self.caret = [], [], None
+        self.shown, self.inked = {}, set()
         self.line_read, self.neat_sent, self.offered, self.history, self.sent = {}, {}, {}, {}, None
 
     def soon(self, ms):
@@ -407,7 +420,7 @@ class Region:
                 break
             if not await self.ensure(free):
                 return []
-            r = parse_text(await e.ask(self.app, "read", self.name, str(count), "detail"))
+            r = parse_text(await e.ask(self.app, "read", self.name, str(count), "detail", *self.writing()))
             if isinstance(r, tuple):
                 await self.gesture(r[1])
                 continue
@@ -438,7 +451,7 @@ class Region:
                     try:
                         if not await self.temp(w, ks):
                             continue
-                        r = parse_text(await e.ask(self.app, "read", w, "1", "detail"))
+                        r = parse_text(await e.ask(self.app, "read", w, "1", "detail", *self.writing(ks)))
                     finally:
                         await e.ask(self.app, "end", w)
                     if isinstance(r, tuple) or not r:
@@ -454,43 +467,66 @@ class Region:
             w.foreign = any(k in self.foreign for k in w.ks)
         self.read = out
 
+    def writing(self, ks=None):
+        """the read option that keeps the session's newest stroke writing: a strike-through
+        over no word (ks: a session of these strokes, else the reading session)"""
+        if ks is not None:
+            newest = ks[-1] if ks else None
+        else:
+            newest = max(self.num, key=self.num.get) if self.num else None
+        return ("writing",) if newest in self.inked else ()
+
     async def gesture(self, f):
         """KIND N BOX COVERED CHARS (docs/recognizer.md): the gesture stroke leaves the region;
         a strike or scratch deletes the words of the value it covers, a caret marks where the
-        writing after it goes (FR-012). It never acts on another region"""
+        writing after it goes (FR-012). It never acts on another region. A strike-through
+        that covers no word is ink: it stays, and is read with the rest of the writing"""
         kind, n, box, covered = f[0], int(f[1]), [float(v) for v in f[2].split(",")], f[3]
         back = {v: k for k, v in self.num.items()}
         g = back.get(n)
         if g is None:
             return
         del self.num[g]
-        self.gestures.add(g)            # never read again
         if not self.read_on:
-            return                      # no gestures without reading: the stroke stays ink
+            self.gestures.add(g)        # no gestures without reading: the stroke stays ink
+            return
+        cov = {back[int(c)] for c in covered.split(",") if c not in ("", "-") and int(c) in back}
+        hits = []
+        if kind in ("strike", "scratch"):
+            hits = [w for w in self.read + self.words if self.struck(box, cov, w)]
+            if kind == "strike" and not hits:
+                self.inked.add(g)       # read again as writing (writing())
+                return
+        self.gestures.add(g)            # never read again
         self.gone.add(g)
         self.send({"op": "region_gesture", "s": self.surface.sid, "r": self.rid, "serial": self.serial + 1,
                        "kind": kind, "strokes": [g]})
-        cov = {back[int(c)] for c in covered.split(",") if c not in ("", "-") and int(c) in back}
         if kind in ("strike", "scratch"):
-            hit = set(cov)
-            for w in self.read:
-                if set(w.ks) & cov:
-                    hit |= set(w.ks)
-            keep = []
-            for w in self.words:
-                if (set(w.ks) & cov) or self.covers(box, w):
-                    hit |= set(w.ks)
-                    continue
-                keep.append(w)
-            self.words = keep
-            self.read = [w for w in self.read if not set(w.ks) & hit]
+            hit = set() if self.display == "set" else set(cov)
+            for w in hits:
+                hit |= set(w.ks)
+            self.words = [w for w in self.words if w not in hits]
+            self.read = [w for w in self.read if w not in hits and not set(w.ks) & hit]
             self.drop(hit)
         elif kind == "caret":
             self.caret = ((box[0] + box[2]) / 2, box[1], g)
 
+    def struck(self, box, cov, w):
+        """a strike or scratch covers word w: where the word is shown (display set: the box
+        its shape is shown in), else its ink among the strokes the gesture covers, or its box"""
+        if self.display == "set" and w.ink and tuple(w.ks) in self.shown:
+            return self.covers_box(box, self.shown[tuple(w.ks)])
+        if set(w.ks) & cov:
+            return True
+        return w in self.words and self.covers(box, w)
+
     def covers(self, box, w):
         """a strike's box over most of a word's width and across its height"""
-        x0, y0, x1, y1 = self.word_box(w)
+        return self.covers_box(box, self.word_box(w))
+
+    @staticmethod
+    def covers_box(box, wb):
+        x0, y0, x1, y1 = wb
         ov = min(x1, box[2]) - max(x0, box[0])
         return ov > 0.5 * max(x1 - x0, 1e-9) and box[1] <= y1 and box[3] >= y0
 
@@ -585,11 +621,20 @@ class Region:
 
     def layout(self):
         """the value's text and its words: an ink word {start, length, strokes, dx, dy}, a
-        set word {start, length, box, path}; start and length in UTF-8 bytes of the text"""
+        set word {start, length, box, path}; start and length in UTF-8 bytes of the text.
+        With the display set an ink word also has the box and path it is shown in: its text
+        in the person's font on its line at the region's size, from where its ink starts,
+        moved right as far as needed to stand a word space after the word before it"""
         text, out = b"", []
-        for li, ln in enumerate(self.ordered()):
+        lines_ = self.ordered()
+        show = self.display == "set" and any(w.ink for ln in lines_ for w in ln)
+        size = self.xh() if show else 0
+        gap = self.word_gap(size) if show else 0
+        self.shown = {}
+        for li, ln in enumerate(lines_):
             if li:
                 text += b"\n"
+            right = None
             for i, w in enumerate(ln):
                 if i:
                     text += b" "
@@ -598,17 +643,30 @@ class Region:
                 text += t
                 if w.ink:
                     d.update(strokes=list(w.ks), dx=round(w.dx, 3), dy=0)
+                    shape = self.shapes.get(w.text) if show else None
+                    if shape is not None:
+                        x0 = self.word_box(w)[0]
+                        x = x0 if right is None else max(x0, right + gap)
+                        sh = self.set_shape(w, (x, self.base_of(w), size), shape)
+                        d.update(sh)
+                        self.shown[w.ks] = tuple(sh["box"])
+                        right = max(sh["box"][2], x + shape[0] * size)
+                    else:
+                        right = self.word_box(w)[2]
                 else:
-                    d.update(self.set_shape(w))
+                    sh = self.set_shape(w)
+                    d.update(sh)
+                    right = sh["box"][2]
                 out.append(d)
         return text.decode(), out
 
-    def set_shape(self, w):
-        """a set word's outline and box in region coordinates: its strokes (the recognizer's
-        `set`, in x-heights, y up) drawn with the font's pen as filled polygons, a quad per
-        segment and an octagon per point, all turning the same way (non-zero fill)"""
-        x, base, size = w.place
-        width, _, ink, st = w.shape or (len(w.text), 0, 0, [])
+    def set_shape(self, w, place=None, shape=None):
+        """a set word's outline and box in region coordinates (or of a word shown set at
+        place with shape): its strokes (the recognizer's `set`, in x-heights, y up) drawn with
+        the font's pen as filled polygons, a quad per segment and an octagon per point, all
+        turning the same way (non-zero fill)"""
+        x, base, size = place or w.place
+        width, _, ink, st = shape or w.shape or (len(w.text), 0, 0, [])
         r = max(ink if ink > 0 else 0.12, 0.04) * size / 2
         path, xs, ys = [], [], []
 
@@ -655,6 +713,13 @@ class Region:
         """the value whole, its word layout, the strokes that left, the saved state; only
         when something changed. Each value is kept a while with the writing it was read from,
         for the reports that name it (FR-013)"""
+        if self.display == "set":
+            for w in self.words + self.read:
+                if w.ink and w.text not in self.shapes:
+                    try:
+                        await self.shape(w.text)
+                    except Error:
+                        pass            # not shown set: its ink
         text, words = self.layout()
         m = {"text": text, "words": words, "state": self.state()}
         gone = sorted(self.gone)
@@ -670,6 +735,13 @@ class Region:
             self.offered.pop(old, None)
         self.send(dict({"op": "region_value", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
                             "gone": gone}, **m))
+
+    async def redisplay(self):
+        """the display changed: the value again with its new layout; nothing is read again,
+        nothing the region holds changes"""
+        async with self.slot(), self.lock:
+            if self.read_on and self.active() and not self.dead and self.sent is not None:
+                await self.deliver()
 
     # ------------------------------------------------------------------ the pause
 
@@ -696,7 +768,7 @@ class Region:
             try:
                 if not await self.temp(w, line):
                     return
-                r = parse_text(await e.ask(self.app, "read", w, str(CANDIDATES), "detail"))
+                r = parse_text(await e.ask(self.app, "read", w, str(CANDIDATES), "detail", *self.writing(line)))
             finally:
                 await e.ask(self.app, "end", w)
             rd = [] if isinstance(r, tuple) else [(t, s, map_align(a, dict(enumerate(line))), f, ok)

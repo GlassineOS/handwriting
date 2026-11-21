@@ -65,7 +65,7 @@ microsecond.
 | `client ID NAME` | `client ID ok` (after `hello … relay` only, else `not-relay`) |
 | `begin ID S LANGS FIELD UNITS BEFORE` | `begin ID ok`, or `begin ID private` (nothing is kept) |
 | `stroke ID S POINTS` | `stroke ID ok N`: the stroke's number in this session |
-| `read ID S [COUNT [raw\|chars] [detail]]` | `read ID text K {TEXT SCORE ALIGN}×K` (with `detail` `{TEXT SCORE ALIGN FROM CHECK}×K`), `read ID gesture …` (below), `read ID empty`, or `drop ID` |
+| `read ID S [COUNT [raw\|chars] [detail] [writing]]` | `read ID text K {TEXT SCORE ALIGN}×K` (with `detail` `{TEXT SCORE ALIGN FROM CHECK}×K`), `read ID gesture …` (below), `read ID empty`, or `drop ID` |
 | `align ID S PROMPT` | `align ID SCORE K {FIT SEGMENTS}×K`, or `align ID short` |
 | `remove ID S N[,N…]` | `remove ID ok REMOVED` |
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
@@ -134,7 +134,9 @@ ones get `drop ID`. Requests between them are carried out in order.
   covers (comma-separated, `-` for none). `CHARS` is in the best reading of the other strokes:
   `A-B` the characters it covers (0-based, inclusive), `@K` for a caret the character index it
   inserts before, `-` when nothing. The gesture stroke is removed from the session (it isn't
-  writing); the client deletes or inserts.
+  writing); the client deletes or inserts. With `writing` (contract 1.11) the newest stroke is
+  read as writing, never as a gesture, and stays in the session: for a client that found a
+  gesture acts on nothing (a strike-through over no word) and gives its stroke back as ink.
 - `empty`: no strokes.
 
 **align** (prompted writing, FR-007): `PROMPT` is the text the person was asked to write. The
