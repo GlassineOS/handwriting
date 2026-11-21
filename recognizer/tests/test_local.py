@@ -209,12 +209,20 @@ class Installed(unittest.TestCase):
         self.assertEqual(self.recognize(c), shipped)
         self.model("use", "recognizer", "local")
         self.assertEqual(self.recognize(c), mine)
-        # the file removed, then damaged: the shipped model from the next reading
+        # the file removed: the shipped model chosen and read from the next reading
         self.assertEqual(self.model("remove", "recognizer").stdout, "removed\n")
         self.assertEqual(self.recognize(c), shipped)
-        self.assertEqual(self.status()[("inuse", "recognizer")], ["shipped"])
+        st = self.status()
+        self.assertEqual((st[("use", "recognizer")], st[("inuse", "recognizer")]), (["shipped"], ["shipped"]))
         self.assertEqual(self.model("remove", "recognizer").stdout, "none\n")
+        # a good file placed by hand afterwards waits for the person's choice
         self.local.mkdir(parents=True, exist_ok=True)
+        shutil.copy(self.mine, self.local / "recognizer.ghm")
+        self.assertEqual(self.recognize(c), shipped)
+        self.assertEqual(self.status()[("use", "recognizer")], ["shipped"])
+        # chosen again, then damaged: the shipped model from the next reading
+        self.model("use", "recognizer", "local")
+        self.assertEqual(self.recognize(c), mine)
         (self.local / "recognizer.ghm").write_bytes(self.mine.read_bytes()[:-40])
         self.assertEqual(self.recognize(c), shipped)
         # good again: used again
