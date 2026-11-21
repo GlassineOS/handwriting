@@ -372,6 +372,18 @@ int hw_conf_get(const char *key, char *out, size_t n)
 	return conf_read("handwriting.conf", key, out, n);
 }
 
+void hw_default_langs(char *out, size_t n)
+{
+	if (hw_conf_get("languages", out, n)) return;
+	const char *v = getenv("LC_ALL");
+	if (!v || !*v) v = getenv("LC_MESSAGES");
+	if (!v || !*v) v = getenv("LANG");
+	if (v && v[0] >= 'a' && v[0] <= 'z' && v[1] >= 'a' && v[1] <= 'z')
+		snprintf(out, n, "%.*s", (int)strcspn(v, "_.@"), v);
+	else
+		snprintf(out, n, "en");
+}
+
 static int is_off(const char *v)
 {
 	return !strcmp(v, "off") || !strcmp(v, "false") || !strcmp(v, "0");

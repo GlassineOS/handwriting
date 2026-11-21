@@ -300,10 +300,16 @@ size, spacing) and keep their shape.
   part in the spacing as a variant does, by its profiles; a pair the person hasn't written
   is placed as FR-007 places an unseen pair.
 - **FR-045**: The base font is redistributable under the repository's rules on models and
-  data, covers every character of the languages the recognizer reads, and is plain: an
-  upright, unjoined, school-like print hand with no ornament, so the person's own letters
-  replace it without a clash of styles. The base is a school print model under the SIL Open
-  Font License (an Edu Beginner family).
+  data, covers every character of the language it is for, and is plain: an upright, unjoined,
+  school-like print hand with no ornament, so the person's own letters replace it without a
+  clash of styles. A language the recognizer reads may have a base of its own, the school
+  print model taught in that language; Autograph draws from the base of the language the
+  recognizer reads by default, and a language without one (or without a model yet) from the
+  default base. The default base, used for English, is a school print model under the SIL Open
+  Font License (an Edu Beginner family); German's is the German Grundschrift under the same
+  licence (Playwrite DE Grund), covering German's letters (ä, ö, ü, ß and their capitals), the
+  other Latin-1 and Latin Extended-A letters and German quotation marks besides the English
+  set.
 - **FR-034**: The font comes in three styles of one family, installed and updated together,
   that differ only in how wide the ink is along each stroke; the letters' shapes, their
   variants and how the font switches between them, the spacing and the kerning are the

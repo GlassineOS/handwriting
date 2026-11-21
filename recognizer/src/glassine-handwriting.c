@@ -280,18 +280,8 @@ static struct hw_lang *pick_lang(const char *langs, int *bad)
 	char t[256], conf[256];
 	*bad = 0;
 	if (!*langs || !strcmp(langs, "-")) {
-		if (hw_conf_get("languages", conf, sizeof conf)) langs = conf;
-		else {
-			const char *v = getenv("LC_ALL");
-			if (!v || !*v) v = getenv("LC_MESSAGES");
-			if (!v || !*v) v = getenv("LANG");
-			if (v && v[0] >= 'a' && v[0] <= 'z' && v[1] >= 'a' && v[1] <= 'z') {
-				snprintf(conf, sizeof conf, "%.*s", (int)strcspn(v, "_.@"), v);
-				langs = conf;
-			} else {
-				langs = "en";
-			}
-		}
+		hw_default_langs(conf, sizeof conf);
+		langs = conf;
 	}
 	if (strlen(langs) >= sizeof t) { *bad = 1; return NULL; }
 	strcpy(t, langs);
