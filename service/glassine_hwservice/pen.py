@@ -469,17 +469,15 @@ class Pen:
         elif op == "destroy":
             s.forget()
             for g in s.regions.values():
-                g.forget()
+                g.destroy()
             del self.surfaces[sid]
 
     def region(self, s, op, m):
         """the writing regions' ops (spec 005; GlassineOS/sway docs/handwriting-channel.md)"""
         r = m.get("r")
         if op == "region":
-            g = s.regions.get(r)
-            if g is not None:
-                g.forget()
-            s.regions[r] = regions.Region(s, int(r))
+            if r not in s.regions:      # announced once; again (it shouldn't be): kept as it is
+                s.regions[r] = regions.Region(s, int(r))
             return
         g = s.regions.get(r)
         if g is None:
@@ -496,9 +494,10 @@ class Pen:
             self.spawn(g.report(m))
         elif op == "region_restore":
             st = [(int(d["k"]), d["points"]) for d in m.get("strokes", []) if isinstance(d, dict)]
-            self.spawn(g.restore(st, m.get("state")))
+            if g.restore(st, m.get("state")):
+                self.spawn(g.restored())
         elif op == "region_destroy":
-            g.forget()
+            g.destroy()
             del s.regions[r]
 
     async def serve(self, reader, writer):

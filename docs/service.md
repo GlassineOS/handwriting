@@ -207,8 +207,10 @@ gives a session begun later the new box: nothing is read again (FR-003, FR-004).
 service (FR-007). Even then the region holds no recognizer session until it is read, and gives
 it up at the pause after its writing. Each region's reading is a session of its own, with the
 region's units, size prior, box (`[0, 0, size]`) and ruled lines, never a line from another
-region (FR-028). Private regions never reach the service; a region that becomes private is
-destroyed.
+region (FR-028). At most 16 regions are read at once (a document opened with many fields is
+read a few at a time, never past the recognizer's 64 sessions), and a region gives its session
+up after a report, an edit or a restore too. Private regions never reach the service; a
+region that becomes private is destroyed.
 
 **The value.** A region's words are of three kinds: read (the current reading of its writing),
 kept (a pick, an acceptance, or a word an edit left as it was: its ink and its text, never read
@@ -232,7 +234,8 @@ ink an edit replaced. `state` is the saved state (FR-010), base64 of the kept an
 **Gestures.** The recognizer's gestures act in the region they are written in (FR-012): a
 strike or scratch deletes the words it covers, their ink leaving; a caret places the writing
 after it where it points. `region_gesture` names the gesture's own stroke and the serial of the
-value that carries its effect; the stroke leaves (`gone`).
+value that carries its effect; the stroke leaves (`gone`). With reading off there are no
+gestures: such a stroke stays ink.
 
 **Candidates and reports.** At a pause (900 ms) the region sends its candidates with the serial
 of its current value: for the line written last, each candidate with the rest of the value. A
@@ -261,7 +264,8 @@ choice.
 line, and never with its text: at every strength kept ink stays ink (FR-019). Set words are
 not neatened.
 
-**Stored ink.** `region_restore` replaces what the region holds with the strokes handed back,
+**Stored ink.** `region_restore` replaces what the region holds with the strokes handed back
+at once (a stroke that follows it on the channel is added to them),
 with their saved state or without (FR-025). With it, the words the state names are kept again
 by their strokes and its set words come back where they were; the rest is read with the model
 there is now (FR-026). Without it, the strokes are read and the reading is the value.

@@ -38,6 +38,8 @@ PAUSE_MS = 900
 CANDIDATES = 5
 FIT_MIN = 0.6           # a word's ink fits its text: the recognizer's prompted check (align SCORE)
 STATE_VERSION = 1
+BUSY = 16               # regions read at once, per compositor channel: each holds up to two
+                        # recognizer sessions while read, and the recognizer has 64
 SMALL = set("acemnorsuvwxz")
 DESC = set("gjpqy")
 
@@ -181,6 +183,7 @@ class Region:
         self.lock = asyncio.Lock()
         self.shapes = {}            # text -> the recognizer's `set` reply
         self.begun = 0
+        self.dead = False
 
     # ------------------------------------------------------------------ names, choices
 
@@ -271,6 +274,23 @@ class Region:
         self.session = None
         self.num = {}
         self.area_sent = None
+
+    def slot(self):
+        """one of BUSY places to be read in (a document opened with many fields reads them a
+        few at a time, never past the recognizer's sessions)"""
+        sem = getattr(self.pen, "region_slots", None)
+        if sem is None:
+            sem = self.pen.region_slots = asyncio.Semaphore(BUSY)
+        return sem
+
+    def send(self, m):
+        if not self.dead:
+            self.pen.send(m)
+
+    def destroy(self):
+        """the region is gone: nothing more is sent for it, work under way stops"""
+        self.forget()
+        self.dead = True
 
     def forget(self):
         self.cancel()
@@ -371,8 +391,8 @@ class Region:
     # ------------------------------------------------------------------ reading
 
     async def update(self):
-        async with self.lock:
-            if self.active() and self.mode == "ink":
+        async with self.slot(), self.lock:
+            if self.active() and self.mode == "ink" and not self.dead:
                 await self._update()
 
     async def _update(self, count=1):
@@ -444,9 +464,11 @@ class Region:
         if g is None:
             return
         del self.num[g]
-        self.gestures.add(g)
+        self.gestures.add(g)            # never read again
+        if not self.read_on:
+            return                      # no gestures without reading: the stroke stays ink
         self.gone.add(g)
-        self.pen.send({"op": "region_gesture", "s": self.surface.sid, "r": self.rid, "serial": self.serial + 1,
+        self.send({"op": "region_gesture", "s": self.surface.sid, "r": self.rid, "serial": self.serial + 1,
                        "kind": kind, "strokes": [g]})
         cov = {back[int(c)] for c in covered.split(",") if c not in ("", "-") and int(c) in back}
         if kind in ("strike", "scratch"):
@@ -627,7 +649,7 @@ class Region:
             else:
                 ws.append({"t": w.text, "at": [round(v, 3) for v in w.place]})
         s = json.dumps({"v": STATE_VERSION, "w": ws}, separators=(",", ":"), ensure_ascii=False)
-        return base64.urlsafe_b64encode(s.encode()).decode().rstrip("=")
+        return base64.b64encode(s.encode()).decode()
 
     async def deliver(self):
         """the value whole, its word layout, the strokes that left, the saved state; only
@@ -642,18 +664,18 @@ class Region:
         self.sent = m
         self.gone = set()
         self.history[self.serial] = ([(w.text, w.ks) for w in self.read],
-                                     {k for w in self.read for k in w.ks})
+                                     {k for w in self.read + self.words for k in w.ks})
         for old in [k for k in self.history if k <= self.serial - 16]:
             del self.history[old]
             self.offered.pop(old, None)
-        self.pen.send(dict({"op": "region_value", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
+        self.send(dict({"op": "region_value", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
                             "gone": gone}, **m))
 
     # ------------------------------------------------------------------ the pause
 
     async def pause(self):
-        async with self.lock:
-            if not self.read_on or not self.active() or self.mode != "ink":
+        async with self.slot(), self.lock:
+            if not self.read_on or not self.active() or self.mode != "ink" or self.dead:
                 return
             await self._pause()
             await self.close_session()  # an idle region holds no session (FR-007)
@@ -691,14 +713,15 @@ class Region:
             items.append({"text": v, "from": f, "fit": ok, "words": [(w.text, list(w.ks)) for w in cand]})
         await self.deliver()
         self.offered[self.serial] = (items, others, set(k for w in self.read for k in w.ks) | line)
-        self.pen.send({"op": "region_candidates", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
+        self.send({"op": "region_candidates", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
                        "items": [{k: v for k, v in i.items() if k != "words"} for i in items]})
 
     # ------------------------------------------------------------------ reports, edits, samples
 
     async def report(self, m):
-        async with self.lock:
-            await self._report(m)
+        async with self.slot(), self.lock:
+            if not self.dead:
+                await self._report(m)
 
     async def _report(self, m):
         """a report on the value serial (accepted, corrected) or its candidates (picked)"""
@@ -715,7 +738,7 @@ class Region:
                 rank = int(m.get("rank", 0))
                 if not 0 <= rank < len(items):
                     result = "stale"
-                    self.pen.send({"op": "region_report", "s": self.surface.sid, "r": self.rid, "serial": serial,
+                    self.send({"op": "region_report", "s": self.surface.sid, "r": self.rid, "serial": serial,
                                    "result": result})
                     return
                 ws = [(w.text, w.ks) for w in others] + [(t, tuple(sorted(ks))) for t, ks in items[rank]["words"]]
@@ -725,7 +748,7 @@ class Region:
             else:
                 result = await self.edit(str(m.get("text", "")), of & held)
             await self.after_change()
-        self.pen.send({"op": "region_report", "s": self.surface.sid, "r": self.rid, "serial": serial,
+        self.send({"op": "region_report", "s": self.surface.sid, "r": self.rid, "serial": serial,
                        "result": result})
 
     async def keep(self, ws, of, source):
@@ -909,8 +932,8 @@ class Region:
 
     async def set_text(self, text):
         """the text the person edited in text mode, as the value back in ink mode (FR-017)"""
-        async with self.lock:
-            if self.private():
+        async with self.slot(), self.lock:
+            if self.private() or self.dead:
                 return
             self.cancel()
             if self.free():
@@ -919,53 +942,63 @@ class Region:
             await self.after_change()
 
     async def after_change(self):
-        """the value and the neatened strokes after a report or an edit (writing the report
-        didn't cover is read again, where it is)"""
+        """the value and the neatened strokes after a report, an edit or a restore (writing
+        not covered is read again, where it is); then the session is given up, as at a
+        pause (FR-007: a document opened with many fields holds none)"""
         if self.free() and self.active():
             await self._update()
-            return
-        if self.read_on:
-            await self.deliver()
-        if self.neaten:
-            await self.neaten_all()
+        else:
+            if self.read_on:
+                await self.deliver()
+            if self.neaten:
+                await self.neaten_all()
+        await self.close_session()
 
-    async def restore(self, strokes, state):
-        """stored ink handed back (FR-025): its strokes, and with a saved state its kept and set
-        words; the rest is read with the model there is now (FR-026)"""
-        async with self.lock:
-            self.forget()
-            if self.private():
-                return
-            for k, pts in strokes:
-                self.strokes[k] = pts
+    def restore(self, strokes, state):
+        """stored ink handed back (FR-025), at once (a stroke that follows on the channel is
+        added to it): its strokes, and with a saved state its kept and set words; reading the
+        rest (restored(), spawned) uses the model there is now (FR-026)"""
+        self.forget()
+        if self.private():
+            return False
+        for k, pts in strokes:
+            if k not in self.strokes:
                 self.order.append(k)
-                self.foreign.add(k)
-            by_fp = {}
-            for k in self.order:
-                by_fp.setdefault(fingerprint(self.strokes[k]), []).append(k)
-            for d in decode(state):
-                if "k" in d:
-                    ks = []
-                    for fp in d["k"]:
-                        cand = by_fp.get(fp)
-                        if cand:
-                            ks.append(cand.pop(0))
-                    if len(ks) != len(d["k"]) or not ks:
-                        continue        # its ink isn't all there: read again
-                    w = Word(d["t"], ks, "kept", float(d.get("dx", 0)))
-                    w.foreign = True
-                    self.words.append(w)
-                elif "at" in d and len(d["at"]) == 3:
-                    w = Word(d["t"], kind="set", place=tuple(float(v) for v in d["at"]))
+            self.strokes[k] = pts
+            self.foreign.add(k)
+        by_fp = {}
+        for k in self.order:
+            by_fp.setdefault(fingerprint(self.strokes[k]), []).append(k)
+        for d in decode(state):
+            if "k" in d:
+                ks = []
+                for fp in d["k"]:
+                    cand = by_fp.get(fp)
+                    if cand:
+                        ks.append(cand.pop(0))
+                if len(ks) != len(d["k"]) or not ks:
+                    continue            # its ink isn't all there: read again
+                w = Word(d["t"], ks, "kept", float(d.get("dx", 0)))
+                w.foreign = True
+                self.words.append(w)
+            elif "at" in d and len(d["at"]) == 3:
+                self.words.append(Word(d["t"], kind="set", place=tuple(float(v) for v in d["at"])))
+        return True
+
+    async def restored(self):
+        async with self.slot(), self.lock:
+            if self.dead or self.private():
+                return
+            for w in self.words:
+                if not w.ink and w.shape is None:
                     try:
-                        w.shape = await self.shape(d["t"])
+                        w.shape = await self.shape(w.text)
                     except Error:
-                        w.shape = None
-                    self.words.append(w)
-            if self.active():
-                await self._update()
-                if self.read_on and not self.free():
-                    await self.deliver()
+                        pass
+            if self.active() and self.mode == "ink":
+                await self.after_change()
+            elif self.read_on:
+                await self.deliver()
 
     # ------------------------------------------------------------------ neatening
 
@@ -993,7 +1026,7 @@ class Region:
                 if ks[j] not in self.strokes:
                     continue
                 xy = [[float(v) for v in p.split(",")[:2]] for p in pts.split(" ")]
-                self.pen.send({"op": "region_neat", "s": self.surface.sid, "r": self.rid, "k": ks[j], "how": how,
+                self.send({"op": "region_neat", "s": self.surface.sid, "r": self.rid, "k": ks[j], "how": how,
                                "points": xy})
             self.neat_sent = {k: v for k, v in self.neat_sent.items() if k[1] == self.strength}
             self.neat_sent[key] = True
@@ -1004,7 +1037,7 @@ def decode(state):
     if not isinstance(state, str) or not state:
         return []
     try:
-        d = json.loads(base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)).decode())
+        d = json.loads(base64.b64decode(state + "=" * (-len(state) % 4), validate=True).decode())
     except (ValueError, UnicodeDecodeError):
         return []
     if not isinstance(d, dict) or d.get("v") != STATE_VERSION or not isinstance(d.get("w"), list):

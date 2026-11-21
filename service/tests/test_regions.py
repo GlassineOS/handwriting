@@ -205,6 +205,10 @@ class Regions(unittest.TestCase):
         self.run_(self._stroke(g, self.k, pts))
         return self.k
 
+    def restore(self, g, strokes, state):
+        if g.restore(strokes, state):
+            self.run_(g.restored())
+
     def value(self):
         """the newest value, each word with its text and line (from start, length in UTF-8
         bytes of the text)"""
@@ -428,6 +432,51 @@ class Regions(unittest.TestCase):
         self.assertTrue(any(m["k"] == a for m in self.pen.ops("neat")))
         self.assertFalse(any(v[0] == "neaten" and len(v) > 3 for v in self.pen.engine.log))
 
+    def test_correction_beside_a_kept_word(self):
+        """a confirmed word and a new one, the new one corrected: the kept word keeps its ink,
+        the corrected one is set, nothing doubles"""
+        g = self.region()
+        a = self.write(g, 20, 40, "one")
+        self.run_(g.pause())
+        self.run_(g.report({"serial": self.pen.ops("candidates")[-1]["serial"], "action": "accepted"}))
+        b = self.write(g, 80, 40, "twa")
+        self.run_(g.pause())
+        self.pen.engine.samples = []
+        self.pen.engine.fail_fit.add("two")
+        self.run_(g.report({"serial": self.pen.ops("candidates")[-1]["serial"], "action": "corrected",
+                            "text": "one two"}))
+        v = self.value()
+        self.assertEqual(v["text"], "one two")
+        self.assertEqual([(w["text"], w.get("strokes")) for w in v["words"]], [("one", [a]), ("two", None)])
+        self.assertIn(b, v["gone"])
+        self.assertEqual(self.pen.engine.samples, [])       # "twa"'s ink doesn't fit "two"
+
+    def test_gesture_without_reading_stays_ink(self):
+        g = self.region(reading=False, neaten=True, strength=0.5)
+        self.write(g, 20, 40, "one")
+        s = self.gesture(g, "strike", 18, 40, 35)
+        self.run_(g.update())
+        self.assertIn(s, g.strokes)
+        self.assertEqual(self.pen.ops("gesture"), [])
+        self.assertEqual(self.pen.ops("value"), [])
+
+    def test_stroke_right_after_a_restore(self):
+        g = self.region()
+        g.restore([(1, self.pen.engine.name(word_stroke(20, 40, "old"), "old"))], None)
+        self.run_(self._stroke(g, 2, self.pen.engine.name(word_stroke(80, 40, "new"), "new")))
+        self.run_(g.restored())
+        self.assertEqual(self.value()["text"], "old new")
+        self.assertEqual(self.pen.engine.sessions, {})      # given up again: no session held
+
+    def test_destroyed_region_sends_nothing(self):
+        g = self.region()
+        self.write(g, 20, 40, "one")
+        g.destroy()
+        self.run_(g.update())
+        self.run_(g.pause())
+        self.run_(g.report({"serial": 1, "action": "accepted"}))
+        self.assertEqual(self.pen.out, [])
+
     # ------------------------------------------------------------------ saved state, stored ink
 
     def test_state_and_stored_ink(self):
@@ -447,12 +496,12 @@ class Regions(unittest.TestCase):
         self.pen.engine.label = {k: ("reed" if v == "read" else v) for k, v in self.pen.engine.label.items()}
         self.pen.engine.samples = []
         g2 = self.region(2)
-        self.run_(g2.restore([(d["k"], d["points"]) for d in strokes], state))
+        self.restore(g2, [(d["k"], d["points"]) for d in strokes], state)
         self.assertEqual(self.value()["r"], 2)
         self.assertEqual(self.value()["text"], "gold read")
         # without the state the strokes alone are read with the model there is now
         g3 = self.region(3)
-        self.run_(g3.restore([(d["k"], d["points"]) for d in strokes], None))
+        self.restore(g3, [(d["k"], d["points"]) for d in strokes], None)
         self.assertEqual(self.value()["text"], "reed")
         # handed-back ink is never a sample
         self.run_(g3.pause())
@@ -483,7 +532,7 @@ class Regions(unittest.TestCase):
         self.write(g, 20, 40, "secret")
         self.run_(g.update())
         self.run_(g.set_text("x"))
-        self.run_(g.restore([(1, word_stroke(0, 40, "a"))], None))
+        self.assertFalse(g.restore([(1, word_stroke(0, 40, "a"))], None))
         self.assertEqual(self.pen.engine.log, [])
         self.assertEqual(self.pen.out, [])
 

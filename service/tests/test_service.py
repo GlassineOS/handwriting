@@ -376,6 +376,25 @@ class Service(unittest.TestCase):
         self.pen_send(op="region_destroy", s=1, r=1)
         self.pen_send(op="destroy", s=1)
 
+    def test_many_regions_restored_at_once(self):
+        """a document opened with 70 inked fields (more than the recognizer's 64 sessions):
+        each gets its value, none keeps a session"""
+        self.pen_send(op="surface", s=2, sandbox="org.example.Notes", pid=0)
+        n = 70
+        for r in range(n):
+            self.pen_send(op="region", s=2, r=r, name="f%d" % r)
+            self.pen_send(op="region_set", s=2, r=r, reading=True, size=[400, 100], units="device:6.25")
+            self.pen_send(op="region_restore", s=2, r=r,
+                          strokes=[{"k": k, "points": p} for k, p in enumerate(ink(2, seed=r))])
+        ev = self.pen_events(lambda o: len({m["r"] for m in o if m["op"] == "region_value"}) >= n, timeout=60)
+        self.assertEqual(len({m["r"] for m in ev if m["op"] == "region_value"}), n)
+        self.assertTrue(self.quiet())
+        reqs = [ln.split("\t") for ln in self.log.read_text().splitlines()]
+        begun = {f[2] for f in reqs if f[0] == "begin" and f[2].startswith("g2-")}
+        ended = {f[2] for f in reqs if f[0] == "end" and f[2].startswith("g2-")}
+        self.assertEqual(begun - ended, set())
+        self.pen_send(op="destroy", s=2)
+
     def test_area_and_units_without_an_ink_area(self):
         """no ink area: every session gets an area of the writing's box with no ruled line,
         the size prior, and the units with the px per mm and the pen's rate (7 ms a point:

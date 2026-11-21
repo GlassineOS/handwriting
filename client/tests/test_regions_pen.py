@@ -130,10 +130,10 @@ class Regions(unittest.TestCase):
         r = a.until(lambda line: line.startswith("report 1 "))[-1]
         self.assertEqual(r.split()[2:], [str(v1[0]), "2"])
         # a keyboard edit of the first field: a value with set words
-        a.send("edit 0 hello world")
+        a.send("edit 0 hello größe, what?")
         ev = a.until(lambda line: line.startswith("value 0 "))
         val = self.values(ev, 0)[-1]
-        self.assertEqual(val[1], "hello world")
+        self.assertEqual(val[1], "hello größe, what?")
         kinds = [w[2] for w in val[2]]
         self.assertTrue(kinds and all(k in ("ink", "set") for k in kinds), val)
         self.assertIn("set", kinds)
