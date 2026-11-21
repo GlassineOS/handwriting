@@ -455,17 +455,8 @@ class Pen:
         s = self.surfaces.get(sid)
         if s is None:
             return
-        if "r" in m and op in ("stroke", "clear", "report"):
-            g = s.regions.get(m["r"])
-            if g is None:
-                return
-            if op == "stroke":
-                g.stroke(int(m["k"]), m["points"])
-            elif op == "clear":
-                g.clear()
-                self.spawn(g.after_change())
-            else:
-                self.spawn(g.report(m))
+        if op.startswith("region"):
+            self.region(s, op, m)
             return
         if op == "set":
             s.set(m)
@@ -475,32 +466,40 @@ class Pen:
             s.clear()
         elif op == "report":
             self.spawn(s.report(m))
-        elif op == "region":
-            g = s.regions.get(m.get("r"))
-            if g is None:
-                g = s.regions[m["r"]] = regions.Region(s, int(m["r"]))
-            g.set(m)
-        elif op == "region_mode":
-            for g in s.regions.values():
-                g.set({"mode": m.get("mode")})
-        elif op == "region_text":
-            g = s.regions.get(m.get("r"))
-            if g is not None:
-                self.spawn(g.set_text(str(m.get("text", ""))))
-        elif op == "region_restore":
-            g = s.regions.get(m.get("r"))
-            if g is not None:
-                st = [(int(d["k"]), d["points"]) for d in m.get("strokes", []) if isinstance(d, dict)]
-                self.spawn(g.restore(st, m.get("state")))
-        elif op == "region_destroy":
-            g = s.regions.pop(m.get("r"), None)
-            if g is not None:
-                g.forget()
         elif op == "destroy":
             s.forget()
             for g in s.regions.values():
                 g.forget()
             del self.surfaces[sid]
+
+    def region(self, s, op, m):
+        """the writing regions' ops (spec 005; GlassineOS/sway docs/handwriting-channel.md)"""
+        r = m.get("r")
+        if op == "region":
+            g = s.regions.get(r)
+            if g is not None:
+                g.forget()
+            s.regions[r] = regions.Region(s, int(r))
+            return
+        g = s.regions.get(r)
+        if g is None:
+            return
+        if op == "region_set":
+            g.set(m)
+        elif op == "region_mode":
+            g.set({"mode": m.get("mode")})
+        elif op == "region_stroke":
+            g.stroke(int(m["k"]), m["points"])
+        elif op == "region_edit":
+            self.spawn(g.set_text(str(m.get("text", ""))))
+        elif op == "region_report":
+            self.spawn(g.report(m))
+        elif op == "region_restore":
+            st = [(int(d["k"]), d["points"]) for d in m.get("strokes", []) if isinstance(d, dict)]
+            self.spawn(g.restore(st, m.get("state")))
+        elif op == "region_destroy":
+            g.forget()
+            del s.regions[r]
 
     async def serve(self, reader, writer):
         self.writer = writer

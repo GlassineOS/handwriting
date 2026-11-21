@@ -30,7 +30,7 @@ import hashlib
 import json
 import math
 
-from . import area, outputs, perms
+from . import area, perms
 from .engine import Error, esc, map_align, parse_text, points
 
 READ_MS = 250
@@ -80,6 +80,56 @@ def tops(text):
     return top, bot
 
 
+def split_words(text, align, sizes):
+    """the reading's words with their strokes: [(text, strokes)]. Each stroke goes to the one
+    word that uses most of it (a stroke the alignment shares between two words, a long
+    connecting stroke, isn't the reason to make them one); a word left with no stroke joins
+    the word before it (else after it). sizes: stroke number -> its number of points"""
+    per = []                    # per character: {stroke: weight}
+    for e in align.split(";") if align else []:
+        d = {}
+        for part in e.split(","):
+            if not part:
+                continue
+            n, _, rng = part.partition(":")
+            n = int(n)
+            if rng:
+                a, _, b = rng.partition("-")
+                w = int(b) - int(a) + 1
+            else:
+                w = sizes.get(n, 1)
+            d[n] = d.get(n, 0) + w
+        per.append(d)
+    per += [{}] * (len(text) - len(per))
+    ws, cur, weight = [], [], {}
+    for c, d in zip(text, per):
+        if c == " ":
+            if cur:
+                ws.append(["".join(cur), weight])
+            cur, weight = [], {}
+            continue
+        cur.append(c)
+        for n, w in d.items():
+            weight[n] = weight.get(n, 0) + w
+    if cur:
+        ws.append(["".join(cur), weight])
+    best = {}
+    for i, (_, weight) in enumerate(ws):
+        for n, w in weight.items():
+            if n not in best or w > best[n][0]:
+                best[n] = (w, i)
+    out = [[t, {n for n, (_, j) in best.items() if j == i}] for i, (t, _) in enumerate(ws)]
+    merged = []
+    for t, ks in out:
+        if not ks and merged:
+            merged[-1][0] += " " + t
+        elif merged and not merged[-1][1]:
+            merged[-1] = [merged[-1][0] + " " + t, ks]
+        else:
+            merged.append([t, ks])
+    return [(t, ks) for t, ks in merged if ks]
+
+
 class Word:
     """a word of the value: ink (ks, the strokes that make it) or set (no ink: place, shape)"""
     __slots__ = ("text", "ks", "kind", "dx", "place", "shape", "foreign")
@@ -105,7 +155,7 @@ class Region:
         self.app = surface.app
         self.read_on, self.neaten, self.strength = False, False, 0.0
         self.purpose, self.hints, self.before, self.langs = 0, 0, "", ""
-        self.units, self.output = "device", ""
+        self.units = "device"
         self.guides = (0.0, 0.0)
         self.size = None            # (w, h): the region's area in its own coordinates
         self.mode = "ink"
@@ -123,18 +173,24 @@ class Region:
         self.area_sent = None
         self.line_read = {}         # (line's strokes, lengths) -> (text, align)
         self.neat_sent = {}
-        self.offered = None         # (serial, items) of the newest candidates sent
-        self.serial = 0
+        self.offered = {}           # value serial -> (items, others, of): its candidates
+        self.history = {}           # value serial -> (its read words [(text, strokes)], the strokes it was read from)
+        self.serial = 0             # the newest value's
         self.sent = None            # the last value message (to send only changes)
         self.timers = []
         self.lock = asyncio.Lock()
         self.shapes = {}            # text -> the recognizer's `set` reply
+        self.begun = 0
 
     # ------------------------------------------------------------------ names, choices
 
     @property
     def name(self):
-        return "g%d-%d" % (self.surface.sid, self.rid)
+        """the reading session's name: new with each session begun, so a session ended late
+        (a region forgotten and declared again) never ends its successor"""
+        return "g%d-%d.%d" % (self.surface.sid, self.rid, self.begun)
+
+    begun_all = 0
 
     def private(self):
         from .pen import HINTS, PRIVATE, PRIVATE_HINTS, PURPOSES
@@ -146,17 +202,16 @@ class Region:
 
     def set(self, m):
         was = (self.neaten, self.strength, self.read_on)
-        fld = (self.purpose, self.hints, self.before, self.langs, self.units, self.output)
+        fld = (self.purpose, self.hints, self.before, self.langs, self.units)
         geo = (self.guides, self.size)
         self.neaten = bool(m.get("neaten", self.neaten))
         self.strength = min(1.0, max(0.0, float(m.get("strength", self.strength))))
-        self.read_on = bool(m.get("text", self.read_on))
+        self.read_on = bool(m.get("reading", self.read_on))
         self.purpose = int(m.get("purpose", self.purpose))
         self.hints = int(m.get("hints", self.hints))
         self.before = str(m.get("before", self.before))[-4000:]
         self.langs = str(m.get("languages", self.langs))
         self.units = str(m.get("units", self.units)) or "device"
-        self.output = str(m.get("output", self.output))
         g = m.get("guides")
         if isinstance(g, list) and len(g) == 2:
             self.guides = (max(0.0, float(g[0])), float(g[1]))
@@ -170,7 +225,7 @@ class Region:
         if self.private():
             self.forget()                   # nothing of a private region stays here
             return
-        if fld != (self.purpose, self.hints, self.before, self.langs, self.units, self.output):
+        if fld != (self.purpose, self.hints, self.before, self.langs, self.units):
             # a new field type or languages applies to writing that follows (FR-002): the
             # session is begun again for the strokes still being read
             self.end_session()
@@ -222,7 +277,7 @@ class Region:
         self.end_session()
         self.strokes, self.order, self.foreign, self.gone, self.gestures = {}, [], set(), set(), set()
         self.words, self.read, self.caret = [], [], None
-        self.line_read, self.neat_sent, self.offered, self.sent = {}, {}, None, None
+        self.line_read, self.neat_sent, self.offered, self.history, self.sent = {}, {}, {}, {}, None
 
     def soon(self, ms):
         self.cancel()
@@ -231,6 +286,9 @@ class Region:
                        loop.call_later(max(ms, PAUSE_MS) / 1000, lambda: self.pen.spawn(self.pause()))]
 
     # ------------------------------------------------------------------ what the region holds
+
+    def sizes(self):
+        return {k: len(p) for k, p in self.strokes.items()}
 
     def kept_ks(self):
         return {k for w in self.words for k in w.ks}
@@ -241,7 +299,7 @@ class Region:
         return [k for k in self.order if k not in kept and k not in self.gestures and k in self.strokes]
 
     def own_units(self):
-        return outputs.units(self.units, self.output)
+        return self.units
 
     def session_units(self, ks):
         if not self.rate:
@@ -290,6 +348,8 @@ class Region:
         """the reading session holding exactly the free strokes"""
         e = self.pen.engine
         if self.session != e.gen:
+            Region.begun_all += 1
+            self.begun = Region.begun_all
             if not await self.begin(self.name, free):
                 return False
             self.session, self.num, self.area_sent = e.gen, {}, None
@@ -343,12 +403,12 @@ class Region:
 
     async def make_read(self, free, rd):
         """the read words from the reading of the free strokes (one line), else line by line"""
-        from .pen import lines, words
+        from .pen import lines
         ls = lines({k: self.strokes[k] for k in free}, self.guides)
         out = []
         if len(ls) <= 1:
             if rd:
-                out = [Word(t, ks) for t, ks in words(rd[0][0], rd[0][2]) if ks]
+                out = [Word(t, ks) for t, ks in split_words(rd[0][0], rd[0][2], self.sizes())]
         else:
             e = self.pen.engine
             for ks in ls:
@@ -367,7 +427,7 @@ class Region:
                     self.line_read[key] = (r[0][0], map_align(r[0][2], dict(enumerate(ks))))
                 t, a = self.line_read[key]
                 if t:
-                    out += [Word(x, s) for x, s in words(t, a) if s]
+                    out += [Word(x, s) for x, s in split_words(t, a, self.sizes())]
             keep = {(tuple(ks), tuple(len(self.strokes[k]) for k in ks)) for ks in ls}
             self.line_read = {k: v for k, v in self.line_read.items() if k in keep}
         for w in out:
@@ -386,6 +446,8 @@ class Region:
         del self.num[g]
         self.gestures.add(g)
         self.gone.add(g)
+        self.pen.send({"op": "region_gesture", "s": self.surface.sid, "r": self.rid, "serial": self.serial + 1,
+                       "kind": kind, "strokes": [g]})
         cov = {back[int(c)] for c in covered.split(",") if c not in ("", "-") and int(c) in back}
         if kind in ("strike", "scratch"):
             hit = set(cov)
@@ -500,25 +562,60 @@ class Region:
         return "\n".join(" ".join(w.text for w in ln) for ln in self.ordered())
 
     def layout(self):
-        out = []
+        """the value's text and its words: an ink word {start, length, strokes, dx, dy}, a
+        set word {start, length, box, path}; start and length in UTF-8 bytes of the text"""
+        text, out = b"", []
         for li, ln in enumerate(self.ordered()):
-            for w in ln:
-                d = {"text": w.text, "line": li}
+            if li:
+                text += b"\n"
+            for i, w in enumerate(ln):
+                if i:
+                    text += b" "
+                t = w.text.encode()
+                d = {"start": len(text), "length": len(t)}
+                text += t
                 if w.ink:
-                    d["strokes"] = list(w.ks)
-                    if w.dx:
-                        d["dx"] = round(w.dx, 3)
+                    d.update(strokes=list(w.ks), dx=round(w.dx, 3), dy=0)
                 else:
-                    x, base, size = w.place
-                    width, _, ink, st = w.shape or (len(w.text), 0, 0, [])
-                    d["set"] = {"x": round(x, 3), "base": round(base, 3), "size": round(size, 3),
-                                "width": round(width * size, 3), "ink": round(ink * size, 3),
-                                "strokes": [[[round(x + px * size, 3), round(base - py * size, 3)] for px, py in s]
-                                            for s in st]}
-                if w.kind != "read":
-                    d["kept"] = True
+                    d.update(self.set_shape(w))
                 out.append(d)
-        return out
+        return text.decode(), out
+
+    def set_shape(self, w):
+        """a set word's outline and box in region coordinates: its strokes (the recognizer's
+        `set`, in x-heights, y up) drawn with the font's pen as filled polygons, a quad per
+        segment and an octagon per point, all turning the same way (non-zero fill)"""
+        x, base, size = w.place
+        width, _, ink, st = w.shape or (len(w.text), 0, 0, [])
+        r = max(ink if ink > 0 else 0.12, 0.04) * size / 2
+        path, xs, ys = [], [], []
+
+        def poly(pts):
+            a = sum(p[0] * q[1] - q[0] * p[1] for p, q in zip(pts, pts[1:] + pts[:1]))
+            if a < 0:
+                pts = pts[::-1]
+            path.extend(["M", round(pts[0][0], 3), round(pts[0][1], 3)])
+            for p in pts[1:]:
+                path.extend(["L", round(p[0], 3), round(p[1], 3)])
+            path.append("Z")
+            xs.extend(p[0] for p in pts)
+            ys.extend(p[1] for p in pts)
+        for s_ in st:
+            pts = [(x + px * size, base - py * size) for px, py in s_]
+            for p in pts:
+                poly([(p[0] + r * math.cos(math.pi * j / 4), p[1] + r * math.sin(math.pi * j / 4)) for j in range(8)])
+            for p, q in zip(pts, pts[1:]):
+                dx, dy = q[0] - p[0], q[1] - p[1]
+                n = math.hypot(dx, dy)
+                if n <= 0:
+                    continue
+                nx, ny = -dy / n * r, dx / n * r
+                poly([(p[0] + nx, p[1] + ny), (q[0] + nx, q[1] + ny), (q[0] - nx, q[1] - ny), (p[0] - nx, p[1] - ny)])
+        if xs:
+            box = [min(xs), min(ys), max(xs), max(ys)]
+        else:
+            box = [x, base - size, x + width * size, base]
+        return {"box": [round(v, 3) for v in box], "path": path}
 
     def state(self):
         """the saved state (FR-010, FR-025): the kept and set words and their places"""
@@ -534,18 +631,23 @@ class Region:
 
     async def deliver(self):
         """the value whole, its word layout, the strokes that left, the saved state; only
-        when something changed"""
-        m = {"op": "value", "s": self.surface.sid, "r": self.rid, "text": self.value(), "words": self.layout(),
-             "state": self.state()}
+        when something changed. Each value is kept a while with the writing it was read from,
+        for the reports that name it (FR-013)"""
+        text, words = self.layout()
+        m = {"text": text, "words": words, "state": self.state()}
         gone = sorted(self.gone)
-        same = self.sent is not None and {k: v for k, v in m.items() if k != "gone"} == self.sent
-        if same and not gone:
+        if self.sent == m and not gone:
             return
-        if gone:
-            m["gone"] = gone
+        self.serial += 1
+        self.sent = m
         self.gone = set()
-        self.sent = {k: v for k, v in m.items() if k != "gone"}
-        self.pen.send(m)
+        self.history[self.serial] = ([(w.text, w.ks) for w in self.read],
+                                     {k for w in self.read for k in w.ks})
+        for old in [k for k in self.history if k <= self.serial - 16]:
+            del self.history[old]
+            self.offered.pop(old, None)
+        self.pen.send(dict({"op": "region_value", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
+                            "gone": gone}, **m))
 
     # ------------------------------------------------------------------ the pause
 
@@ -557,7 +659,7 @@ class Region:
             await self.close_session()  # an idle region holds no session (FR-007)
 
     async def _pause(self):
-        from .pen import lines, words
+        from .pen import lines
         free = self.free()
         if not free:
             return
@@ -581,16 +683,15 @@ class Region:
         others = [w for w in self.read if not set(w.ks) & line]
         items = []
         for t, _, a, f, ok in rd:
-            cand = [Word(x, ks) for x, ks in words(t, a) if ks]
+            cand = [Word(x, ks) for x, ks in split_words(t, a, self.sizes())]
             saved = self.read
             self.read = others + cand
             v = self.value()
             self.read = saved
-            items.append({"text": v, "line": t, "from": f, "fit": ok, "chars": a if v == t else "",
-                          "words": [(w.text, list(w.ks)) for w in cand]})
-        self.serial += 1
-        self.offered = (self.serial, items, others, set(k for w in self.read for k in w.ks) | line)
-        self.pen.send({"op": "candidates", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
+            items.append({"text": v, "from": f, "fit": ok, "words": [(w.text, list(w.ks)) for w in cand]})
+        await self.deliver()
+        self.offered[self.serial] = (items, others, set(k for w in self.read for k in w.ks) | line)
+        self.pen.send({"op": "region_candidates", "s": self.surface.sid, "r": self.rid, "serial": self.serial,
                        "items": [{k: v for k, v in i.items() if k != "words"} for i in items]})
 
     # ------------------------------------------------------------------ reports, edits, samples
@@ -600,34 +701,44 @@ class Region:
             await self._report(m)
 
     async def _report(self, m):
+        """a report on the value serial (accepted, corrected) or its candidates (picked)"""
         serial, action = int(m.get("serial", 0)), m.get("action")
-        if not self.offered or serial != self.offered[0]:
+        if serial not in self.history or (action == "picked" and serial not in self.offered):
             result = "stale"
         elif action == "discarded":
             result = "not_kept"
         else:
-            _, items, others, of = self.offered
+            snap, of = self.history[serial]
+            held = set(self.strokes)
             if action == "picked":
+                items, others, of = self.offered[serial]
                 rank = int(m.get("rank", 0))
-                if 0 <= rank < len(items):
-                    cand = [Word(t, ks) for t, ks in items[rank]["words"] if set(ks) <= set(self.strokes)]
-                    self.read = [w for w in others if set(w.ks) <= set(self.strokes)] + cand
-                result = await self.keep(of, "picked")
+                if not 0 <= rank < len(items):
+                    result = "stale"
+                    self.pen.send({"op": "region_report", "s": self.surface.sid, "r": self.rid, "serial": serial,
+                                   "result": result})
+                    return
+                ws = [(w.text, w.ks) for w in others] + [(t, tuple(sorted(ks))) for t, ks in items[rank]["words"]]
+                result = await self.keep(ws, of, "picked")
             elif action == "accepted":
-                result = await self.keep(of, "confirmed")
+                result = await self.keep(snap, of, "confirmed")
             else:
-                result = await self.edit(str(m.get("text", "")), of)
+                result = await self.edit(str(m.get("text", "")), of & held)
             await self.after_change()
-        self.pen.send({"op": "report", "s": self.surface.sid, "r": self.rid, "serial": serial, "result": result})
+        self.pen.send({"op": "region_report", "s": self.surface.sid, "r": self.rid, "serial": serial,
+                       "result": result})
 
-    async def keep(self, of, source):
-        """the value as it is confirmed: its read words made of the reported writing (of) kept,
-        with their samples; a report applies to the writing it was read from (FR-013)"""
-        new = [w for w in self.read if set(w.ks) <= of]
+    async def keep(self, ws, of, source):
+        """the reported words [(text, strokes)] kept, those whose strokes are all still the
+        region's free writing, with their samples; read words sharing their strokes go (a
+        report applies to the writing it was read from, FR-013)"""
+        free = set(self.free())
+        new = [Word(t, ks, "kept") for t, ks in ws if ks and set(ks) <= free and set(ks) <= of]
+        taken = {k for w in new for k in w.ks}
         for w in new:
-            w.kind = "kept"
+            w.foreign = any(k in self.foreign for k in w.ks)
+        self.read = [w for w in self.read if not set(w.ks) & taken]
         self.words += new
-        self.read = [w for w in self.read if w not in new]
         return await self.samples([(w, w.text) for w in new], source)
 
     async def edit(self, text, of=None):
@@ -882,7 +993,7 @@ class Region:
                 if ks[j] not in self.strokes:
                     continue
                 xy = [[float(v) for v in p.split(",")[:2]] for p in pts.split(" ")]
-                self.pen.send({"op": "neat", "s": self.surface.sid, "r": self.rid, "k": ks[j], "how": how,
+                self.pen.send({"op": "region_neat", "s": self.surface.sid, "r": self.rid, "k": ks[j], "how": how,
                                "points": xy})
             self.neat_sent = {k: v for k, v in self.neat_sent.items() if k[1] == self.strength}
             self.neat_sent[key] = True
