@@ -49,23 +49,39 @@ check-model: $(OUT)/glassine-handwriting
 install: $(OUT)/glassine-handwriting
 	install -Dm755 $(OUT)/glassine-handwriting $(DESTDIR)$(PREFIX)/bin/glassine-handwriting
 
-# Autograph's base font (docs/recognizer.md, The base font): the centre lines of an Edu
-# Beginner font (BASE_TTF, its licence BASE_OFL), made and checked by tools/base-font.py
-# (fontTools, numpy); then installed with its licence and a note of where it comes from
+# Autograph's base fonts (docs/recognizer.md, The base font): the centre lines of a school
+# print model, made and checked by tools/base-font.py (fontTools, numpy); then installed with
+# its licence and a note of where it comes from. The default, base.jsonl: Edu SA Beginner
+# (BASE_TTF, its licence BASE_OFL). German's own, de/base.jsonl: Playwrite DE Grund (BASE_DE_TTF,
+# BASE_DE_OFL) at the weight BASE_DE_AXES, the characters of tools/base-de.chars.
 BASE_DIR = $(PREFIX)/share/glassine/handwriting/autograph
+BASE_DE_AXES = wght=320
+BASE_README = import json, sys; h = json.loads(open(sys.argv[1]).readline()); print("Autograph draws the characters a person has not written from the centre lines of %s (%s%s, %s; sha256 %s), a Modified Version under the SIL Open Font License 1.1 (OFL.txt). %s" % (h["family"], h["source"], "".join(" %s=%g" % kv for kv in h.get("axes", {}).items()), h["licence"], h["sha256"], h["copyright"]))
 $(OUT)/base.jsonl: tools/base-font.py
 	@test -n "$(BASE_TTF)" || { echo "make base BASE_TTF=EduSABeginner.ttf"; exit 2; }
 	$(PY) tools/base-font.py $(BASE_TTF) $@
 
+$(OUT)/base-de.jsonl: tools/base-font.py tools/base-de.chars
+	@test -n "$(BASE_DE_TTF)" || { echo "make base-de BASE_DE_TTF=PlaywriteDEGrund.ttf"; exit 2; }
+	$(PY) tools/base-font.py --axes $(BASE_DE_AXES) --chars-file tools/base-de.chars $(BASE_DE_TTF) $@
+
 base: $(OUT)/base.jsonl
+
+base-de: $(OUT)/base-de.jsonl
 
 install-base: $(OUT)/base.jsonl
 	@test -n "$(BASE_OFL)" || { echo "make install-base BASE_OFL=OFL.txt"; exit 2; }
 	install -Dm644 $(OUT)/base.jsonl $(DESTDIR)$(BASE_DIR)/base.jsonl
 	install -Dm644 $(BASE_OFL) $(DESTDIR)$(BASE_DIR)/OFL.txt
-	$(PY) -c 'import json, sys; h = json.loads(open(sys.argv[1]).readline()); print("Autograph draws the characters a person has not written from the centre lines of %s (%s, %s; sha256 %s), a Modified Version under the SIL Open Font License 1.1 (OFL.txt). %s" % (h["family"], h["source"], h["licence"], h["sha256"], h["copyright"]))' $(OUT)/base.jsonl > $(DESTDIR)$(BASE_DIR)/README
+	$(PY) -c '$(BASE_README)' $(OUT)/base.jsonl > $(DESTDIR)$(BASE_DIR)/README
+
+install-base-de: $(OUT)/base-de.jsonl
+	@test -n "$(BASE_DE_OFL)" || { echo "make install-base-de BASE_DE_OFL=OFL.txt"; exit 2; }
+	install -Dm644 $(OUT)/base-de.jsonl $(DESTDIR)$(BASE_DIR)/de/base.jsonl
+	install -Dm644 $(BASE_DE_OFL) $(DESTDIR)$(BASE_DIR)/de/OFL.txt
+	$(PY) -c '$(BASE_README)' $(OUT)/base-de.jsonl > $(DESTDIR)$(BASE_DIR)/de/README
 
 clean:
 	rm -f $(OUT)/glassine-handwriting $(OUT)/test-engine $(OBJ)
 
-.PHONY: all check check-model install base install-base clean
+.PHONY: all check check-model install base base-de install-base install-base-de clean
