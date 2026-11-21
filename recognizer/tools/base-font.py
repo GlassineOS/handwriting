@@ -4,7 +4,8 @@
 font): the centre lines of an outline font's letters, written to the file the recognizer
 reads, so the base is drawn like the person's letters (their ink width, metrics and styles).
 
-    base-font.py [--chars CHARS] [--keep-slant] [--min-match X] [--sheet PNG] FONT.ttf OUT.jsonl
+    base-font.py [--chars CHARS | --chars-file FILE] [--axes TAG=V,...] [--keep-slant] [--min-match X]
+                 [--sheet PNG] FONT.ttf OUT.jsonl
 
 For a monoline font (every stroke one pen's width, round at its ends, as the school print
 models are): each glyph is filled at about 160 pixels per x-height (non-zero winding), thinned
@@ -15,6 +16,10 @@ component that thins to almost nothing) is one point. The strokes are smoothed, 
 upright (the font's measured slant taken out, unless --keep-slant), turned so each starts at
 its top (a mostly level one at its left; a loop at its top, anticlockwise) and ordered by
 where they start, the short marks (dots, accents) last.
+
+--chars-file: the characters to make (UTF-8 text, line breaks ignored), each of which the font must
+have; a missing one fails the run. --axes: a variable font at that instance (fontTools'
+instancer, in memory; the head records it as "axes", and "sha256" stays the file's).
 
 The gate (--min-match, 0.8 unless given): each glyph is drawn again from its strokes at the
 measured pen width and compared with its filled outline (shared pixels over the pixels of
@@ -473,6 +478,17 @@ def blot(img, p):
     return out
 
 
+def parts(img):
+    """the glyph's filled parts (4-connected), largest first"""
+    left, out = img.copy(), []
+    while left.any():
+        i, j = np.argwhere(left)[0]
+        b = blot(left, (i, j))
+        left &= ~b
+        out.append(b)
+    return sorted(out, key=lambda b: -int(b.sum()))
+
+
 def draw_strokes(strokes, r, w, h):
     """strokes (pixel row, column) drawn at radius r"""
     ii, jj = np.mgrid[0:h, 0:w]
@@ -557,18 +573,32 @@ def main(argv=None):
     ap.add_argument("font")
     ap.add_argument("out")
     ap.add_argument("--chars")
+    ap.add_argument("--chars-file")
+    ap.add_argument("--axes")
     ap.add_argument("--keep-slant", action="store_true")
     ap.add_argument("--min-match", type=float, default=0.8)
     ap.add_argument("--sheet")
     a = ap.parse_args(argv)
     raw = open(a.font, "rb").read()
     f = TTFont(a.font)
+    axes = None
+    if a.axes:
+        from fontTools.varLib.instancer import instantiateVariableFont
+        axes = {k: float(v) for k, v in (x.split("=", 1) for x in a.axes.split(","))}
+        f = instantiateVariableFont(f, axes)
     gs = f.getGlyphSet()
     cmap = f.getBestCmap()
     xh_u = f["OS/2"].sxHeight or 0.5 * f["head"].unitsPerEm
     s = PX_PER_XH / xh_u
     hm = f["hmtx"]
     chars = sorted(chr(c) for c in cmap if c > 0x20 and chr(c).isprintable() and not chr(c).isspace())
+    if a.chars_file:
+        want = set(open(a.chars_file, encoding="utf-8").read()) - {"\n", "\r"}
+        missing = sorted(c for c in want if ord(c) not in cmap)
+        if missing:
+            print("base-font: not in the font: %s" % " ".join(missing), file=sys.stderr)
+            return 1
+        a.chars = "".join(want)
     if a.chars:
         chars = [c for c in chars if c in a.chars]
     raw_strokes, fails, widths, info = {}, [], [], {}
@@ -597,9 +627,13 @@ def main(argv=None):
     for c, (img, ox, oy, w, h) in info.items():
         st = strokes_of(img, width_px)
         st = [smooth(p, width_px / 4) for p in st]
-        if not st:                      # a blot that thins to nothing: a dot at its middle
-            ii, jj = np.nonzero(img)
-            st = [[(float(ii.mean()), float(jj.mean()))]]
+        # a blot that thins to nothing (a dot of a colon, an ellipsis, a diaeresis): a dot at
+        # its middle, one for each such part of the glyph
+        for part in parts(img):
+            if not any(part[int(round(i)), int(round(j))] for t in st for i, j in t
+                       if 0 <= round(i) < h and 0 <= round(j) < w):
+                ii, jj = np.nonzero(part)
+                st.append([(float(ii.mean()), float(jj.mean()))])
         again = draw_strokes(st, width_px / 2, w, h)
         # a dot is drawn at the pen's width however large the font's is: its blot isn't compared
         keep = np.ones_like(img)
@@ -677,6 +711,8 @@ def main(argv=None):
             "slant": round(slant, 4), "measured_slant": round(measured, 4), "cap_height": round(cap, 4),
             "ascender": round(asc, 4), "descender": round(desc, 4), "ink_width": round(2 * half / xc, 4),
             "letter_spacing": round(letter, 4), "word_spacing": round(word, 4)}
+    if axes:
+        head["axes"] = axes
     with open(a.out, "w", encoding="utf-8") as fo:
         fo.write(json.dumps(head, ensure_ascii=False) + "\n")
         for c in sorted(out):

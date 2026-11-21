@@ -48,6 +48,9 @@ int hw_store_replace(const char *rel, const char *data, size_t len);
 /* settings: $XDG_CONFIG_HOME/glassine/handwriting.conf, KEY = VALUE, last one wins */
 int hw_local_models_dir(char *out, size_t n);   /* $XDG_DATA_HOME/glassine/handwriting-models */
 int hw_conf_get(const char *key, char *out, size_t n);         /* 1 found, 0 not */
+/* The languages a request without its own reads in (`LANGS` - or empty): the setting
+ * `languages`, else the locale's language, else `en`; into out, comma-separated. */
+void hw_default_langs(char *out, size_t n);
 int hw_conf_set(const char *key, const char *value);
 /* learning is on unless handwriting.conf or predict.conf (the keyboard's one setting)
  * says off */
