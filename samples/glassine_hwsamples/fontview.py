@@ -67,7 +67,8 @@ def parse(text):
                 _skip(at, "its character")
                 continue
             rules = d.get("rules") or []
-            good = [r for r in rules if isinstance(r, dict) and _chars(r.get("prev", r.get("next")), 1)]
+            good = [r for r in rules if isinstance(r, dict) and ("prev" in r or "next" in r)
+                    and all(_chars(r[x], 1) for x in ("prev", "next") if x in r)]
             if len(good) != len(rules):
                 _skip(at, "a rule's neighbour")
                 d["rules"] = good
@@ -123,16 +124,23 @@ def _rule_variant(model, d, out, k):
     whose neighbour's glyph is beside it (a joined pair counts by its letter on that side),
     its variant; None for none"""
     n = len(d["variants"])
-    for r in d.get("rules") or []:
-        side = "prev" if "prev" in r else "next" if "next" in r else None
-        v = r.get("variant")
-        if side is None or not isinstance(v, int) or not 0 <= v < n or not _in_font(model, r[side]):
-            continue
+
+    def beside(side, c):
         j = k - 1 if side == "prev" else k + 1
         if not 0 <= j < len(out):
-            continue
+            return False
         kind, t = out[j][0], out[j][1]
-        if (kind == "letter" and t == r[side]) or (kind == "joined" and t[-1 if side == "prev" else 0] == r[side]):
+        return (kind == "letter" and t == c) or (kind == "joined" and t[-1 if side == "prev" else 0] == c)
+
+    for r in d.get("rules") or []:
+        v = r.get("variant")
+        if not isinstance(v, int) or not 0 <= v < n:
+            continue
+        # a context rule (both neighbours) or a neighbour rule (one)
+        sides = [x for x in ("prev", "next") if x in r]
+        if not sides or not all(_in_font(model, r[x]) for x in sides):
+            continue
+        if all(beside(x, r[x]) for x in sides):
             return v
     return None
 

@@ -2301,6 +2301,73 @@ class NeighbourRules(unittest.TestCase):
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class ContextRules(unittest.TestCase):
+    """context rules (GLASSINE_HANDWRITING_LETTERS_CONTEXT=1, off by default): an o written its
+    second way between a b and a d (6 times) but its first after a b or before a d elsewhere
+    (8 times each, no neighbour rule) gets a rule for that letter triple; between a p and an x
+    3 times gets none (too few); without the option no model has one"""
+    @classmethod
+    def setUpClass(cls):
+        rnd = random.Random(43)
+        ss = alphabet_samples(seed=43, per=3)
+        ss += [sample("bod", rnd, styles={"o": 1}) for _ in range(6)]
+        ss += [sample("bo", rnd) for _ in range(8)] + [sample("od", rnd) for _ in range(8)]
+        ss += [sample("pox", rnd, styles={"o": 1}) for _ in range(3)]
+        cls.plain = Env()
+        cls.plain.put(ss)
+        cls.plain.run("letters", "build", "-r")
+        cls.e = Env()
+        cls.e.env["GLASSINE_HANDWRITING_LETTERS_CONTEXT"] = "1"
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.model = cls.e.model()
+        cls.chars = {d["char"]: d for d in map(json.loads, cls.model.splitlines()) if "char" in d}
+        cls.gl = font_glyphs(cls.model)
+        cls.ttf = {}
+        for st in ("Regular", "Calligraphy"):
+            cls.ttf[st] = cls.e.dir / ("ctx-%s.ttf" % st)
+            cls.e.run("font", "build", "-n", "Context", "--style", st, str(cls.ttf[st]))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+        cls.plain.close()
+
+    def ctx(self, c):
+        return [r for r in self.chars[c].get("rules", []) if "prev" in r and "next" in r]
+
+    def test_rule_learned(self):
+        r = self.ctx("o")
+        self.assertEqual([(x["prev"], x["next"]) for x in r], [("b", "d")])
+        self.assertEqual((r[0]["n"], r[0]["same"]), (6, 6))
+        self.assertGreater(r[0]["hits"], r[0]["cycle"])
+        # the letter's neighbour rules: none for b or d alone
+        self.assertFalse(any(x.get("prev") == "b" and "next" not in x for x in self.chars["o"].get("rules", [])))
+        self.assertFalse(any(x.get("next") == "d" and "prev" not in x for x in self.chars["o"].get("rules", [])))
+        self.assertFalse(any(("p", "x") == (x["prev"], x["next"]) for x in r))
+
+    def test_off_by_default(self):
+        plain = [json.loads(x) for x in self.plain.model().splitlines()]
+        self.assertFalse(any("prev" in r and "next" in r for d in plain if "char" in d for r in d.get("rules", [])))
+        # with the option the model is made again: its inputs differ
+        self.assertNotEqual(self.plain.model().splitlines()[0], self.model.splitlines()[0])
+
+    def shown(self, ttf, text):
+        return [self.gl[g["g"]] for g in hb(ttf, text)]
+
+    def test_shaped_between_the_neighbours(self):
+        v = self.ctx("o")[0]["variant"]
+        for st, ttf in self.ttf.items():
+            self.assertEqual(self.shown(ttf, "bod")[1], ("variant", "o", v), st)
+            self.assertEqual(self.shown(ttf, "a bod")[3], ("variant", "o", v), st)
+            # one neighbour only, or another: the cycle
+            for text in ("bo", "od", "boa", "aod", "b od"):
+                k = text.index("o")
+                self.assertEqual(self.shown(ttf, text)[k][0], "step", (st, text))
+            valid_font(self, ttf)
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
 class JoinedPairs(unittest.TestCase):
     """spec 003 FR-039: t and h written joined in 5 samples of 6 are one glyph in each style,
     a ligature shaped with no feature asked for, set at its letters' gaps, its neighbours at
