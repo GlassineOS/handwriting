@@ -180,6 +180,151 @@ def viterbi(logp: np.ndarray, labels: list[int]) -> np.ndarray | None:
     return np.array(owner)[path]
 
 
+# ---------------------------------------------------------------------------- the engine's shape
+
+def featurize_rows(strokes: list[np.ndarray]) -> tuple[np.ndarray, list[np.ndarray]]:
+    """The recognizer's own input rows (features.features: tilt removed, own core height,
+    resampled every features.STEP) and per stroke the frame of each of its points for a model
+    halving the rows once (PointAligner): a point's row is the one nearest it along its
+    stroke, its frame (row + 1) // 2. Empty strokes keep an empty map. The C engine maps
+    points the same way (recognizer/src/hw/aligner.c)."""
+    from . import features as F
+    keep = [i for i, q in enumerate(strokes) if len(q)]
+    x = F.features([np.asarray(strokes[i], float)[:, :3] for i in keep])
+    if not len(x):
+        return x, [np.zeros(0, int) for _ in strokes]
+    norm = F.normalise([np.asarray(strokes[i], float)[:, :3] for i in keep])
+    nf = (len(x) - 1) // 2 + 1
+    maps = [np.zeros(0, int) for _ in strokes]
+    at = 0
+    for i, q in zip(keep, norm):
+        k = len(F._resample(q, F.STEP))
+        d = np.r_[0, np.cumsum(np.linalg.norm(np.diff(q[:, :2], axis=0), axis=1))]
+        row = np.zeros(len(q), int) if k < 2 or d[-1] <= 0 else np.floor(d * (k - 1) / d[-1] + 0.5).astype(int)
+        maps[i] = np.minimum((np.clip(row, 0, k - 1) + at + 1) // 2, nf - 1)
+        at += k
+    return x, maps
+
+
+class PointAligner(nn.Module):
+    """The aligner in the shape the recognizer's C engine runs (model.Recognizer: a
+    convolution, one strided convolution, a two-layer bidirectional LSTM; the recognizer's
+    own five features; a frame every 0.2 core heights), exported as a .ghm like a base model
+    (class 0 the blank, class k + 1 LETTERS[k]). Its log-probabilities come out in this
+    module's order (LETTERS, then BLANK), so the chain and its decoding are shared."""
+
+    def __init__(self, hidden: int = 128, conv: int = 128, layers: int = 2):
+        super().__init__()
+        from .model import Recognizer
+        self.m = Recognizer(conv=conv, hidden=hidden, layers=layers, down=1, alphabet=LETTERS)
+
+    def forward(self, x, lens=None):  # (B, T, 5) -> (B, T', NCLASS)
+        # as model.Single (the export) but batched: the convolutions masked past each line's
+        # end, the LSTM over the padded batch (packing is many times slower to train on the
+        # CPU; batches are of lines of about one length)
+        m = self.m
+        if lens is None:
+            lens = torch.full((x.shape[0],), x.shape[1], dtype=torch.long)
+        h = m._mask((x * m.scale).transpose(1, 2), lens)
+        h = m._mask(m.act(m.c1(h)), lens)
+        l3 = lens
+        for c in m.strided:
+            l3 = (l3 - 1) // 2 + 1
+            h = m._mask(m.act(c(h)), l3)
+        h, _ = m.lstm(h.transpose(1, 2))
+        lp = m.out(m.drop(h)).log_softmax(-1)
+        return torch.cat([lp[..., 1:], lp[..., :1]], -1)
+
+    def out_lengths(self, lens):
+        return self.m.out_lengths(lens)
+
+
+def features_for(model, strokes):
+    """(features, per stroke the frame of each point) for the model's kind."""
+    if isinstance(model, PointAligner):
+        return featurize_rows(strokes)
+    x, maps, _ = featurize(strokes)
+    return x, maps
+
+
+def decode_delayed(lp: np.ndarray, firsts: list[int], labels: list[int], group: list[int], pen: float) -> np.ndarray | None:
+    """The best path through the chain of `labels` (as viterbi), where in addition a whole
+    stroke (frames firsts[j] up to the next first) may be a delayed one: all of it one label
+    already passed (index into labels, of the group of the current one or the one before:
+    `group` per label, a word), at log-penalty pen, the chain staying where it was. Per frame
+    the index into labels (-1 the blank); None when the frames are too few."""
+    cls, rep = chain(labels)
+    owner = []
+    k = 0
+    for c in cls:
+        owner.append(-1 if c == BLANK else k)
+        if c != BLANK:
+            k += 1
+    T, S = len(lp), len(cls)
+    if T < S:
+        return None
+    owner = np.array(owner)
+    lab_of_state = np.maximum.accumulate(np.where(owner >= 0, owner, -1))  # a blank: the label before it
+    e = lp[:, cls]
+    repm = np.array(rep)
+    bounds = list(firsts) + [T]
+    back = np.zeros((T, S), np.int8)
+    alpha = None
+    choice = []  # per stroke: (delayed per state, its label per state)
+    for j in range(len(firsts)):
+        a, b = bounds[j], bounds[j + 1]
+        if b <= a:
+            choice.append((np.zeros(S, bool), np.zeros(S, int)))
+            continue
+        if alpha is None:
+            cur = np.full(S, NEG)
+            cur[0] = e[a, 0]
+            t0 = a + 1
+        else:
+            cur, t0 = alpha, a
+        prev = alpha
+        for t in range(t0, b):
+            stay = np.where(repm, cur, NEG)
+            move = np.r_[NEG, cur[:-1]]
+            back[t] = move > stay
+            cur = np.maximum(stay, move) + e[t]
+        dl = np.zeros(S, bool)
+        dlab = np.zeros(S, int)
+        if prev is not None:
+            sums = lp[a:b].sum(0)
+            for s in range(S):
+                if owner[s] < 0 or prev[s] <= NEG / 2:
+                    continue
+                here = lab_of_state[s]
+                best, bl = NEG, -1
+                for c in range(here):
+                    if group[c] < group[here] - 1:
+                        continue
+                    v = sums[labels[c]]
+                    if v > best:
+                        best, bl = v, c
+                if bl >= 0 and prev[s] + best + pen > cur[s]:
+                    cur[s] = prev[s] + best + pen
+                    dl[s], dlab[s] = True, bl
+        choice.append((dl, dlab))
+        alpha = cur
+    s = S - 1
+    out = np.zeros(T, int)
+    for j in range(len(firsts) - 1, -1, -1):
+        a, b = bounds[j], bounds[j + 1]
+        if b <= a:
+            continue
+        dl, dlab = choice[j]
+        if dl[s]:
+            out[a:b] = dlab[s]
+            continue
+        for t in range(b - 1, a - 1, -1):
+            out[t] = owner[s]
+            if t > (bounds[0]) and back[t, s]:
+                s -= 1
+    return out
+
+
 class Aligner(nn.Module):
     def __init__(self, hidden: int = 128, layers: int = 2):
         super().__init__()
@@ -198,18 +343,32 @@ def class_of(text: str, idx: list[int]) -> list[int]:
     return [LETTERS.index(text[i]) if text[i] in LETTERS else BLANK for i in idx]
 
 
-def label_points(model: Aligner, strokes: list[np.ndarray], text: str, spans: list[list[int]] | None = None) -> list[np.ndarray]:
+def label_points(model, strokes: list[np.ndarray], text: str, spans: list[list[int]] | None = None,
+                 delay: float | None = None) -> list[np.ndarray]:
     """Each point's character (index into text; -1 none): text alone (spans None), or each
-    stroke over the letters its span lists."""
-    x, maps, firsts = featurize(strokes)
-    with torch.no_grad():
-        lp = model(torch.from_numpy(x)[None])[0].numpy()
+    stroke over the letters its span lists. delay (text alone): a stroke may be a delayed one
+    of a letter already passed, at that log-penalty (decode_delayed); None: never."""
+    x, maps = features_for(model, strokes)
     out = [np.full(len(q), -1, int) for q in strokes]
+    if not len(x):
+        return out
+    with torch.no_grad():
+        lp = model(torch.from_numpy(np.ascontiguousarray(x))[None])[0].numpy()
     if spans is None:
         idx = [i for i, c in enumerate(text) if c in LETTERS]
         if not idx:
             return out
-        own = viterbi(lp, class_of(text, idx))
+        # decoded over the frames that hold points only (so every letter on the path gets
+        # points; a frame between two sparse points holds none), as aligner.c
+        occ = np.unique(np.concatenate([m for m in maps if len(m)]))
+        lp = lp[occ]
+        maps = [np.searchsorted(occ, m) for m in maps]
+        if delay is None:
+            own = viterbi(lp, class_of(text, idx))
+        else:
+            firsts = sorted({int(m.min()) for m in maps if len(m)})
+            group = [text[:i].count(" ") for i in idx]
+            own = decode_delayed(lp, firsts, class_of(text, idx), group, delay)
         if own is None:
             return out
         fc = np.where(own >= 0, np.array(idx)[np.maximum(own, 0)], -1)

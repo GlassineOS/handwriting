@@ -30,7 +30,7 @@ _G = None
 
 
 def _setup(fonts: list[str], workers: int, names="build/names", gclm="build/release/glassine-handwriting-chars-en-1/chars.gclm",
-           wordlist="build/lexicon/en/words.txt", given="ssa", held=False):
+           wordlist="build/lexicon/en/words.txt", given="ssa", held=False, joins=None, bar_chars=None):
     from . import build4, gen, lines as L
     from .cli import font_splits
     from .timing import FIT_ONE_WRITER, Fit
@@ -40,15 +40,28 @@ def _setup(fonts: list[str], workers: int, names="build/names", gclm="build/rele
     tabs, covers = build4.font_tables(sp["train"] + sp["dev"] + sp["test"], Path("build/cache"), workers)
     by = dict(tabs)
     pool, open0, _ = build4.style_pool([(f, by[f]) for f in sp["train"]], build4.bigrams(lg.train_s), [], gen.CALIB)
-    g = gen.Generator(gen.FontWriter([(f, by[f]) for f in fonts], covers), Fit(**FIT_ONE_WRITER), pool, open0)
+    g = gen.Generator(gen.FontWriter([(f, by[f]) for f in fonts], covers), Fit(**FIT_ONE_WRITER), pool, open0,
+                      joins=joins, bar_chars=bar_chars or gen.BAR_CHARS)
     return g, lg, pool
 
 
-def _style(rng, pool, join=(0.5, 1.0)):
+def _style(rng, pool, join=(0.5, 1.0), real=False):
+    """A writer drawn for aligner data: joins inside words likelier than the generator's; with
+    real, also the ways real ink differs from straight bridges and tidy bars (REAL)."""
     from . import gen
     st = gen.draw_style(rng, pool)
     st.join = float(rng.uniform(*join))
+    if real:
+        for k, (lo, hi) in REAL.items():
+            setattr(st, k, float(rng.uniform(lo, hi)))
     return st
+
+
+# the "real" writers (aligner data 2): curved joins (a learned join shape where one fits,
+# else a drawn bow), bars delayed more often and reaching over the next letter or running
+# on into it pen down, delayed strokes after a later letter or after the next word is begun
+REAL = {"curve": (0.5, 1.0), "bar_delay": (0.1, 0.7), "mid": (0.03, 0.3), "reach": (0.0, 0.8),
+        "bar_lead": (0.0, 0.5), "late_word": (0.0, 0.2)}
 
 
 def _pack(smp: dict) -> dict:
@@ -57,60 +70,83 @@ def _pack(smp: dict) -> dict:
 
 
 def _render(job):
-    t, seed = job
-    g, pool = _G
+    t, seed, mine = job
+    g, pool, real, lw = _G
     rng = np.random.default_rng(seed)
     for _ in range(3):
         try:
-            return _pack(g.line(t, rng, _style(rng, pool), points=True))
+            if mine and lw is not None and lw.covers(t):
+                st = lw.style(rng)
+                st.join = float(rng.uniform(0.5, 1.0))
+                for k, (lo, hi) in REAL.items():
+                    setattr(st, k, float(rng.uniform(lo, hi)))
+                return _pack(g.line(t, rng, st, letters=lw, points=True))
+            return _pack(g.line(t, rng, _style(rng, pool, real=real), points=True))
         except ValueError:
             continue
     return None
 
 
-def render(texts: list[str], g, pool, seed: int, workers: int) -> list[dict]:
+def render(texts: list[str], g, pool, seed: int, workers: int, real: bool = False, letters=None,
+           share: float = 0.0) -> list[dict]:
+    """letters: a LetterWriter that writes about `share` of the lines (those it covers; the
+    others in the fonts)."""
     global _G
-    _G = (g, pool)
-    seeds = np.random.default_rng(seed).integers(0, 2**62, len(texts)).tolist()
+    _G = (g, pool, real, letters)
+    r = np.random.default_rng(seed)
+    seeds = r.integers(0, 2**62, len(texts)).tolist()
+    mine = (r.random(len(texts)) < share).tolist() if letters is not None else [False] * len(texts)
     with mp.get_context("fork").Pool(workers) as p:
-        return [s for s in p.imap(_render, list(zip(texts, seeds)), chunksize=32) if s is not None]
+        return [s for s in p.imap(_render, list(zip(texts, seeds, mine)), chunksize=32) if s is not None]
 
 
 TEXT_SHARES = {"prose": 0.6, "words": 0.25, "pseudo": 0.15}
 
 
-def make_sets(out: Path, n_train: int, n_dev: int, test_lines: int, letter_lines: int, workers: int, seed: int = 71):
+def make_sets(out: Path, n_train: int, n_dev: int, test_lines: int, letter_lines: int, workers: int, seed: int = 71,
+              real: bool = False, letters: Path | None = None, share: float = 0.0):
     """train (training fonts), dev (dev fonts), and per test font one writer: its letter
-    lines (no joins, no delayed strokes) and its joined test lines."""
+    lines (no joins, no delayed strokes) and its joined test lines. real: the writers of
+    REAL (curved joins, bars and dots as people write them, the 5's roof a bar); letters: a
+    letter model file (docs/recognizer.md) whose learned join shapes the curved joins take
+    and whose versions write `share` of the training lines (its person's ink: keep the sets
+    as private as the model)."""
+    from . import gen
     from .cli import font_splits
-    from .lines import Generator
     out.mkdir(parents=True, exist_ok=True)
     sp = font_splits()
+    joins = lw = None
+    if letters is not None:
+        rows = [json.loads(ln) for ln in Path(letters).read_text(encoding="utf-8").splitlines() if ln.strip()]
+        joins = gen.JoinShapes.from_rows(rows)
+        lw = gen.LetterWriter(rows, "person")
+    bars = gen.BAR_CHARS + "5" if real else None
     for name, fonts, n, s in (("train", sp["train"], n_train, seed), ("dev", sp["dev"], n_dev, seed + 1)):
         f = out / f"{name}.pkl"
         if f.exists():
             continue
-        g, lg, pool = _setup(fonts, workers)
+        g, lg, pool = _setup(fonts, workers, joins=joins, bar_chars=bars)
         texts = [t for t, _ in lg.lines(n, s, TEXT_SHARES)]
         t0 = time.time()
-        f.write_bytes(pickle.dumps(render(texts, g, pool, s + 100, workers)))
+        f.write_bytes(pickle.dumps(render(texts, g, pool, s + 100, workers, real, lw if name == "train" else None, share)))
         print(f"{name}: {n} lines, {time.time() - t0:.0f} s", flush=True)
     f = out / "test.pkl"
     if f.exists():
         return
     test = {}
     fonts = sp["test"]
-    g, lg, pool = _setup(fonts, workers, held=True)
-    from . import gen
+    g, lg, pool = _setup(fonts, workers, held=True, joins=joins, bar_chars=bars)
     rng = np.random.default_rng(seed + 2)
     alpha = "abcdefghijklmnopqrstuvwxyz"
     tables = dict(g.fonts.tables)
     covers = dict(zip([f for f, _ in g.fonts.tables], g.fonts.covers))
     for fi, font in enumerate(fonts):
-        gf = gen.Generator(gen.FontWriter([(font, tables[font])], {font: covers[font]}), g.timing.f, pool, g.open0)
-        st = _style(rng, pool)
+        gf = gen.Generator(gen.FontWriter([(font, tables[font])], {font: covers[font]}), g.timing.f, pool, g.open0,
+                           joins=joins, bar_chars=bars or gen.BAR_CHARS)
+        st = _style(rng, pool, real=real)
         st.one_font = True
-        plain = gen.Style(**{**st.__dict__, "join": 0.0, "dot_delay": 0.0, "bar_delay": 0.0})
+        plain = gen.Style(**{**st.__dict__, "join": 0.0, "dot_delay": 0.0, "bar_delay": 0.0, "reach": 0.0,
+                             "bar_lead": 0.0, "late_word": 0.0})
         texts = [t for t, _ in lg.lines(test_lines, seed + 10 + fi, {"prose": 0.5, "words": 0.5})]
         # the letter lines: every small letter, capital and digit at least four times, then words
         chars = list(alpha + alpha.upper() + "0123456789") * 4
@@ -126,17 +162,25 @@ def make_sets(out: Path, n_train: int, n_dev: int, test_lines: int, letter_lines
 
 # ---------------------------------------------------------------------------- training
 
-def prepare(lines: list[dict]) -> list[tuple[np.ndarray, list[int], np.ndarray]]:
+def prepare(lines: list[dict], kind: str = "point") -> list[tuple[np.ndarray, list[int], np.ndarray]]:
     """(features, class labels of the writing-order target, each frame's class or -1 on a
-    join) per line."""
+    join) per line; kind "point" the engine-shaped aligner's rows (A.PointAligner), else the
+    prototype's frames."""
     out = []
     for s in lines:
         st = [np.asarray(q, float) for q in s["strokes"]]
-        x, maps, _ = A.featurize(st)
-        fc = A.frame_truth(maps, [np.asarray(o, int) for o in s["owner"]], len(x))
+        if kind == "point":
+            x, maps = A.featurize_rows(st)
+            T = (len(x) - 1) // 2 + 1 if len(x) else 0
+        else:
+            x, maps, _ = A.featurize(st)
+            T = len(x)
+        if not T:
+            continue
+        fc = A.frame_truth(maps, [np.asarray(o, int) for o in s["owner"]], T)
         tgt = A.target_of(fc)
         cls = A.class_of(s["text"], tgt)
-        if not tgt or A.BLANK in cls or len(A.chain(cls)[0]) > len(x):
+        if not tgt or A.BLANK in cls or len(A.chain(cls)[0]) > T:
             continue
         fcls = np.array([A.LETTERS.find(s["text"][c]) if c >= 0 else -1 for c in fc])
         out.append((x, cls, fcls))
@@ -144,17 +188,17 @@ def prepare(lines: list[dict]) -> list[tuple[np.ndarray, list[int], np.ndarray]]
 
 
 def train(data: Path, out: Path, steps: int, batch: int = 24, lr: float = 2e-3, hidden: int = 128,
-          threads: int = 8, seed: int = 0, minutes: float = 1e9, ce: float = 0.0):
+          threads: int = 8, seed: int = 0, minutes: float = 1e9, ce: float = 0.0, kind: str = "point"):
     """The chain loss per frame; ce > 0 adds that weight of a frame-level cross-entropy on
     the generator's own point labels (joins left out), which the chain loss alone doesn't
     need but which keeps the alignment from settling where the likelihood is as good."""
     torch.set_num_threads(threads)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    tr = prepare(pickle.loads((data / "train.pkl").read_bytes()))
-    dv = prepare(pickle.loads((data / "dev.pkl").read_bytes()))[:400]
+    tr = prepare(pickle.loads((data / "train.pkl").read_bytes()), kind)
+    dv = prepare(pickle.loads((data / "dev.pkl").read_bytes()), kind)[:400]
     print(f"train {len(tr)} lines, dev {len(dv)}", flush=True)
-    m = A.Aligner(hidden)
+    m = A.PointAligner(hidden) if kind == "point" else A.Aligner(hidden)
     opt = torch.optim.AdamW(m.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps, pct_start=0.1)
     order = np.argsort([len(x) for x, *_ in tr])
@@ -162,13 +206,17 @@ def train(data: Path, out: Path, steps: int, batch: int = 24, lr: float = 2e-3, 
 
     def run(items):
         T = max(len(x) for x, *_ in items)
-        X = torch.zeros(len(items), T, A.NFEAT)
-        Y = torch.full((len(items), T), -1, dtype=torch.long)
+        X = torch.zeros(len(items), T, items[0][0].shape[1])
+        Ty = max(len(y) for *_, y in items)
+        Y = torch.full((len(items), Ty), -1, dtype=torch.long)
         for b, (x, _, y) in enumerate(items):
             X[b, :len(x)] = torch.from_numpy(x)
             Y[b, :len(y)] = torch.from_numpy(y)
-        lens = torch.tensor([len(x) for x, *_ in items])
-        lp = m(X)
+        if kind == "point":
+            lp = m(X, torch.tensor([len(x) for x, *_ in items]))
+        else:
+            lp = m(X)
+        lens = torch.tensor([len(y) for *_, y in items])
         loss = A.chain_loss(lp, lens, [c for _, c, _ in items]) / lens.sum()
         if ce > 0:
             loss = loss + ce * torch.nn.functional.nll_loss(lp.reshape(-1, A.NCLASS), Y.reshape(-1), ignore_index=-1)
@@ -193,16 +241,38 @@ def train(data: Path, out: Path, steps: int, batch: int = 24, lr: float = 2e-3, 
             if dl < best:
                 best = dl
                 out.parent.mkdir(parents=True, exist_ok=True)
-                torch.save({"state": m.state_dict(), "hidden": hidden, "step": step + 1, "dev": dl}, out)
+                torch.save({"state": m.state_dict(), "hidden": hidden, "step": step + 1, "dev": dl, "kind": kind}, out)
         if time.time() - t0 > minutes * 60:
             break
 
 
-def load(path: Path) -> A.Aligner:
+def load(path: Path):
+    """A checkpoint: the engine-shaped aligner, or the prototype (no "kind")."""
     ck = torch.load(path, weights_only=True)
-    m = A.Aligner(ck["hidden"])
+    m = A.PointAligner(ck["hidden"]) if ck.get("kind") == "point" else A.Aligner(ck["hidden"])
     m.load_state_dict(ck["state"])
     return m.eval()
+
+
+def export_ghm(ckpt: Path, out: Path) -> Path:
+    """The engine-shaped aligner as a .ghm (the base model format, recognizer/tools/onnx2ghm.py:
+    class 0 the blank, then LETTERS), for recognizer/src/hw/aligner.c."""
+    import subprocess
+    import sys
+    import tempfile
+    from .model import Single
+    m = load(ckpt)
+    assert isinstance(m, A.PointAligner)
+    tool = Path(__file__).resolve().parents[3] / "recognizer" / "tools" / "onnx2ghm.py"
+    with tempfile.TemporaryDirectory() as t:
+        onnx = Path(t) / "aligner.onnx"
+        x0 = torch.zeros(1, 200, m.m.c1.in_channels)
+        torch.onnx.export(Single(m.m).eval(), (x0,), onnx, input_names=["ink"], output_names=["logp"],
+                          dynamic_axes={"ink": {1: "points"}, "logp": {1: "frames"}}, opset_version=17, dynamo=False)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, str(tool), str(onnx), "--charset", A.LETTERS, "-o", str(out)],
+                       check=True, stdout=subprocess.DEVNULL)
+    return out
 
 
 # ---------------------------------------------------------------------------- measures
@@ -299,11 +369,31 @@ def delayed_line(owners: list[np.ndarray]) -> bool:
     return False
 
 
-def measure_synthetic(test: dict, model: A.Aligner | None, other: dict | None = None) -> dict:
+def ownership(strokes: list[np.ndarray], truth: list[np.ndarray], pred: list[np.ndarray], acc: dict):
+    """Whole-line ownership into acc: points (labelled by the truth) given their own
+    character, and delayed strokes (all of one character, written after a later character's
+    ink: a late dot or bar) whose points at least nine in ten go to it."""
+    seen = -1
+    for q, o, p in zip(strokes, truth, pred):
+        o = np.asarray(o, int)
+        p = np.asarray(p, int)
+        lab = o >= 0
+        acc["points"] = acc.get("points", 0) + int(lab.sum())
+        acc["points_right"] = acc.get("points_right", 0) + int((p[lab] == o[lab]).sum())
+        own = set(o[lab].tolist())
+        if len(own) == 1 and seen > next(iter(own)):
+            acc["delayed"] = acc.get("delayed", 0) + 1
+            acc["delayed_right"] = acc.get("delayed_right", 0) + int(np.mean(p[lab] == o[lab]) >= 0.9)
+        if own:
+            seen = max(seen, max(own))
+
+
+def measure_synthetic(test: dict, model, other: dict | None = None, delay: float | None = None) -> dict:
     """Cut errors per method over the joins of the test lines (all lines, and those without
     delayed strokes), and on the strokes the shape cut changed (`shape_text` against
     `pre_text`, when given). `other`: {writer: {"lines": [{method: per-stroke labels}]}}."""
     errs: dict[str, dict[str, list]] = {}
+    owns: dict[str, dict] = {}
     cut_strokes = 0
     strokes_with_joins = 0
     for font, w in test.items():
@@ -315,6 +405,11 @@ def measure_synthetic(test: dict, model: A.Aligner | None, other: dict | None = 
             if model is not None:
                 methods["aligner_text"] = A.label_points(model, st, s["text"])
                 methods["aligner_spans"] = A.label_points(model, st, s["text"], s["spans"])
+                if delay is not None:
+                    methods["aligner_text_delay"] = A.label_points(model, st, s["text"], delay=delay)
+            for name, lab in methods.items():
+                if lab is not None and not name.startswith("pre_"):
+                    ownership(st, truth, lab, owns.setdefault(name, {}))
             late = delayed_line(truth)
             for j, (q, o) in enumerate(zip(st, truth)):
                 if not joins_of(o):
@@ -333,6 +428,10 @@ def measure_synthetic(test: dict, model: A.Aligner | None, other: dict | None = 
                     if changed:
                         errs[name].setdefault("strokes the shape cut changed", []).extend(e)
     out = {name: {k: summarise(v) for k, v in d.items()} for name, d in errs.items()}
+    for name, a in owns.items():
+        out.setdefault(name, {})["ownership"] = {
+            "points_right": a.get("points_right", 0) / max(a.get("points", 0), 1),
+            "delayed": a.get("delayed", 0), "delayed_right": a.get("delayed_right", 0) / max(a.get("delayed", 0), 1)}
     out["_strokes"] = {"with joins": strokes_with_joins, "shape cut changed": cut_strokes}
     return out
 
@@ -380,6 +479,9 @@ def main(argv=None):
     d.add_argument("--test-lines", type=int, default=40)
     d.add_argument("--letter-lines", type=int, default=60)
     d.add_argument("--workers", type=int, default=12)
+    d.add_argument("--real", action="store_true", help="the writers of REAL (curved joins, bars and dots as written)")
+    d.add_argument("--letters", type=Path, help="a letter model file: its join shapes, and its versions write --share of train")
+    d.add_argument("--share", type=float, default=0.0)
     t = sub.add_parser("train")
     t.add_argument("--data", default="build/align")
     t.add_argument("--out", default="build/align/aligner.pt")
@@ -390,11 +492,43 @@ def main(argv=None):
     t.add_argument("--threads", type=int, default=8)
     t.add_argument("--minutes", type=float, default=1e9)
     t.add_argument("--ce", type=float, default=0.0, help="weight of a frame cross-entropy on the generator's labels")
+    t.add_argument("--kind", choices=["point", "prototype"], default="point")
+    e = sub.add_parser("export")
+    e.add_argument("ckpt", type=Path)
+    e.add_argument("out", type=Path)
+    m = sub.add_parser("measure")
+    m.add_argument("test", type=Path)
+    m.add_argument("ckpt", type=Path)
+    m.add_argument("out", type=Path)
+    m.add_argument("--delay", type=float, action="append", help="decode with delayed strokes at this penalty")
+    m.add_argument("--other", action="append", default=[],
+                   help="TAG=PKL: another method's labels per writer and line (as the comparison driver writes them)")
     a = ap.parse_args(argv)
     if a.cmd == "data":
-        make_sets(Path(a.out), a.train, a.dev, a.test_lines, a.letter_lines, a.workers)
+        make_sets(Path(a.out), a.train, a.dev, a.test_lines, a.letter_lines, a.workers, real=a.real,
+                  letters=a.letters, share=a.share)
+    elif a.cmd == "export":
+        export_ghm(a.ckpt, a.out)
+    elif a.cmd == "measure":
+        test = pickle.loads(a.test.read_bytes())
+        if isinstance(test, list):  # a dev set (to choose --delay on): its lines as one writer's
+            test = {"dev": {"test": test}}
+        model = load(a.ckpt)
+        other: dict = {}
+        for o in a.other:
+            tag, f = o.split("=", 1)
+            for font, w in pickle.loads(Path(f).read_bytes()).items():
+                lines = other.setdefault(font, {"lines": [{} for _ in w["lines"]]})["lines"]
+                for d, ln in zip(lines, w["lines"]):
+                    # (TAG "main" keeps the names: shape_text against pre_text marks the strokes it cut)
+                    d.update({(k if tag == "main" else f"{tag}_{k}"): v for k, v in ln.items()})
+        res = {}
+        for d in a.delay or [None]:
+            res["delay" if d is None else f"delay {d}"] = measure_synthetic(test, model, other or None, delay=d)
+        a.out.write_text(json.dumps(res, indent=1))
     else:
-        train(Path(a.data), Path(a.out), a.steps, a.batch, a.lr, a.hidden, a.threads, minutes=a.minutes, ce=a.ce)
+        train(Path(a.data), Path(a.out), a.steps, a.batch, a.lr, a.hidden, a.threads, minutes=a.minutes, ce=a.ce,
+              kind=a.kind)
 
 
 if __name__ == "__main__":
