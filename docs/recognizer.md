@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.5)
+# The handwriting recognizer (contract version 1.7)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -71,6 +71,8 @@ microsecond.
 | `clear ID S` | `clear ID ok`: all strokes gone, the session stays |
 | `end ID S` | `end ID ok` |
 | `area ID S X0,Y0,X1,Y1,LINE,ROT[,BASE]` | `area ID ok` |
+| `prior ID S XH` | `prior ID ok` |
+| `set ID TEXT` | `set ID ok WIDTH XH_MM INK K {POINTS}×K` |
 | `confirm ID S SOURCE TEXT [keep]` | `confirm ID ok SAMPLE` (`prompted`: `confirm ID ok SAMPLE exact\|inferred`), or `confirm ID skip REASON` |
 | `recognize ID LANGS FIELD UNITS COUNT BEFORE STROKES` | as `read`, with the verb `recognize`; or `recognize ID private` |
 | `samples ID [all]` | `samples ID K SAMPLE…` |
@@ -85,7 +87,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 to 1.5 only add to 1.0, so a client of any
+**hello** names the contract version (1: versions 1.1 to 1.7 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -146,7 +148,25 @@ box `X0,Y0` to `X1,Y1` and its line spacing `LINE`, in the session's units, the 
 orientation `ROT` (0, 90, 180 or 270 degrees), and optionally `BASE`, the y of its first guide
 line (the line letters sit on; the next ones every `LINE` from it). It stays until the session
 ends. A box that is empty or an orientation that isn't one of these is `bad-area`. `BASE` is not
-stored in samples.
+stored in samples. `LINE` 0 (contract 1.6) is an area without ruled lines: its box, and its
+`BASE` as one guide line (Size, below); it is no size reference.
+
+**prior** (contract 1.6) gives session `S` a typical small letter's height `XH` in its units (0
+none; a negative or non-number `XH` is `bad-prior`), the size reference when neither the
+person's letters in its units nor an area line give one (Size, below). It stays until the
+session ends and is not stored in samples. The handwriting service gives every session it
+begins for a `device` client a typical handwriting size in millimetres at the units' points
+per millimetre (docs/service.md, The writing's size).
+
+**set** (contract 1.7, spec 005 FR-018 to FR-024) gives `TEXT` (escaped) set in the writer's
+font as pen strokes, for a client that draws a word without the font itself: the glyphs of the
+font (The letter model and the font, below) at their places, the joins between letters
+included, in x-heights with y up and the baseline at 0, the ink's left at 0. `WIDTH` is the
+ink's width (the advance of the text without a letter model), `XH_MM` the writer's small
+letters in millimetres (0 when not known), `INK` the strokes' width as the font draws them, `K`
+the strokes, each `x,y x,y …`. Without a letter model, or for characters it doesn't cover, a
+character is an advance with no strokes. The same text gives the same strokes for the same
+letter model. No session; nothing is stored.
 
 **remove** removes strokes by number (unknown numbers are ignored; `REMOVED` counts the ones
 removed). An undo, or the strokes a gesture covered once the client acted on it.
@@ -293,7 +313,21 @@ unweighed). The reference below serves both; the weighing only a version 1 model
   kind of units only: a session with `device:PER_MM` in millimetres, else one with an `area` by
   its LINE, else an `em` one in em. Without enough samples in those units, the line alone (the
   area's LINE, or 1 for `em`; small letters 0.2 lines high, capitals 0.5), which only tells
-  dots and dashes apart. Without either, nothing below applies.
+  dots and dashes apart; without a line, the session's `prior` as the line alone is (small
+  letters `XH` high, capitals 2.5 times that), but the prior is a typical size, never the
+  writing's own. Writing whose small letters can be measured is read at 1.5 times their height,
+  whatever `XH`: each stroke's turns, a turn counting only once the pen went back a twentieth of
+  the ink's height (so a pen's jitter makes no turns), the median foot less the median top over
+  0.85, with at least 5 of each and the ink at least 4 of its letters wide. Ink that can't be
+  measured takes `XH` as its reference only while it is at most twice as high (one or two
+  glyphs: a lone character) or four times as high (more) as `XH`; taller, the prior says
+  nothing of it and it is read without a reference, by its own height. These figures come from
+  the person's writing (a train half): a reference helps a lone character up to 1.5 times its
+  height, is level with none up to 2 and costs more beyond; for words it helps up to 3 and is
+  level up to 4; a measured line reads best at 1.5 times its letters (of 1, 1.25, 1.5, 2 and 3)
+  at every size. Without any of these, nothing below applies.
+  An area with `LINE` 0 and a `BASE` has that one guide line, the next ones a line of
+  1 / 0.2 reference small letters apart.
   The line's 0.2 is a guess, and people write smaller than it: a version 2 model reads ink at
   too few points per letter when its letters are much smaller than the reference. So with the
   line alone, a line of writing is read at twice its own small letters' height when they come

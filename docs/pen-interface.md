@@ -29,10 +29,15 @@ one. The service has no confirmed text for the writing, so no word is set in the
 font (spec 003 FR-043): at the neatest strength the words are pulled towards their letters as
 at the strong one.
 
-Every reading has a writing area and the units with the output's px per millimetre: the app's
-area and guides when it set them, else ones found from the writing (docs/service.md, The
-writing's size), so a model that reads the ink's size reads an app's writing as it reads the
-keyboard's.
+Every reading is judged in physical size (spec 004 FR-016, FR-017; docs/service.md, The
+writing's size): the units carry the output's px per millimetre, the person's letters are known
+in millimetres once there are enough of them, and before that a typical small letter of 2.5 mm
+is the prior. The app's area and ruled lines count when it sets them; no line is found from the
+writing, so a lone character is never read against a line found from itself or from writing
+elsewhere. On an output whose physical size the compositor doesn't know, the person sets its
+px per millimetre once in Settings (the compositor keeps it per output); until then the units
+stay the pen's own and the prior is applied at the default density of 96 px per inch (3.78 px
+per millimetre).
 
 **Privacy (FR-010).** Nothing reaches the service for a surface with neatening and text both
 off, nor for a private field: a purpose of `password` or `pin`, or the hints
@@ -49,7 +54,8 @@ its process runs. A name the app gives itself is never asked for.
 ## Capabilities (FR-003)
 
 On bind the manager sends `capabilities` (`strokes`, plus `neaten`, `text`, `letters` while
-the service is there), the languages it reads, then `done`. It sends them again whenever they
+the service is there, and `regions` to a manager bound at version 2 while the service reads
+regions), the languages it reads, then `done`. It sends them again whenever they
 change. Without the service an app still gets raw strokes. On a system without the global
 (`glassine_handwriting_manager_v1`), the app draws from its own tablet events.
 
@@ -111,3 +117,102 @@ corrected writing is stored as a sample only when the person has let this app le
 compositor sent, never from what the app keeps (FR-009). It is the same sample a client of
 the recognizer contract stores for the same pen input, units and area (docs/service.md, The
 writing's size).
+
+## Writing regions (spec 005)
+
+A surface can hold any number of writing regions: handwritten fields, each with its own area,
+ruled lines, field type, languages, reading and neatening, whose value is its text. The
+protocol is version 2 of `glassine_handwriting_v1` (`get_region`,
+`glassine_handwriting_region_v1`); the compositor's side and its channel to the service are in
+GlassineOS/sway (`docs/handwriting-channel.md`), the service's in docs/service.md (Writing
+regions).
+
+**Where.** `set_rect` places the region on the surface; its strokes, ruled lines and word
+layout are in the region's own coordinates (from its top left corner), so a scroll or a new
+layout moves the region without changing anything in it, and nothing is read again. `set_clip`
+says which part is visible. A stroke belongs, whole, to the region it starts in; where regions
+overlap, the highest layer wins. A region costs the service nothing until it is written in, so
+a page of many empty fields is free.
+
+**The value.** With reading on, each change of the region's writing gives a `value`: the text
+whole (lines in reading order, separated by a newline), and before it, for that serial, each
+word of it (`word`: an ink word, its strokes and how far to move them, `dx`, `dy`; `set_word`:
+a word with no ink, set in the person's font, as an outline to fill and its box), the strokes
+that left the field for good (`gone`: struck out, replaced by an edit, gestures), and the saved
+state. Draw the value in one go. The app never needs the person's font, computes a reading or
+matches words to ink. At a pause `candidate` events give ranked alternatives for the value;
+`gesture` says a strike, scratch or caret was written (its effect comes with the next value).
+
+**Reports.** `report` names a value or its candidates: `accepted` (the value as it is),
+`picked` (a candidate's rank), `corrected` (the person's text). It applies to the writing that
+value was read from, never to writing added later, and the ink stays the field's content. A
+word becomes a sample only with its own ink from the pen that fits its text, only when the
+person lets the app learn, and never a word set in the font.
+
+**Text mode.** `set_mode` (one region, or `ghw_pen_set_mode` for all) turns a region into an
+ordinary text field edited with the system's keyboard; it takes no strokes. Before going back
+to ink mode, send the edited text with `edit`: words left as they were keep their ink, edited
+and added words come back as set words at their place, and the ink after an edited word moves
+along its line by the difference in width.
+
+**Stored ink.** Keep the region's strokes (from `stroke`, less those in `gone`), its value and
+its saved state (opaque bytes) in the document, and hand all three back with `restore` when it
+is opened again: the value and word layout come back as they were, words the person confirmed
+or edited are never read again, and the rest is read with the model the system has now. Strokes
+alone (no value or state) are read anew. Ink handed back is never a sample.
+
+**Size.** Each region's writing is judged in physical size as above; its ruled lines count only
+for it.
+
+### C
+
+```c
+static void on_value(void *app, struct ghw_region *r, uint32_t serial, const char *text,
+		     const struct ghw_word *w, size_t nw, const uint32_t *gone, size_t ngone,
+		     const void *state, size_t state_len)
+{
+	/* forget the strokes in gone; keep text and state with the document */
+	for (size_t i = 0; i < nw; i++) {
+		if (w[i].set) draw_outline(w[i].path, w[i].npath);         /* fill, non-zero rule */
+		else draw_strokes(w[i].strokes, w[i].nstrokes, w[i].dx, w[i].dy);
+	}
+}
+static const struct ghw_region_listener field = { .stroke = on_stroke, .value = on_value };
+
+struct ghw_region *name = ghw_region_new(pen, "name", &field, app);
+if (name) {                                   /* NULL: the compositor has no regions */
+	ghw_region_set_rect(name, 40, 120, 600, 80);
+	ghw_region_set_guides(name, 60, 60);
+	ghw_region_set_context(name, GHW_NORMAL, 0, "");
+	ghw_pen_flush(pen);
+}
+/* later: the user scrolled by dy */
+ghw_region_set_rect(name, 40, 120 - dy, 600, 80);
+/* text mode and back */
+ghw_region_set_mode(name, GHW_MODE_TEXT);
+ghw_region_edit(name, edited_text);
+ghw_region_set_mode(name, GHW_MODE_INK);
+/* opening a document */
+ghw_region_restore(name, stored, nstored, value, state, state_len);
+```
+
+`client/examples/ghw-regions-print.c` is a complete app with regions: it keeps each region's
+strokes, value and state as a document would, and hands them back to a fresh region.
+
+### Python
+
+```python
+class Field:
+    def stroke(self, k, points): ...
+    def value(self, serial, text, words, gone, state):
+        for w in words:                       # {"text", "strokes", "dx", "dy"} or {"text", "box", "path"}
+            ...
+
+f = pen.region("name", Field())
+if f:
+    f.set_rect(40, 120, 600, 80)
+    f.set_guides(60, 60)
+    ...
+    f.restore(strokes, value, state)          # strokes: {k: points}
+```
+

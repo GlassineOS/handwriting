@@ -68,11 +68,12 @@ Strokes are lists of points `[x, y, t]`, `[x, y, t, pressure]` or
 `context`: `purpose` and `hints` as in `zwp_text_input_v3`, plus `before` and `languages`.
 `units`: as the recognizer's (`device`, `device:PX_PER_MM`, `device:PX_PER_MM:RATE`, `em`);
 with `device:PX_PER_MM` the service adds the rate it measures from the strokes. `area`: `box`
-([x0, y0, x1, y1]), `line`, `base` (the y of the first guide line) and `rot` (0, 90, 180 or
-270), in the strokes' units; a part left out is found from the writing (The writing's size,
-below), in `em` the line is 1. Ink in `em` without an `area` gets none (its units say how high
-a line is), nor does writing too little to find a line in. An area that is empty, a line of 0
-or less or another turn is `bad-request`.
+([x0, y0, x1, y1]), `line` (the ruled lines' spacing), `base` (the y of the first guide line)
+and `rot` (0, 90, 180 or 270), in the strokes' units; a part left out is as the pen interface
+has it (The writing's size, below): the box of the writing, no ruled line (in `em` a line of
+1), the guide line of one line of writing. Ink in `em` without an `area` gets none (its units
+say how high a line is). An area that is empty, a line of 0 or less or another turn is
+`bad-request`. Every `device` request has the size prior (below).
 
 Error codes: `bad-request`, `unknown-method`, `permission-needed`, `not-allowed`,
 `not-yours`, `unavailable`, `failed`.
@@ -84,47 +85,78 @@ person sees as a contribution.
 
 ## The writing's size
 
-Every session the service begins in the recognizer, for either interface, has a writing area
-and units (spec 004 FR-016, FR-017), so a model that reads the ink's size (docs/recognizer.md,
-Size and Base models) has a reference: the person's letters in millimetres when the units have
-`PER_MM`, else the area's line.
+Every session the service begins in the recognizer, for either interface, has a writing area,
+units and a size prior (spec 004 FR-016, FR-017), so a model that reads the ink's size
+(docs/recognizer.md, Size and Base models) judges it in physical size: the person's letters in
+millimetres once there are enough of them (units with `PER_MM`), before that a typical
+handwriting size in millimetres.
 
-- **Box**: the app's ink area (`set_area`), else the bounding box of the writing held.
-- **Line**: the spacing of the app's ruled lines (`set_guides`), else six times the median
-  stroke size of the writing held, a stroke's size being the larger of its height and a
-  quarter of its width. It needs 3 glyphs (strokes overlapping horizontally, also through
-  others, are one): less writing, such as a lone character, whose line found from itself would
-  hide its size, gets the line found earlier on the surface, and before there is one no area
-  at all, so the recognizer goes by the person's letters or else the ink's own size.
-- **Guide line**: the app's first ruled line, else the median of the strokes' lowest points,
-  for a session whose strokes are one line of writing (the lines found as for neatening). A
-  session holding more than one line has none.
+- **Box**: the app's ink area (`set_area`, a region's area), else the bounding box of the
+  writing held.
+- **Line**: the spacing of the app's ruled lines (`set_guides`), else none (`LINE` 0). A ruled
+  line is a size reference only when the app sets one: no line is found from the writing, so a
+  lone character is never measured against a line found from itself, nor against one found
+  from other writing on the surface, in another region or in another app.
+- **Guide line**: the app's first ruled line, else for a session whose strokes are one line of
+  writing (the lines found as for neatening) of at least 3 glyphs (strokes overlapping
+  horizontally, also through others, are one) the median of the strokes' lowest points. It
+  says where letters sit (a comma from an apostrophe), not how big they are. Less writing, or
+  more than one line, has none.
+- **Prior**: a small letter 2.5 mm high (`TYPICAL_XH_MM`), sent as the recognizer's `prior` in
+  the session's units: at the units' points per millimetre, and for `device` units without
+  them at the default density of 96 points per inch (3.78 per millimetre, `DEFAULT_PX_PER_MM`).
+  The recognizer uses it only when neither the person's letters in the session's units nor the
+  app's ruled line give a reference, and never over the writing's own size: writing whose small
+  letters can be measured is read at their height, and the prior only settles what the height
+  of writing too short to measure means (a small letter or a capital), for ink at most twice
+  (a lone character) or four times (more) as high as it; taller ink is read by its own height
+  (docs/recognizer.md, Size). Ink in `em` gets none (its units say how high a line is).
 - **Units**: the compositor's, `device:PX_PER_MM` when it knows the size of the output the pen
   writes on (its px over its millimetres, in logical px), with the pen's rate added once the
   surface's writing has 8 time steps: 1000 / the median step in ms, as the keyboard measures it.
-  The rate is kept for the surface. Without a known output size the units stay `device`: no
-  size in millimetres is assumed.
+  The rate is kept for the surface. For an output of unknown size the compositor sends the
+  density the person set for it in Settings (GlassineOS/sway `docs/handwriting-channel.md`,
+  Units); without one the units stay `device`, the pen's own, and no size in millimetres is
+  assumed beyond the prior at the **default density of 96 points per inch (3.78 per
+  millimetre)**.
 
 The words of a line and the lines of the writing are read and neatened in sessions of their
-own, with the surface's box and line and the guide line of their line. A word is neatened
-without its reading as the text: the reading only tells which strokes are a word, and only a
-text the person confirmed is set in their font at Neatest (spec 003 FR-043; a word read
-wrongly would be set as another). The `neaten` method passes the app's `text` on as given. The main session's area
-follows the writing as it grows.
+own, with the surface's box, no line unless the app ruled one, the guide line of their line
+and the prior. A word is neatened without its reading as the text: the reading only tells
+which strokes are a word, and only a text the person confirmed is set in their font at Neatest
+(spec 003 FR-043; a word read wrongly would be set as another). The `neaten` method passes the
+app's `text` on as given. The main session's area follows the writing as it grows.
 
-A line found from the writing tells nothing of a lone character's size (a lone `o` from an
-`O`); the person's letters do, once there are enough of them in millimetres. On the recorded
-ink (recognizer/tests/data/ink.jsonl, written at 1.5 to 6 mm small letters), a version 2 model
-reads within a point of the keyboard's paper this way (3.3 % against 2.5 %, 11.2 % without an
-area), and a version 1 model as before (`make -C service check-model MODEL_DIR=…`). A fixed
-line in millimetres reads as well only for a person who writes the size it guesses, and far
-worse for one who writes smaller. On synthetic lines of every kind (the trainer's `dev_kinds`,
-15 of each) model 4 reads 10.4 % this way, 13.2 % without an area and 8.9 % on the
-keyboard's paper; lines of capitals and digits (plates) and of small letters alone (`flat`)
-read 1.5 to 3 points worse than without an area, since their median stroke is no ordinary
-mix of small and tall letters.
+Measured with `make -C service check-model` (tests/check_sizes.py: the recorded ink,
+recognizer/tests/data/ink.jsonl, written at 1.5, 3 and 6 mm small letters, its 28 lines and
+each of its 210 letters and digits written with strokes of their own read alone; CER %, the
+size prior alone, against the rule before it, which found a line of six median stroke sizes
+from writing of 3 glyphs or more and for less writing took the one found earlier on the
+surface, or none):
 
-A sample stored from such a session keeps that area, as every sample keeps its session's.
+| model 4 (ghm 2) | 1.5 mm | 3 mm | 6 mm |
+|---|---|---|---|
+| lines, the prior and the writing's own size | 7.4 | 8.3 | 11.6 |
+| lines, the found line before | 24.0 | 24.0 | 24.0 |
+| lines, no area (no reference) | 13.6 | 13.6 | 13.6 |
+| lines, the keyboard's paper | 20.7 | 20.7 | 20.7 |
+| lone characters, the prior and the writing's own size | 30.5 | 34.3 | 55.7 |
+| lone characters, before (no area) | 55.7 | 55.7 | 55.7 |
+| lone characters, the keyboard's paper | 25.7 | 25.7 | 25.7 |
+
+With the writer's letters known both rules read the same (lines 2.1, lone characters 31.9; the
+keyboard's paper 2.1 and 9.5, its ruled guide line placing a lone character). A version 1
+model (model 2) reads as before (lines 5.0; lone characters 21.0, one more error at 1.5 mm).
+Every size reads at least as well as before; a lone character of 6 mm small letters is more
+than twice as high as the prior and is read by its own height, as before. The figures the
+rule uses come from the person's writing, not from this ink (docs/recognizer.md, Size); on the
+person's other half, the prior alone, at 1.5, 3 and 6 mm small letters, it reads their words
+at 35.1, 35.9 and 35.5 % CER (the prior as it was: 34.9, 41.1, 38.9; no reference: 38.9) and
+their lone characters at 58.9, 68.3 and 66.6 (the prior as it was: 55.7, 72.5, 90.6; no
+reference: 66.6). The person's letters, once known, replace the prior.
+
+A sample stored from such a session keeps that area, as every sample keeps its session's; the
+prior is not stored.
 
 ## The compositor's channel
 
@@ -141,13 +173,19 @@ From the compositor:
 | `stroke` | `s`, `k`, `points` ([x, y, t, pressure, tilt_x, tilt_y]) | a raw stroke |
 | `clear` | `s` | the app is done with the writing held |
 | `report` | `s`, `serial`, `action` (`picked`, `accepted`, `corrected`, `discarded`), `rank`, `text` | what the person did with the candidates `serial` |
-| `destroy` | `s` | forget the surface and all it held |
+| `destroy` | `s` | forget the surface and all it held, its regions too |
+
+The writing regions' ops (`region`, `region_set`, `region_mode`, `region_stroke`,
+`region_edit`, `region_report`, `region_restore`, `region_destroy`; from the service
+`region_neat`, `region_value`, `region_candidates`, `region_gesture`, `region_report`) are
+specified with the compositor's side in GlassineOS/sway `docs/handwriting-channel.md`; what the
+service does with them is under Writing regions, below.
 
 From the service:
 
 | `op` | Fields | Meaning |
 |---|---|---|
-| `hello` | `version`, `neaten`, `text`, `letters`, `languages` | sent once at start: the capabilities |
+| `hello` | `version`, `neaten`, `text`, `regions`, `letters`, `languages` | sent once at start: the capabilities |
 | `neat` | `s`, `k`, `how`, `points` ([x, y] per raw point) | the neatened stroke `k` |
 | `reading` | `s`, `text`, `strokes` | a partial reading |
 | `candidates` | `s`, `serial`, `items` (`text`, `from`, `fit`, `chars`) | the candidates at a pause |
@@ -161,3 +199,79 @@ raw point for the neat stroke.
 (the guides, else the lines found from the writing) and, within a line, word by word along
 the best reading. A word is neatened again only when its strokes, its text or the strength
 change. The candidates follow a pause of 900 ms.
+
+## Writing regions
+
+A surface can hold writing regions (spec 005): fields of their own, each with its area, ruled
+lines, field type, languages, reading and neatening, whose reading is the field's value. The
+compositor routes each stroke to the region it starts in, in the region's own coordinates
+(GlassineOS/sway `docs/handwriting-channel.md`); the service never sees a region's place on
+the surface, so a move changes nothing here, and a resize (`region_set` with a new `size`) only
+gives a session begun later the new box: nothing is read again (FR-003, FR-004).
+
+**Cost.** The compositor announces a region (`region`) only once it holds writing and wants the
+service (FR-007). Even then the region holds no recognizer session until it is read, and gives
+it up at the pause after its writing. Each region's reading is a session of its own, with the
+region's units, size prior, box (`[0, 0, size]`) and ruled lines, never a line from another
+region (FR-028). At most 16 regions are read at once (a document opened with many fields is
+read a few at a time, never past the recognizer's 64 sessions), and a region gives its session
+up after a report, an edit or a restore too. Private regions never reach the service; a
+region that becomes private is destroyed.
+
+**The value.** A region's words are of three kinds: read (the current reading of its writing),
+kept (a pick, an acceptance, or a word an edit left as it was: its ink and its text, never read
+again, FR-026) and set (a word the person typed, with no ink). The reading is made again at
+every change of the writing (250 ms after a stroke), line by line, and when the value changed
+it is sent whole (`region_value`, `serial` one more than the last): the words line by line in
+reading order, joined by spaces and the lines by a newline (FR-008, FR-009). Each entry of
+`words` has `start` and `length` (UTF-8 bytes of `text`) and either
+
+- `strokes`, `dx`, `dy`: an ink word, its strokes moved by `dx` along its line when an edited
+  word before it changed width (`dy` is 0), or
+- `box` ([x0, y0, x1, y1]) and `path`: a word set in the person's font (the recognizer's `set`)
+  as an outline: each stroke of the font's glyphs drawn with its pen as filled polygons (a quad
+  per segment, an octagon per point, all turning the same way, non-zero fill), so the app needs
+  no font (FR-024).
+
+`gone` lists the strokes that left the region since the last value: gestures, struck-out words,
+ink an edit replaced. `state` is the saved state (FR-010), base64 of the kept and set words
+(each kept word by its text and its strokes' points, each set word by its text and place).
+
+**Gestures.** The recognizer's gestures act in the region they are written in (FR-012): a
+strike or scratch deletes the words it covers, their ink leaving; a caret places the writing
+after it where it points. `region_gesture` names the gesture's own stroke and the serial of the
+value that carries its effect; the stroke leaves (`gone`). With reading off there are no
+gestures: such a stroke stays ink.
+
+**Candidates and reports.** At a pause (900 ms) the region sends its candidates with the serial
+of its current value: for the line written last, each candidate with the rest of the value. A
+report names a value (`accepted`, `corrected`) or its candidates (`picked`) among the region's
+last 16 values (older: `stale`), and applies only to the writing that value was read from;
+writing added after it stays read (FR-013). A report never ends the region's writing. `picked`
+and `accepted` keep the reported words; `corrected` is an edit (below). A word becomes a sample
+only with ink of its own that came from the pen in this run (never ink handed back by
+`region_restore`), only when that ink fits its text (the recognizer's `align`, a score of 0.6 or
+more), and only with the person's permission for the app (`not_allowed` otherwise); set words
+never do (FR-014). The result is `stored` when a sample was stored, else `not_kept`.
+
+**Edits.** A correction, or the person's keyboard text (`region_edit`, FR-017), is matched to the
+value word by word: a word left as it was keeps its ink and is kept; a changed or added word is
+set in the person's font where it stands: on the line of the word before it on its line of the
+text, else of the kept ink it comes before, else the region's first free line, at the size of
+the person's writing in the region, else their letters in millimetres, else the typical size
+(FR-021). The kept ink after a changed word moves along its line by the difference in width,
+unchanged in shape. The ink of a changed word leaves; where it fits the word's new text it
+becomes a sample first (a correction). When no word keeps its ink, the whole value is set and
+none of the ink stays (FR-020). Writing after an edit is read as usual and joins the value
+where it is written; set words stay as they are (FR-023). Whether set words wrap is the app's
+choice.
+
+**Neatening.** Each word with ink is neatened in a session of its own with the area of its
+line, and never with its text: at every strength kept ink stays ink (FR-019). Set words are
+not neatened.
+
+**Stored ink.** `region_restore` replaces what the region holds with the strokes handed back
+at once (a stroke that follows it on the channel is added to them),
+with their saved state or without (FR-025). With it, the words the state names are kept again
+by their strokes and its set words come back where they were; the rest is read with the model
+there is now (FR-026). Without it, the strokes are read and the reading is the value.

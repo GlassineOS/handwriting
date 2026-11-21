@@ -177,7 +177,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
 - **FR-026**: The app's pages. The owner's session has four tabs, in this order:
   - **Write**: the prompt, the writing area and the choice of prompt set (Scenarios 1, 2
     and 4). It teaches the recognizer only.
-  - **Your font**: opens on the font page; below it, rows open the careful samples and
+  - **Autograph**: opens on the font page; below it, rows open the careful samples and
     picks that teach it and Neaten my writing (spec 003 FR-042).
   - **Learn**: the adaptation, its progress and the version before (Scenario 3), with two
     pages beneath it: **Samples**, the sample view (Scenario 6), and **Coverage**, the
@@ -191,7 +191,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
   to the tab whose work it is: Coverage's "Practise these" goes to Write with the set that
   favours what is weak, and Learn's "Write more" to Write; the last step of the introduction
   (FR-012) and its Skip, the way back from the list of writers, and the note after Finish
-  go to Write; the ways back from the parts of Your font go to the font page.
+  go to Write; the ways back from the parts of Autograph go to the font page.
 
 ### Other writers
 
@@ -230,7 +230,7 @@ export them as one file in the sample format; nothing leaves the device otherwis
   licence, contributor number and earlier-samples offer, of their own samples only, and
   "Your samples", the sample view of their own samples (Scenario 6): look at one, delete it,
   erase all and export, with no import. Counts are today's and the total. Not offered: the
-  Your font and Learn tabs, so neither Coverage, Adapt and the learning progress, nor the
+  Autograph and Learn tabs, so neither Coverage, Adapt and the learning progress, nor the
   font, "Which one is nicer?" and Neaten my writing; and no own word list. A font is
   installed for the whole account and neatening works on the account's pen ink, so either
   would put the guest's hand into the owner's apps; an adaptation or a letter model of a
