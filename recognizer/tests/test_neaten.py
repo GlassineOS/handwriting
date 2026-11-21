@@ -629,7 +629,7 @@ class Neaten(unittest.TestCase):
                             "--models", str(self.e.models), "--tilt", "0.15", "--dump", str(dump)],
                            capture_output=True, text=True, env=self.e.env, check=True)
         rows = {ln.split("  ")[0].strip(): ln for ln in p.stdout.splitlines() if ln.startswith(("Light", "Medium", "Strong", "pull 1", "set"))}
-        self.assertEqual(set(rows), {"Light", "Medium", "Strong", "pull 1", "set", "set, conditioned"})
+        self.assertEqual(set(rows), {"Light", "Medium", "Strong", "pull 1", "set", "set, conditioned", "set, line-conditioned"})
         self.assertIn("tilted:", p.stdout)
         self.assertEqual(dump.stat().st_mode & 0o777, 0o600)
         d = json.loads(dump.read_text())
