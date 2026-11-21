@@ -1557,8 +1557,9 @@ ready BYTES TIME UNTIL` (its size, modification time, and the training data's en
 kind. `model install FILE` checks it, copies it to its place for its kind through a `.tmp` file
 and a rename (the original stays), sets the kind's setting to `local` and prints `installed KIND
 LANG`, or `refused REASON DETAIL` (exit 1) with nothing changed. `model use KIND shipped|local`
-sets the setting; `model remove KIND` deletes the installed file and prints `removed` or
-`none`. In a writer's store `model` is `writer-store` (exit 2).
+sets the setting; `model remove KIND` sets the kind's setting to `shipped` (for every
+language), then deletes the installed file and prints `removed` or `none`. A file placed by hand
+afterwards is used only after `model use KIND local`. In a writer's store `model` is `writer-store` (exit 2).
 
 ## Environment
 
