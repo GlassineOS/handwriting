@@ -460,6 +460,36 @@ class Regions(unittest.TestCase):
         self.assertEqual(self.pen.ops("gesture"), [])
         self.assertEqual(self.pen.ops("value"), [])
 
+    def restore_then_edit(self, g, strokes, state, text):
+        """as the channel gives them after a service restart: region_restore, then a held
+        region_edit, both spawned in that order"""
+        async def both():
+            if g.restore(strokes, state):
+                await asyncio.gather(g.restored(), g.set_text(text))
+            else:
+                await g.set_text(text)
+        self.run_(both())
+
+    def test_edit_held_across_a_restart(self):
+        """restore followed at once by an edit: words left as they were keep their ink, the
+        edited one is set; strokes alone and with saved state, in ink and in text mode"""
+        g = self.region()
+        a = self.write(g, 20, 40, "one")
+        b = self.write(g, 80, 40, "two")
+        self.run_(g.pause())
+        v = self.value()
+        strokes = [(k, g.strokes[k]) for k in (a, b)]
+        for state, mode in ((None, "ink"), (v["state"], "ink"), (v["state"], "text"), (None, "text")):
+            with self.subTest(state=bool(state), mode=mode):
+                g2 = self.region(rid=7, mode=mode)
+                self.restore_then_edit(g2, strokes, state, "one three")
+                w = self.value()
+                self.assertEqual(w["r"], 7)
+                self.assertEqual(w["text"], "one three")
+                self.assertEqual([(x["text"], x.get("strokes")) for x in w["words"]], [("one", [a]), ("three", None)])
+                self.assertIn(b, w["gone"])
+                self.assertEqual(self.pen.engine.sessions, {})
+
     def test_stroke_right_after_a_restore(self):
         g = self.region()
         g.restore([(1, self.pen.engine.name(word_stroke(20, 40, "old"), "old"))], None)
