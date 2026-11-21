@@ -620,6 +620,37 @@ class Neaten(unittest.TestCase):
             self.assertLess(max(bases) - min(bases), 0.3, (text, bases))
         self.assertEqual(words, 10)
 
+    def test_neatest_follows_context_rules(self):
+        """with the letter model's context rules (GLASSINE_HANDWRITING_LETTERS_CONTEXT=1) Neatest
+        sets a letter as the font does between its two neighbours: an l written its second way
+        after an a (20 of 26 times) but its first, the cycle's, between an a and an e (the other
+        6) gets a context rule ahead of the neighbour rule; "ale" is set with the context rule's
+        l, "al" with the neighbour rule's, each where the font draws them"""
+        self.e.env["GLASSINE_HANDWRITING_LETTERS_CONTEXT"] = "1"
+        rnd = random.Random(57)
+        L = self.letters(more=[TL.sample("ale", rnd) for _ in range(6)] +
+                         [TL.sample("al", rnd, styles={"l": 1}) for _ in range(20)] +
+                         [TL.sample("l", rnd) for _ in range(40)])
+        rules = L["l"].get("rules", [])
+        ctx = [r for r in rules if "prev" in r and "next" in r]
+        pair = [r for r in rules if r.get("prev") == "a" and "next" not in r]
+        self.assertEqual([(r["prev"], r["next"]) for r in ctx], [("a", "e")])
+        self.assertEqual(len(pair), 1)
+        self.assertNotEqual(ctx[0]["variant"], pair[0]["variant"])
+        self.assertLess(rules.index(ctx[0]), rules.index(pair[0]))
+        model = FV.parse((self.e.store / "letters" / "model").read_text())
+        self.assertEqual(FV.variants(model, "ale")[1], ctx[0]["variant"])
+        self.assertEqual(FV.variants(model, "al")[1], pair[0]["variant"])
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        for text in ("ale", "al"):
+            s = TL.sample(text, rnd)
+            lay, how_laid = self.set_layout(text)
+            _, xy = self.neaten_letters(s, 1)
+            self.assertEqual([w for w in self.why if w != "space"], ["set"] * len(text), text)
+            wp = [p for k in range(len(text)) for j in s["spans"][k] for p in xy[j]]
+            wg = [lay[k] for k in range(len(text)) for j in s["spans"][k] for _ in xy[j]]
+            self.assertLess(on_set(wp, wg)[0], 0.003, (text, how_laid))
+
     def test_neatest_draws_every_stroke_apart(self):
         """at Neatest (FR-043) a letter is set onto a variant with as many strokes as its ink
         has pieces, each piece along its own stroke: the dots of i and j stay dots, the bars of
