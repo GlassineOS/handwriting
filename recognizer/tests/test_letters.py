@@ -1520,8 +1520,8 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 17))
-            old = dict(head, inputs=hw_inputs(ids, 16))
+            self.assertEqual(head["inputs"], hw_inputs(ids, 19))
+            old = dict(head, inputs=hw_inputs(ids, 18))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
@@ -2433,6 +2433,259 @@ class JoinedPlainly(unittest.TestCase):
         f = valid_font(self, ttf)
         lig = next(g for g, x in gl.items() if x == ("joined", "in"))
         self.assertGreaterEqual(f["glyf"][f.getGlyphOrder()[lig]].numberOfContours, 2)
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class Joins(unittest.TestCase):
+    """spec 003 FR-044: e and r, and r and s, written joined in 10 samples of 16 (too few of
+    them for one glyph, FR-039; an r between them entering one join and leaving the other) are
+    joined in the font in each
+    style: their glyphs become the join's alternates (calt), the halves meet, nothing kerns
+    between them; a ligature has no joins; the same store gives the same font; a store with no
+    joined ink has no joins at all"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(61)
+        ss = alphabet_samples(seed=61, per=3)
+        ss += [joined(sample("er", rnd), [0]) for _ in range(5)] + [sample("er", rnd) for _ in range(3)]
+        ss += [joined(sample("ers", rnd), [0, 1]) for _ in range(5)] + [sample("ers", rnd) for _ in range(3)]
+        ss += [joined(sample("rs", rnd), [0]) for _ in range(5)] + [sample("rs", rnd) for _ in range(3)]
+        ss += [joined(sample("th", rnd), [0]) for _ in range(5)] + [sample("th", rnd)]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        cls.model = cls.e.model()
+        cls.lines = [json.loads(x) for x in cls.model.splitlines()]
+        cls.joins = next((d["joins"] for d in cls.lines if "joins" in d), None)
+        cls.gl = font_glyphs(cls.model)
+        cls.ttf = {}
+        for st in ("Regular", "Calligraphy", "Brush"):
+            cls.ttf[st] = cls.e.dir / ("joins-%s.ttf" % st)
+            cls.e.run("font", "build", "-n", "Joins", "--style", st, str(cls.ttf[st]))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_learned(self):
+        self.assertIsNotNone(self.joins)
+        pairs = {a + b: (s, j) for a, b, s, j in self.joins["pairs"]}
+        # (r and s are neighbours in the separate letters' samples too)
+        self.assertEqual(pairs["er"], (16, 10))
+        self.assertEqual(pairs["rs"][1], 10)
+        er = [x for x in self.joins["shapes"] if x.get("pair") == "er"]
+        self.assertEqual(len(er), 1)
+        self.assertEqual(len(er[0]["points"]), 13)
+        self.assertEqual(er[0]["points"][0], [0, 0])
+        self.assertGreaterEqual(er[0]["n"], 5)
+
+    def halves(self, ttf, text, features=None):
+        """the shaped glyphs and, for each two that are a join's, how far apart their halves'
+        outlines are (font units)"""
+        from fontTools.ttLib import TTFont
+        from fontTools.pens.recordingPen import DecomposingRecordingPen
+        f = TTFont(str(ttf))
+        gs, order, glyf = f.getGlyphSet(), f.getGlyphOrder(), f["glyf"]
+        got = hb(ttf, text, features)
+
+        def pts(name, dx):
+            p = DecomposingRecordingPen(gs)
+            gs[name].draw(p)
+            return [(x + dx, y) for op, a in p.value for (x, y) in a]
+        gaps, x = [], 0
+        for i in range(len(got) - 1):
+            a, b = glyf[order[got[i]["g"]]], glyf[order[got[i + 1]["g"]]]
+            xa, xb = x + got[i]["dx"], x + got[i]["ax"] + got[i + 1]["dx"]
+            x += got[i]["ax"]
+            if not (a.isComposite() and len(a.components) >= 2 and b.isComposite() and b.components[0].x):
+                continue
+            pa = pts(a.components[1].glyphName, xa + a.components[1].x)
+            pb = pts(b.components[-1].glyphName, xb + b.components[-1].x)
+            gaps.append(min(math.hypot(p[0] - q[0], p[1] - q[1]) for p in pa for q in pb))
+        return got, gaps
+
+    def test_joined_in_each_style(self):
+        for st, ttf in self.ttf.items():
+            f = valid_font(self, ttf)
+            self.assertEqual(gsub_features(ttf), ["calt", "liga"])
+            self.assertGreater(len(f.getGlyphOrder()), len(self.gl) + 1, st)
+            got, gaps = self.halves(ttf, "er")
+            # the join's alternates, beyond the glyphs without joins
+            self.assertTrue(all(g["g"] > max(self.gl) for g in got), st)
+            # the halves meet: their outlines touch (within a unit's rounding each way)
+            self.assertEqual(len(gaps), 1, st)
+            self.assertLess(gaps[0], 2.0, st)
+            # a letter in two joins: entered by one, leaving by the other, both meeting
+            got, gaps = self.halves(ttf, "ers")
+            self.assertTrue(all(g["g"] > max(self.gl) for g in got), st)
+            mid = f["glyf"][f.getGlyphOrder()[got[1]["g"]]]
+            self.assertEqual(len(mid.components), 3, st)
+            self.assertEqual(len(gaps), 2, st)
+            self.assertLess(max(gaps), 2.0, st)
+            # without calt the letters stand apart as before
+            got = hb(ttf, "er", "-calt")
+            self.assertEqual([self.gl[g["g"]][0] for g in got], ["step", "step"], st)
+
+    def test_no_kerning_inside_a_join(self):
+        from fontTools.ttLib import TTFont
+        ttf = self.ttf["Regular"]
+        f = TTFont(str(ttf))
+        got = hb(ttf, "er")
+        hm = f["hmtx"]
+        # the first glyph's advance is its own: where its half ends
+        self.assertEqual(got[0]["ax"], hm[f.getGlyphOrder()[got[0]["g"]]][0])
+
+    def test_ligature_has_no_joins(self):
+        ttf = self.ttf["Regular"]
+        got = hb(ttf, "ther")
+        kinds = [self.gl.get(g["g"], ("join",))[0] for g in got]
+        self.assertEqual(kinds[0], "joined")
+        # e after the ligature is not entered from it; e and r still join
+        self.assertEqual(kinds[1:], ["join", "join"])
+        _, gaps = self.halves(ttf, "ther")
+        self.assertEqual(len(gaps), 1)
+
+    def test_same_font_again(self):
+        again = self.e.dir / "joins-again.ttf"
+        self.e.run("font", "build", "-n", "Joins", str(again))
+        self.assertEqual(again.read_bytes(), self.ttf["Regular"].read_bytes())
+
+    def test_no_joined_ink_no_joins(self):
+        e = Env()
+        try:
+            rnd = random.Random(62)
+            e.put(alphabet_samples(seed=62, per=3) + [sample("er", rnd) for _ in range(7)])
+            e.run("letters", "build", "-r")
+            self.assertFalse(any('"joins"' in x for x in e.model().splitlines()))
+            ttf = e.dir / "nojoins.ttf"
+            e.run("font", "build", str(ttf))
+            from fontTools.ttLib import TTFont
+            f = TTFont(str(ttf))
+            self.assertEqual(len(f.getGlyphOrder()), len(font_glyphs(e.model())) + 1)
+            self.assertEqual(f["maxp"].maxComponentElements, 1)
+        finally:
+            e.close()
+
+
+# letters as a person writes them, in x-heights: the main body first, then its marks (a
+# dot, a bar, a bowl); each stroke dense, as a pen gives it
+WHOLE = {
+    "i": [[(0.2, 1.0), (0.2, 0.0)], [(0.25, 1.45), (0.27, 1.47)]],
+    "j": [[(0.35, 1.0), (0.35, -0.5), (0.05, -0.6)], [(0.4, 1.45), (0.42, 1.47)]],
+    "t": [[(0.3, 1.5), (0.3, 0.0), (0.45, 0.05)], [(0.05, 1.0), (0.6, 1.0)]],
+    "f": [[(0.65, 1.4), (0.4, 1.5), (0.3, 1.2), (0.3, 0.0)], [(0.05, 0.95), (0.6, 0.95)]],
+    "F": [[(0.0, 1.5), (0.0, 0.0)], [(0.0, 1.5), (0.6, 1.5)], [(0.0, 0.75), (0.45, 0.75)]],
+    "E": [[(0.0, 1.5), (0.0, 0.0)], [(0.0, 1.5), (0.6, 1.5)], [(0.0, 0.75), (0.45, 0.75)], [(0.0, 0.0), (0.6, 0.0)]],
+    "T": [[(0.3, 1.5), (0.3, 0.0)], [(0.0, 1.5), (0.6, 1.5)]],
+    "p": [[(0.1, 1.0), (0.1, -0.6)], [(0.1, 0.95), (0.45, 0.95), (0.6, 0.6), (0.45, 0.3), (0.1, 0.3)]],
+    "b": [[(0.1, 1.5), (0.1, 0.0)], [(0.1, 0.65), (0.45, 0.7), (0.6, 0.35), (0.45, 0.0), (0.1, 0.05)]],
+    "d": [[(0.5, 1.5), (0.5, 0.0)], [(0.5, 0.65), (0.15, 0.7), (0.0, 0.35), (0.15, 0.0), (0.5, 0.05)]],
+}
+
+
+def dense(st, rnd, k=6):
+    out = [st[0]]
+    for a, b in zip(st, st[1:]):
+        out += [(a[0] + (b[0] - a[0]) * q / k, a[1] + (b[1] - a[1]) * q / k) for q in range(1, k + 1)]
+    return [(x + rnd.gauss(0, 0.008), y + rnd.gauss(0, 0.008)) for x, y in out]
+
+
+def whole(c, style, rnd):
+    return [dense(st, rnd) for st in WHOLE[c]]
+
+
+WHOLE_SHAPES = {c: whole for c in WHOLE}
+
+
+def run_on(c, nxt, rnd, part):
+    """a prompted sample of c and nxt written with c's stroke part (its last, a mark) run on
+    into nxt: that stroke and nxt's first one a single stroke, as an f's bar is written into
+    the next letter; the spans give it to nxt alone, as the alignment does"""
+    s = sample(c + nxt, rnd, shapes=WHOLE_SHAPES)
+    a, b = s["spans"][0][part], s["spans"][1][0]
+    st = s["strokes"]
+    st[b] = st[a] + st[b]
+    del st[a]
+    s["spans"] = [[j - (j > a) for j in s["spans"][0] if j != a], [j - (j > a) for j in s["spans"][1]]]
+    retime_sample(s)
+    return s
+
+
+def joined_on(c, nxt, rnd):
+    """c and nxt written with c's main body (its first stroke) joined into nxt's first stroke,
+    c's marks after them"""
+    s = sample(c + nxt, rnd, shapes=WHOLE_SHAPES)
+    st, sp = s["strokes"], s["spans"]
+    body, marks, rest = st[sp[0][0]], [st[j] for j in sp[0][1:]], [st[j] for j in sp[1]]
+    s["strokes"] = [body + rest[0]] + rest[1:] + marks
+    s["spans"] = [[0] + list(range(len(rest), len(rest) + len(marks))), list(range(len(rest)))]
+    retime_sample(s)
+    return s
+
+
+def retime_sample(s):
+    t = 0.0
+    for st in s["strokes"]:
+        for p in st:
+            p[2] = round(t, 3)
+            t += 0.01
+
+
+class WholeLetters(unittest.TestCase):
+    """spec 003 FR-007, FR-044: a mark (an f's or a t's bar, a p's, b's or d's bowl) written on
+    into the next letter is a part of the letter the other's ink has: no variant is made
+    without it; joins leave a letter's main body and enter the next one's, never a dot, a
+    bar or another mark"""
+
+    def test_a_mark_run_on_makes_no_variant_without_it(self):
+        e = Env()
+        try:
+            rnd = random.Random(81)
+            ss = alphabet_samples(seed=81, per=4, shapes=WHOLE_SHAPES)
+            for c in "ftpbd":
+                ss += [run_on(c, "o", rnd, 1) for _ in range(6)]
+            e.put(ss)
+            e.run("letters", "build", "-r")
+            m = {d["char"]: d for d in map(json.loads, e.model().splitlines()) if "char" in d}
+            for c in "ftpbd":
+                with self.subTest(c=c):
+                    self.assertEqual({len(v["strokes"]) for v in m[c]["variants"]}, {2})
+                    # (the run-on samples count for neither letter)
+                    self.assertEqual(sum(v["use"] for v in m[c]["variants"]), 4)
+        finally:
+            e.close()
+
+    @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+    def test_joins_leave_the_main_body(self):
+        e = Env()
+        try:
+            rnd = random.Random(82)
+            ss = alphabet_samples(seed=82, per=4, shapes=WHOLE_SHAPES)
+            for c in "ijtfFET":
+                ss += [joined_on(c, "n", rnd) for _ in range(5)] + [sample(c + "n", rnd, shapes=WHOLE_SHAPES) for _ in range(3)]
+            e.put(ss)
+            e.run("letters", "build", "-r")
+            pairs = {a + b for a, b, _, _ in next(d["joins"] for d in map(json.loads, e.model().splitlines()) if "joins" in d)["pairs"]}
+            ttf = e.dir / "body.ttf"
+            e.run("font", "build", "-n", "Body", str(ttf))
+            from fontTools.ttLib import TTFont
+            from fontTools.pens.recordingPen import DecomposingRecordingPen
+            f = TTFont(str(ttf))
+            gs, order, glyf = f.getGlyphSet(), f.getGlyphOrder(), f["glyf"]
+            for c in "ijtfFET":
+                with self.subTest(c=c):
+                    self.assertIn(c + "n", pairs)
+                    a = glyf[order[hb(ttf, c + "n")[0]["g"]]]
+                    self.assertTrue(a.isComposite() and len(a.components) >= 2)
+                    pen = DecomposingRecordingPen(gs)
+                    gs[a.components[1].glyphName].draw(pen)
+                    ys = [y + a.components[1].y for op, q in pen.value for (x, y) in q]
+                    # the exit's half starts at the body's end (the baseline or below it),
+                    # nowhere near the marks (at three quarters of the x-height and above)
+                    self.assertLess(min(ys), 0.3 * 500)
+        finally:
+            e.close()
 
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")

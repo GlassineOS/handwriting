@@ -51,6 +51,13 @@ enum {
 /* a pen lift in a set character's ink moves to the end of a glyph's stroke within this
  * share of the glyph's length */
 #define HW_NEAT_SET_SNAP 0.2
+#define HW_NEAT_SET_ON 0.1     /* (of a letter's height) a neighbour's piece starting this near its ink is on it */
+#define HW_NEAT_SET_RARE 3      /* a version made from fewer samples is set on its ink's top and bottom */
+#define HW_NEAT_SET_BAND 0.75   /* (x-heights) when its own top or bottom is further than this from the ink's */
+#define HW_NEAT_SET_LOW 0.2     /* (x-heights) and both are at least this tall */
+#define HW_NEAT_SET_FRAG 0.5    /* (of its version's height) ink so low is a fragment */
+#define HW_NEAT_BAR_MIN 0.3     /* (x-heights) the shortest such bar */
+#define HW_NEAT_BAR_KEEP 0.25   /* (of its piece) a neighbour keeps when a bar run into it is the letter's */
 /* a stroke taller than this many x-heights is drawing, not writing */
 #define HW_NEAT_DRAWING 3.5
 
