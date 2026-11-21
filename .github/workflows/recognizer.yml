@@ -21,7 +21,7 @@ jobs:
               py3-fonttools harfbuzz-utils fontconfig wayland-dev py3-jsonschema
             # the samples app draws with glassine_ui: the commit the packages build
             git clone -q https://github.com/GlassineOS/ui /tmp/ui
-            git -C /tmp/ui checkout -q 77ed45f37ff8fbc1ce2acf8321a17b87a64cbbc5
+            git -C /tmp/ui checkout -q f8f97d8583bb50a8caab4492c640f9a081481638
             make -C recognizer OUT=/tmp check
             # the bases of Autograph: Edu SA Beginner and Playwrite DE Grund as the packages fetch
             # them, their centre lines made and checked, then the font over each valid in all three styles
