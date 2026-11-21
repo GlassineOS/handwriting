@@ -11,6 +11,8 @@ every way:
     set                     Neatest: each word set in the font (FR-043)
     set, conditioned        Neatest with each word set along its own baseline, lean, x-height
                             and spacing, each letter onto its nearest version (cond=1)
+    set, line-conditioned   the same along the line's baseline, at the line's lean and
+                            x-height (cond=2)
 
 Faithfulness (the neatened line against the line as written; x-heights are the line's as
 written): `move` the RMS distance each point moved, `shape` the RMS distance between each letter
@@ -48,7 +50,8 @@ en = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(en)
 
 WAYS = [("Light", "", 0.25), ("Medium", "", 0.5), ("Strong", "", 0.75), ("pull 1", "set=0", 1.0),
-        ("set", "", 1.0), ("set, conditioned", "cond=1", 1.0)]
+        ("set", "", 1.0), ("set, conditioned", "cond=1", 1.0),
+        ("set, line-conditioned", "cond=2", 1.0)]
 X_LETTERS = "acemnorsuvwxz"
 
 
