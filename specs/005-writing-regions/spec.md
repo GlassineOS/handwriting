@@ -27,8 +27,9 @@ Relation to spec 004: every requirement of spec 004 stays as it is. A surface th
 no regions behaves exactly as spec 004 says. A surface that declares regions gets the
 requirements below for the writing in them; the rules on identity (spec 004 FR-001), the
 service holding one model (FR-005), privacy (FR-010), raw input for samples (FR-009), the
-person's permissions (FR-014), versioning (FR-003) and the writing's size (FR-016, FR-017)
-apply to each region as they apply to a surface.
+person's permissions (FR-014), versioning (FR-003) and the units (FR-017) apply to each
+region as they apply to a surface. A region's writing size is judged by FR-028 below, not
+by a line found from the writing (spec 004 FR-016).
 
 ## User scenarios
 
@@ -86,39 +87,40 @@ and hands each region its stored strokes and value, **Then** each region shows t
 ink and font words as before, its value is the stored value, and further writing is read
 as part of it.
 
-**Given** a newer reading model is installed, **When** an app hands a region its stored
-strokes to be read again, **Then** the region delivers the new reading as its value.
+**Given** the system reads with a newer model than when the ink was written, **When** the
+app hands a region its stored strokes and value, **Then** the words the person never
+confirmed or edited take the system's current reading, the words the person confirmed or
+edited stay as they are, and the app needs to know nothing about the model.
 
-### Scenario 7 – No handwriting service (Priority: P2)
+### Scenario 7 – No handwriting service (Priority: P3)
 
-**Given** a system without the handwriting service, **When** the person writes in a
-region, **Then** the app still receives the raw strokes per region and draws them, and
-text mode works with the on-screen keyboard alone.
+**Given** a system without the handwriting service, **When** an app starts, **Then** the
+capabilities the system announces tell it that writing regions are not available, and the
+app can decide not to start without them.
 
 ### Edge cases
 
 - **A stroke crossing two regions** belongs to the region it starts in, whole; it is read
   only there, and a gesture it makes acts only there.
 - **A region removed while the person writes**: its writing is forgotten by the service at
-  once and no value is delivered for it afterwards. [NEEDS CLARIFICATION: what becomes of
-  a stroke that started in the region and ends after the removal: delivered raw with no
-  region, or dropped?]
-- **Overlapping regions**: a stroke starting where regions overlap belongs to one of them.
-  [NEEDS CLARIFICATION: which one: the one the app stacks on top, the one declared last,
-  or the smallest?]
-- **A stroke starting outside every region** on a surface with regions. [NEEDS
-  CLARIFICATION: delivered raw without a region and never read, or not delivered?]
+  once and no value is delivered for it afterwards. A stroke that started in it and is
+  still being written is dropped: input the app said it has no interest in is never
+  delivered.
+- **Overlapping regions**: a stroke starting where regions overlap belongs to the topmost
+  of them, as the app stacks them.
+- **A stroke starting outside every region** on a surface with regions is not delivered
+  through the pen interface at all, as with the ink areas: no region, no pen input.
 - **Private fields**: a region whose type is private (as in spec 004 FR-010) sends nothing
   to the service, has no value from a reading, makes no samples and accepts no report;
   its raw strokes still reach the app. A region that becomes private is forgotten by the
   service at once. Its text mode works as any private text field does with the keyboard.
+  Its raw strokes in region coordinates are the only handwriting it has.
 - **A region resized mid-word**: the strokes it holds stay in it and the word goes on
   being read with them; only where new strokes start is decided by the new area. The
-  writing's size reference follows the new area for the next reading.
-- **A lone character in a small field** (a digit in a planner cell): read with the
-  region's ruled line when it has one. [NEEDS CLARIFICATION: without ruled lines, may the
-  line found in another region of the same surface serve as the reference (spec 004
-  FR-016), or only one found earlier in the same region?]
+  writing's size reference is physical (FR-028), so a resize doesn't change it.
+- **A lone character in a small field** (a digit in a planner cell): its size is judged in
+  millimetres (FR-028), never against a line found from itself or from another region, so a
+  lone `o` is not read as an `O` for lack of a line.
 - **Text mode with an empty region**: the field opens empty; text typed into it is shown
   in ink mode wholly in the person's font.
 - **A text edit that only deletes words**: the remaining words keep their ink.
@@ -144,18 +146,20 @@ text mode works with the on-screen keyboard alone.
   the layout changes. A region's area may grow or shrink while it holds writing; what it
   holds stays.
 - **FR-005**: A stroke belongs to the region in which it starts, whole, wherever it
-  ends, and is read only in that region (see the edge cases for overlaps and strokes
-  outside every region).
+  ends, and is read only in that region. Where regions overlap, the topmost as the app
+  stacks them gets it. A stroke that starts outside every region is not delivered through
+  the pen interface; a stroke whose region is removed before it ends is dropped.
 - **FR-006**: Each region with reading on has its own reading, in the region's field type
-  and languages, with the region's ruled lines and area as its writing area (spec 004
-  FR-016). Reading one region never waits on another.
+  and languages, with the region's own area and ruled lines and the size reference of
+  FR-028. Reading one region never waits on another.
 - **FR-007**: A region costs the service nothing until it holds writing; declaring many
   empty regions (a planner page) takes no reading resources.
 
 ### The value
 
-- **FR-008**: The value of a region is its text: its current reading, combined with any
-  text the person set by keyboard (FR-016 to FR-021). The region delivers the whole value
+- **FR-008**: The value of a region is its text: its current best reading (or the
+  candidate the person picked), combined with any text the person set by keyboard (FR-016
+  to FR-021). The region delivers the whole value
   to the app every time it changes, as a text field edited by a keyboard delivers its text.
   There is no revision number, change list or other comparison machinery; an app that
   wants to know what changed compares values itself.
@@ -164,12 +168,11 @@ text mode works with the on-screen keyboard alone.
   line.
 - **FR-010**: With each value the region tells the app which of its strokes make up the
   value and which strokes no longer belong to it (struck out, or replaced by an edit), so
-  the app knows what to draw and what it may drop. [NEEDS CLARIFICATION: is the ink of a
-  replaced or deleted word removed from the region for good, or kept by the region so it
-  could be shown again?]
-- **FR-011**: Ranked alternatives beyond the value are not needed to use a region.
-  [NEEDS CLARIFICATION: does a region still deliver ranked candidates at a pause (spec 004
-  FR-007), for apps that want them, or only its value?]
+  the app knows what to draw. Ink that is struck out or replaced by an edit leaves the
+  region for good, so a region's ink and its value always match.
+- **FR-011**: At a pause a region also delivers ranked alternatives for its writing
+  (candidates, as in spec 004 FR-007), so any app can offer them; an app that only wants
+  the value can ignore them. A picked candidate becomes the value.
 
 ### Gestures
 
@@ -180,8 +183,9 @@ text mode works with the on-screen keyboard alone.
 
 ### Reports and learning
 
-- **FR-013**: The app reports per region what the person did with its value: confirmed
-  it as it is, or corrected it to a text the person gave. A report applies to the writing
+- **FR-013**: The app reports per region what the person did with its writing, as in
+  spec 004 FR-008: picked a candidate, confirmed the value as it is, or corrected it to a
+  text the person gave. A report applies to the writing
   the reported value was read from; writing added later is not part of it. A report never
   ends the region's writing: the ink stays the field's content.
 - **FR-014**: Reports are the confirmation signal for the person's samples and learning
@@ -218,15 +222,16 @@ text mode works with the on-screen keyboard alone.
 - **FR-020**: When the value can't be shown word by word (the words of the text can't be
   matched to the ink), the region's whole value is set in the person's font instead, and
   none of its ink is shown.
-- **FR-021**: The person's size is the size of their own writing in that region, else on
-  that surface, else their letter model's size, else the region's ruled line. The line a
-  set word goes on is the line of the word before it, else the region's first line.
-  [NEEDS CLARIFICATION: when an edited word is wider or narrower than the ink it replaces,
-  may the kept ink after it on the line move along the line, or wrap to the next line,
-  to make room; or does it stay where it was written?]
-- **FR-022**: A person without a letter model gets a default handwriting font for these
-  words, redistributable under the repository's rules on models and data. [NEEDS
-  CLARIFICATION: which font.]
+- **FR-021**: A set word is set at the size of the person's writing in that region, else
+  at the size of their letters in millimetres, else at the typical handwriting size of
+  FR-028. The line a set word goes on is the line of the word before it, else the region's
+  first line. When an edited word is wider or narrower than the ink it replaces, the kept
+  ink after it on the line moves along the line by the difference, unchanged in shape.
+  Whether words that no longer fit the region's width wrap to its next line is the app's
+  choice.
+- **FR-022**: Set words use the person's font (spec 003). The person's font always exists:
+  it starts as a plain base font and grows with the person's writing, so there is no case
+  without it.
 - **FR-023**: New pen strokes in such a region are added to it and read as usual; their
   reading joins the value at the place they are written, and the words set from the text
   stay as they are.
@@ -243,25 +248,29 @@ text mode works with the on-screen keyboard alone.
 ### Stored ink
 
 - **FR-025**: An app can hand a region strokes it kept (from an earlier run or another
-  document), with or without the value it kept for them. With the value, the value is the
-  region's value and the region shows it as FR-018 to FR-020 say. Without it, the strokes
-  are read and the reading becomes the value.
-- **FR-026**: The system tells apps when the reading model changes, so an app can hand a
-  region its stored strokes to be read again with the newer model and get an updated value.
-  [NEEDS CLARIFICATION: may a re-read change words the person confirmed or edited, or
-  only the words that were never confirmed; and does the app alone decide when to re-read,
-  or may the system re-read held regions on its own?]
+  document), with the value it kept for them or without one. The region reads the strokes
+  and shows the result as FR-018 to FR-020 say. Without a value, the reading is the value.
+- **FR-026**: Whenever the system reads stored strokes it reads them with the model it has
+  at that time, so a newer model's reading reaches the value without the app knowing about
+  models. A reading never changes words the person confirmed (a pick or a confirmation) or
+  edited; it changes only words that come from an earlier reading alone. [NEEDS
+  CLARIFICATION: how the region knows, for stored ink handed back after a restart, which
+  words of the kept value the person confirmed or edited.]
 
-### Without the service or the interface
+### Availability
 
-- **FR-027**: Without the handwriting service, the app still receives each region's raw
-  strokes, routed to their regions, as in spec 004; regions have no reading, no value from
-  ink and no font setting, and text mode works with the keyboard alone. [NEEDS
-  CLARIFICATION: how an edited region is shown in ink mode without the service: its text
-  in the app's own font, its ink only, or both?]
-- **FR-028**: On a system without the pen interface, an app draws from its own pen input
-  and its text mode works with the keyboard alone. An app learns which of these features
-  the running system offers before using them (spec 004 FR-003).
+- **FR-027**: Writing regions depend on the handwriting service. The capabilities the
+  system announces (spec 004 FR-003) say whether regions are available, and change when the
+  service comes or goes; an app may refuse to start without them.
+
+### The writing's size
+
+- **FR-028**: A region's writing size is judged in physical size: the surface's pixels per
+  millimetre, which the compositor knows from the output the pen writes on, and the
+  person's letters in millimetres once there are enough of them. Before there are, a
+  typical handwriting size in millimetres is the prior. A ruled line is a reference only
+  when the app sets one for the region. A region never takes a line from another region,
+  and a lone character's size is never judged from a line found from itself.
 
 ## Key entities
 
@@ -271,7 +280,8 @@ text mode works with the on-screen keyboard alone.
 - **Value**: the region's text, from its reading and the person's text edits (FR-008).
 - **Word layout**: for each word of the value, either the strokes that make it or its
   shape and place set in the person's font (FR-010, FR-024).
-- **Report**: what the person did with a region's value: confirmed or corrected (FR-013).
+- **Report**: what the person did with a region's writing: picked, confirmed or corrected
+  (FR-013).
 - **Stored ink**: strokes, and optionally a value, that an app kept and hands back to a
   region (FR-025).
 
@@ -281,10 +291,9 @@ text mode works with the on-screen keyboard alone.
 |---|---|---|---|
 | Pen interface, with writing regions (regions, their choices and modes in; per region raw and neatened strokes, values, word layout out; reports and stored ink back) | owned (this repository specifies it; its protocol definition is owned by GlassineOS/protocols) | the next version of spec 004's pen interface, additive: an app on the earlier version keeps spec 004's behaviour | this spec; spec 004 |
 | Service interface (read ink, samples, permissions) | owned by spec 004, unchanged | 1 | spec 004; docs/service.md |
-| The person's font and letter model | owned by spec 003, consumed for setting words | 1 | spec 003 |
+| The person's font (always present, growing with the person's writing) | owned by spec 003, consumed for setting words | 1 | spec 003 |
 | Recognizer gestures and readings | owned by spec 001, consumed per region | 1 | docs/recognizer.md |
 | System text input and on-screen keyboard | consumed for text mode | — | GlassineOS/shell spec 006 |
-| Default handwriting font | consumed (a font resource) | — | to be chosen (FR-022) |
 
 ## Device scope and risk
 
@@ -306,10 +315,15 @@ Host level:
 - a region taken to text mode, edited and taken back shows unchanged words as their ink,
   edited and added words as set words in the person's font, and reports the edit as a
   correction that stores no sample for a word whose ink doesn't fit its new text;
-- with no letter model, set words come from the default handwriting font;
+- a person with no samples yet gets set words in the plain base form of their font;
+- a lone character in a region without ruled lines is read against the size prior in
+  millimetres, and its reading does not change when other regions hold writing;
+- a stroke starting outside every region is not delivered; a stroke whose region is
+  removed mid-stroke is dropped; a stroke in an overlap goes to the topmost region;
 - strokes and value handed back to a fresh region give the same value and word layout as
-  before; strokes alone give the model's reading;
-- without the service, regions still get their raw strokes.
+  before; strokes alone give the model's reading; with another model, confirmed and edited
+  words stay as they were;
+- without the service, the capabilities say regions are not available.
 
 Product level: in the images acceptance suite, a demo app with a page of small fields and a
 notes field: the person writes in two fields, scrolls, edits one field as text, writes
