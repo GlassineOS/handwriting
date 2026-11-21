@@ -497,7 +497,7 @@ size, spacing) and keep their shape.
   baseline; a short word's baseline, lean and x-height lean towards the line's), and with
   the font's advances scaled (by 0.8 to 1.25) and moved so the letters' middles fall where
   they were written. Each word stays where it was written, so a line written on a slope
-  or leaning keeps its direction, and the gaps between words stay the person's. The strokes stay the person's (FR-013):
+  or leaning keeps its direction. The strokes stay the person's (FR-013):
   each character's ink, its pieces in the order written, is drawn along the centre lines of
   its glyph's strokes, each point by its share of the ink's length, so the timing and
   pressure run along the glyph as written. Each letter is set onto a way of writing it
