@@ -34,7 +34,7 @@ This spec is about the person's own hand on their own device. Learning from many
 
 ### Scenario 1 – Writing it your best (Priority: P1)
 
-**Given** the samples app's Your font tab, **When** the person chooses "Write it your best",
+**Given** the samples app's Autograph tab, **When** the person chooses "Write it your best",
 **Then** prompts are shown as usual but framed as unhurried, careful writing, and each
 kept sample is marked as careful.
 
@@ -44,7 +44,7 @@ then once carefully, **Then** both samples are kept and linked as a pair.
 ### Scenario 2 – Which one is nicer? (Priority: P1)
 
 **Given** the person has at least two samples of the same character or word, **When** they
-choose "Which one is nicer?" on the Your font tab, **Then** two of their own versions are
+choose "Which one is nicer?" on the Autograph tab, **Then** two of their own versions are
 shown side by side, ink only, and a tap on one records the preference; "Both fine" and
 "Skip" record nothing against either. Nothing is scored or ranked on screen.
 
@@ -54,7 +54,7 @@ shown side by side, ink only, and a tap on one records the preference; "Both fin
 chosen (the settings app, text editors, notes apps), **Then** Autograph is there, drawn in
 the plain base font.
 
-**Given** samples, **When** the person opens the font page on the Your font tab, **Then**
+**Given** samples, **When** the person opens the font page on the Autograph tab, **Then**
 a preview shows a sentence in Autograph with the characters their samples cover in their
 own hand and the rest in the base, the characters still in the base are listed with a way
 to write them now, and on confirmation Autograph is updated and apps that use it show the
@@ -135,14 +135,14 @@ size, spacing) and keep their shape.
 ### In the samples app
 
 - **FR-042**: Everything in this spec that makes or uses the font has a tab of its own in
-  the samples app (spec 002 FR-026), **Your font**, in the owner's session only. It opens on
+  the samples app (spec 002 FR-026), **Autograph**, in the owner's session only. It opens on
   the font page (Scenario 3: the preview, the styles and the nib, install, and each
   character's page with its samples, FR-033, where a single character is also learned again,
   FR-032). Below the font's letters, rows open "Write it your best" (Scenario 1), "Which one
   is nicer?" (Scenario 2) and Neaten my writing (the app's own page that draws through the
   neat ink layer, Scenario 4); each leads back to the font page. The font's counts per
   character (FR-030) are on the font page and the character's page, apart from the
-  recognizer's coverage beneath Learn. A guest's session has no Your font tab: "Write it
+  recognizer's coverage beneath Learn. A guest's session has no Autograph tab: "Write it
   your best" is a prompt set in its Write tab, and "Which one is nicer?" isn't offered
   there (spec 002 FR-018).
 
@@ -302,13 +302,8 @@ size, spacing) and keep their shape.
 - **FR-045**: The base font is redistributable under the repository's rules on models and
   data, covers every character of the languages the recognizer reads, and is plain: an
   upright, unjoined, school-like print hand with no ornament, so the person's own letters
-  replace it without a clash of styles. [NEEDS CLARIFICATION: which base. Candidates under
-  the OFL: **Kalam** (already the font the samples app shows words in where there is no
-  ink; Latin and Devanagari; a casual, slightly slanted print rather than a plain one, and a
-  held-out hand of the recognizer's synthetic test set); an **Edu … Beginner** family
-  (school print models, the plainest of the three; Latin only, and in the synthetic
-  training pool); a **Playwrite** family (school handwriting models for many countries;
-  Latin only, with joined and print forms).]
+  replace it without a clash of styles. The base is a school print model under the SIL Open
+  Font License (an Edu Beginner family).
 - **FR-034**: The font comes in three styles of one family, installed and updated together,
   that differ only in how wide the ink is along each stroke; the letters' shapes, their
   variants and how the font switches between them, the spacing and the kerning are the
@@ -399,8 +394,9 @@ size, spacing) and keep their shape.
   documented with the recognizer.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
-  the session. A rebuild keeps the name Autograph; the font is rebuilt only when the person
-  asks.
+  the session. A rebuild keeps the name Autograph. The font rebuilds itself in the background, at low
+  priority while the device charges, once new samples have changed the letter model; the
+  person can also rebuild it at once.
   Updating the font learns the letters first when the letter model is out of date, then
   makes the font from it; learning the letters alone (to see the preview first) leaves the
   installed font as it was.
