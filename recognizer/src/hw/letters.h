@@ -79,7 +79,7 @@
 #define HW_BEST_CAREFUL 2.0     /* written to "Write it your best" (quick: 1 / this) */
 #define HW_BEST_CHOSEN 2.0      /* each time chosen in "Which one is nicer?" */
 #define HW_BEST_OTHER 0.3       /* each time not chosen there */
-#define HW_FONT_NAME_DEFAULT "My handwriting"
+#define HW_FONT_NAME "Autograph"  /* the installed font's name, kept by every rebuild (FR-011) */
 #define HW_FONT_NAME_MAX 63     /* bytes of UTF-8 */
 
 /* Coordinates of a variant: x-heights, y up, the baseline at 0, x from the left edge of
@@ -450,14 +450,26 @@ int hw_font_join_half(const struct hw_letters *V, const struct hw_font_joins *J,
 void hw_font_widths(const struct hw_letters *L, const struct hw_variant *v, size_t j, int style, double nib, double *w);
 /* Calligraphy's thinnest and widest line (x-heights) for the model's ink width */
 void hw_font_nib_widths(const struct hw_letters *L, double *wmin, double *wmax);
-/* Builds and installs all three styles (replacing the font there, name kept when NULL, the
- * nib angle kept when < 0, random alternates kept when random < 0, else on when 1);
- * prints the Regular file's path. 0, 1 no letter model or nothing covered, -1 error, -2 a
- * bad name. */
-int hw_font_install(const char *name, int nib, int random, int verbose);
+/* Builds and installs Autograph in all three styles from the letter model over the base
+ * (the empty model before the first build), replacing the font there (the nib angle kept when
+ * < 0, random alternates kept when random < 0, else on when 1); prints the Regular file's
+ * path. 0, 1 nothing to draw (no base and nothing covered), -1 error. */
+int hw_font_install(int nib, int random, int verbose);
+/* Writes the three styles as the installed one is made, under name, into dir as
+ * NAME-STYLE.ttf (FR-012); the installed font stays. 0, 1 nothing to draw, -1, -2 a bad name. */
+int hw_font_export(const char *name, const char *dir, int verbose);
+/* Autograph kept: installed when there is none (FR-009); else, while charging and idle, the
+ * letter model built when it changed and the font made again when it isn't made from it (or
+ * the base) as they are now (FR-011). 0 installed, 2 nothing to do, 1 nothing to draw, -1. */
+int hw_font_auto(int verbose);
+/* The model as the font draws it (font show): the letters as the font has them, with the
+ * base's metrics and spacing where they have none, then a {"base": CHAR, "variant": …} line
+ * per character drawn from the base. malloc'd. */
+char *hw_font_model_format(const struct hw_letters *L, size_t *len);
 /* removes the installed font: 1 removed, 0 none, -1 error */
 int hw_font_remove(void);
-/* The store's lock held: removes the letter model and the installed font (an erase). */
+/* The store's lock held: removes the letter model and returns Autograph to the base (an erase;
+ * without a base the font goes). */
 void hw_letters_erase_locked(void);
 
 #endif
