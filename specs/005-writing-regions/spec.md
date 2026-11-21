@@ -246,6 +246,14 @@ app can decide not to start without them.
   shape and place from the person's font, so an app can draw set words without having the
   font itself. The app never computes a reading, a word match or a font layout.
 
+### Live ink
+
+- **FR-029**: Ink appears under the pen in a region that takes strokes as fast as anywhere
+  else on the device, from the first point of the stroke, with reading on or off and in a
+  private region alike; declaring the region is all the app does for it. Where no region
+  takes strokes (outside every region, a region in text mode and what it covers) the pen
+  leaves no such ink. The app's own drawing of the stroke follows as FR-024 says.
+
 ### Stored ink
 
 - **FR-025**: An app keeps a region's saved state (FR-010) with its strokes and value, and
@@ -326,6 +334,9 @@ Host level:
 - strokes, value and saved state handed back to a fresh region give the same value and
   word layout as before; strokes alone give the model's reading; with another model, confirmed and edited
   words stay as they were;
+- a surface with regions and no other ink areas has ink areas exactly where its regions
+  take strokes: they follow a region's move, clip and mode, a region in text mode above
+  another cuts it, and nothing outside the regions is an ink area;
 - without the service, the capabilities say regions are not available.
 
 Product level: in the images acceptance suite, a demo app with a page of small fields and a
