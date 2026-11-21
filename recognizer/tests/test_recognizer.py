@@ -107,6 +107,7 @@ class Env:
         self.env["LANG"] = "en_US.UTF-8"
         # a random model's readings, compared exactly: no look-alike lean (test-engine tests it)
         self.env["GLASSINE_HANDWRITING_LOOKALIKE"] = "off"
+        self.env["GLASSINE_HANDWRITING_BASE"] = "off"          # no Autograph base unless a test gives one
 
     def words(self, words, lang="en"):
         """a word predictor model (format 1, shell docs/predictor.md) with these words, all
