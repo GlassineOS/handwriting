@@ -62,6 +62,11 @@ class Style:
     rtl: float = 0.8  # chance a word's delayed strokes go right to left
     mid: float = 0.1  # chance a delayed stroke comes after a later letter, not the word's end
     join: float = 0.4  # chance two close strokes of a word are written in one
+    # (aligner data; 0 leaves the ink as before, with the same draws)
+    curve: float = 0.0  # chance a pen-down join is curved (a learned join shape or a drawn bow), else straight
+    bar_lead: float = 0.0  # chance a letter's bar, its last stroke, runs on pen down into the next letter
+    reach: float = 0.0  # a bar before a later letter of its word reaches on over it by up to this many x-heights
+    late_word: float = 0.0  # chance a word's last letter's dot or bar waits until the next word is begun
     xh_line: float = 0.14
     timing: WriterTiming = None
     one_font: bool = True
@@ -177,16 +182,16 @@ class LetterWriter:
 
 # ---------------------------------------------------------------------------- delayable strokes
 
-def delayable(ch: str, strokes: list[np.ndarray]) -> list[str | None]:
+def delayable(ch: str, strokes: list[np.ndarray], bar_chars: str = BAR_CHARS) -> list[str | None]:
     """Per stroke of a glyph (em, y down, baseline 0): 'dot', 'bar' or None. A dot: a small
-    stroke of an i or j above the x-height; a bar: a flat stroke of a barred letter that is
-    not its only stroke."""
+    stroke of an i or j above the x-height; a bar: a flat stroke of a barred letter (of
+    `bar_chars`) that is not its only stroke."""
     out = []
     for s in strokes:
         w, h = np.ptp(s[:, 0]), np.ptp(s[:, 1])
         if ch in DOT_CHARS and max(w, h) < 0.15 and s[:, 1].max() < -0.4:
             out.append("dot")
-        elif ch in BAR_CHARS and len(strokes) > 1 and w > 2.5 * h and w > 0.12:
+        elif ch in bar_chars and len(strokes) > 1 and w > 2.5 * h and w > 0.12:
             out.append("bar")
         else:
             out.append(None)
@@ -219,14 +224,109 @@ def font_spacing(table: dict, bigrams: list[str]) -> tuple[float, float, float]:
     return float(np.median(gaps)), float(np.median(opens)), float(space + rb + lb)
 
 
+# ---------------------------------------------------------------------------- joins
+
+def _reach(q: np.ndarray, ext: float) -> np.ndarray:
+    """A bar (em, y down) drawn on by ext em past its right end, along its way there."""
+    if ext <= 0 or len(q) < 2:
+        return q
+    rev = q[-1][0] < q[0][0]
+    r = q[::-1] if rev else q
+    d = r[-1] - r[max(0, len(r) - 4)]
+    nd = float(np.linalg.norm(d))
+    if nd < 1e-9:
+        return q
+    k = max(1, int(ext / 0.02))
+    more = r[-1] + (d / nd) * ext * np.linspace(0, 1, k + 1)[1:, None]
+    r = np.vstack([r, more])
+    return r[::-1] if rev else r
+
+
+class JoinShapes:
+    """A letter model's learned join shapes (its `joins` row, docs/recognizer.md "Joins"): per
+    letter pair and per kind of join (exit band, entry class), points from the joint's start
+    (x-heights, y up)."""
+
+    BANDS = (-0.25, 0.5, 1.25)  # x-heights over the baseline: the exit and entry bands 0-3
+
+    def __init__(self, row: dict):
+        self.pairs, self.kinds = {}, {}
+        for sh in row.get("shapes", []):
+            pts = np.asarray(sh.get("points", []), float)
+            if len(pts) < 2:
+                continue
+            if "pair" in sh:
+                self.pairs[sh["pair"]] = pts
+            else:
+                self.kinds[tuple(sh["kind"])] = pts
+
+    @classmethod
+    def from_rows(cls, rows: list[dict]) -> "JoinShapes | None":
+        for r in rows:
+            if "joins" in r:
+                return cls(r["joins"])
+        return None
+
+    def shape(self, a: str, b: str, p0: np.ndarray, p1: np.ndarray, right: bool) -> np.ndarray | None:
+        """The shape joining a to b from p0 to p1 (em, y down, baseline 0): the pair's, else
+        the kind's of the exit's band and the entry's (right: right of the letter's middle)."""
+        sh = self.pairs.get(a + b)
+        if sh is None:
+            band = lambda p: int(np.searchsorted(self.BANDS, -p[1] / XH))
+            sh = self.kinds.get((band(p0), 2 * band(p1) + int(right)))
+        return sh
+
+
+def connector(p0: np.ndarray, p1: np.ndarray, shape: np.ndarray | None = None, bow: float = 0.0) -> np.ndarray:
+    """The points strictly between p0 and p1 (em, y down) of a pen-down join, every 0.02 em or
+    so: a learned shape (x-heights, y up, from its start) set between the ends, turned and
+    scaled onto them, its bow across the line at most 1.5 times its length (as the letter
+    model sets one); else a curve bowing `bow` times the distance across the line (positive
+    below it); else the straight line."""
+    c = np.asarray(p1, float) - np.asarray(p0, float)
+    L = float(np.linalg.norm(c))
+    n = max(2, int(L / 0.02))
+    if L < 1e-9:
+        return np.zeros((0, 2))
+    e = c / L
+    nrm = np.array([-e[1], e[0]])  # (y down) for a join to the right: below the line
+    if shape is not None:
+        s = np.asarray(shape, float) * [1.0, -1.0]
+        se = s[-1] - s[0]
+        sl = float(np.linalg.norm(se))
+        if sl < 1e-6:
+            shape = None
+        else:
+            sh, sn = se / sl, np.array([-se[1], se[0]]) / sl
+            u = (s - s[0]) @ sh / sl
+            v = np.clip((s - s[0]) @ sn / sl, -1.5, 1.5)
+            path = p0 + u[:, None] * c + v[:, None] * L * nrm
+    if shape is None:
+        t = np.linspace(0, 1, 33)[:, None]
+        ctrl = p0 + c / 2 + bow * L * nrm
+        path = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * ctrl + t ** 2 * p1
+    d = np.r_[0, np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))]
+    u = np.linspace(0, d[-1], n)
+    return np.c_[np.interp(u, d, path[:, 0]), np.interp(u, d, path[:, 1])][1:-1]
+
+
 class Generator:
     def __init__(self, fonts: FontWriter | None, fit: Fit, pool: list[tuple[float, float]], open0: float = 0.3,
-                 params: Params | None = None, residual: float | None = None):
+                 params: Params | None = None, residual: float | None = None, joins: JoinShapes | None = None,
+                 bar_chars: str = BAR_CHARS):
+        """joins: learned join shapes a curved join takes where one fits (Style.curve);
+        bar_chars: the letters whose flat strokes are bars (delayable, Style.reach, .bar_lead)."""
         self.fonts, self.pool, self.open0 = fonts, pool, open0
+        self.joins, self.bar_chars = joins, bar_chars
         self.p = params or Params(warp=0.025, zones=0.2, asc_scale=1.1)
         self.timing = Timing(fit) if residual is None else Timing(fit, residual)
 
-    def line(self, text: str, rng, style: Style | None = None, letters: LetterWriter | None = None) -> dict:
+    def line(self, text: str, rng, style: Style | None = None, letters: LetterWriter | None = None,
+             points: bool = False) -> dict:
+        """One line of ink. points: also each point's character (`point_owner`: per stroke, the
+        character index of each point, -1 on a pen-down join between two characters) and the
+        joins (`joins`: per stroke, [from arc, to arc, character before, character after] in
+        em along the stroke as written, before noise); the same ink either way."""
         p = self.p
         st = style or (letters.style(rng) if letters else draw_style(rng, self.pool))
         slant = rng.normal(p.slant_mean, p.slant) if letters is None else rng.normal(0, p.slant / 2)
@@ -262,7 +362,7 @@ class Generator:
                 glyphs.append((ci, word, [], [], None, fid, float("nan")))
                 continue
             strokes = [q[:, :2] for q in g.strokes]
-            kinds = delayable(ch, strokes)
+            kinds = delayable(ch, strokes, self.bar_chars)
             if letters is None:
                 strokes = [_zones(q * [width, 1], asc, desc) for q in strokes]
                 if p.warp > 0:
@@ -319,18 +419,23 @@ class Generator:
                 q[:, 1] += p.drift * np.sin(freq * q[:, 0].mean() * 2 * np.pi + ph)
 
         # stroke order: loops sometimes reversed; dots and bars delayed
-        seq = []  # (char index, stroke, delayed)
+        seq = []  # (char index, stroke, delayed, kind, its letter's first stroke as written)
         by_word = {}
         for ci, w, strokes, kinds, fid in placed:
             by_word.setdefault(w, []).append((ci, strokes, kinds))
-        for w in sorted(by_word):
+        words = sorted(by_word)
+        carry = []  # a word's last letter's strokes held until the next word is begun
+        for wi, w in enumerate(words):
             letters_w = by_word[w]
             held = []  # (after letter position, char index, stroke)
             for pos, (ci, strokes, kinds) in enumerate(letters_w):
+                first = True
                 for q, k in zip(strokes, kinds):
                     closed = np.linalg.norm(q[0] - q[-1]) < 0.04
                     if closed and rng.random() < p.reverse_loop:
                         q = q[::-1]
+                    if st.reach > 0 and k == "bar" and pos < len(letters_w) - 1:
+                        q = _reach(q, rng.uniform(0, st.reach) * XH)
                     chance = st.dot_delay if k == "dot" else st.bar_delay if k == "bar" else 0.0
                     if pos < len(letters_w) - 1 and chance and rng.random() < chance:
                         after = len(letters_w) - 1
@@ -338,41 +443,74 @@ class Generator:
                             after = int(rng.integers(pos + 1, len(letters_w) - 1))
                         held.append((after, ci, q))
                         continue
-                    seq.append((ci, q, False))
+                    if (st.late_word > 0 and k and pos == len(letters_w) - 1 and wi + 1 < len(words)
+                            and rng.random() < st.late_word):
+                        carry.append((ci, q))
+                        continue
+                    seq.append((ci, q, False, k, first))
+                    first = False
                 mine = [h for h in held if h[0] == pos]
                 if mine:
                     if len(mine) > 1 and rng.random() < st.rtl:
                         mine = mine[::-1]
-                    seq += [(ci2, q2, True) for _, ci2, q2 in mine]
+                    seq += [(ci2, q2, True, None, False) for _, ci2, q2 in mine]
                     held = [h for h in held if h[0] != pos]
+                if pos == 0 and wi and by_word[words[wi - 1]] and carry:
+                    seq += [(ci2, q2, True, None, False) for ci2, q2 in carry]
+                    carry = []
             # a dot on the word's last letter is written with it (nothing follows to delay it)
 
-        # pen-down joins inside a word, never of a delayed stroke
+        # pen-down joins inside a word, never of a delayed stroke; a bar may run on into the
+        # next letter (Style.bar_lead)
         word_of = {ci: w for ci, w, *_ in placed}
+        mid_x = {ci: float(np.mean(np.concatenate(strokes)[:, 0])) for ci, w, strokes, *_ in placed if strokes}
         merged = []
-        for ci, q, dl in seq:
+        pieces = []  # per merged stroke: (points, character or (before, after) for a join)
+        last_kind = None
+        for ci, q, dl, kind, first in seq:
             if merged and not dl and not merged[-1][2]:
                 pq, cis = merged[-1][1], merged[-1][3]
-                if (word_of[cis[-1]] == word_of[ci] and np.linalg.norm(q[0] - pq[-1]) < 0.7 * XH / 0.45
-                        and rng.random() < st.join):
-                    n = max(2, int(np.linalg.norm(q[0] - pq[-1]) / 0.02))
-                    bridge = np.linspace(pq[-1], q[0], n)[1:-1]
+                dist = np.linalg.norm(q[0] - pq[-1])
+                same = word_of[cis[-1]] == word_of[ci]
+                lead = (st.bar_lead > 0 and same and last_kind == "bar" and first and ci > cis[-1]
+                        and dist < 3 * XH and rng.random() < st.bar_lead)
+                if lead or (same and dist < 0.7 * XH / 0.45 and rng.random() < st.join):
+                    if st.curve > 0 and rng.random() < st.curve:
+                        shape = None
+                        if self.joins is not None and rng.random() < 0.6:
+                            shape = self.joins.shape(text[cis[-1]], text[ci], pq[-1], q[0],
+                                                     bool(q[0][0] > mid_x.get(ci, q[0][0])))
+                        bridge = connector(pq[-1], q[0], shape, float(rng.normal(0.1, 0.3)))
+                    else:
+                        n = max(2, int(dist / 0.02))
+                        bridge = np.linspace(pq[-1], q[0], n)[1:-1]
                     merged[-1] = (merged[-1][0], np.vstack([pq, bridge, q]), False,
                                   cis + ([ci] if ci not in cis else []))
+                    # (a join inside one character is that character's ink)
+                    pieces[-1] += [(len(bridge), (cis[-1], ci) if cis[-1] != ci else ci), (len(q), ci)]
+                    last_kind = kind
                     continue
             merged.append((ci, q, dl, [ci]))
+            pieces.append([(len(q), ci)])
+            last_kind = kind
 
         # timing, stray lifts, tilt, noise
         rot = np.array([[np.cos(tilt), -np.sin(tilt)], [np.sin(tilt), np.cos(tilt)]])
         out, owner = [], []
+        powner, joins = [], []
         t, last, last_ci = 0.0, None, None
-        for ci, q, dl, cis in merged:
+        for (ci, q, dl, cis), pcs in zip(merged, pieces):
             q = q @ rot.T
             parts = [q]
+            cuts = [(0, len(q))]
             if len(q) > 20 and rng.random() < p.extra_lift:
                 k = int(rng.integers(5, len(q) - 5))
                 parts = [q[:k + 1], q[k:]]
-            for part in parts:
+                cuts = [(0, k + 1), (k, len(q))]
+            if points:  # each path point's character, and the arc where each piece starts
+                lab = np.concatenate([np.full(n, -1 if isinstance(c, tuple) else c) for n, c in pcs])
+                ends = np.cumsum([n for n, _ in pcs])
+            for part, (i0, i1) in zip(parts, cuts):
                 if last is not None:
                     jump = float(np.linalg.norm(part[0] - last)) / XH
                     if dl:
@@ -380,6 +518,23 @@ class Generator:
                     else:
                         t += self.timing.pause("inside" if ci == last_ci else "between", jump, st.timing, rng)
                 arr = self.timing.stroke(part, XH, st.timing, rng, t)
+                if points:
+                    d = np.r_[0, np.cumsum(np.linalg.norm(np.diff(part, axis=0), axis=1))]
+                    pos = self.timing.last_pos
+                    # a point between path points i and i+1 is the character of both, or a join
+                    k = np.clip(np.searchsorted(d, pos, side="right") - 1, 0, len(part) - 1)
+                    k2 = np.minimum(k + 1, len(part) - 1)
+                    near = np.where(pos - d[k] <= d[k2] - pos, k, k2)
+                    powner.append(lab[i0:i1][near].astype(int))
+                    jn = []
+                    start = 0
+                    for (n, c), e in zip(pcs, ends):
+                        if isinstance(c, tuple):
+                            a, b = start - 1 - i0, e - i0  # the bridge runs from the path point before it to the one after
+                            if 0 <= a and b < len(part):
+                                jn.append([float(d[a]), float(d[b]), int(c[0]), int(c[1])])
+                        start = e
+                    joins.append(jn)
                 arr[:, :2] += rng.normal(0, p.noise, arr[:, :2].shape)
                 t = float(arr[-1, 2])
                 out.append(arr)
@@ -390,6 +545,9 @@ class Generator:
             for c in cis:
                 spans[c].append(si)
         fonts = {fid for *_, fid in placed}
-        return {"text": text, "strokes": out, "spans": spans, "xh": XH, "line": XH / st.xh_line, "base": 0.0,
-                "writer": letters.name if letters else (sorted(fonts)[0] if len(fonts) == 1 else "mixed"),
-                "rate": RATE}
+        res = {"text": text, "strokes": out, "spans": spans, "xh": XH, "line": XH / st.xh_line, "base": 0.0,
+               "writer": letters.name if letters else (sorted(fonts)[0] if len(fonts) == 1 else "mixed"),
+               "rate": RATE}
+        if points:
+            res["point_owner"], res["joins"] = powner, joins
+        return res

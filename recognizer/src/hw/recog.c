@@ -9,6 +9,7 @@
 #include "adapt.h"
 #include "calib.h"
 #include "chars.h"
+#include "local.h"
 #include "recog.h"
 #include "size.h"
 #include "store.h"
@@ -48,21 +49,31 @@ static void refresh_adaptation(struct hw_lang *l)
 	if (!hw_adapt_load(p, &l->model, &l->adapted, &info)) l->has_adapted = 1;
 }
 
-/* l (cleared) holds lang's model from dir */
-static void lang_load(struct hw_lang *l, const char *lang, const char *dir)
+/* l (cleared) holds lang's model from the file resolved (local.h) */
+static void lang_load(struct hw_lang *l, const char *lang, const struct hw_resolved *res)
 {
 	memset(l, 0, sizeof *l);
 	snprintf(l->lang, sizeof l->lang, "%s", lang);
-	snprintf(l->dir, sizeof l->dir, "%s", dir);
-	char p[4200], err[128];
-	snprintf(p, sizeof p, "%s/recognizer.ghm", l->dir);
+	l->res = *res;
+	snprintf(l->dir, sizeof l->dir, "%s", res->path);
+	char *slash = strrchr(l->dir, '/');
+	if (slash) *slash = 0;
+	char err[128];
 	l->loaded = -1;
-	if (!hw_model_load(&l->model, p, err, sizeof err)) {
-		l->loaded = 1;
-		l->base_temp = hw_calib_base(l->dir, l->model.hash);
-		l->model.base.temp = (float)l->base_temp;
-	} else if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
-		fprintf(stderr, "glassine-handwriting: %s: %s\n", p, err);
+	if (hw_model_load(&l->model, res->path, err, sizeof err)) {
+		if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
+			fprintf(stderr, "glassine-handwriting: %s: %s\n", res->path, err);
+		return;
+	}
+	if (l->model.kind > HW_GHM_KIND_RECOGNIZER) {   /* an aligner, or a kind this engine doesn't know */
+		fprintf(stderr, "glassine-handwriting: %s: not a recognizer\n", res->path);
+		hw_model_free(&l->model);
+		return;
+	}
+	l->loaded = 1;
+	/* the calibration beside the file: the shipped one's, or one the person put beside theirs */
+	l->base_temp = hw_calib_base(l->dir, l->model.hash);
+	l->model.base.temp = (float)l->base_temp;
 }
 
 static void lang_free(struct hw_lang *l)
@@ -74,12 +85,12 @@ static void lang_free(struct hw_lang *l)
 struct hw_lang *hw_lang_get(const char *lang)
 {
 	struct hw_lang *l = NULL;
-	char dir[sizeof l->dir];
-	snprintf(dir, sizeof dir, "%s/%s", hw_models_dir(), lang);
+	struct hw_resolved res;
+	hw_model_resolve(lang, HW_KIND_RECOGNIZER, &res);
 	for (int i = 0; i < nlangs; i++) if (!strcmp(langs[i].lang, lang)) l = &langs[i];
-	if (l && strcmp(l->dir, dir)) {               /* the setting moved to other models */
+	if (l && !hw_resolved_same(&l->res, &res)) {  /* another file: the choice, a setting or the file changed */
 		lang_free(l);
-		lang_load(l, lang, dir);
+		lang_load(l, lang, &res);
 	}
 	if (!l) {
 		if (nlangs == NLANGS) {               /* forget the oldest */
@@ -88,11 +99,26 @@ struct hw_lang *hw_lang_get(const char *lang)
 			nlangs--;
 		}
 		l = &langs[nlangs++];
-		lang_load(l, lang, dir);
+		lang_load(l, lang, &res);
+	}
+	if (l->loaded < 0 && res.local) {             /* checked, then gone bad: the shipped one */
+		struct hw_resolved sh = res;
+		snprintf(sh.path, sizeof sh.path, "%s/%s/%s", hw_models_dir(), lang, hw_kind_file(HW_KIND_RECOGNIZER));
+		sh.local = 0;
+		if (stat(sh.path, &sh.st)) memset(&sh.st, 0, sizeof sh.st);
+		lang_load(l, lang, &sh);
+		l->res = res;                         /* tried again when the local file changes */
 	}
 	if (l->loaded < 0) return NULL;
 	refresh_adaptation(l);
 	return l;
+}
+
+int hw_lang_local(const char *lang)
+{
+	struct hw_resolved res;
+	hw_model_resolve(lang, HW_KIND_RECOGNIZER, &res);
+	return res.local;
 }
 
 const struct hw_head *hw_lang_head(const struct hw_lang *l)
@@ -178,6 +204,7 @@ static uint64_t run_key(const struct hw_lang *l, const struct hw_stroke *s, size
 	h = hw_hash(rb, sizeof rb, h);
 	const void *who[2] = { l, hw_lang_head(l) };
 	h = hw_hash(who, sizeof who, h);
+	h = hw_hash(&l->model.hash, sizeof l->model.hash, h);    /* the same slot, another file */
 	double t = hw_lang_temp(l);
 	h = hw_hash(&t, sizeof t, h);
 	long long st[4] = { (long long)l->adapt_st.st_ino, (long long)l->adapt_st.st_size,

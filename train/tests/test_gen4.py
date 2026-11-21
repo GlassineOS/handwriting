@@ -352,3 +352,24 @@ def test_featurize_measured_scales_by_the_writers_small_letters(tmp_path):
     # the reference r times the generator's: the size column log(1/r) more, more points per stroke
     assert b[0, 5] - a[0, 5] == pytest.approx(-np.log(r), abs=2e-3)
     assert (len(b) > len(a)) == (r < 1)
+
+
+def test_point_owners_and_joins_leave_the_ink_alone():
+    """points=True gives each point's character and the joins, the same ink as without"""
+    g, st = _gen(join=1.0)
+    a = g.line("mummy in town", np.random.default_rng(3), st)
+    g, st = _gen(join=1.0)
+    b = g.line("mummy in town", np.random.default_rng(3), st, points=True)
+    assert len(a["strokes"]) == len(b["strokes"])
+    assert all(np.array_equal(p, q) for p, q in zip(a["strokes"], b["strokes"]))
+    assert [len(o) for o in b["point_owner"]] == [len(q) for q in b["strokes"]]
+    joined = 0
+    for j, (own, jn) in enumerate(zip(b["point_owner"], b["joins"])):
+        chars = sorted({int(c) for c in own if c >= 0})
+        assert chars == sorted(c for c, sp in enumerate(b["spans"]) if j in sp)
+        assert [c for c in dict.fromkeys(int(c) for c in own if c >= 0)] == chars  # in order, one run each
+        assert len(jn) == len(chars) - 1
+        for lo, hi, c0, c1 in jn:
+            assert lo < hi and c1 == c0 + 1 and c0 in chars
+        joined += len(jn)
+    assert joined >= 3

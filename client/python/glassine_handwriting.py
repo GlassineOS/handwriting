@@ -15,7 +15,20 @@ events. The listener is any object with some of these methods (missing ones are 
     candidate(serial, rank, text, origin, fit, chars)   origin: "ink", "beam", "words", "guided"
     candidates_done(serial, count)
     report_done(serial, result)    "stored", "not_kept", "not_allowed", "stale", "unavailable"
-    capabilities(caps)             a set of "strokes", "neaten", "text", "letters"
+    capabilities(caps)             a set of "strokes", "neaten", "text", "letters", "regions"
+
+Writing regions (spec 005): pen.region(name, listener) gives a Region (None without them),
+whose listener has some of
+
+    stroke(k, points), neat(k, how, points)       region coordinates
+    value(serial, text, words, gone, state)       words: dicts in the text's order, an ink word
+                                                  {"text", "strokes", "dx", "dy"}, a set word
+                                                  {"text", "box": (x, y, w, h), "path": [op, …]}
+                                                  with op ("M", x, y), ("L", x, y), ("Q", …),
+                                                  ("C", …), ("Z",); state: bytes to keep
+    candidate(serial, rank, text, origin, fit), candidates_done(serial, count)
+    gesture(serial, kind, strokes)                kind: "strike", "scratch", "caret"
+    report_done(serial, result)
 
 Events arrive while the app's toolkit dispatches Wayland events, on its thread."""
 
@@ -23,13 +36,16 @@ import ctypes
 import ctypes.util
 import os
 
-__all__ = ["Pen", "PICKED", "ACCEPTED", "CORRECTED", "DISCARDED", "PURPOSE"]
+__all__ = ["Pen", "Region", "PICKED", "ACCEPTED", "CORRECTED", "DISCARDED", "PURPOSE"]
 
 PICKED, ACCEPTED, CORRECTED, DISCARDED = range(4)
 HOW = ("kept", "line", "pulled")
 ORIGIN = ("ink", "beam", "words", "guided")
 RESULT = ("stored", "not_kept", "not_allowed", "stale", "unavailable")
-CAPS = ((1, "strokes"), (2, "neaten"), (4, "text"), (8, "letters"))
+CAPS = ((1, "strokes"), (2, "neaten"), (4, "text"), (8, "letters"), (16, "regions"))
+GESTURE = ("strike", "scratch", "caret")
+PATH = (("M", 2), ("L", 2), ("Q", 4), ("C", 6), ("Z", 0))
+MODE = {"ink": 0, "text": 1}
 PURPOSE = {"normal": 0, "alpha": 1, "digits": 2, "number": 3, "phone": 4, "url": 5, "email": 6, "name": 7,
            "password": 8, "pin": 9, "date": 10, "time": 11, "datetime": 12, "terminal": 13}
 
@@ -53,6 +69,34 @@ _CAPS = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint32)
 class _Listener(ctypes.Structure):
     _fields_ = [("stroke", _STROKE), ("neat", _NEAT), ("reading", _READING), ("candidate", _CAND),
                 ("candidates_done", _DONE), ("report_done", _REPORT), ("capabilities", _CAPS)]
+
+
+class _Word(ctypes.Structure):
+    _fields_ = [("start", ctypes.c_uint32), ("length", ctypes.c_uint32), ("set", ctypes.c_int),
+                ("strokes", ctypes.POINTER(ctypes.c_uint32)), ("nstrokes", ctypes.c_size_t),
+                ("dx", ctypes.c_double), ("dy", ctypes.c_double), ("x", ctypes.c_double), ("y", ctypes.c_double),
+                ("width", ctypes.c_double), ("height", ctypes.c_double),
+                ("path", ctypes.POINTER(ctypes.c_double)), ("npath", ctypes.c_size_t)]
+
+
+class _Stored(ctypes.Structure):
+    _fields_ = [("stroke", ctypes.c_uint32), ("points", _P), ("n", ctypes.c_size_t)]
+
+
+_U32P = ctypes.POINTER(ctypes.c_uint32)
+_vp, _u32, _sz = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_size_t
+_R_STROKE = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, _P, _sz)
+_R_NEAT = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, ctypes.c_int, _P, _sz)
+_R_VALUE = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, ctypes.c_char_p, ctypes.POINTER(_Word), _sz, _U32P, _sz, _vp, _sz)
+_R_CAND = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, _u32, ctypes.c_char_p, ctypes.c_int, ctypes.c_int)
+_R_DONE = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, _u32)
+_R_GESTURE = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, ctypes.c_int, _U32P, _sz)
+_R_REPORT = ctypes.CFUNCTYPE(None, _vp, _vp, _u32, ctypes.c_int)
+
+
+class _RListener(ctypes.Structure):
+    _fields_ = [("stroke", _R_STROKE), ("neat", _R_NEAT), ("value", _R_VALUE), ("candidate", _R_CAND),
+                ("candidates_done", _R_DONE), ("gesture", _R_GESTURE), ("report_done", _R_REPORT)]
 
 
 _lib = None
@@ -82,7 +126,21 @@ def _load():
                 ("ghw_pen_set_context", None, [vp, u32, u32, cp, cp, cp]),
                 ("ghw_pen_clear", None, [vp]),
                 ("ghw_pen_report", None, [vp, u32, i, u32, cp]),
-                ("ghw_pen_flush", i, [vp])):
+                ("ghw_pen_flush", i, [vp]),
+                ("ghw_pen_set_mode", None, [vp, i]),
+                ("ghw_region_new", vp, [vp, cp, ctypes.POINTER(_RListener), vp]),
+                ("ghw_region_destroy", None, [vp]),
+                ("ghw_region_set_rect", None, [vp] + [ctypes.c_double] * 4),
+                ("ghw_region_set_clip", None, [vp, i, i, i, i]),
+                ("ghw_region_set_guides", None, [vp, ctypes.c_double, ctypes.c_double]),
+                ("ghw_region_set_context", None, [vp, u32, u32, cp]),
+                ("ghw_region_set_reading", None, [vp, i]),
+                ("ghw_region_set_neaten", None, [vp, i, ctypes.c_double]),
+                ("ghw_region_set_layer", None, [vp, i]),
+                ("ghw_region_set_mode", None, [vp, i]),
+                ("ghw_region_edit", None, [vp, cp]),
+                ("ghw_region_report", None, [vp, u32, i, u32, cp]),
+                ("ghw_region_restore", None, [vp, ctypes.POINTER(_Stored), ctypes.c_size_t, cp, vp, ctypes.c_size_t])):
             fn = getattr(lib, f)
             fn.restype, fn.argtypes = res, args
         _lib = lib
@@ -206,3 +264,131 @@ class Pen:
 
     def flush(self):
         return self._lib.ghw_pen_flush(self._p)
+
+    def set_mode(self, mode):
+        """every region into "ink" or "text" mode, and those made later"""
+        self._lib.ghw_pen_set_mode(self._p, MODE.get(mode, mode) if isinstance(mode, str) else int(mode))
+        self.flush()
+
+    def region(self, name, listener=None):
+        """a new writing region on this surface, or None without regions"""
+        return Region(self, name, listener)
+
+
+def _path(p, n):
+    out, i = [], 0
+    while i < n:
+        op = int(p[i])
+        if not 0 <= op < len(PATH):
+            break
+        name, k = PATH[op]
+        out.append((name, *[p[i + 1 + j] for j in range(k)]))
+        i += 1 + k
+    return out
+
+
+def _words(text, w, n):
+    b = text.encode()
+    out = []
+    for i in range(n):
+        d = {"text": b[w[i].start:w[i].start + w[i].length].decode("utf-8", "replace"), "start": w[i].start,
+             "length": w[i].length}
+        if w[i].set:
+            d.update(box=(w[i].x, w[i].y, w[i].width, w[i].height), path=_path(w[i].path, w[i].npath))
+        else:
+            d.update(strokes=[w[i].strokes[j] for j in range(w[i].nstrokes)], dx=w[i].dx, dy=w[i].dy)
+        out.append(d)
+    return out
+
+
+class Region:
+    """a writing region (spec 005) of a Pen; Pen.region() makes one"""
+
+    def __new__(cls, pen, name, listener=None):
+        self = super().__new__(cls)
+        self.pen, self.listener, self._lib = pen, listener, pen._lib
+
+        def call(fn, *a):
+            f = getattr(self.listener, fn, None)
+            if f:
+                f(*a)
+
+        def value(d, r, serial, t, w, nw, g, ng, st, nst):
+            text = _s(t)
+            call("value", serial, text, _words(text, w, nw), [g[i] for i in range(ng)],
+                 ctypes.string_at(st, nst) if st and nst else b"")
+        self._cbs = _RListener(
+            _R_STROKE(lambda d, r, k, p, n: call("stroke", k, _pts(p, n))),
+            _R_NEAT(lambda d, r, k, h, p, n: call("neat", k, HOW[h] if 0 <= h < 3 else "kept", _pts(p, n))),
+            _R_VALUE(value),
+            _R_CAND(lambda d, r, serial, rank, t, o, fit: call("candidate", serial, rank, _s(t),
+                                                                 ORIGIN[o] if 0 <= o < 4 else "ink", bool(fit))),
+            _R_DONE(lambda d, r, serial, n: call("candidates_done", serial, n)),
+            _R_GESTURE(lambda d, r, serial, k, s, n: call("gesture", serial, GESTURE[k] if 0 <= k < 3 else "strike",
+                                                          [s[i] for i in range(n)])),
+            _R_REPORT(lambda d, r, serial, res: call("report_done", serial,
+                                                     RESULT[res] if 0 <= res < 5 else "unavailable")))
+        self._r = self._lib.ghw_region_new(pen._p, name.encode(), ctypes.byref(self._cbs), None)
+        if not self._r:
+            return None
+        return self
+
+    def close(self):
+        if self._r:
+            self._lib.ghw_region_destroy(self._r)
+            self._r = None
+            self.pen.flush()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _do(self, fn, *a):
+        getattr(self._lib, fn)(self._r, *a)
+        self.pen.flush()
+
+    def set_rect(self, x, y, w, h):
+        self._do("ghw_region_set_rect", float(x), float(y), float(w), float(h))
+
+    def set_clip(self, x=0, y=0, w=0, h=0):
+        self._do("ghw_region_set_clip", int(x), int(y), int(w), int(h))
+
+    def set_guides(self, spacing=0.0, first=0.0):
+        self._do("ghw_region_set_guides", float(spacing), float(first))
+
+    def set_context(self, purpose="normal", hints=0, languages=""):
+        p = PURPOSE.get(purpose, purpose) if isinstance(purpose, str) else purpose
+        self._do("ghw_region_set_context", int(p), int(hints), languages.encode())
+
+    def set_reading(self, on):
+        self._do("ghw_region_set_reading", int(bool(on)))
+
+    def set_neaten(self, on, strength=0.5):
+        self._do("ghw_region_set_neaten", int(bool(on)), float(strength))
+
+    def set_layer(self, layer):
+        self._do("ghw_region_set_layer", int(layer))
+
+    def set_mode(self, mode):
+        self._do("ghw_region_set_mode", MODE.get(mode, mode) if isinstance(mode, str) else int(mode))
+
+    def edit(self, text):
+        self._do("ghw_region_edit", text.encode())
+
+    def report(self, serial, action, rank=0, text=""):
+        self._do("ghw_region_report", int(serial), int(action), int(rank), text.encode())
+
+    def restore(self, strokes, value=None, state=None):
+        """stored ink handed back: strokes {k: points} (points as stroke() gave them), the
+        value and saved state kept with them, or neither"""
+        keep = []
+        arr = (_Stored * max(1, len(strokes)))()
+        for i, (k, pts) in enumerate(sorted(strokes.items())):
+            p = (_Point * max(1, len(pts)))(*[_Point(*pt) for pt in pts])
+            keep.append(p)
+            arr[i] = _Stored(int(k), ctypes.cast(p, _P), len(pts))
+        st = ctypes.create_string_buffer(state, len(state)) if state else None
+        self._do("ghw_region_restore", arr, len(strokes), value.encode() if value is not None else None,
+                 ctypes.cast(st, ctypes.c_void_p) if st else None, len(state) if state else 0)
