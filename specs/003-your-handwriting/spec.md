@@ -57,8 +57,8 @@ the plain base font.
 **Given** samples, **When** the person opens the font page on the Autograph tab, **Then**
 a preview shows a sentence in Autograph with the characters their samples cover in their
 own hand and the rest in the base, the characters still in the base are listed with a way
-to write them now, and on confirmation Autograph is updated and apps that use it show the
-new version.
+to write them now, and Autograph is rebuilt in the background while the device charges (or
+at once when the person asks) and apps that use it show the new version.
 
 **Given** the font page, **When** the person exports Autograph under a name they choose,
 **Then** they get the font files under that name, to keep or install elsewhere; the
@@ -81,7 +81,7 @@ of writing it shows its own samples, with the same choices. **When** they make o
 their favourite, leave a way or a sample out (and put it back, or undo), write more of it
 (careful prompts of the character alone and inside words) or say which of its ways is nicer
 and close the character, **Then** just that character is learned again in the background
-and the preview shows it; the installed font changes only when they update it. A character
+and the preview shows it; the installed font changes at its next rebuild (FR-011). A character
 that isn't covered yet opens on writing more of it.
 
 ### Scenario 4 – Neaten my ink (Priority: P2)
@@ -249,7 +249,7 @@ size, spacing) and keep their shape.
 
   Each mark can be undone (put back). Marks are the person's data: kept with the samples
   on the device, erased with them, never exported or contributed. A mark changes the letter
-  model at its next build and the installed font only when the person updates it (FR-011).
+  model at its next build and the installed font at its next rebuild (FR-011).
 - **FR-032**: A single character can be learned again on its own: after a change to it
   (marks, new samples of it, preferences between its samples), its variants are rebuilt
   from its samples while the rest of the letter model stays as it was, in seconds, at the
@@ -402,8 +402,8 @@ size, spacing) and keep their shape.
   installed font as it was.
 - **FR-012**: The font never leaves the device except by the person's own export; it is not
   part of a contribution. The person can export Autograph, all three styles, under a name
-  they choose: the exported fonts carry that name, and the installed Autograph keeps its
-  own.
+  they choose: the exported fonts carry that name, with the base font's licence beside them
+  (FR-045), and the installed Autograph keeps its own.
 
 ### Neatening
 
@@ -707,7 +707,7 @@ Host level:
   and text.
 
 Product level: in the images acceptance suite, a new test user finds Autograph in the
-settings app's font list; with a prepared sample store the user updates it, and a text set
+settings app's font list; with a prepared sample store the user rebuilds it, and a text set
 in it renders with the covered letters in the person's hand; in the handwriting app's writing page with neatening on, written ink is replaced
 by its neatened version and the original comes back at strength 0.
 

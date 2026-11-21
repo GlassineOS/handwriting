@@ -4510,9 +4510,13 @@ int hw_letters_fingerprint(const struct hw_letters *L, char out[17])
 	body = body ? body + 1 : t + len;
 	uint64_t h = fnv(FNV0, body, (size_t)(t + len - body));
 	free(t);
-	/* and the base it draws the rest from (FR-009): a new base makes the font again */
+	/* and the base it draws the rest from (FR-009): a new base makes the font again; so does
+	 * a new way of making it (HW_FONT_BUILD) */
 	const struct hw_base *B = hw_base_get();
 	h = fnv(h, B ? B->hash : "no base", B ? 16 : 7);
+	char fb[24];
+	snprintf(fb, sizeof fb, "\nfont %d", HW_FONT_BUILD);
+	h = fnv(h, fb, strlen(fb));
 	snprintf(out, 17, "%016llx", (unsigned long long)h);
 	return 0;
 }
@@ -4674,6 +4678,22 @@ int hw_font_install(int nib, int random, int verbose)
 	return ret;
 }
 
+/* src copied to dst (through dst.tmp). 0, -1 */
+static int copy_file(const char *src, const char *dst)
+{
+	char tmp[4300];
+	snprintf(tmp, sizeof tmp, "%s.tmp", dst);
+	FILE *in = fopen(src, "re"), *out = in ? fopen(tmp, "we") : NULL;
+	int bad = !in || !out;
+	char buf[8192];
+	size_t k;
+	while (!bad && (k = fread(buf, 1, sizeof buf, in)) > 0) bad = fwrite(buf, 1, k, out) != k;
+	if (in && ferror(in)) bad = 1;
+	if (in) fclose(in);
+	if ((out && fclose(out)) || bad || rename(tmp, dst)) { if (out) unlink(tmp); return -1; }
+	return 0;
+}
+
 int hw_font_export(const char *name, const char *dir, int verbose)
 {
 	if (!valid_name(name)) return -2;
@@ -4694,10 +4714,25 @@ int hw_font_export(const char *name, const char *dir, int verbose)
 	if (!bn) snprintf(base, sizeof base, "Handwriting");
 	char path[HW_STYLES][4200];
 	for (int k = 0; k < HW_STYLES; k++) snprintf(path[k], sizeof path[k], "%s/%s-%s.ttf", dir, base, hw_font_style_names[k]);
+	/* drawn over the base, the fonts are a Modified Version of it under the OFL: its text goes
+	 * beside them, as the licence asks */
+	char lic[4096], lpath[4200];
+	int has_base = !hw_base_licence(lic, sizeof lic);
+	snprintf(lpath, sizeof lpath, "%s/%s", dir, HW_BASE_LICENCE);
+	if (has_base && access(lic, R_OK)) {
+		hw_letters_free(&L);
+		fprintf(stderr, "glassine-handwriting: %s: %s\n", lic, strerror(errno));
+		return -1;
+	}
 	int r = write_styles(&L, name, v, nib, hw_font_random() == 1, path);
 	hw_letters_free(&L);
+	if (!r && has_base && copy_file(lic, lpath)) {
+		for (int k = 0; k < HW_STYLES; k++) unlink(path[k]);
+		r = -1;
+	}
 	if (r) { fprintf(stderr, "glassine-handwriting: %s: %s\n", dir, strerror(errno ? errno : EIO)); return -1; }
 	for (int k = 0; verbose && k < HW_STYLES; k++) printf("exported\t%s\t%s\n", hw_font_style_names[k], path[k]);
+	if (verbose && has_base) printf("licence\t%s\n", lpath);
 	return 0;
 }
 

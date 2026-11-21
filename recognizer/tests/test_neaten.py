@@ -1071,10 +1071,68 @@ class Neaten(unittest.TestCase):
                     seen += 1
         self.assertEqual(seen, 4)
 
+    def test_neatest_puts_what_the_font_lacks_on_its_base_glyph(self):
+        """with Autograph's base a character the letter model doesn't cover is in the box of
+        the glyph the font draws there from the base (FR-043, FR-045): at that glyph's advance
+        and kerning, as hb-shape puts it, not at .notdef's; its ink moved only"""
+        if TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"):
+            self.skipTest("needs hb-shape")
+        self.letters()
+        self.e.env["GLASSINE_HANDWRITING_BASE"] = str(TL.write_base(self.e.dir / "base.jsonl"))
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        rnd = random.Random(51)
+        seen = off = 0
+        for text in ("hi, you.", "a-b c;d"):
+            s = TL.sample(text, rnd)
+            lay, how = self.set_layout(text)
+            self.assertEqual(how, "hb-shape")
+            ttf = self.e.dir / "set.ttf"
+            # the ink's middle of each glyph as the font draws it (x-heights from the text's start)
+            g = json.loads(subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", "--show-extents",
+                                           str(ttf), text], capture_output=True, text=True, check=True).stdout)
+            mids, x = {}, 0
+            for e in g:
+                mids[e["cl"]] = (x + e["dx"] + e["xb"] + e["w"] / 2) / 500
+                x += e["ax"]
+            align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+            res = {}
+            for st in ("0.75", "1"):
+                c = self.e.start()
+                self.begin(c, s)
+                _, out, why = parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
+                c.close()
+                res[st] = ([EV.to_xy(o[2]) for o in out], why)
+            xy, why = res["1"]
+            k0 = 0
+            for w in text.split(" "):
+                ks = range(k0, k0 + len(w))
+                k0 += len(w) + 1
+                miss = [k for k in ks if lay[k] is None]
+                self.assertTrue(all(why[k] == ("not-covered" if k in miss else "set") for k in ks), (text, why))
+                wp = [p for k in ks if k not in miss for j in s["spans"][k] for p in xy[j]]
+                wg = [lay[k] for k in ks if k not in miss for j in s["spans"][k] for _ in xy[j]]
+                rms, size, _, x0 = on_set(wp, wg)
+                self.assertLess(rms, 0.003, (text, w))
+                for k in miss:
+                    a = [p for j in s["spans"][k] for p in xy[j]]
+                    b = [p for j in s["spans"][k] for p in res["0.75"][0][j]]
+                    dx = [p[0] - q[0] for p, q in zip(a, b)]
+                    self.assertLess(max(dx) - min(dx), 0.01)
+                    self.assertTrue(all(abs(p[1] - q[1]) < 0.01 for p, q in zip(a, b)))
+                    # in the middle of the base glyph the font draws there
+                    mid = (min(p[0] for p in a) + max(p[0] for p in a)) / 2
+                    self.assertAlmostEqual((mid - x0) / size, mids[k], delta=0.02, msg=(text, k))
+                    # (not where .notdef's box would have it)
+                    off += abs(mids[k] - (self.pens[k] + 0.5)) > 0.05
+                    seen += 1
+        self.assertEqual(seen, 4)
+        self.assertGreater(off, 0)
+
     def test_the_base_is_never_a_target(self):
         """Autograph's base (FR-045) is not the person's: a character only it draws is
         neatened as one the font lacks, at every level, whatever the base has for it; the
-        ink is the same with the base as without (FR-014, FR-022, FR-035, FR-043)"""
+        ink is the same with the base as without, at Neatest moved only, into the base
+        glyph's box (FR-014, FR-022, FR-035, FR-043)"""
         self.letters()
         base = TL.write_base(self.e.dir / "base.jsonl")
         rnd = random.Random(61)
@@ -1090,7 +1148,20 @@ class Neaten(unittest.TestCase):
                 got[b] = [parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
                           for st in ("0.25", "0.5", "0.75", "1")]
                 c.close()
-            self.assertEqual(got["off"], got[str(base)], text)
+            # (below Neatest the same ink; at Neatest a character only the base draws sits in
+            # the base glyph's box, so the ink moves along the line, each character's as one)
+            self.assertEqual(got["off"][:3], got[str(base)][:3], text)
+            (r0, o0, w0), (r1, o1, w1) = got["off"][3], got[str(base)][3]
+            self.assertEqual((r0, w0), (r1, w1), text)
+            for k, sp in enumerate(s["spans"]):
+                pa = [p for j in sp for p in EV.to_xy(o0[j][2])]
+                pb = [p for j in sp for p in EV.to_xy(o1[j][2])]
+                if not pa:
+                    continue
+                self.assertEqual([o0[j][1] for j in sp], [o1[j][1] for j in sp], text)
+                dx = [p[0] - q[0] for p, q in zip(pa, pb)]
+                self.assertLess(max(dx) - min(dx), 0.01, (text, k))
+                self.assertTrue(all(abs(p[1] - q[1]) < 0.01 for p, q in zip(pa, pb)), (text, k))
             for _, _, why in got[str(base)]:
                 for k, ch in enumerate(text):
                     if ch in ",.;-":

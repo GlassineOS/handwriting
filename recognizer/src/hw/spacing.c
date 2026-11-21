@@ -107,6 +107,24 @@ double hw_mid_of(const struct hw_mid *m)
 	return m->sw > 1e-9 ? m->sx / m->sw : NAN;
 }
 
+double hw_variant_middle(const struct hw_variant *v)
+{
+	if (isfinite(v->mid)) return v->mid;
+	double sx = 0, sw = 0;
+	for (size_t t = 0; t < v->nstrokes; t++) {
+		const struct hw_lstroke *s = &v->s[t];
+		for (size_t i = 0; i < s->n; i++) {
+			size_t i0 = i ? i - 1 : 0;
+			double w = hypot(s->x[i] - s->x[i0], s->y[i] - s->y[i0]);
+			/* (a dot: its one point) */
+			if (s->n == 1) w = 1e-3;
+			sx += w * (s->x[i] + s->x[i0]) / 2;
+			sw += w;
+		}
+	}
+	return sw > 0 ? sx / sw : NAN;
+}
+
 /* a side's shape: per band, how far it lies in from the side's outermost ink */
 static void side_shape(const struct hw_profile *p, int side, double *v)
 {
@@ -182,12 +200,29 @@ static int cmp_reach(const void *x, const void *y)
 	return a < b ? -1 : a > b;
 }
 
+/* b at `at` right of a, moved right as far as it takes for ink of either within a band of
+ * the other's height to keep floor away: a pair set at the gap meets only in the bands both
+ * have ink in, so where those are few (a mark written above the x-height beside a small
+ * letter, a crown over the letter before) the rest of one would stand over the other */
+static double clear_near(const struct hw_profile *pa, const struct hw_profile *pb, double at, double floor)
+{
+	double g = INFINITY;
+	for (int k = 0; k < HW_PROF_BANDS; k++)
+		for (int j = k - 1; j <= k + 1; j++) {
+			if (j < 0 || j >= HW_PROF_BANDS || isnan(pa->r[k]) || isnan(pb->l[j])) continue;
+			double x = pb->l[j] + at - pa->r[k];
+			if (x < g) g = x;
+		}
+	return g < floor ? at + floor - g : at;
+}
+
 double hw_spacing_place(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, double ma, int rc,
 			unsigned b, const struct hw_profile *pb, double mb, int lc)
 {
 	double gap = hw_spacing_gap(sp, a, pa, rc, b, pb, lc);
-	/* set at the gap */
-	double s = gap - hw_profile_gap(pa, pb, 0);
+	double floor = gap < sp->letter / 2 ? gap : sp->letter / 2;
+	/* set at the gap, clear of the other's ink near its height */
+	double s = clear_near(pa, pb, gap - hw_profile_gap(pa, pb, 0), floor);
 	if (!isfinite(ma) || !isfinite(mb)) return s;
 	/* the middles' distance: the pair's own, or the two characters' reaches */
 	double d = NAN;
@@ -203,7 +238,7 @@ double hw_spacing_place(const struct hw_spacing *sp, unsigned a, const struct hw
 	if (!isfinite(d)) return s;
 	/* guarded: never closer than the gap, or half the typical gap where that is smaller,
 	 * between the baseline and the x-height (a bar or a hook may reach over the next letter) */
-	double at = d + ma - mb, floor = gap < sp->letter / 2 ? gap : sp->letter / 2, g = INFINITY;
+	double at = d + ma - mb, g = INFINITY;
 	for (int k = 0; k < HW_PROF_BANDS; k++) {
 		double y0 = HW_PROF_Y0 + k * BAND, y1 = y0 + BAND;
 		if (y1 <= HW_MID_Y0 || y0 >= HW_MID_Y1 || isnan(pa->r[k]) || isnan(pb->l[k])) continue;
