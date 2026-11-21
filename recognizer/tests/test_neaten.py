@@ -698,6 +698,25 @@ class Neaten(unittest.TestCase):
                     best = min(on_curve(ink, v) for v in L[w[k - ks[0]]]["variants"] if len(v["strokes"]) == len(ink))
                     self.assertLess(best, 0.05, (text, w, k))
 
+    def test_eval_setting(self):
+        """tools/eval-setting.py: every way of neatening measured on the held-back samples,
+        aggregate numbers only on stdout, the ink only in --dump (a private file)"""
+        self.letters(more=[TL.sample(t, random.Random(60 + i)) for i, t in enumerate(("hello world", "come on now") * 6)])
+        dump = self.e.dir / "dump.json"
+        p = subprocess.run([sys.executable, str(HERE.parent / "tools" / "eval-setting.py"), str(TR.BIN), str(self.e.store),
+                            "--models", str(self.e.models), "--tilt", "0.15", "--dump", str(dump)],
+                           capture_output=True, text=True, env=self.e.env, check=True)
+        rows = {ln.split("  ")[0].strip(): ln for ln in p.stdout.splitlines() if ln.startswith(("Light", "Medium", "Strong", "pull 1", "set"))}
+        self.assertEqual(set(rows), {"Light", "Medium", "Strong", "pull 1", "set", "set, conditioned", "set, line-conditioned"})
+        self.assertIn("tilted:", p.stdout)
+        self.assertEqual(dump.stat().st_mode & 0o777, 0o600)
+        d = json.loads(dump.read_text())
+        self.assertTrue(d["lines"])
+        self.assertEqual(set(d["lines"][0]["ways"]), set(rows))
+        # (only numbers: no text of a sample on stdout)
+        texts = {e["text"] for e in d["lines"]}
+        self.assertFalse(any(t in p.stdout for t in texts if len(t) > 3))
+
     def test_neatest_draws_every_stroke_apart(self):
         """at Neatest (FR-043) a letter is set onto a variant with as many strokes as its ink
         has pieces, each piece along its own stroke: the dots of i and j stay dots, the bars of
