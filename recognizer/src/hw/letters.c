@@ -25,12 +25,13 @@
 
 static int avg_mean(void);
 
-/* the context rules (letters.h, HW_CTX_MIN): $GLASSINE_HANDWRITING_LETTERS_CONTEXT=1, for
- * measurements; part of the model's inputs, so a model built so is made again without it */
+/* the context rules (letters.h, HW_CTX_MIN; FR-046): on unless
+ * $GLASSINE_HANDWRITING_LETTERS_CONTEXT=0, for measurements; part of the model's inputs, so a
+ * model built without them is made again with them */
 static int ctx_on(void)
 {
 	const char *e = getenv("GLASSINE_HANDWRITING_LETTERS_CONTEXT");
-	return e && !strcmp(e, "1");
+	return !(e && !strcmp(e, "0"));
 }
 
 static uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -607,7 +608,10 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 		json_object *v;
 		if (line == 0) {
 			if (!json_object_object_get_ex(o, "format", &v) || strcmp(json_object_get_string(v), HW_LETTERS_FORMAT) ||
-			    (int)jnum(o, "version", 0) != HW_LETTERS_VERSION) { json_object_put(o); goto bad; }
+			    (int)jnum(o, "version", 0) < HW_LETTERS_VERSION_MIN || (int)jnum(o, "version", 0) > HW_LETTERS_VERSION) {
+				json_object_put(o);
+				goto bad;
+			}
 			if (json_object_object_get_ex(o, "inputs", &v)) snprintf(L->inputs, sizeof L->inputs, "%s", json_object_get_string(v));
 			L->samples = (long)jnum(o, "samples", 0);
 			L->built = (long long)jnum(o, "built", 0);
