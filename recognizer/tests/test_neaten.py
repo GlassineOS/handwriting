@@ -327,10 +327,10 @@ class Neaten(unittest.TestCase):
     def tearDown(self):
         TR.shutil.rmtree(self.e.dir, ignore_errors=True)
 
-    def letters(self, seed=1, change=None, shapes=None):
-        """a letter model from synthetic prompted samples of separate letters (each stroke
-        changed by change(stroke) first)"""
-        ss = TL.alphabet_samples(seed=seed, per=4, shapes=shapes)
+    def letters(self, seed=1, change=None, shapes=None, more=(), per=4):
+        """a letter model from synthetic prompted samples of separate letters, each `per`
+        times (each stroke changed by change(stroke) first), and more samples"""
+        ss = TL.alphabet_samples(seed=seed, per=per, shapes=shapes) + list(more)
         if change:
             for s in ss:
                 s["strokes"] = [change(st) for st in s["strokes"]]
@@ -617,6 +617,413 @@ class Neaten(unittest.TestCase):
                 words += 1
             self.assertLess(max(bases) - min(bases), 0.3, (text, bases))
         self.assertEqual(words, 10)
+
+    def test_neatest_draws_every_stroke_apart(self):
+        """at Neatest (FR-043) a letter is set onto a variant with as many strokes as its ink
+        has pieces, each piece along its own stroke: the dots of i and j stay dots, the bars of
+        t, f, E and T bars and the bowls of p, b and d bowls (no line drawn from the stem to
+        them, nothing of them lost), and an F written in
+        two strokes, its glyph in three, keeps its ink as written (set over the glyph, its pen
+        lift would be drawn from its top bar to its middle one)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        rnd = random.Random(91)
+        # (the line's spacing pulls the T's bar's start onto the end of the E's top bar; as
+        # written they are apart, so neither keeps its ink)
+        s = TL.sample("FipjtbdfET", rnd, shapes=TL.WHOLE_SHAPES)
+        # the F in two: the stem up and on along the top bar, then the middle bar
+        f0, f1, f2 = (s["strokes"][j] for j in s["spans"][0])
+        s["strokes"][s["spans"][0][0]] = list(reversed(f0)) + f1
+        del s["strokes"][s["spans"][0][1]]
+        s["spans"] = [[0, 1]] + [[j - 1 for j in sp] for sp in s["spans"][1:]]
+        TL.retime_sample(s)
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("FipjtbdfET"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["no-structure"] + ["set"] * 9)
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+
+        def box(j):
+            xs, ys = [p[0] for p in xy[j]], [p[1] for p in xy[j]]
+            return max(xs) - min(xs), max(ys) - min(ys)
+
+        def ink(j):
+            xs, ys = [p[0] for p in s["strokes"][j]], [p[1] for p in s["strokes"][j]]
+            return max(xs) - min(xs), max(ys) - min(ys)
+        # each letter's strokes: stem (or body) first, then its mark
+        marks = (("i", 2, 3), ("p", 4, 5), ("j", 6, 7), ("t", 8, 9), ("b", 10, 11), ("d", 12, 13),
+                 ("f", 14, 15), ("E", 16, 17), ("E", 16, 18), ("E", 16, 19), ("T", 20, 21))
+        for c, a, b in marks:
+            with self.subTest(c=c, stroke=b):
+                stem, mark = box(a), box(b)
+                if c in "ij":       # a dot stays a dot
+                    self.assertLess(max(mark), 0.2 * stem[1])
+                elif c in "tfET":   # a bar stays a bar
+                    self.assertGreater(mark[0], 0.25 * stem[1])
+                    self.assertLess(mark[1], 0.15 * stem[1])
+                else:               # a bowl stays a bowl
+                    self.assertGreater(mark[0], 0.2 * stem[1])
+                    self.assertGreater(mark[1], 0.2 * stem[1])
+        # the F's ink as written (only moved, scaled and set upright with its line): its
+        # strokes' sizes about as they were
+        sc = box(0)[1] / ink(0)[1]
+        for j in (0, 1):
+            self.assertAlmostEqual(box(j)[0], sc * ink(j)[0], delta=0.15 * ink(0)[1])
+
+    def test_neatest_sets_a_rare_version_on_the_ink_on_the_line(self):
+        """a letter whose version there was made from fewer than 3 samples and sits far
+        higher than its ink (here every M of the model written twice as tall): the letter is
+        set, its top and bottom where Strong leaves its ink's, no higher or lower, and the
+        next letter at the gap the person writes the pair at, not the font's tall M's
+        (FR-043)"""
+        n = [0]
+
+        def tall(c, style, rnd):
+            # (two ways of writing it, each twice: two versions of 2 samples each)
+            n[0] += 1
+            return [[(x, 2 * y) for x, y in st] for st in TL.shape(c, n[0] % 2, rnd)]
+        model = self.letters(seed=9, shapes={"M": tall})
+        # (Strong pulling nothing, so its ink is the ink as written, on the line)
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "pull=0"
+        s = TL.sample("Moon", random.Random(96))
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Moon"), align), why=True)
+        c.close()
+        m = [v["members"] for v in model["M"]["variants"]]
+        self.assertLess(max(m), 3, m)
+        self.assertEqual(why, ["set"] * 4)
+        # (its ink where Strong leaves it, to a tenth of an x-height, top and bottom)
+        c = self.e.start()
+        self.begin(c, s)
+        _, strong, _ = parse(c.ask("neaten", "s", "0.75", TR.esc("Moon"), align), why=True)
+        c.close()
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        xs = {o[0]: EV.to_xy(o[2]) for o in strong}
+        ys = [p[1] for j in s["spans"][0] for p in xy[j]]
+        yi = [p[1] for j in s["spans"][0] for p in xs[j]]
+        self.assertLess(abs(min(ys) - min(yi)), 0.1 * 30)
+        self.assertLess(abs(max(ys) - max(yi)), 0.1 * 30)
+        # (the o beside it: no further than the person's widest gap between letters, and
+        # not on it)
+        a = max(p[0] for j in s["spans"][0] for p in xy[j])
+        b = min(p[0] for j in s["spans"][1] for p in xy[j])
+        self.assertGreater(b - a, -0.1 * 30)
+        self.assertLess(b - a, 1.0 * 30)
+
+    def test_neatest_spaces_a_kept_capital_as_the_person_does(self):
+        """an F written in two strokes (its versions have three: it keeps its ink) two and a
+        half times as wide as usual: kept, it sits on the middle of its glyph and the font
+        would leave the o further off than the person writes letters apart; the o is placed
+        as the line-level spacing places letters (the person's distance between the two
+        middles, never closer than half the typical gap where both have ink), so beside it,
+        neither on it nor further off than the person's gap (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        gaps = []
+        for scale in (1.0, 2.5):
+            s = TL.sample("Fon", random.Random(93), shapes=TL.WHOLE_SHAPES)
+            st, sp = s["strokes"], s["spans"]
+            f = [st[j] for j in sp[0]]
+            x0 = min(p[0] for q in f for p in q)
+            wide = [[[round(x0 + scale * (p[0] - x0), 3)] + p[1:] for p in q] for q in f]
+            rest = [[[round(p[0] + (scale - 1) * 18, 3)] + p[1:] for p in st[j]] for j in sp[1] + sp[2]]
+            s["strokes"] = [list(reversed(wide[0])) + wide[1], wide[2]] + rest
+            s["spans"] = [[0, 1], [2], list(range(3, 3 + len(sp[2])))]
+            TL.retime_sample(s)
+            align = ";".join(",".join(map(str, z)) for z in s["spans"])
+            c = self.e.start()
+            self.begin(c, s)
+            _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fon"), align), why=True)
+            c.close()
+            self.assertEqual(why, ["no-structure", "set", "set"], scale)
+            xy = {q[0]: EV.to_xy(q[2]) for q in out}
+            # (between the baseline and the x-height, where both have ink)
+            base = max(p[1] for p in xy[2])
+            band = [p for j in (0, 1) for p in xy[j] if base - 30 <= p[1] <= base]
+            gaps.append((min(p[0] for p in xy[2]) - max(p[0] for p in band)) / 30)
+        sp = [json.loads(x) for x in (self.e.store / "letters" / "model").read_text().splitlines() if '"spacing"' in x]
+        letter = sp[0]["spacing"]["letter"]
+        self.assertGreater(min(gaps), 0, gaps)
+        self.assertLess(gaps[1], letter, (gaps, letter))
+
+    def test_neatest_draws_no_letter_twice(self):
+        """the reading gives the o only the f's bar and its body to the n (which then has a
+        piece more than any n has, and keeps its ink as written, the o's body in it): the o
+        is not set from the bar as well, so it isn't drawn twice (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("fon", random.Random(92), shapes=TL.WHOLE_SHAPES)
+        st, sp = s["strokes"], s["spans"]
+        # (the bar a little long, out over where the o is: the word still fits the font's)
+        bar = [[round(p[0] + 15, 3)] + p[1:] for p in st[sp[0][1]]]
+        s["strokes"] = [st[sp[0][0]], bar, st[sp[1][0]]] + [st[j] for j in sp[2]]
+        s["spans"] = [[0], [1], list(range(2, 3 + len(sp[2])))]
+        TL.retime_sample(s)
+        align = ";".join(",".join(map(str, z)) for z in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertEqual(why[2], "no-structure", why)
+        self.assertNotEqual(why[1], "set", why)
+
+    def test_neatest_keeps_the_word_gap(self):
+        """two words, the first written narrower than the font sets it: set, it would reach
+        into the second; the gap stays at least as wide as written or the font's word gap,
+        whichever is less (FR-043)"""
+        self.letters(seed=9)
+        s = TL.sample("nun nun", random.Random(97))
+        x0 = min(p[0] for j in s["spans"][0] for p in s["strokes"][j])
+        for sp in s["spans"][:3]:
+            for j in sp:
+                s["strokes"][j] = [[round(x0 + 0.7 * (p[0] - x0), 3)] + p[1:] for p in s["strokes"][j]]
+        # (the second word moved up to the first, a third of an x-height from it)
+        r1 = max(p[0] for sp in s["spans"][:3] for j in sp for p in s["strokes"][j])
+        l2 = min(p[0] for sp in s["spans"][4:] for j in sp for p in s["strokes"][j])
+        for sp in s["spans"][4:]:
+            for j in sp:
+                s["strokes"][j] = [[round(p[0] - (l2 - r1) + 10.0, 3)] + p[1:] for p in s["strokes"][j]]
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("nun nun"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["set"] * 3 + ["space"] + ["set"] * 3)
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        a = max(p[0] for sp in s["spans"][:3] for j in sp for p in xy[j])
+        b = min(p[0] for sp in s["spans"][4:] for j in sp for p in xy[j])
+        self.assertGreater(b - a, 10.0 - 0.5)
+
+    def test_neatest_keeps_a_stem_joined_into(self):
+        """an a joined on into the stem of a b, p, k or t whose other stroke is its own just
+        right of the stem (a t's bar written long, wholly right of it): the stem is the
+        letter's (taller than its other stroke), no exit tail of the a, and both letters are
+        set (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        for c in "bpkt":
+            with self.subTest(c=c):
+                s = TL.sample("a" + c, random.Random(95), shapes=TL.WHOLE_SHAPES)
+                st, sp = s["strokes"], s["spans"]
+                a, stem = st[sp[0][-1]], st[sp[1][0]]
+                if c == "t":
+                    # (the bar from just right of the stem, longer than it)
+                    x0 = max(q[0] for q in stem) + 1.5
+                    y = st[sp[1][1]][0][1]
+                    st[sp[1][1]] = [[round(x0 + 3.0 * z, 3), y, 0, 0.5] for z in range(18)]
+                u, v = a[-1], stem[0]
+                bridge = [[round(u[0] + (v[0] - u[0]) * z / 4, 3), round(u[1] + (v[1] - u[1]) * z / 4, 3), 0, 0.5] for z in range(1, 4)]
+                one = a + bridge + stem
+                rest = [st[j] for j in sp[1][1:]]
+                firsts = [st[j] for j in sp[0][:-1]]
+                s["strokes"] = firsts + [one] + rest
+                TL.retime_sample(s)
+                k = len(firsts)
+                na = len(a) + len(bridge)
+                align = ";".join([",".join([f"{j}:0-{len(f) - 1}" for j, f in enumerate(firsts)] + [f"{k}:0-{na - 1}"]),
+                                  ",".join([f"{k}:{na}-{len(one) - 1}"] + [f"{k + 1 + z}:0-{len(r) - 1}" for z, r in enumerate(rest)])])
+                e = self.e.start()
+                self.begin(e, s)
+                _, out, why = parse(e.ask("neaten", "s", "1", TR.esc("a" + c), align), why=True)
+                e.close()
+                self.assertEqual(why, ["set", "set"])
+
+    def test_neatest_runs_on_from_kept_ink_into_a_set_letter(self):
+        """an F written in two strokes (its glyph in three: it keeps its ink), its middle bar
+        run on into the o in one stroke: the o is set, and the stroke goes on from the F into
+        the o as written, with no line drawn between where each was placed (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("Fo", random.Random(94), shapes=TL.WHOLE_SHAPES)
+        st, sp = s["strokes"], s["spans"]
+        f0, f1, f2 = (st[j] for j in sp[0])
+        o = st[sp[1][0]]
+        a, b = f2[-1], o[0]
+        bridge = [[round(a[0] + (b[0] - a[0]) * z / 4, 3), round(a[1] + (b[1] - a[1]) * z / 4, 3), 0, 0.5] for z in range(1, 4)]
+        one = f2 + bridge + o
+        s["strokes"] = [list(reversed(f0)) + f1, one]
+        TL.retime_sample(s)
+        nf = len(f2) + len(bridge)
+        align = f"0:0-{len(s['strokes'][0]) - 1},1:0-{nf - 1};1:{nf}-{len(one) - 1}"
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("Fo"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["no-structure", "set"])
+        xy = {q[0]: EV.to_xy(q[2]) for q in out}
+        raw = math.hypot(one[nf][0] - one[nf - 1][0], one[nf][1] - one[nf - 1][1])
+        step = math.hypot(xy[1][nf][0] - xy[1][nf - 1][0], xy[1][nf][1] - xy[1][nf - 1][1])
+        self.assertLess(step, raw + 0.25 * 30)
+        # the F moved only along the line: its top and bottom where Strong leaves them
+        c = self.e.start()
+        self.begin(c, s)
+        _, strong, _ = parse(c.ask("neaten", "s", "0.75", TR.esc("Fo"), align), why=True)
+        c.close()
+        xs = {q[0]: EV.to_xy(q[2]) for q in strong}
+        fy = [p[1] for p in xy[0]] + [p[1] for p in xy[1][:nf]]
+        sy = [p[1] for p in xs[0]] + [p[1] for p in xs[1][:nf]]
+        self.assertLess(abs(min(fy) - min(sy)), 0.1 * 30)
+        self.assertLess(abs(max(fy) - max(sy)), 0.1 * 30)
+
+    def test_neatest_never_drops_a_letter(self):
+        """the reading gives the o only an f's bar written on towards it (the o's own ink went
+        to the letter after): the o is still drawn, set on its glyph, as tall as an o, never
+        left as a bare bar on the f (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.sample("fon", random.Random(98), shapes=TL.WHOLE_SHAPES)
+        st, sp = s["strokes"], s["spans"]
+        bar, o = st[sp[0][1]], st[sp[1][0]]
+        a, b = bar[-1], o[0]
+        on = [[round(a[0] + (b[0] - a[0]) * z / 6, 3), round(a[1] + (b[1] - a[1]) * z / 6, 3), 0, 0.5] for z in range(1, 7)]
+        s["strokes"] = [st[sp[0][0]], bar + on, o[1:] + [p for j in sp[2] for p in st[j]]]
+        s["spans"] = [[0], [1], [2]]
+        TL.retime_sample(s)
+        nb = len(bar)
+        align = "0;1;2"
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertEqual(why[:2], ["set", "set"], why)
+        xy = {q[0]: EV.to_xy(q[2]) for q in out}
+        h = max(p[1] for p in xy[1][nb:]) - min(p[1] for p in xy[1][nb:])
+        self.assertGreater(h, 0.5 * 30)
+        # given nothing but the bar (all of it over the f), the o keeps it: not left out
+        s["strokes"] = [s["strokes"][0], bar, s["strokes"][2]]
+        TL.retime_sample(s)
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fon"), align), why=True)
+        c.close()
+        self.assertNotIn("no-ink", why)
+
+    def test_every_letter_keeps_ink_of_its_own(self):
+        """words written in one stroke, ALIGN listing that stroke for every letter (the
+        points split between them, a short run spilled over to a neighbour): no letter of
+        the text is left without ink of its own, at any strength (FR-043)"""
+        self.letters(seed=9)
+        rnd = random.Random(99)
+        for text in ("minimum.", "a.b.c", "it.is", "loop;", "fix.it"):
+            s = TL.sample(text, rnd)
+            one = [p for st in s["strokes"] for p in st]
+            s["strokes"] = [one]
+            TL.retime_sample(s)
+            align = ";".join("0" for _ in text)
+            for st in ("0.5", "1"):
+                c = self.e.start()
+                self.begin(c, s)
+                _, _, why = parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
+                c.close()
+                self.assertNotIn("no-ink", why, (text, st, why))
+
+    def test_neatest_gives_an_exit_tail_back(self):
+        """a's exit tail the reading gives the t, whose own strokes start after a pen lift:
+        the tail is the a's, both letters are set and nothing joins them (FR-043)"""
+        self.letters(seed=9)
+        s = TL.sample("at", random.Random(93))
+        sa, st = s["spans"]
+        last = s["strokes"][sa[-1]]
+        x, y, t = last[-1][0], last[-1][1], last[-1][2]
+        tail = [[round(x + 1.2 * z, 3), round(y - 0.8 * z, 3), round(t + 0.01 * z, 3), 0.5] for z in range(1, 6)]
+        n0 = len(last)
+        last += tail
+        TL.retime_sample(s)
+        self.assertLess(max(p[0] for p in tail), min(p[0] for j in st for p in s["strokes"][j]))
+        mine_a = [f"{j}:0-{len(s['strokes'][j]) - 1}" if j != sa[-1] else f"{j}:0-{n0 - 1}" for j in sa]
+        mine_t = [f"{sa[-1]}:{n0}-{n0 + len(tail) - 1}"] + [f"{j}:0-{len(s['strokes'][j]) - 1}" for j in st]
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("at"), ",".join(mine_a) + ";" + ",".join(mine_t)), why=True)
+        c.close()
+        self.assertEqual(why, ["set", "set"])
+        # the a's last stroke stays left of the t: no join drawn into it
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        self.assertLess(max(p[0] for p in xy[sa[-1]]), min(p[0] for j in st for p in xy[j]))
+
+    def test_neatest_keeps_a_bar_written_into_the_next_letter(self):
+        """an f's bar written on into the next letter (the start of that one's stroke, which
+        the reading gives it alone): set over the next letter's glyph it would be lost, so
+        it is the f's, and both letters are set, the f with its bar (FR-043)"""
+        self.letters(seed=9, shapes=TL.WHOLE_SHAPES)
+        s = TL.run_on("f", "o", random.Random(92), 1)
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+        c = self.e.start()
+        self.begin(c, s)
+        _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("fo"), align), why=True)
+        c.close()
+        self.assertEqual(why, ["set", "set"])
+        # the o's stroke still starts with the bar, from left of the f's stem at its height
+        xy = {o[0]: EV.to_xy(o[2]) for o in out}
+        stem, bar = xy[0], xy[1][0]
+        h = max(p[1] for p in stem) - min(p[1] for p in stem)
+        at = [p[0] for p in stem if abs(p[1] - bar[1]) < 0.15 * h]
+        self.assertTrue(at)
+        self.assertLess(bar[0], min(at))
+
+    @unittest.skipIf(TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"), "needs fontTools and hb-shape")
+    def test_neatest_runs_along_the_join(self):
+        """at Neatest the ink the person didn't lift between two letters the font joins runs
+        along the font's join (FR-043, FR-044): the set word's points lie in the ink the font
+        draws for it, its halves of the join with it (the font's glyphs for it the join's
+        alternates); without the model's joins it is set otherwise"""
+        rnd = random.Random(71)
+        more = [TL.joined(TL.sample("er", rnd), [0]) for _ in range(5)] + [TL.sample("er", rnd) for _ in range(3)]
+        self.letters(seed=7, more=more)
+        model = self.e.store / "letters" / "model"
+        self.assertIn('"pair":"er"', model.read_text())
+        s = TL.joined(TL.sample("er", random.Random(72)), [0])
+        align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+
+        def inside():
+            from fontTools.ttLib import TTFont
+            from fontTools.pens.recordingPen import DecomposingRecordingPen
+            ttf = self.e.dir / "join.ttf"
+            self.e.run("font", "build", "-n", "Join Test", str(ttf))
+            f = TTFont(str(ttf))
+            gs, order = f.getGlyphSet(), f.getGlyphOrder()
+            rings, x = [], 0
+            for g in TL.hb(ttf, "er"):
+                pen = DecomposingRecordingPen(gs)
+                gs[order[g["g"]]].draw(pen)
+                for op, a in pen.value:
+                    if op == "moveTo":
+                        rings.append([])
+                    rings[-1] += [((x + g["dx"] + px) / 500, py / 500) for px, py in a]
+                x += g["ax"]
+            c = self.e.start()
+            self.begin(c, s)
+            _, out, why = parse(c.ask("neaten", "s", "1", TR.esc("er"), align), why=True)
+            c.close()
+            self.assertEqual(why, ["set", "set"])
+            pts = [(px, -py) for o in out for px, py in EV.to_xy(o[2])]
+            ink = next(json.loads(ln)["metrics"].get("ink_width", 0.07) for ln in model.read_text().splitlines() if '"metrics"' in ln)
+            r = max(ink / 2, 0.012)
+            # the points' box onto the ink's box less the ink's half width all round
+            ox = [p[0] for rg in rings for p in rg]
+            oy = [p[1] for rg in rings for p in rg]
+            px, py = [p[0] for p in pts], [p[1] for p in pts]
+            sc = ((max(ox) - min(ox) - 2 * r) / (max(px) - min(px)) + (max(oy) - min(oy) - 2 * r) / (max(py) - min(py))) / 2
+
+            def wind(qx, qy):
+                w = 0
+                for rg in rings:
+                    for (ax, ay), (bx, by) in zip(rg, rg[1:] + rg[:1]):
+                        if ay <= qy < by and (bx - ax) * (qy - ay) - (qx - ax) * (by - ay) > 0:
+                            w += 1
+                        elif by <= qy < ay and (bx - ax) * (qy - ay) - (qx - ax) * (by - ay) < 0:
+                            w -= 1
+                return w
+            mx, my = (min(ox) + max(ox)) / 2, (min(oy) + max(oy)) / 2
+            cx, cy = (min(px) + max(px)) / 2, (min(py) + max(py)) / 2
+            alts = all(g["g"] > max(TL.font_glyphs(model.read_text())) for g in TL.hb(ttf, "er"))
+            return sum(wind(mx + (a - cx) * sc, my + (b - cy) * sc) != 0 for a, b in pts) / len(pts), alts, pts
+        joined, alts, pj = inside()
+        lines = model.read_text().splitlines()
+        model.write_text("".join(ln + "\n" for ln in lines if not ln.startswith('{"joins"')))
+        _, alts2, ps = inside()
+        self.assertTrue(alts)
+        self.assertFalse(alts2)
+        self.assertGreater(joined, 0.95)
+        self.assertGreater(max(math.hypot(a[0] - b[0], a[1] - b[1]) for a, b in zip(pj, ps)), 0.5)
 
     def test_neatest_keeps_what_the_font_lacks(self):
         """a character the letter model doesn't cover (here punctuation) keeps its ink as

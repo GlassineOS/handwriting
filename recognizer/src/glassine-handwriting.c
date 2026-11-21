@@ -1254,6 +1254,32 @@ static int split_joined(struct hw_lang *l, const struct session *s, const unsign
 					if (nk > 1) own[si][pt] = (int)c;
 				}
 			}
+			/* a character ALIGN lists for a split stroke that no point aligned with: the
+			 * point where the stroke passes from the letter before it to the one after (or
+			 * the stroke's end next to its neighbour), so no character is left out */
+			for (size_t c = 0; c < nc; c++) {
+				/* (one ALIGN lists for a stroke kept as written is drawn with it) */
+				int has = 0;
+				for (size_t i = 0; i < s->n && !has; i++) {
+					has = keep[i] && whole[i * nc + c];
+					for (size_t t = 0; t < s->ink[i].n && !has; t++) has = own[i][t] == (int)c;
+				}
+				for (size_t i = 0; i < s->n && !has; i++) {
+					int nk = 0;
+					for (size_t d = 0; d < nc; d++) nk += whole[i * nc + d];
+					if (nk < 2 || !whole[i * nc + c] || keep[i] || !s->ink[i].n) continue;
+					size_t t = 0;
+					while (t < s->ink[i].n && (own[i][t] < 0 || own[i][t] < (int)c)) t++;
+					if (t == s->ink[i].n) t--;
+					/* (never a letter's only point) */
+					size_t on = 0;
+					for (size_t a = 0; own[i][t] >= 0 && a < s->n; a++)
+						for (size_t z = 0; z < s->ink[a].n; z++) on += own[a][z] == own[i][t];
+					if (own[i][t] >= 0 && on < 2) continue;
+					own[i][t] = (int)c;
+					has = 1;
+				}
+			}
 			/* a split stroke none of whose points aligned: as ALIGN gave it */
 			for (size_t i = 0; i < s->n; i++) {
 				int nk = 0, last = -1, got = 0;
@@ -1410,12 +1436,16 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 		q.guard = NULL;
 		free(guard);
 		if (r) goto oom;
-		/* drawing and a gesture among a character's strokes (with ALIGN) */
+		/* drawing and a gesture among a character's strokes (with ALIGN: also a stroke
+		 * ALIGN lists for it that another character's points hold, kept as written) */
 		for (size_t k = 0; q.why && k < q.nc; k++) {
 			if (q.why[k] != HW_NEAT_WHY_NO_INK) continue;
 			for (size_t i = 0; i < s->n; i++)
 				for (size_t t = 0; keep[i] && t < s->ink[i].n; t++)
-					if (own[i][t] == (int)k) { q.why[k] = i == g ? HW_NEAT_WHY_GESTURE : HW_NEAT_WHY_DRAWING; break; }
+					if (own[i][t] == (int)k || (whole && whole[i * nc + k])) {
+						q.why[k] = i == g ? HW_NEAT_WHY_GESTURE : HW_NEAT_WHY_DRAWING;
+						break;
+					}
 		}
 	}
 	bfmt(&b, "neaten\t%s\tok\t", id);

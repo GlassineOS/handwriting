@@ -913,7 +913,7 @@ static void test_letters_glyphs(void)
 	for (size_t k = 0; k < n; k++) cp[k] = (unsigned char)text[k];
 	int var[16];
 	long jo[16];
-	hw_letters_glyphs(&V, cp, n, var, jo);
+	hw_letters_glyphs(&V, NULL, cp, n, var, jo, NULL);
 	/* a at step 0 -> 0, step 1 -> 1, (space 2), step 3 -> 0, b, a after b -> rule 2, a step 6
 	 * -> 0, b c joined, a step 9 -> 0, x lacking, a at step 0 -> 0 */
 	const int want[] = { 0, 1, -1, 0, 0, 2, 0, -1, -1, 0, -1, 0 };

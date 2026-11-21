@@ -180,7 +180,12 @@ size, spacing) and keep their shape.
   after the rest (an i's dot, the bar of a t or an f, the arms of an E, the second stroke of
   an x) is part of the character it lies across or stands over, in words as well as alone,
   and a neighbour's stroke that the alignment put beside a small mark (a full stop, a comma)
-  stays the neighbour's, so both count. Line metrics (baseline,
+  stays the neighbour's, so both count; a stroke about as long as the rest of its character
+  (an H's second stem) is no late stroke. A character a stroke of a neighbour in its word
+  crosses or starts or ends on (an f's or a t's bar written on into the next letter, a p's
+  bowl begun on its stem and run on into the next letter) has a part of it in the
+  neighbour's ink: neither of the two is usable there, so no way of writing a letter lacks
+  its bar or its bowl. Line metrics (baseline,
   x-height, cap height, ascender, descender, slant) and spacing come from the person's word
   and sentence samples. Spacing follows how the person writes running text: a pair's
   distance and gap, the typical gap and how far letters reach come from their writing of
@@ -272,8 +277,8 @@ size, spacing) and keep their shape.
   x-height); a character's other variants are in the font without a character of their own.
   Letters are set at the letter model's spacing: side bearings from the profiles and pair
   kerning that text shaping applies by default, for every pair of variants, so each pair
-  of variants comes out where the spacing places it (FR-007) and words at the word spacing.
-  Every other character falls back to the system's default font.
+  of variants comes out where the spacing places it (FR-007) and words at the word spacing;
+  letters the font joins are set as their join places them (FR-044). Every other character falls back to the system's default font.
 - **FR-034**: The font comes in three styles of one family, installed and updated together,
   that differ only in how wide the ink is along each stroke; the letters' shapes, their
   variants and how the font switches between them, the spacing and the kerning are the
@@ -296,7 +301,8 @@ size, spacing) and keep their shape.
   alternates that text shaping applies by default (no setting in the app). The preview,
   spaced as the font spaces it,
   (Scenario 3) shows the same variants as the installed font for the same text, and the
-  same neighbour rules (FR-038) and joined pairs (FR-039).
+  same neighbour rules (FR-038) and joined pairs (FR-039); it sets joined letters (FR-044)
+  as two letters, apart.
 - **FR-038**: Where the person's samples show that they write a character a particular way
   next to a particular neighbour (the character before it or after it), the font uses that
   way there, by contextual alternates that text shaping applies by default. A rule needs
@@ -315,13 +321,50 @@ size, spacing) and keep their shape.
   profiles, kerned with its neighbours as any letter is), the characters around it keep the
   ways they'd have without it, and it reads, copies and searches as the two characters it
   stands for. A joined pair that is no longer written joined often enough leaves the font
-  at its next rebuild.
+  at its next rebuild. It has no joins (FR-044) to the letters beside it.
+- **FR-044**: Letters the person joins are joined in the font, with joins drawn as the
+  person draws them. Each joint in their letters written joined (FR-007) is a join: the
+  stroke from where the first letter's own ink ends to where the second's begins. Joins are
+  learned per letter pair and per kind of join; the kind is where the first letter's way of
+  writing it ends (below the baseline, near it, at the x-height or above) and where the
+  second's starts (the same heights, in its left or its right half), each from the end of
+  the way's last stroke of its main body and the start of its first (or the stroke the
+  person's exits leave from and their entries lead into, FR-007); a join never leaves or
+  enters a mark: a stroke shorter than half the way's longest (a dot, a bar, an arm). A letter pair with at least 5 joins has a
+  join shape of its own, a kind with at least 4 joins one for the kind: the mean of its
+  joins, matched point by point along their length, each turned and scaled onto its own
+  ends (a join whose ends nearly meet has no direction and counts for the ends alone). The
+  shape keeps its curve only where it fits the person's joins better than a straight line
+  does, each of them tried against the mean of the others, and is smooth: no rougher than
+  0.01 by the roughness the letters' variants are measured with (a straight line has none);
+  else the join is straight. The
+  font joins two neighbouring letters
+  of a word (letters only, no digits, marks or symbols) where the person writes that pair
+  joined: in at least half of the samples with the pair written with known strokes (at
+  least 3 of them, and joined at least twice); a pair written fewer than 3 times is joined
+  where the person writes its kind of join joined in at least half of the at least 10 times
+  they wrote it. The join takes the pair's own shape, else its kind's; a pair without a shape
+  of either, or one the person writes apart, stays as two letters set apart. Each joined
+  letter is drawn with its half of the join, by contextual alternates that text shaping
+  applies by default, the two halves meeting exactly: the join runs from the first letter's
+  end to the second's start along the learned shape, turned and scaled to fit between those
+  ends (its curve grown by no more than half again its own), the halves meeting at the
+  height the person's joins pass halfway. The cycle
+  (FR-010), the neighbour rules (FR-038) and the joined pairs (FR-039) choose the letters'
+  ways as without joins. Joined letters are set where the spacing places them (FR-007) as
+  closely as one meeting place for each way of writing a letter and join allows, but never
+  so near that the second letter's start comes before the first one's end plus the way the
+  join runs across (at least a tenth of an x-height); a way
+  whose half would run backwards or longer than 1.5 x-heights isn't joined with that join.
+  In Regular and Calligraphy the join is drawn as any stroke; in Brush as a thin line (the
+  brush's thinnest width that isn't a taper). A store without letters written joined gives
+  no joins, and the font is the one it would be without them.
 - **FR-040**: Random alternates are off: the font has none unless the font is built with
   them on request in the recognizer's interface (not offered on the font page). Built with
   them, apps whose text shaping applies random alternates (it does by default in HarfBuzz,
   so in GTK, Pango and the apps built on them) pick each character's way at random,
   weighted as in the cycle, the same way each time for the same text, and other apps keep
-  the cycle; neighbour rules and joined pairs apply either way. Which apps honour them is
+  the cycle; neighbour rules, joined pairs and joins apply either way. Which apps honour them is
   documented with the recognizer.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
@@ -390,15 +433,40 @@ size, spacing) and keep their shape.
   its shape would come closer to another character (FR-037), in a word read with
   low confidence (FR-017), or drawing or a gesture (FR-020).
 - **FR-043**: At Neatest each word whose text is known is set anew in the person's font,
-  exactly as the font sets that text: the same glyph for each character (the cycle, the
-  neighbour rules, the joined pairs: FR-035, FR-038, FR-039) and the font's advances and
-  kerning, placed on the line where the written word starts, on the line's baseline, at
+  as the font sets that text: the font's glyph for each character (the cycle, the
+  neighbour rules, the joined pairs: FR-035, FR-038, FR-039) unless the ink calls for
+  another way of writing it (below), and the font's advances and kerning, placed on the line where the written word starts, on the line's baseline, at
   the line's x-height, with the slant the font draws. The strokes stay the person's (FR-013):
   each character's ink, its pieces in the order written, is drawn along the centre lines of
   its glyph's strokes, each point by its share of the ink's length, so the timing and
-  pressure run along the glyph as written; a pen lift falls at the end of a glyph's stroke
-  near it, and where the person didn't lift the pen between two glyphs' strokes a straight
-  joining line runs from the one to the other. A character the letter model doesn't cover
+  pressure run along the glyph as written. Each letter is set onto a way of writing it
+  (FR-006) with as many strokes as its ink has pieces, each piece along its own stroke: the
+  font's there when it has that many, else the one with that many made from the most
+  samples; a letter with none keeps its written ink as the line-level corrections leave it,
+  moved to its place in the set word (a piece set over two strokes would draw the pen's
+  lift between them, and a stroke no piece runs along would not be drawn). A letter whose
+  version there was made from very few samples and doesn't fit the height of its ink is set
+  scaled to its ink's top and bottom, so it keeps its place on the line. No letter is drawn
+  twice: a letter whose ink is only a scrap of a neighbour's, beside a kept letter that
+  holds its body, keeps its ink too. Beside a kept letter, or one set on its ink's height,
+  the next letter sits at the gap the person writes the pair at. Where kept ink runs on into a set letter in
+  one stroke, the kept letter moves only along the line so the stroke goes on as written,
+  with no line drawn between where each is placed. A bar written on into the next letter
+  (the start of that letter's stroke crossing, or starting on, the letter before as
+  written, along the line) is the letter before's, so it is not lost in the next letter's
+  glyph; the next letter keeps the rest of its ink. No letter of the reading is left out:
+  each keeps ink of its own. Between two words the gap stays at least as wide as written,
+  or as the font's word gap where that is less; the word on the right moves along the line.
+  A letter's tail that the reading gives the next letter (it lies wholly before that
+  letter's own strokes and is shorter and lower than they are) stays the letter's, and a lead-in the
+  reading gives the letter before stays the next letter's: the pen was lifted there, so the
+  two aren't joined. Two letters are joined only where the person didn't lift the pen between them: the ink runs along the
+  join from the end of the stroke the first letter's piece is set along to the start of the
+  one the second's is (it follows the ink: a bar the person writes on into the next letter
+  is joined from the bar): the font's join where the font joins the two from and to those
+  strokes (FR-044), else the pair's learned join shape (or its kind's) fitted between them,
+  each letter's ink along its glyph and its half of the join; only where there is no learned
+  join a straight line runs from the one to the other. A character the letter model doesn't cover
   keeps its written ink as the line-level corrections leave it, moved to the middle of the
   box the font has for it. Only the confirmed text is known: without it no word is set (a
   word read wrongly would be set as another word). A word is set only when its ink can be its
@@ -553,6 +621,14 @@ Host level:
   a ligature with no feature requested, spaced within 0.02 x-heights of where its letters'
   gaps put its neighbours, with the characters around it as without it; a pair written
   joined too rarely is two glyphs; the glyph maps back to its two characters;
+- with letters written joined often enough, the font shapes those pairs with no feature
+  requested into the letters' join alternates, whose halves meet within a font unit in all
+  three styles, with the letters' ways, the cycle, the rules and the joined pairs as without
+  joins; a pair written apart, a digit or a symbol stays as two letters set as the spacing
+  places them; a store without letters written joined gives the same font, every table but
+  the version stamps, as one built without joins; at Neatest ink that runs on between two
+  letters of a set word runs along the font's join there, else along the learned join, and
+  a straight line only where there is none;
 - a font built without random alternates has no such feature and shapes the same with
   and without it requested; one built with them varies the ways along a long text in
   about the cycle's proportions, the same for the same text; all three styles pass the
@@ -595,8 +671,8 @@ by its neatened version and the original comes back at strength 0.
 
 ## Out of scope
 
-- Generated handwriting with joined letters for text never written (a learned writing
-  model; a later spec).
+- Generated handwriting beyond the person's own letters and joins for text never written
+  (a learned writing model that invents ways of writing or joining; a later spec).
 - Neatening with another person's letter model, or sharing a handwriting font.
 - Fonts for scripts the recognizer has no model for.
 
