@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdlib.h>
 
+#include "aligner.h"
 #include "cut.h"
 
 double hw_cut_arc(const double *x, const double *y, size_t n, double *cum)
@@ -56,7 +57,7 @@ static int cut_dp(const double *x, const double *y, size_t m, double xh, size_t 
 		  const size_t *off, size_t *at, int *which, double *cost);
 
 int hw_cut_shape(const double *x, const double *y, size_t m, double xh, size_t R, const struct hw_cut_ref *refs,
-		 const size_t *off, size_t *at, int *which, double *cost)
+		 const size_t *off, size_t *at, int *which, double *cost, const struct hw_cut_ctx *ctx)
 {
 	if (!R || m < 2 * R || !(xh > 0)) return 1;
 	/* the cut is placed at no more than HW_CUT_PTS points (and HW_CUT_PER per letter) of the
@@ -123,4 +124,47 @@ static int cut_dp(const double *x, const double *y, size_t m, double xh, size_t 
 	}
 	free(cum); free(D); free(P); free(Wc);
 	return ret;
+}
+
+int hw_cut_aligner(const double *x, const double *y, size_t m, double xh, size_t R, const struct hw_cut_ref *refs,
+		   const size_t *off, size_t *at, int *which, double *cost, const struct hw_cut_ctx *ctx)
+{
+	int ok = ctx && ctx->a && ctx->frame && ctx->cls && R && m >= 2 * R && xh > 0;
+	for (size_t r = 0; ok && r < R; r++) ok = ctx->cls[r] > 0 && off[r + 1] > off[r];
+	if (!ok) return hw_cut_shape(x, y, m, xh, R, refs, off, at, which, cost, ctx);
+	long f0 = ctx->frame[0], f1 = ctx->frame[m - 1];
+	if (f1 < f0) return hw_cut_shape(x, y, m, xh, R, refs, off, at, which, cost, ctx);
+	int *lab = malloc((size_t)(f1 - f0 + 1) * sizeof *lab);
+	double *cum = malloc((m + 1) * sizeof *cum);
+	if (!lab || !cum) { free(lab); free(cum); return -1; }
+	int r = hw_aligner_split(ctx->a, f0, f1, ctx->cls, R, lab);
+	if (r < 0) { free(lab); free(cum); return -1; }
+	if (!r) {
+		/* letter k's part from the first point whose frame is k's or later's */
+		size_t i = 0;
+		at[0] = 0;
+		for (size_t k = 1; k < R; k++) {
+			while (i < m && lab[ctx->frame[i] - f0] < (int)k) i++;
+			at[k] = i;
+		}
+		at[R] = m;
+		for (size_t k = 0; k < R && !r; k++) if (at[k + 1] < at[k] + 2) r = 1;
+	}
+	free(lab);
+	if (r) { free(cum); return hw_cut_shape(x, y, m, xh, R, refs, off, at, which, cost, ctx); }
+	hw_cut_arc(x, y, m, cum);
+	double tot = 0;
+	for (size_t k = 0; k < R; k++) {
+		double best = INFINITY;
+		int bc = (int)off[k];
+		for (size_t c = off[k]; c < off[k + 1]; c++) {
+			double e = hw_cut_cost(x, y, at[k], at[k + 1], cum, &refs[c], xh);
+			if (e < best) { best = e; bc = (int)c; }
+		}
+		if (which) which[k] = bc;
+		tot += best;
+	}
+	if (cost) *cost = tot;
+	free(cum);
+	return 0;
 }

@@ -97,3 +97,46 @@ def test_cut_errors_and_span_agreement():
     m = R.measure_spans([smp], {"good": [good], "bad": [bad]})
     assert m["good"]["agree"] == 1.0 and m["good"]["shared_strokes"] == 1
     assert m["bad"]["agree_shared"] == 0.0 and m["bad"]["letters_lost_shared"] == 0.5
+
+
+def test_decode_delayed_gives_a_late_stroke_back_to_its_letter():
+    # three strokes over the labels [0, 1, 2] (one word): the third says label 0 all along
+    # (a dot written after the word); the chain alone must give it to the last letter
+    lp = np.full((9, A.NCLASS), -20.0)
+    for t, c in enumerate([0, 0, 0, 1, 1, 2, 2, 0, 0]):
+        lp[t, c] = 0.0
+    firsts = [0, 3, 7]
+    plain = A.viterbi(lp, [0, 1, 2])
+    assert list(plain[7:]) == [2, 2]
+    got = A.decode_delayed(lp, firsts, [0, 1, 2], [0, 0, 0], -3.0)
+    assert list(got) == [0, 0, 0, 1, 1, 2, 2, 0, 0]
+    # at a penalty no stroke pays, the chain's path
+    never = A.decode_delayed(lp, firsts, [0, 1, 2], [0, 0, 0], -1e6)
+    assert list(never) == list(plain)
+    # never to a letter two words back
+    far = A.decode_delayed(lp, firsts, [0, 1, 2], [0, 1, 2], -3.0)
+    assert list(far[7:]) == [2, 2]
+
+
+def test_rows_map_each_point_to_its_frame():
+    rng = np.random.default_rng(3)
+    strokes = []
+    t = 0.0
+    for k in range(4):
+        n = int(rng.integers(2, 30))
+        xy = np.cumsum(rng.normal(0, 0.02, (n, 2)), 0) + [k * 0.3, 0]
+        strokes.append(np.c_[xy, t + np.arange(n) * 0.01])
+        t += n * 0.01 + 0.2
+    strokes.insert(2, np.zeros((0, 3)))
+    x, maps = A.featurize_rows(strokes)
+    nf = (len(x) - 1) // 2 + 1
+    assert len(maps[2]) == 0
+    seen = -1
+    for q, m in zip(strokes, maps):
+        assert len(m) == len(q)
+        if len(m):
+            assert np.all(np.diff(m) >= 0) and m.min() >= seen and m.max() < nf
+            seen = m.max()
+    model = A.PointAligner(16, 16)
+    with torch.no_grad():
+        assert model(torch.from_numpy(x)[None]).shape == (1, nf, A.NCLASS)

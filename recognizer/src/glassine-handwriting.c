@@ -39,6 +39,7 @@
 #include "hw/calib.h"
 #include "hw/gesture.h"
 #include "hw/letters.h"
+#include "hw/aligner.h"
 #include "hw/neaten.h"
 #include "hw/recog.h"
 #include "hw/size.h"
@@ -1323,6 +1324,7 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 	}
 	struct buf b = { 0 };
 	struct hw_neat q = { 0 };
+	struct hw_aligned aligned = { 0 };
 	unsigned char *keep = calloc(s->n + 1, 1);
 	int **own = calloc(s->n + 1, sizeof *own);
 	double *fit = NULL;
@@ -1411,6 +1413,15 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 			if (sw) { free(sw); free(np); }
 			free(ink); free(map);
 		}
+		/* the point aligner, when there is one: it cuts the strokes letters share, and
+		 * without ALIGN it gives every stroke its letters (written after the word or not) */
+		const struct hw_model *am = l && cp && nc && used[0] ? hw_aligner_get(l->lang) : NULL;
+		if (am) {
+			int ar = hw_aligner_run(am, s->ink, s->n, keep, &aligned);
+			if (ar < 0) goto oom;
+			if (!ar && !align && fit && hw_aligner_label(&aligned, cp, nc, HW_ALIGNER_DELAY, own) < 0) goto oom;
+			if (!ar) q.aligned = &aligned;
+		}
 		q.ink = s->ink;
 		q.n = s->n;
 		q.keep = keep;
@@ -1486,6 +1497,7 @@ out:
 	hw_neat_free(&q);
 	if (own) for (size_t i = 0; i < s->n; i++) free(own[i]);
 	free(own); free(keep); free(fit); free(whole); free(cp);
+	hw_aligned_free(&aligned);
 }
 
 static int nfields(char **f, int max, char *line)
