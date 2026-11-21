@@ -691,8 +691,8 @@ class FontPreview(Case):
         self.assertTrue(any(r.get("prev") == "l" for r in model["chars"]["o"].get("rules", [])))
 
     def test_preview_matches_shaping_in_context(self):
-        """with the context rules (GLASSINE_HANDWRITING_LETTERS_CONTEXT=1): an o between a b
-        and a d its own way, the same in the preview as in shaping"""
+        """with the context rules (FR-046, on by default): an o between a b and a d its own way,
+        the same in the preview as in shaping"""
         if not shutil.which("hb-shape"):
             self.skipTest("no hb-shape")
         sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
@@ -701,7 +701,6 @@ class FontPreview(Case):
         ss = TL.alphabet_samples(seed=73, per=3)
         ss += [TL.sample("bod", rnd, styles={"o": 1}) for _ in range(6)]
         ss += [TL.sample("bo", rnd) for _ in range(8)] + [TL.sample("od", rnd) for _ in range(8)]
-        self.e.cli.env = dict(self.e.cli.env or os.environ, GLASSINE_HANDWRITING_LETTERS_CONTEXT="1")
         model = self.preview(ss, ("bod", "a bod bo od", "bodbod", "lo bod"))
         self.assertTrue(any("prev" in r and "next" in r for r in model["chars"]["o"].get("rules", [])))
 
