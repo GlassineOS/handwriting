@@ -221,9 +221,12 @@ its kind.
   they obtained themselves and must keep to its terms, and that the file stays on the device.
 - **FR-022**: Placing by hand: a model file copied under its kind's name into the language's
   folder of the person's installed models is checked and used like one installed in the app
-  (FR-007), once the installed model is chosen for its kind.
-- **FR-023**: The person removes an installed model in the samples app. The shipped model is
-  used from the next reading.
+  (FR-007), once the installed model is chosen for its kind. Placing a file never chooses it.
+- **FR-023**: The person removes an installed model in the samples app. Removing it chooses the
+  shipped model for its kind (FR-010), and the shipped model is used from the next reading. The
+  choice stays on the shipped model: a model of that kind placed by hand afterwards is not used
+  until the person chooses the installed model again; installing one in the app chooses it
+  (FR-020).
 - **FR-024**: Checking, installing, choosing and removing installed models, and reporting their
   state, are part of the recognizer's documented contract, so another settings app can offer
   the same.
@@ -271,7 +274,9 @@ Host level:
   and differently from the shipped one. Choosing shipped again reads as the shipped model,
   without restarting the recognizer.
 - When the chosen installed model is removed or damaged, the next reading is the shipped
-  model's. When it is replaced in place, the next reading of the same strokes is the new file's.
+  model's. After a removal the shipped model is chosen, and a file placed by hand afterwards is
+  used only once the installed model is chosen again. When it is replaced in place, the next
+  reading of the same strokes is the new file's.
 - An installed aligner is used for neatening while the shipped recognizer reads.
 - With an owner's installed model chosen, a guest's reading is the shipped model's.
 - A sample export and a contribution file are the same with an installed model as without, and

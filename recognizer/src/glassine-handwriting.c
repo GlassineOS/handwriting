@@ -2710,6 +2710,8 @@ static int cmd_model(int argc, char **argv)
 	if (!strcmp(sub, "remove") && na == 1 && (kind = hw_kind_of(args[0]))) {
 		char p[4300];
 		if (hw_local_path(p, sizeof p, lang, kind)) return 1;
+		/* the shipped model chosen first: a file placed afterwards waits for the person's choice */
+		if (hw_conf_set(hw_kind_name(kind), "shipped")) return 1;
 		if (unlink(p)) {
 			if (errno != ENOENT) { perror("glassine-handwriting"); return 1; }
 			puts("none");
