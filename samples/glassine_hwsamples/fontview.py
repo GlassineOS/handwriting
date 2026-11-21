@@ -246,13 +246,44 @@ def _num(v):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else float("nan")
 
 
+def _clear_near(pa, pb, at, floor):
+    """spacing.c clear_near: b at at moved right until ink within a band of the other's
+    height keeps floor away"""
+    g = float("inf")
+    for k in range(BANDS):
+        for j in (k - 1, k, k + 1):
+            if 0 <= j < BANDS and _ok(pa[1][k]) and _ok(pb[0][j]):
+                g = min(g, pb[0][j] + at - pa[1][k])
+    return at + floor - g if g < floor else at
+
+
+def variant_middle(var):
+    """spacing.c hw_variant_middle: its middle, or without one the mean x of all its ink by
+    length"""
+    m = _num(var.get("middle"))
+    if _ok(m):
+        return m
+    sx = sw = 0.0
+    for st in var.get("strokes") or []:
+        for i in range(len(st)):
+            i0 = i - 1 if i else 0
+            w = math.hypot(st[i][0] - st[i0][0], st[i][1] - st[i0][1])
+            if len(st) == 1:
+                w = 1e-3
+            sx += w * (st[i][0] + st[i0][0]) / 2
+            sw += w
+    return sx / sw if sw > 0 else float("nan")
+
+
 def place(sp, a, va, b, vb):
     """spacing.c hw_spacing_place: where b's left edge goes, right of a's: the letters'
     middles at the pair's distance (or the two characters' reaches), guarded by the gap
-    between the baseline and the x-height; at the gap without a distance"""
+    between the baseline and the x-height; at the gap without a distance, clear of ink near
+    the other's height"""
     pa, pb = _prof(va), _prof(vb)
     gap = pair_gap(sp, a, va, b, vb)
-    s = gap - profile_gap(pa, pb, 0)
+    floor = gap if gap < sp.get("letter", 0.15) / 2 else sp.get("letter", 0.15) / 2
+    s = _clear_near(pa, pb, gap - profile_gap(pa, pb, 0), floor)
     ma, mb = _num(va.get("middle")), _num(vb.get("middle"))
     if not (_ok(ma) and _ok(mb)):
         return s
@@ -268,7 +299,6 @@ def place(sp, a, va, b, vb):
     if not _ok(d):
         return s
     at = d + ma - mb
-    floor = gap if gap < sp.get("letter", 0.15) / 2 else sp.get("letter", 0.15) / 2
     band = (PROF_Y1 - PROF_Y0) / BANDS
     g = float("inf")
     for k in range(BANDS):
@@ -356,10 +386,11 @@ def layout(model, text):
             if kind == "joined":
                 # its parts have no middles of their own: set at the gap on both sides
                 var = dict(pairs[c]["variant"], middle=None)
-            elif kind == "base":
-                var = model["base"][c]
             else:
-                var = model["chars"][c]["variants"][v]
+                var = model["base"][c] if kind == "base" else model["chars"][c]["variants"][v]
+                # (placed by all its ink's middle when it has none between the baseline and
+                # the x-height, as ttf.c kent_var)
+                var = dict(var, middle=variant_middle(var))
             if prev is not None:
                 k = _kern(sp, prev[0], prev[1], c[0], var, gap)
                 x += k
