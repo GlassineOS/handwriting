@@ -16,7 +16,7 @@
 #include "featurize.h"
 #include "model.h"
 
-#define HDR_WORDS 16     /* magic, version, header bytes, 8 config words, charset bytes, trained until (2), 2 reserved */
+#define HDR_WORDS 16     /* magic, version, header bytes, 8 config words, charset bytes, trained until (2), kind, 1 reserved */
 
 uint64_t hw_hash(const void *p, size_t n, uint64_t h)
 {
@@ -73,6 +73,7 @@ int hw_model_load(struct hw_model *m, const char *path, char *err, size_t errlen
 	}
 	uint32_t hdr = w[2], cs = w[11];
 	m->trained_until = (int64_t)((uint64_t)w[12] | (uint64_t)w[13] << 32);
+	m->kind = w[14];
 	if (hdr != HDR_WORDS * 4 || c->nfeat == 0 || c->nfeat > 64 || c->c1 == 0 || c->c1 > 4096 ||
 	    c->conv == 0 || c->conv > 4096 || c->nstrided > 8 || c->kernel == 0 || c->kernel > 31 ||
 	    c->kernel % 2 == 0 || c->hidden == 0 || c->hidden > 4096 || c->layers == 0 || c->layers > 8 ||

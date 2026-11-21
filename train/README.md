@@ -865,6 +865,10 @@ uv run python -m glassine_train.alignrun measure build/align-real/dev.pkl aligne
 uv run python -m glassine_train.alignrun export aligner.pt MODELS/en/aligner.ghm
 ```
 
+The export records the kind in the file (`onnx2ghm --kind aligner`; a base model's release
+records `recognizer`), so a device tells an aligner from a recognizer without guessing from its
+shape (`docs/recognizer.md`, Base models).
+
 **Delayed strokes.** With the text alone a whole stroke after the first may be given to a
 letter already passed (of its word or the word before) at a log-penalty; on synthetic dev
 lines (600, 795 delayed strokes) the points labelled right stay at 93.3 % from −0.5 to −8,

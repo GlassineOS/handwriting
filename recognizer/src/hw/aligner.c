@@ -9,29 +9,36 @@
 
 #include "aligner.h"
 #include "featurize.h"
+#include "local.h"
 #include "recog.h"
 
 #define NEG (-1e30)
 
-static struct { char lang[36]; int state; struct hw_model m; } cache;   /* state 1 loaded, -1 none */
+/* the aligner in use and the file it came from (local.h): read again when the choice or the
+ * file changes; state 1 loaded, -1 none */
+static struct { char lang[36]; int state; struct hw_model m; struct hw_resolved res; } cache;
 
 const struct hw_model *hw_aligner_get(const char *lang)
 {
 	const char *e = getenv("GLASSINE_HANDWRITING_ALIGNER");
 	if (e && !strcmp(e, "off")) return NULL;
-	if (cache.state && !strcmp(cache.lang, lang)) return cache.state > 0 ? &cache.m : NULL;
+	struct hw_resolved res;
+	hw_model_resolve(lang, HW_KIND_ALIGNER, &res);
+	if (cache.state && !strcmp(cache.lang, lang) && hw_resolved_same(&cache.res, &res))
+		return cache.state > 0 ? &cache.m : NULL;
 	if (cache.state > 0) hw_model_free(&cache.m);
 	memset(&cache, 0, sizeof cache);
 	snprintf(cache.lang, sizeof cache.lang, "%s", lang);
-	char p[4300], err[128];
-	snprintf(p, sizeof p, "%s/%s/%s", hw_models_dir(), lang, HW_ALIGNER_FILE);
+	cache.res = res;
+	char err[128];
 	cache.state = -1;
-	if (!hw_model_load(&cache.m, p, err, sizeof err)) {
+	if (!hw_model_load(&cache.m, res.path, err, sizeof err)) {
 		/* a frame every two rows, the recognizer's own features */
-		if (cache.m.version == HW_GHM_VERSION && cache.m.cfg.nstrided == 1) cache.state = 1;
-		else { fprintf(stderr, "glassine-handwriting: %s: not an aligner\n", p); hw_model_free(&cache.m); }
+		if (hw_model_kind(&cache.m) == HW_KIND_ALIGNER && cache.m.version == HW_GHM_VERSION &&
+		    cache.m.cfg.nstrided == 1) cache.state = 1;
+		else { fprintf(stderr, "glassine-handwriting: %s: not an aligner\n", res.path); hw_model_free(&cache.m); }
 	} else if (errno != ENOENT || strcmp(err, strerror(ENOENT)))
-		fprintf(stderr, "glassine-handwriting: %s: %s\n", p, err);
+		fprintf(stderr, "glassine-handwriting: %s: %s\n", res.path, err);
 	return cache.state > 0 ? &cache.m : NULL;
 }
 

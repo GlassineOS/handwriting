@@ -14,7 +14,7 @@ holding the directory the recognizer reads (`docs/recognizer.md`, "Base models")
 
 | File | What |
 |---|---|
-| `recognizer.ghm` | the model (ghm version 1, or 2 for one reading the reference height) |
+| `recognizer.ghm` | the model (ghm version 1, or 2 for one reading the reference height; its kind, recognizer, recorded in the header) |
 | `README` | the recipe (trainer commit, training command), the data sources, the results |
 | `LICENSES` | the licences of these files and of the training data (font notices, OFL text) |
 | `prompts.txt` | `models/LANG/prompts.txt` |
@@ -78,3 +78,11 @@ A model under trial is a package of its own beside the default one
 (`glassine-handwriting-model4-en`, in `/usr/share/glassine/handwriting-model-4/en/` with the
 same character model): installing it changes nothing until the setting `models` names that
 directory (`docs/recognizer.md`, Base models).
+
+## A model the person installs themselves
+
+A model that can't be released here (for example one trained on handwriting data whose terms
+don't allow it to be shipped) is never published by this repository. A person who obtained one
+themselves, from its official source and under its terms, installs it on their own device as a
+private replacement for a shipped model (spec 006; `docs/recognizer.md`, Installed models). The
+system never downloads one.
