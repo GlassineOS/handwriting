@@ -42,6 +42,7 @@
 #include "hw/neaten.h"
 #include "hw/recog.h"
 #include "hw/size.h"
+#include "hw/setword.h"
 #include "hw/lookalike.h"
 #include "hw/sample.h"
 #include "hw/store.h"
@@ -1489,6 +1490,42 @@ out:
 	free(own); free(keep); free(fit); free(whole); free(cp);
 }
 
+/* set ID TEXT (contract 1.7): TEXT set in the person's font as pen strokes (setword.h) */
+static void do_set(const char *id, const char *text)
+{
+	size_t len = strlen(text);
+	unsigned *cp = malloc((len + 1) * sizeof *cp);
+	if (!cp) { reply("error\t%s\tmemory", id); return; }
+	size_t nc = hw_utf8_decode(text, cp, len + 1);
+	if (!nc || nc > HW_MAX_LABELS) { free(cp); reply("error\t%s\tbad-text", id); return; }
+	struct hw_set st;
+	if (hw_set_text(letters_now(), cp, nc, &st)) { free(cp); reply("error\t%s\tmemory", id); return; }
+	struct buf b = { 0 };
+	bfmt(&b, "set\t%s\tok\t", id);
+	bcoord(&b, st.width);
+	bstr(&b, "\t");
+	bcoord(&b, st.xh_mm);
+	bstr(&b, "\t");
+	bcoord(&b, st.ink);
+	bfmt(&b, "\t%zu", st.n);
+	for (size_t i = 0; i < st.n; i++) {
+		bstr(&b, "\t");
+		for (size_t j = 0; j < st.s[i].n; j++) {
+			if (j) bstr(&b, " ");
+			bcoord(&b, st.s[i].x[j]);
+			bstr(&b, ",");
+			bcoord(&b, st.s[i].y[j]);
+		}
+	}
+	if (b.s) {
+		bstr(&out, b.s);
+		bput(&out, "\n", 1);
+	} else reply("error\t%s\tmemory", id);
+	free(b.s);
+	hw_set_free(&st);
+	free(cp);
+}
+
 static int nfields(char **f, int max, char *line)
 {
 	int n = 0;
@@ -1705,6 +1742,11 @@ static void request(char *line, int skip_read)
 		if (n >= 5) UNESC(4);
 		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
 		do_neaten(id, s, f[3], n >= 5 ? f[4] : NULL, n == 6 ? f[5] : NULL);
+	} else if (!strcmp(v, "set")) {
+		NEED(3);
+		UNESC(2);
+		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
+		do_set(id, f[2]);
 	} else if (!strcmp(v, "forget")) {
 		NEED(3);
 		do_forget(id, f[2]);

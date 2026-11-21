@@ -167,17 +167,29 @@ From the compositor:
 | `stroke` | `s`, `k`, `points` ([x, y, t, pressure, tilt_x, tilt_y]) | a raw stroke |
 | `clear` | `s` | the app is done with the writing held |
 | `report` | `s`, `serial`, `action` (`picked`, `accepted`, `corrected`, `discarded`), `rank`, `text` | what the person did with the candidates `serial` |
-| `destroy` | `s` | forget the surface and all it held |
+| `destroy` | `s` | forget the surface and all it held, its regions too |
+| `region` | `s`, `r`, `size` ([width, height] in the region's own coordinates), `guides` ([spacing, first], the region's ruled lines), `neaten`, `strength`, `text`, `purpose`, `hints`, `before`, `languages`, `units`, `output`, `mode` (`ink` or `text`) | a writing region (spec 005), declared or changed: any field left out stays |
+| `stroke` | `s`, `r`, `k`, `points` (in the region's coordinates) | a raw stroke of region `r`, whole, in the region it started in |
+| `clear` | `s`, `r` | the region's writing is forgotten (its strokes come back in `gone`) |
+| `report` | `s`, `r`, `serial`, `action` (`picked`, `accepted`, `corrected`, `discarded`), `rank`, `text` | what the person did with region `r`'s candidates `serial` |
+| `region_mode` | `s`, `mode` | every region of the surface to text or ink mode |
+| `region_text` | `s`, `r`, `text` | the text the person edited in text mode: the region's value back in ink mode |
+| `region_restore` | `s`, `r`, `strokes` ([{`k`, `points`}]), `state` | stored ink handed back, with its saved state or none |
+| `region_destroy` | `s`, `r` | forget the region |
 
 From the service:
 
 | `op` | Fields | Meaning |
 |---|---|---|
-| `hello` | `version`, `neaten`, `text`, `letters`, `languages` | sent once at start: the capabilities |
+| `hello` | `version`, `neaten`, `text`, `regions`, `letters`, `languages` | sent once at start: the capabilities |
 | `neat` | `s`, `k`, `how`, `points` ([x, y] per raw point) | the neatened stroke `k` |
 | `reading` | `s`, `text`, `strokes` | a partial reading |
 | `candidates` | `s`, `serial`, `items` (`text`, `from`, `fit`, `chars`) | the candidates at a pause |
 | `report` | `s`, `serial`, `result` | the answer to a report |
+| `value` | `s`, `r`, `text`, `words`, `gone`, `state` | region `r`'s value, whole, when it changed (Writing regions, below) |
+| `candidates` | `s`, `r`, `serial`, `items` (`text`, `line`, `from`, `fit`, `chars`) | region `r`'s candidates at a pause: `text` the whole value with the candidate, `line` the candidate alone |
+| `neat` | `s`, `r`, `k`, `how`, `points` | a neatened stroke of region `r` |
+| `report` | `s`, `r`, `serial`, `result` | the answer to a report on region `r` |
 
 The compositor turns these into the pen interface's events. It sends a stroke's points in
 parts small enough for the Wayland wire, and it keeps the time, pressure and tilt of each
@@ -187,3 +199,72 @@ raw point for the neat stroke.
 (the guides, else the lines found from the writing) and, within a line, word by word along
 the best reading. A word is neatened again only when its strokes, its text or the strength
 change. The candidates follow a pause of 900 ms.
+
+## Writing regions
+
+A surface can hold writing regions (spec 005): fields of their own, each with its area, ruled
+lines, field type, languages, reading and neatening, whose reading is the field's value. The
+compositor routes each stroke to the region it starts in, moved into the region's own
+coordinates; the service never sees a region's place on the surface, so moving or resizing a
+region changes nothing here and reads nothing again (FR-003, FR-004).
+
+**Cost.** A region holds no recognizer session until it is written in, and gives it up at the
+pause after its writing (FR-007). Each region's reading is a session of its own (`g`
+surface `-` region), with the region's units, size prior, box (its `size`) and ruled lines,
+and never a line from another region (FR-028). A region whose field is private sends nothing
+to the recognizer and keeps nothing; changing a field to private forgets what the region held.
+
+**The value.** A region's words are of three kinds: read (the current reading of its writing),
+kept (a pick, an acceptance, or a word an edit left as it was: its ink, and its text, never read
+again, FR-026) and set (a word the person typed, with no ink). The reading is made again at
+every change of the writing (250 ms after a stroke), line by line, and the value is sent whole
+when it changed (`value`): the words line by line in reading order, joined by spaces and the
+lines by a newline (FR-008, FR-009). Each entry of `words` has `text` and `line` (the value's
+line), `kept` when the person confirmed or edited it, and either
+
+- `strokes`: the strokes that make it, and `dx` when its ink moved along its line by an edit
+  (draw the strokes, raw or as `neat` gives them, `dx` to the right), or
+- `set`: a word set in the person's font (`x` and `base`, where it starts and the line it sits
+  on, `size` its small letters' height, `width`, `ink` the pen's width, `strokes` [[x, y]…]
+  in the region's coordinates), to draw as strokes; the app needs no font (FR-024).
+
+`gone` lists the strokes that left the region since the last value: gestures, struck out
+words, ink an edit replaced. `state` is the saved state (FR-010), opaque: the app keeps it with
+the strokes and hands both back.
+
+**Gestures.** The recognizer's gestures act in the region they are written in (FR-012): a
+strike or scratch deletes the words it covers, their ink leaving; a caret places the writing
+after it where it points. The gesture's own stroke leaves (`gone`).
+
+**Candidates and reports.** At a pause (900 ms) the region sends its candidates: for the line
+written last, each candidate with the rest of the value (`text`). A report applies to the
+writing the candidates were read from; writing added after them stays read (FR-013), and a
+report never ends the region's writing. `picked` and `accepted` keep the reported words;
+`corrected` is an edit (below). A word becomes a sample only with ink of its own that came from
+the pen (never ink the app handed back), only when that ink fits its text (the recognizer's
+`align` check, a score of 0.6 or more), and only with the person's permission for the app
+(`not_allowed` otherwise); set words never do (FR-014). The result is `stored` when a sample was
+stored, else `not_kept`, or `stale` for candidates that aren't the newest.
+
+**Edits.** A correction, or the text the person edited in text mode back in ink mode
+(`region_text`, FR-017), is matched to the value word by word: a word left as it was keeps its
+ink and is kept; a changed or added word is set in the person's font (the recognizer's `set`)
+where it stands, on the line of the word before it on its line of the text, else of the kept
+ink it comes before, else the region's next line; at the size of the person's writing in the
+region, else their letters in millimetres, else the typical size (FR-021). The kept ink after a
+changed word moves along its line by the difference in width (`dx`), unchanged in shape. The ink
+of a changed word leaves; where it fits the word's new text it is a sample first (a
+correction). When no word keeps its ink, the whole value is set and none of the ink stays
+(FR-020). Writing after an edit is read as usual and joins the value where it is written; set
+words stay as they are (FR-023). Whether set words wrap is the app's choice.
+
+**Neatening.** Each word with ink is neatened in a session of its own with the area of its
+line, and never with its text: at every strength kept ink stays ink (FR-019). Set words are
+not neatened.
+
+**Stored ink.** `region_restore` hands the region strokes the app kept, with their saved state
+or without (FR-025). With it, the words the state names are kept again by their strokes (each
+named by its points) and its set words come back where they were; the rest is read with the
+model there is now (FR-026). Without it, the strokes are read and the reading is the value.
+Handed-back ink is never a sample.
+
