@@ -32,7 +32,8 @@ def languages():
 
 def features():
     langs = languages()
-    return {"neaten": bool(langs), "text": bool(langs), "letters": os.path.exists(os.path.join(data_dir(), "letters", "model")),
+    return {"neaten": bool(langs), "text": bool(langs), "regions": True,
+            "letters": os.path.exists(os.path.join(data_dir(), "letters", "model")),
             "languages": langs}
 
 
