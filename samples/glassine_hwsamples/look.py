@@ -4,7 +4,7 @@ voice changes type, edges and rules), and the parts every page is made of. Every
 drawn with cairo and Pango through glassine_ui.paint, as the settings app draws."""
 import re
 
-from glassine_ui import paint as PT, voices
+from glassine_ui import paint as PT, size as S, voices
 
 from .tokens import VOICES
 
@@ -101,12 +101,18 @@ def icon(cr, name, sz, cx, cy, col):
 
 
 class Hits:
-    """the tap targets of one paint: boxes with what a tap does"""
+    """the tap targets of one paint: boxes with what a tap does. A box under the minimum
+    (shell spec 012 FR-022: 7 mm both ways, glassine_ui.size.min_tap) is widened about its
+    middle"""
 
     def __init__(self):
         self.boxes = []
 
     def add(self, x, y, w, h, fn):
+        m = S.min_tap()
+        if m > 0 and (w < m or h < m):
+            nw, nh = max(w, m), max(h, m)
+            x, y, w, h = x - (nw - w) / 2, y - (nh - h) / 2, nw, nh
         self.boxes.append((x, y, w, h, fn))
 
     def at(self, x, y):
