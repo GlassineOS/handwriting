@@ -483,7 +483,7 @@ class Pen:
         if g is None:
             return
         if op == "region_set":
-            g.set(m)
+            g.set(dict({"display": "ink"}, **m))    # no display: ink (the start)
         elif op == "region_mode":
             g.set({"mode": m.get("mode")})
         elif op == "region_stroke":
