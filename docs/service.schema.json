@@ -9,14 +9,15 @@
       "required": ["method"],
       "properties": {
         "id": {"description": "any JSON value; the response carries it back"},
-        "method": {"enum": ["hello", "status", "permission.get", "permission.set", "read", "neaten", "samples.list", "samples.delete", "letters.status"]},
+        "method": {"enum": ["hello", "status", "permission.get", "permission.set", "read", "neaten", "samples.list", "samples.delete", "letters.status", "output.get", "output.set"]},
         "params": {"type": "object"}
       },
       "allOf": [
         {"if": {"properties": {"method": {"const": "permission.set"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/permission.set/params"}}, "required": ["params"]}},
         {"if": {"properties": {"method": {"const": "read"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/read/params"}}, "required": ["params"]}},
         {"if": {"properties": {"method": {"const": "neaten"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/neaten/params"}}, "required": ["params"]}},
-        {"if": {"properties": {"method": {"const": "samples.delete"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/samples.delete/params"}}, "required": ["params"]}}
+        {"if": {"properties": {"method": {"const": "samples.delete"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/samples.delete/params"}}, "required": ["params"]}},
+        {"if": {"properties": {"method": {"const": "output.set"}}}, "then": {"properties": {"params": {"$ref": "#/$defs/methods/output.set/params"}}, "required": ["params"]}}
       ]
     },
     "response": {
@@ -56,10 +57,10 @@
     },
     "area": {
       "type": "object",
-      "description": "the writing area in the units of the strokes (docs/service.md, The writing's size); a part left out is found from the writing",
+      "description": "the writing area in the units of the strokes (docs/service.md, The writing's size); a part left out is as the pen interface has it: the writing's box, no ruled line, the guide line of one line of writing",
       "properties": {
         "box": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "x0, y0, x1, y1"},
-        "line": {"type": "number", "exclusiveMinimum": 0, "description": "the line height"},
+        "line": {"type": "number", "exclusiveMinimum": 0, "description": "the spacing of the ruled lines, a size reference; left out: none"},
         "base": {"type": "number", "description": "the y of the first guide line, the next ones every line below it"},
         "rot": {"enum": [0, 90, 180, 270], "description": "the screen's turn in degrees"}
       }
@@ -146,6 +147,19 @@
           "type": "object", "required": ["state", "covered", "font"],
           "properties": {"state": {"type": "string"}, "covered": {"type": "integer"}, "font": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["name", "version"], "properties": {"name": {"type": "string"}, "version": {"type": "integer"}}}]}}
         }
+      },
+      "output.get": {
+        "result": {
+          "type": "object", "required": ["outputs", "default"],
+          "properties": {
+            "outputs": {"type": "object", "additionalProperties": {"type": "number", "exclusiveMinimum": 0}, "description": "output name: the points per millimetre the person set for it"},
+            "default": {"type": "number", "exclusiveMinimum": 0, "description": "the density the size prior is applied at on an output of unknown size the person hasn't set"}
+          }
+        }
+      },
+      "output.set": {
+        "params": {"type": "object", "required": ["output", "px_per_mm"], "properties": {"output": {"type": "string", "minLength": 1, "maxLength": 255, "description": "the output's name, as the compositor gives it"}, "px_per_mm": {"oneOf": [{"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1000}, {"type": "null"}], "description": "its points per millimetre; null: unknown again"}}},
+        "result": {"$ref": "#/$defs/methods/output.get/result"}
       }
     }
   }

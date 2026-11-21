@@ -29,10 +29,14 @@ one. The service has no confirmed text for the writing, so no word is set in the
 font (spec 003 FR-043): at the neatest strength the words are pulled towards their letters as
 at the strong one.
 
-Every reading has a writing area and the units with the output's px per millimetre: the app's
-area and guides when it set them, else ones found from the writing (docs/service.md, The
-writing's size), so a model that reads the ink's size reads an app's writing as it reads the
-keyboard's.
+Every reading is judged in physical size (spec 004 FR-016, FR-017; docs/service.md, The
+writing's size): the units carry the output's px per millimetre, the person's letters are known
+in millimetres once there are enough of them, and before that a typical small letter of 2.5 mm
+is the prior. The app's area and ruled lines count when it sets them; no line is found from the
+writing, so a lone character is never read against a line found from itself or from writing
+elsewhere. On an output whose physical size the compositor doesn't know, the person sets its
+px per millimetre once in Settings; until then the units stay the pen's own and the prior is
+applied at the default density of 96 px per inch (3.78 px per millimetre).
 
 **Privacy (FR-010).** Nothing reaches the service for a surface with neatening and text both
 off, nor for a private field: a purpose of `password` or `pin`, or the hints

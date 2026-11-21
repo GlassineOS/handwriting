@@ -62,17 +62,20 @@ with the same `id` and either `"result": {…}` or `"error": {"code", "message"}
 | `samples.list` | | `samples` kept through the caller: `id`, `time`, `source`, `language`, `text` (needs `samples`) |
 | `samples.delete` | `id` | `{}`, or `not-yours` (needs `samples`) |
 | `letters.status` | | `state`, `covered`, `font` (needs `samples`) |
+| `output.get` | | `outputs` (output name: the points per millimetre the person set), `default` (the density the size prior is applied at without one) |
+| `output.set` | `output`, `px_per_mm` (above 0, or null: unknown again) | as `output.get`; unsandboxed callers only (Settings) |
 
 Strokes are lists of points `[x, y, t]`, `[x, y, t, pressure]` or
 `[x, y, t, pressure, tilt_x, tilt_y]`, with t in ms, pressure 0 to 1 and tilt in degrees.
 `context`: `purpose` and `hints` as in `zwp_text_input_v3`, plus `before` and `languages`.
 `units`: as the recognizer's (`device`, `device:PX_PER_MM`, `device:PX_PER_MM:RATE`, `em`);
 with `device:PX_PER_MM` the service adds the rate it measures from the strokes. `area`: `box`
-([x0, y0, x1, y1]), `line`, `base` (the y of the first guide line) and `rot` (0, 90, 180 or
-270), in the strokes' units; a part left out is found from the writing (The writing's size,
-below), in `em` the line is 1. Ink in `em` without an `area` gets none (its units say how high
-a line is), nor does writing too little to find a line in. An area that is empty, a line of 0
-or less or another turn is `bad-request`.
+([x0, y0, x1, y1]), `line` (the ruled lines' spacing), `base` (the y of the first guide line)
+and `rot` (0, 90, 180 or 270), in the strokes' units; a part left out is as the pen interface
+has it (The writing's size, below): the box of the writing, no ruled line (in `em` a line of
+1), the guide line of one line of writing. Ink in `em` without an `area` gets none (its units
+say how high a line is). An area that is empty, a line of 0 or less or another turn is
+`bad-request`. Every `device` request has the size prior (below).
 
 Error codes: `bad-request`, `unknown-method`, `permission-needed`, `not-allowed`,
 `not-yours`, `unavailable`, `failed`.
@@ -84,47 +87,72 @@ person sees as a contribution.
 
 ## The writing's size
 
-Every session the service begins in the recognizer, for either interface, has a writing area
-and units (spec 004 FR-016, FR-017), so a model that reads the ink's size (docs/recognizer.md,
-Size and Base models) has a reference: the person's letters in millimetres when the units have
-`PER_MM`, else the area's line.
+Every session the service begins in the recognizer, for either interface, has a writing area,
+units and a size prior (spec 004 FR-016, FR-017), so a model that reads the ink's size
+(docs/recognizer.md, Size and Base models) judges it in physical size: the person's letters in
+millimetres once there are enough of them (units with `PER_MM`), before that a typical
+handwriting size in millimetres.
 
-- **Box**: the app's ink area (`set_area`), else the bounding box of the writing held.
-- **Line**: the spacing of the app's ruled lines (`set_guides`), else six times the median
-  stroke size of the writing held, a stroke's size being the larger of its height and a
-  quarter of its width. It needs 3 glyphs (strokes overlapping horizontally, also through
-  others, are one): less writing, such as a lone character, whose line found from itself would
-  hide its size, gets the line found earlier on the surface, and before there is one no area
-  at all, so the recognizer goes by the person's letters or else the ink's own size.
-- **Guide line**: the app's first ruled line, else the median of the strokes' lowest points,
-  for a session whose strokes are one line of writing (the lines found as for neatening). A
-  session holding more than one line has none.
+- **Box**: the app's ink area (`set_area`, a region's area), else the bounding box of the
+  writing held.
+- **Line**: the spacing of the app's ruled lines (`set_guides`), else none (`LINE` 0). A ruled
+  line is a size reference only when the app sets one: no line is found from the writing, so a
+  lone character is never measured against a line found from itself, nor against one found
+  from other writing on the surface, in another region or in another app.
+- **Guide line**: the app's first ruled line, else for a session whose strokes are one line of
+  writing (the lines found as for neatening) of at least 3 glyphs (strokes overlapping
+  horizontally, also through others, are one) the median of the strokes' lowest points. It
+  says where letters sit (a comma from an apostrophe), not how big they are. Less writing, or
+  more than one line, has none.
+- **Prior**: a small letter 2.5 mm high (`TYPICAL_XH_MM`), sent as the recognizer's `prior` in
+  the session's units: at the units' points per millimetre, and for `device` units without
+  them at the default density of 96 points per inch (3.78 per millimetre, `DEFAULT_PX_PER_MM`).
+  The recognizer uses it only when neither the person's letters in the session's units nor the
+  app's ruled line give a reference; for a line of writing whose own small letters measure
+  more than 1.6 times it, their height (Size). Ink in `em` gets none (its units say how high a
+  line is).
 - **Units**: the compositor's, `device:PX_PER_MM` when it knows the size of the output the pen
   writes on (its px over its millimetres, in logical px), with the pen's rate added once the
   surface's writing has 8 time steps: 1000 / the median step in ms, as the keyboard measures it.
-  The rate is kept for the surface. Without a known output size the units stay `device`: no
-  size in millimetres is assumed.
+  The rate is kept for the surface. For an output of unknown size the compositor names the
+  output (`output`): when the person has set its points per millimetre in Settings
+  (`output.set`, kept by the output's name in `$XDG_CONFIG_HOME/glassine/handwriting-outputs.json`)
+  the units are `device:` that density; until then they stay `device`, the pen's own, and no
+  size in millimetres is assumed beyond the prior at the default density.
 
 The words of a line and the lines of the writing are read and neatened in sessions of their
-own, with the surface's box and line and the guide line of their line. A word is neatened
-without its reading as the text: the reading only tells which strokes are a word, and only a
-text the person confirmed is set in their font at Neatest (spec 003 FR-043; a word read
-wrongly would be set as another). The `neaten` method passes the app's `text` on as given. The main session's area
-follows the writing as it grows.
+own, with the surface's box, no line unless the app ruled one, the guide line of their line
+and the prior. A word is neatened without its reading as the text: the reading only tells
+which strokes are a word, and only a text the person confirmed is set in their font at Neatest
+(spec 003 FR-043; a word read wrongly would be set as another). The `neaten` method passes the
+app's `text` on as given. The main session's area follows the writing as it grows.
 
-A line found from the writing tells nothing of a lone character's size (a lone `o` from an
-`O`); the person's letters do, once there are enough of them in millimetres. On the recorded
-ink (recognizer/tests/data/ink.jsonl, written at 1.5 to 6 mm small letters), a version 2 model
-reads within a point of the keyboard's paper this way (3.3 % against 2.5 %, 11.2 % without an
-area), and a version 1 model as before (`make -C service check-model MODEL_DIR=…`). A fixed
-line in millimetres reads as well only for a person who writes the size it guesses, and far
-worse for one who writes smaller. On synthetic lines of every kind (the trainer's `dev_kinds`,
-15 of each) model 4 reads 10.4 % this way, 13.2 % without an area and 8.9 % on the
-keyboard's paper; lines of capitals and digits (plates) and of small letters alone (`flat`)
-read 1.5 to 3 points worse than without an area, since their median stroke is no ordinary
-mix of small and tall letters.
+Measured with `make -C service check-model` (tests/check_sizes.py: the recorded ink,
+recognizer/tests/data/ink.jsonl, written at 1.5, 3 and 6 mm small letters, its 28 lines and
+each of its 210 letters and digits written with strokes of their own read alone; CER %, the
+size prior alone, against the rule before it, which found a line of six median stroke sizes
+from writing of 3 glyphs or more and for less writing took the one found earlier on the
+surface, or none):
 
-A sample stored from such a session keeps that area, as every sample keeps its session's.
+| model 4 (ghm 2) | 1.5 mm | 3 mm | 6 mm |
+|---|---|---|---|
+| lines, the prior | 17.8 | 24.4 | 33.1 |
+| lines, the found line before | 24.0 | 24.0 | 24.0 |
+| lines, the keyboard's paper | 20.7 | 20.7 | 20.7 |
+| lone characters, the prior | 36.2 | 42.9 | 95.2 |
+| lone characters, before (no area) | 55.7 | 55.7 | 55.7 |
+| lone characters, the keyboard's paper | 25.7 | 25.7 | 25.7 |
+
+With the writer's letters known both rules read the same (lines 2.1, lone characters 31.9; the
+keyboard's paper 2.1 and 9.5, its ruled guide line placing a lone character). A version 1
+model (model 2) reads as before (lines 5.0; lone characters 21.0, one more error at 1.5 mm).
+The prior reads small and middling writing better than a found line did and large writing
+worse: model 4 reads ink far larger than its reference with too many points per letter
+(train/README.md, Size against the reference), and a lone character of 6 mm small letters is
+twice as large as the typical one. The person's letters, once known, replace the prior.
+
+A sample stored from such a session keeps that area, as every sample keeps its session's; the
+prior is not stored.
 
 ## The compositor's channel
 
@@ -137,7 +165,7 @@ From the compositor:
 | `op` | Fields | Meaning |
 |---|---|---|
 | `surface` | `s`, `sandbox` or `pid` | a surface that wants the service, and whose it is |
-| `set` | `s`, `neaten`, `strength`, `text`, `purpose`, `hints`, `before`, `after`, `languages`, `guides` ([spacing, first]), `box` ([x0, y0, x1, y1], when the area is set), `units` | its choices; a private field (`password`, `pin`, the hints `hidden_text` or `sensitive_data`) is followed by `destroy` instead |
+| `set` | `s`, `neaten`, `strength`, `text`, `purpose`, `hints`, `before`, `after`, `languages`, `guides` ([spacing, first]), `box` ([x0, y0, x1, y1], when the area is set), `units`, `output` (the name of the output the pen writes on, for units without its size) | its choices; a private field (`password`, `pin`, the hints `hidden_text` or `sensitive_data`) is followed by `destroy` instead |
 | `stroke` | `s`, `k`, `points` ([x, y, t, pressure, tilt_x, tilt_y]) | a raw stroke |
 | `clear` | `s` | the app is done with the writing held |
 | `report` | `s`, `serial`, `action` (`picked`, `accepted`, `corrected`, `discarded`), `rank`, `text` | what the person did with the candidates `serial` |
