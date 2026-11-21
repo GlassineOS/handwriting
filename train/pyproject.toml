@@ -12,6 +12,7 @@ dependencies = [
   "onnxruntime>=1.20",
   "fonttools>=4.40",  # which characters a font has (the model-4 generator)
   "scipy>=1.11",
+  "uharfbuzz>=0.40",  # shaping the joined fonts (joined.py, the point aligner's joined ink)
 ]
 
 [project.optional-dependencies]
