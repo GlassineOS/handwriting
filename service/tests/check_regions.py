@@ -78,6 +78,27 @@ async def main(models):
                 whole += not any(w.ink for w in g.words)
                 g.forget()
                 j += 1
+    # samples from a region with the real recognizer: each multi-word line accepted (3 mm),
+    # learning allowed; the report's result and the samples the store holds after
+    perms.state = lambda app, what: "allowed"
+    results = []
+    u = 8.0 * PER_MM
+    for i, r in enumerate(recs):
+        if " " not in r["text"]:
+            continue
+        g = regions.Region(s, 1000 + i)
+        g.set({"reading": True, "units": "device:%g" % PER_MM, "size": [4000, 400]})
+        for k, st in enumerate(r["strokes"]):
+            g.stroke(k, [[x * u + 20, y * u + 3 * u, t * 1000, 0.5, 0, 0] for x, y, t, *_ in st])
+        g.cancel()
+        await g.pause()
+        serial = g.serial
+        n = len(pen.out)
+        await g.report({"serial": serial, "action": "accepted"})
+        results += [m["result"] for m in pen.out[n:] if m["op"] == "region_report"]
+        g.forget()
+    stored = len((await pen.engine.cli("samples", "list")).splitlines()) if hasattr(pen.engine, "cli") else -1
+    print("samples: reports %s; samples stored %d" % (results, stored))
     await pen.engine.close()
     pc = 100.0 * ok / max(1, tested)
     print("SC-005: %d of %d edits keep every unchanged word's ink (%.1f %%); set whole: %d" % (ok, tested, pc, whole))
