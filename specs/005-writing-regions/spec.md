@@ -27,9 +27,8 @@ Relation to spec 004: every requirement of spec 004 stays as it is. A surface th
 no regions behaves exactly as spec 004 says. A surface that declares regions gets the
 requirements below for the writing in them; the rules on identity (spec 004 FR-001), the
 service holding one model (FR-005), privacy (FR-010), raw input for samples (FR-009), the
-person's permissions (FR-014), versioning (FR-003) and the units (FR-017) apply to each
-region as they apply to a surface. A region's writing size is judged by FR-028 below, not
-by a line found from the writing (spec 004 FR-016).
+person's permissions (FR-014), versioning (FR-003) and the writing's size in physical
+units (FR-016, FR-017) apply to each region as they apply to a surface.
 
 ## User scenarios
 
@@ -169,7 +168,9 @@ app can decide not to start without them.
 - **FR-010**: With each value the region tells the app which of its strokes make up the
   value and which strokes no longer belong to it (struck out, or replaced by an edit), so
   the app knows what to draw. Ink that is struck out or replaced by an edit leaves the
-  region for good, so a region's ink and its value always match.
+  region for good, so a region's ink and its value always match. With each value the
+  region also gives the app a saved state: which words the person confirmed or edited, and
+  where they are. It is opaque to the app.
 - **FR-011**: At a pause a region also delivers ranked alternatives for its writing
   (candidates, as in spec 004 FR-007), so any app can offer them; an app that only wants
   the value can ignore them. A picked candidate becomes the value.
@@ -224,7 +225,7 @@ app can decide not to start without them.
   none of its ink is shown.
 - **FR-021**: A set word is set at the size of the person's writing in that region, else
   at the size of their letters in millimetres, else at the typical handwriting size of
-  FR-028. The line a set word goes on is the line of the word before it, else the region's
+  spec 004 FR-016 (FR-028). The line a set word goes on is the line of the word before it, else the region's
   first line. When an edited word is wider or narrower than the ink it replaces, the kept
   ink after it on the line moves along the line by the difference, unchanged in shape.
   Whether words that no longer fit the region's width wrap to its next line is the app's
@@ -247,15 +248,17 @@ app can decide not to start without them.
 
 ### Stored ink
 
-- **FR-025**: An app can hand a region strokes it kept (from an earlier run or another
-  document), with the value it kept for them or without one. The region reads the strokes
-  and shows the result as FR-018 to FR-020 say. Without a value, the reading is the value.
+- **FR-025**: An app keeps a region's saved state (FR-010) with its strokes and value, and
+  hands it back unchanged with them; it never reads, changes or builds a saved state
+  itself. An app can hand a region strokes it kept (from an earlier run or another
+  document) with their value and saved state, or the strokes alone. The region reads the
+  strokes and shows the result as FR-018 to FR-020 say. Strokes alone are read, and the
+  reading is the value.
 - **FR-026**: Whenever the system reads stored strokes it reads them with the model it has
   at that time, so a newer model's reading reaches the value without the app knowing about
   models. A reading never changes words the person confirmed (a pick or a confirmation) or
-  edited; it changes only words that come from an earlier reading alone. [NEEDS
-  CLARIFICATION: how the region knows, for stored ink handed back after a restart, which
-  words of the kept value the person confirmed or edited.]
+  edited; it changes only words that come from an earlier reading alone. For stored ink,
+  the confirmed and edited words are the ones its saved state names.
 
 ### Availability
 
@@ -265,12 +268,10 @@ app can decide not to start without them.
 
 ### The writing's size
 
-- **FR-028**: A region's writing size is judged in physical size: the surface's pixels per
-  millimetre, which the compositor knows from the output the pen writes on, and the
-  person's letters in millimetres once there are enough of them. Before there are, a
-  typical handwriting size in millimetres is the prior. A ruled line is a reference only
-  when the app sets one for the region. A region never takes a line from another region,
-  and a lone character's size is never judged from a line found from itself.
+- **FR-028**: A region's writing size is judged in physical size as spec 004 FR-016 and
+  FR-017 say for the whole pen interface, including an output of unknown size (the
+  person's setting, else the default density). The region's ruled line is a reference only
+  when the app sets one for that region; a region never takes a line from another region.
 
 ## Key entities
 
@@ -282,8 +283,10 @@ app can decide not to start without them.
   shape and place set in the person's font (FR-010, FR-024).
 - **Report**: what the person did with a region's writing: picked, confirmed or corrected
   (FR-013).
-- **Stored ink**: strokes, and optionally a value, that an app kept and hands back to a
-  region (FR-025).
+- **Saved state**: what a region needs to know again about its value: the words the person
+  confirmed or edited and their places; opaque to the app (FR-010, FR-025).
+- **Stored ink**: strokes, with their value and saved state or alone, that an app kept and
+  hands back to a region (FR-025).
 
 ## Contracts
 
@@ -320,8 +323,8 @@ Host level:
   millimetres, and its reading does not change when other regions hold writing;
 - a stroke starting outside every region is not delivered; a stroke whose region is
   removed mid-stroke is dropped; a stroke in an overlap goes to the topmost region;
-- strokes and value handed back to a fresh region give the same value and word layout as
-  before; strokes alone give the model's reading; with another model, confirmed and edited
+- strokes, value and saved state handed back to a fresh region give the same value and
+  word layout as before; strokes alone give the model's reading; with another model, confirmed and edited
   words stay as they were;
 - without the service, the capabilities say regions are not available.
 
