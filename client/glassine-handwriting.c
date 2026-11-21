@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later
  * libglassine-handwriting: the pen interface for apps (glassine-handwriting.h). */
 #include <math.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-client.h>
@@ -143,7 +144,7 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char
 {
 	struct ghw_pen *p = d;
 	if (!strcmp(iface, glassine_handwriting_manager_v1_interface.name) && !p->mgr) {
-		p->mgr_version = version < 2 ? version : 2;     /* regions since 2 */
+		p->mgr_version = version < 3 ? version : 3;     /* regions since 2, their display since 3 */
 		p->mgr = wl_registry_bind(r, name, &glassine_handwriting_manager_v1_interface, p->mgr_version);
 	} else if (!strcmp(iface, wl_compositor_interface.name) && !p->compositor)
 		p->compositor = wl_registry_bind(r, name, &wl_compositor_interface, version < 4 ? version : 4);
@@ -388,16 +389,16 @@ static void r_word(void *d, struct glassine_handwriting_region_v1 *x, uint32_t s
 	w->nstrokes = b.n / sizeof(uint32_t);
 }
 
-static void r_set_word(void *d, struct glassine_handwriting_region_v1 *x, uint32_t serial, uint32_t start,
-		       uint32_t length, wl_fixed_t bx, wl_fixed_t by, wl_fixed_t bw, wl_fixed_t bh)
+/* a set word, or with strokes (taken from the strokes gathered) an ink word shown set */
+static void set_word(struct ghw_region *g, bool ink, uint32_t start, uint32_t length, wl_fixed_t bx, wl_fixed_t by,
+		     wl_fixed_t bw, wl_fixed_t bh)
 {
-	struct ghw_region *g = d;
-	struct buf b = take_part(g, KIND_SHAPE);
+	struct buf b = take_part(g, KIND_SHAPE), k = ink ? take_part(g, KIND_STROKES) : (struct buf){ 0 };
 	struct ghw_word *w = new_word(g);
-	if (!w) { buf_free(&b); return; }
+	if (!w) { buf_free(&b); buf_free(&k); return; }
 	size_t n = b.n / sizeof(int32_t);
 	double *path = n ? malloc(n * sizeof *path) : NULL;
-	if (n && !path) { g->nwords--; buf_free(&b); return; }
+	if (n && !path) { g->nwords--; buf_free(&b); buf_free(&k); return; }
 	/* op codes stay codes; coordinates are wl_fixed */
 	static const int ncoord[] = { 2, 2, 4, 6, 0 };
 	const int32_t *q = (const int32_t *)b.d;
@@ -419,6 +420,20 @@ static void r_set_word(void *d, struct glassine_handwriting_region_v1 *x, uint32
 	w->height = wl_fixed_to_double(bh);
 	w->path = path;
 	w->npath = i;
+	w->strokes = (const uint32_t *)k.d;     /* the word owns the bytes now */
+	w->nstrokes = k.n / sizeof(uint32_t);
+}
+
+static void r_set_word(void *d, struct glassine_handwriting_region_v1 *x, uint32_t serial, uint32_t start,
+		       uint32_t length, wl_fixed_t bx, wl_fixed_t by, wl_fixed_t bw, wl_fixed_t bh)
+{
+	set_word(d, false, start, length, bx, by, bw, bh);
+}
+
+static void r_shown_set(void *d, struct glassine_handwriting_region_v1 *x, uint32_t serial, uint32_t start,
+			uint32_t length, wl_fixed_t bx, wl_fixed_t by, wl_fixed_t bw, wl_fixed_t bh)
+{
+	set_word(d, true, start, length, bx, by, bw, bh);
 }
 
 static void r_gone(void *d, struct glassine_handwriting_region_v1 *x, uint32_t serial)
@@ -475,7 +490,7 @@ static void r_report(void *d, struct glassine_handwriting_region_v1 *x, uint32_t
 static const struct glassine_handwriting_region_v1_listener region_listener = {
 	.points = r_points, .stroke = r_stroke, .neat_stroke = r_neat, .data_part = r_data, .word = r_word,
 	.set_word = r_set_word, .gone = r_gone, .value = r_value, .candidate = r_candidate,
-	.candidates_done = r_cands_done, .gesture = r_gesture, .report_done = r_report,
+	.candidates_done = r_cands_done, .gesture = r_gesture, .report_done = r_report, .word_shown_set = r_shown_set,
 };
 
 struct ghw_region *ghw_region_new(struct ghw_pen *p, const char *name, const struct ghw_region_listener *listener,
@@ -545,6 +560,13 @@ void ghw_region_set_neaten(struct ghw_region *g, int on, double strength)
 void ghw_region_set_layer(struct ghw_region *g, int layer) { glassine_handwriting_region_v1_set_layer(g->r, layer); }
 
 void ghw_region_set_mode(struct ghw_region *g, int mode) { glassine_handwriting_region_v1_set_mode(g->r, (uint32_t)mode); }
+
+void ghw_region_set_display(struct ghw_region *g, int display)
+{
+	/* a compositor before version 3 has no display: the words stay ink */
+	if (wl_proxy_get_version((struct wl_proxy *)g->r) >= 3)
+		glassine_handwriting_region_v1_set_display(g->r, display == GHW_DISPLAY_SET ? 1 : 0);
+}
 
 void ghw_pen_set_mode(struct ghw_pen *p, int mode)
 {

@@ -5,8 +5,9 @@
 **Input**: Any number of writing regions inside one app surface, each a handwritten field
 with its own area, ruled lines, field type, languages and neatening, whose reading is the
 field's value; per-region gestures and reports; a text mode edited with the system's
-on-screen keyboard; edited text shown in the person's font back in ink mode; ink the app
-keeps and hands back to be read again.
+on-screen keyboard; edited text shown in the person's font back in ink mode; a display that
+shows a region's handwritten words set in the person's font while their ink stays stored; ink
+the app keeps and hands back to be read again.
 
 ## Context
 
@@ -44,6 +45,10 @@ other's value.
 **Given** the person strikes through "dentist", **When** the stroke is recognised as a
 strike-through, **Then** the two o'clock field's value becomes empty and the ink of the
 word leaves the field; no other field changes.
+
+**Given** the person draws a straight line through an empty part of the three o'clock field,
+where no word is, **When** the stroke looks like a strike-through, **Then** it is not one: the
+line stays in the field as the person's ink and is read with the rest of the field's writing.
 
 ### Scenario 2 – A notes field that grows (Priority: P1)
 
@@ -97,6 +102,16 @@ edited stay as they are, and the app needs to know nothing about the model.
 capabilities the system announces tell it that writing regions are not available, and the
 app can decide not to start without them.
 
+### Scenario 8 – Shown in the person's font (Priority: P2)
+
+**Given** a field whose value is "Meet the team at noon", read from the person's ink, **When**
+the app switches the field's display to set (the person chose to see their writing set in
+their font), **Then** each word is shown set in the person's font on its line, where its ink
+stands, the value stays "Meet the team at noon", and the person's strokes stay in the field
+unchanged. **When** the person writes "sharp" after it, **Then** it is read as usual and shown
+set too. **When** the app switches the display back to ink, **Then** the person's ink is shown
+again exactly as written, "sharp" included.
+
 ### Edge cases
 
 - **A stroke crossing two regions** belongs to the region it starts in, whole; it is read
@@ -123,6 +138,11 @@ app can decide not to start without them.
 - **Text mode with an empty region**: the field opens empty; text typed into it is shown
   in ink mode wholly in the person's font.
 - **A text edit that only deletes words**: the remaining words keep their ink.
+- **A strike-through over no word** (in an empty part of a field, over a drawing): it is no
+  gesture. Its stroke stays in the region as ink and is read with the rest of the writing, as
+  part of a word or as ink that is no word, as the reading has it.
+- **A gesture with the display set**: it covers the words where they are shown, set in the
+  font, not where their hidden ink lies.
 
 ## Requirements
 
@@ -180,7 +200,11 @@ app can decide not to start without them.
 - **FR-012**: The gestures the recognizer reports act within the region they are written
   in: a strike-through or scratch deletes the words of the value it covers, a caret marks
   where the next writing is inserted into the value. The gesture's own stroke is not part
-  of the value. A gesture never acts on another region.
+  of the value. A gesture never acts on another region. A gesture covers a word where the word
+  is shown (its ink, or the shape it is set or shown set in, FR-030). A strike-through that
+  covers no word of the value is no gesture: its stroke stays in the region as the person's
+  ink, and the region reads it with the rest of its writing (as part of a word, or as ink that
+  is no word, FR-010).
 
 ### Reports and learning
 
@@ -244,7 +268,27 @@ app can decide not to start without them.
   each stroke to its region, keeps private regions from the service, and gives the app per
   region the value, which strokes make which word of it, and, for each word to be set, its
   shape and place from the person's font, so an app can draw set words without having the
-  font itself. The app never computes a reading, a word match or a font layout.
+  font itself; with the display set (FR-030) the same for each word shown set, along with
+  the strokes that make it. The app never computes a reading, a word match or a font layout.
+
+### Display
+
+- **FR-030**: An app can set how a region shows its value's words: as ink (the start) or set.
+  With the display set, every word of the value that has ink is shown set in the person's font
+  (spec 003) instead of as its ink; words without ink (FR-018) are set either way; ink that is
+  no word (a drawing) is shown as written. Switching back to ink shows the ink again, raw or
+  neatened as the region's neatening has it, exactly as before.
+- **FR-031**: The display changes only how the words are shown, never what the region holds:
+  its strokes stay as written, stored and handed back as before, no stroke leaves the region
+  for it, and the value, the saved state, readings, candidates, reports and samples are the
+  same with either display (a word shown set keeps its ink for samples under FR-014). Changing
+  the display reads nothing again. New writing in a region with the display set is read as
+  usual and its words are shown set too; stored ink handed back to such a region (FR-025) is
+  shown set as well.
+- **FR-032**: A word shown set stands on its line (the line its ink sits on) at the size of
+  FR-021, from where its ink starts, moved right only as far as needed to stand a word space
+  after the word before it on its line. The app gets its shape and place with the strokes that
+  make it (FR-024) and draws the shape in place of the strokes.
 
 ### Live ink
 
@@ -291,8 +335,10 @@ app can decide not to start without them.
   takes strokes, ruled lines, field type, languages, reading and neatening choices, its
   mode (ink or text), its strokes and its value.
 - **Value**: the region's text, from its reading and the person's text edits (FR-008).
-- **Word layout**: for each word of the value, either the strokes that make it or its
-  shape and place set in the person's font (FR-010, FR-024).
+- **Word layout**: for each word of the value, the strokes that make it, its shape and place
+  set in the person's font, or with the display set both (FR-010, FR-024, FR-030).
+- **Display**: how a region shows its value's words: as ink, or set in the person's font; a
+  choice of the app, never part of what the region holds (FR-030, FR-031).
 - **Report**: what the person did with a region's writing: picked, confirmed or corrected
   (FR-013).
 - **Saved state**: what a region needs to know again about its value: the words the person
@@ -324,7 +370,8 @@ Host level:
   value from its own reading, field type and languages;
 - moving every region by a scroll offset changes no value, causes no reading and keeps
   every stroke's region coordinates;
-- a strike-through in one region deletes words only in that region;
+- a strike-through in one region deletes words only in that region; a strike-through over no
+  word is no gesture, stays in the region and is read with its writing;
 - a private region causes no service traffic and no sample, and its raw strokes still
   arrive;
 - a region taken to text mode, edited and taken back shows unchanged words as their ink,
@@ -343,6 +390,11 @@ Host level:
   another cuts it, and nothing outside the regions is an ink area; a stroke starting in a
   region shows ink along its whole path over the visible window, past the region's edge,
   and a stroke starting outside every region shows none, also inside a region;
+- a region switched to the display set and back gives every word with ink as its strokes and
+  its shape in the person's font, then as its strokes again, with the same value, strokes and
+  saved state, no stroke leaving and nothing read again; a word shown set stands where its ink
+  starts, after the word before it; new writing and stored ink handed back are shown set; a
+  strike-through over a word shown set deletes it;
 - without the service, the capabilities say regions are not available.
 
 Product level: in the images acceptance suite, a demo app with a page of small fields and a
@@ -374,3 +426,5 @@ into it again, closes and opens the app, and each field shows and holds the same
   region, without a full-panel refresh.
 - **SC-007**: A developer with a working spec 004 app can add several regions with text
   mode from the documentation alone in under a day.
+- **SC-008**: Switching a region's display shows it in one redraw of that region, without a
+  full-panel refresh and without reading its writing again.

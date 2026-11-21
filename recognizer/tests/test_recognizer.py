@@ -390,6 +390,14 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.c.ask("read", "u")[2:4], ["gesture", "strike"])
         self.c.ask("stroke", "u", " ".join(f"{100 + 0.5 * i},{200},{5 * i}" for i in range(20)))   # 1 mm: a dash
         self.assertEqual(self.c.ask("read", "u")[2], "text")
+        # writing (contract 1.11): the same strike read as writing, kept in the session
+        self.c.ask("begin", "w", "en", "normal", "device:10", "")
+        self.c.ask("stroke", "w", " ".join(f"{100 + 4 * i},{200 + (i % 2)},{5 * i}" for i in range(40)))
+        r = self.c.ask("read", "w", "3", "detail", "writing")
+        self.assertEqual(r[2], "text", r)
+        self.assertEqual(self.c.ask("read", "w", "1", "writing")[2], "text")
+        self.assertEqual(self.c.ask("read", "w")[2:4], ["gesture", "strike"])   # it stayed
+        self.assertEqual(self.c.ask("read", "w", "1", "writing", "detail")[2:], ["bad-line"])
 
     def test_no_gesture_in_writing(self):
         """no stroke of the recorded writing reads as a gesture while it is written"""

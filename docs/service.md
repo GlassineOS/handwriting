@@ -248,6 +248,15 @@ reading order, joined by spaces and the lines by a newline (FR-008, FR-009). Eac
   per segment, an octagon per point, all turning the same way, non-zero fill), so the app needs
   no font (FR-024).
 
+With the region's display `set` (`region_set` `display`, FR-030) an ink word has both: its
+`strokes`, `dx`, `dy` as above and the `box` and `path` it is shown in, its text in the person's
+font on its line (the line its ink sits on) at the size of the person's writing in the region
+(as for an edit, FR-021), from where its ink starts, moved right only as far as needed to stand
+a word space after the word before it on the line. A change of the display sends the value again
+with that layout (a new `serial`) and nothing else: no reading, no session, no stroke leaving,
+the same text and saved state. A word whose shape can't be had (the recognizer's `set` fails)
+stays ink.
+
 `gone` lists the strokes that left the region since the last value: gestures, struck-out words,
 ink an edit replaced. `state` is the saved state (FR-010), base64 of the kept and set words
 (each kept word by its text and its strokes' points, each set word by its text and place).
@@ -256,7 +265,12 @@ ink an edit replaced. `state` is the saved state (FR-010), base64 of the kept an
 strike or scratch deletes the words it covers, their ink leaving; a caret places the writing
 after it where it points. `region_gesture` names the gesture's own stroke and the serial of the
 value that carries its effect; the stroke leaves (`gone`). With reading off there are no
-gestures: such a stroke stays ink.
+gestures: such a stroke stays ink. A word is covered where it is shown: by its ink (the strokes
+the recognizer finds the gesture covers, or for a kept or set word its box), with the display
+`set` by the box its shape is shown in. A strike-through that covers no word is no gesture: no
+`region_gesture`, its stroke stays the region's, and it is read with the rest of the writing
+(the recognizer's `read … writing` while it is the session's newest stroke), so it becomes part
+of a word, or ink that is no word, as the reading has it.
 
 **Candidates and reports.** At a pause (900 ms) the region sends its candidates with the serial
 of its current value: for the line written last, each candidate with the rest of the value. A

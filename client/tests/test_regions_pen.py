@@ -9,7 +9,8 @@ libglassine-handwriting as the app. A stand-in pen writes.
 
 Checks: the regions capability; each stroke arrives in the region it starts in, in region
 coordinates, also when it ends in another; each region gets its own value made of its own
-strokes; a move reads nothing again; a keyboard edit gives a value with set words; the
+strokes; a move reads nothing again; the display set shows a field's words set in the
+person's font with the same strokes and back; a keyboard edit gives a value with set words; the
 strokes, value and saved state handed back to a fresh region give the same value and word
 layout; a private region still gets its raw strokes and nothing else; a report on a value is
 answered."""
@@ -125,10 +126,23 @@ class Regions(unittest.TestCase):
         while (line := a.line(timeout=2)) is not None:
             later.append(line)
         self.assertFalse(any(line.startswith("value ") for line in later), later)
+        # the second field shown set in the person's font: the same value and strokes, each
+        # word with its shape; nothing leaves; back to ink, the words are their strokes again
+        a.send("display 1 1")
+        ev = a.until(lambda line: line.startswith("value 1 "))
+        sv = self.values(ev, 1)[-1]
+        self.assertEqual(sv[1], v1[1])
+        self.assertTrue(sv[2] and all(w[2] in ("shown", "set") for w in sv[2]), sv)
+        self.assertEqual(sorted(int(k) for w in sv[2] if w[2] == "shown" for k in w[3].split(",")), ks1)
+        self.assertFalse(any(line.startswith("gone 1") for line in ev), ev)
+        a.send("display 1 0")
+        ev = a.until(lambda line: line.startswith("value 1 "))
+        bv = self.values(ev, 1)[-1]
+        self.assertEqual((bv[1], [w[:4] for w in bv[2]]), (v1[1], [w[:4] for w in v1[2]]))
         # a report on the second field's value: no permission to learn yet
-        a.send("report 1 %d 1 0" % v1[0])
+        a.send("report 1 %d 1 0" % bv[0])
         r = a.until(lambda line: line.startswith("report 1 "))[-1]
-        self.assertEqual(r.split()[2:], [str(v1[0]), "2"])
+        self.assertEqual(r.split()[2:], [str(bv[0]), "2"])
         # a keyboard edit of the first field: a value with set words
         a.send("edit 0 hello größe, what?")
         ev = a.until(lambda line: line.startswith("value 0 "))
