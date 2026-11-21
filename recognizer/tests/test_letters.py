@@ -29,6 +29,7 @@ import random
 import statistics
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -3101,6 +3102,55 @@ class Autograph(unittest.TestCase):
         self.assertEqual(self.e.run("font", "auto").stdout.strip().split("\t")[:3], ["installed", "Autograph", "2"])
 
 
+class BaseLanguage(unittest.TestCase):
+    """the base of the language the recognizer reads by default: its own (LANG/base.jsonl) when
+    that language has one and a model, else base.jsonl (docs/recognizer.md, The base font)"""
+
+    def setUp(self):
+        d = Path(tempfile.mkdtemp(prefix="hw-baselang-"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.dir = d / "autograph"
+        self.dir.mkdir()
+        write_base(self.dir / "base.jsonl", "abc")
+        (self.dir / "de").mkdir()
+        write_base(self.dir / "de" / "base.jsonl", "abcä")
+        self.model = d / "model.ghm"
+        subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(self.model)], check=True)
+
+    def chars(self, langs=None, locale=None, models=("en",)):
+        """the characters of a fresh person's Autograph"""
+        from fontTools.ttLib import TTFont
+        e = Env(base=self.dir)
+        self.addCleanup(e.close)
+        for m in models:
+            (e.dir / "models" / m).mkdir(parents=True)
+            shutil.copy(self.model, e.dir / "models" / m / "recognizer.ghm")
+        for k in ("LC_ALL", "LC_MESSAGES", "LANG"):
+            e.env.pop(k, None)
+        if locale:
+            e.env["LANG"] = locale
+        if langs is not None:
+            (e.dir / "conf" / "glassine").mkdir(parents=True)
+            (e.dir / "conf" / "glassine" / "handwriting.conf").write_text(f"languages = {langs}\n")
+        self.assertEqual(e.run("font", "auto").stdout.split("\t")[0], "installed")
+        _, files = font_files(e)
+        return {chr(c) for c in TTFont(str(files["Regular"])).getBestCmap()} - {" "}
+
+    def test_default_without_a_language_of_its_own(self):
+        self.assertEqual(self.chars(), set("abc"))
+        self.assertEqual(self.chars(langs="en,de", models=("en", "de")), set("abc"))
+
+    def test_a_language_without_a_model_keeps_the_default(self):
+        # a German locale, but only the English model: the recognizer reads English, so the base stays
+        self.assertEqual(self.chars(locale="de_DE.UTF-8"), set("abc"))
+        self.assertEqual(self.chars(langs="de,en"), set("abc"))
+
+    def test_the_language_read_has_its_own(self):
+        self.assertEqual(self.chars(locale="de_DE.UTF-8", models=("en", "de")), set("abcä"))
+        self.assertEqual(self.chars(langs="de-AT,en", models=("en", "de")), set("abcä"))
+        self.assertEqual(self.chars(langs="fr,de", models=("en", "de")), set("abcä"))
+
+
 @unittest.skipUnless(os.environ.get("HW_BASE"), "HW_BASE: the packaged base font file (make base)")
 class AutographBase(unittest.TestCase):
     """the base as packaged (HW_BASE, made by tools/base-font.py from Edu SA Beginner): a fresh
@@ -3141,6 +3191,38 @@ class AutographBase(unittest.TestCase):
             if step == "letters":
                 reg = TTFont(str(files["Regular"]))
                 self.assertGreater(len(reg.getGlyphOrder()), 1 + SLOTS + len(chars))     # the letters' steps
+
+    @unittest.skipUnless(os.environ.get("HW_BASE_DE"), "HW_BASE_DE: German's base as packaged")
+    def test_packaged_german_base(self):
+        """German's own base (HW_BASE_DE, made by tools/base-font.py from Playwrite DE Grund):
+        every character of tools/base-de.chars, the recognizer's and German's letters among
+        them; Autograph valid in every style with it, its copyright and licence carried on"""
+        from fontTools.ttLib import TTFont
+        import re
+        base = Path(os.environ["HW_BASE_DE"])
+        head = json.loads(base.read_text().splitlines()[0])
+        chars = {json.loads(x)["char"] for x in base.read_text().splitlines()[1:]}
+        self.assertEqual(head["licence"], "OFL-1.1")
+        want = set((HERE.parent / "tools" / "base-de.chars").read_text(encoding="utf-8")) - {"\n"}
+        self.assertEqual(chars, want)
+        rec = re.search(r'^CHARS = "(.*)"$', (HERE / "mkmodel.py").read_text(), re.M).group(1)
+        self.assertEqual((set(rec) | set("äöüÄÖÜß")) - {" "} - chars, set())
+        # every dot of a mark made only of dots kept (a colon's two, an ellipsis' three)
+        strokes = {json.loads(x)["char"]: json.loads(x)["strokes"] for x in base.read_text().splitlines()[1:]}
+        for c, dots in ((":", 2), ("…", 3), ("¨" if "¨" in strokes else "ä", 2)):
+            self.assertGreaterEqual(sum(len(t) == 1 for t in strokes[c]), dots, c)
+        e = Env(base=base)
+        self.addCleanup(e.close)
+        self.assertEqual(e.run("font", "auto").stdout.split("\t")[0], "installed")
+        _, files = font_files(e)
+        self.assertEqual(set(files), set(STYLES))
+        for st, path in files.items():
+            f = valid_font(self, path)
+            self.assertEqual({chr(c) for c in f.getBestCmap()}, chars | {" "}, st)
+            n = f["name"]
+            self.assertEqual(n.getDebugName(0).split(". Characters")[0], head["copyright"])
+            self.assertIn("Open Font License", n.getDebugName(13))
+            self.assertNotIn("Playwrite", n.getDebugName(1))
 
 
 if __name__ == "__main__":
