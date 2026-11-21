@@ -2064,5 +2064,90 @@ class Drawn(unittest.TestCase):
             self.assertGreaterEqual(xh, 6)
 
 
+class Sized(unittest.TestCase):
+    """the window at the display's factor and text size (shell spec 012): drawn in design px
+    at F / N, the minimums and the text growth of glassine_ui.size (needs GTK and glassine_ui)"""
+    PANEL = 8.943                         # px per mm of a panel at factor 2 (2.0032, snapped)
+
+    def setUp(self):
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from glassine_hwsamples import ui
+            from glassine_ui import size as S, voices
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        self.U, self.S, self.V = ui, S, voices
+        self.addCleanup(S.set_metrics)
+
+    def draw(self, screen, voice, px, fac, dens=0.0, text=100, metrics=True):
+        """screen drawn into px device pixels at fac device px per design px -> (bytes, hits, W, H)"""
+        U, S = self.U, self.S
+        W, H = px[0] / fac, px[1] / fac
+        u = U.demo(screen, voice)
+        if metrics:
+            S.set_voice_metrics(self.V.voice(u.theme.name), S.mm_per_px(fac, dens), text / 100.0)
+        else:
+            S.set_metrics()
+        surf, cr = U.surface(W, H, fac)
+        hits = U.paint(cr, u, W, H)
+        surf.flush()
+        return bytes(surf.get_data()), hits, W, H
+
+    def test_default_is_the_plain_render(self):
+        """Default on the panel: every screen byte for byte the drawing without the size
+        metrics (no text grows, nothing reaches a minimum)"""
+        fac = self.S.factor(self.PANEL, 100)
+        self.assertEqual(fac, 2)
+        for voice in ("white", "editorial", "stationery"):
+            for px in ((1404, 1768), (2496, 1404)):
+                for s in self.U.SCREENS:
+                    a = self.draw(s, voice, px, fac, self.PANEL)
+                    b = self.draw(s, voice, px, fac, metrics=False)
+                    self.assertEqual(a[0], b[0], (voice, px, s))
+
+    def test_steps_and_minimums(self):
+        """every step and text size on displays of 3 to 25 px per mm (a window of the panel's
+        size in mm): no tap target under 7 mm; at the steps up to Default with the text at
+        100 % every target inside the window (the pages don't scroll: larger steps and text
+        may run off the end of a long page)"""
+        S = self.S
+        shots = self.U.SCREENS[::4]
+        mm = (1404 / self.PANEL, 1768 / self.PANEL)
+        for dens in (3.0, 8.943, 25.0):
+            for pct in S.STEPS:
+                for text in (100, 150):
+                    fac = S.factor(dens, pct)
+                    for px in ((round(mm[0] * dens), round(mm[1] * dens)), (round(mm[1] * dens), round(mm[0] * dens))):
+                        for s in shots:
+                            _, hits, W, H = self.draw(s, "white", px, fac, dens, text)
+                            m = S.min_tap()
+                            for x, y, w, h, _ in hits.boxes:
+                                self.assertGreaterEqual(min(w, h) + 1e-6, m, (dens, pct, text, s))
+                                if (w, h) != (W, H) and pct <= 100 and text == 100:
+                                    self.assertTrue(-m / 2 <= x and x + w <= W + m / 2 and -m / 2 <= y and y + h <= H + m / 2,
+                                                    (dens, pct, text, px, s, x, y, w, h))
+
+    def test_part_rects_meet(self):
+        """a writing page's parts in GTK px at a fractional factor: no gap, no overlap"""
+        U = self.U
+        for z in (0.8013, 0.9016, 1.2019):
+            u = U.demo("write.prompt")
+            W, H = 1404 / 2 / z, 1768 / 2 / z
+            lay = {k: U.gtk_rect(v, z) for k, v in U.layout(u, W, H).items()}
+            top, area, bot = lay["top"], lay["area"], lay["bottom"]
+            self.assertEqual(top[1] + top[3], area[1], z)
+            self.assertEqual(area[1] + area[3], bot[1], z)
+            self.assertLessEqual(abs(bot[1] + bot[3] - 1768 / 2), 1, z)
+
+    def test_dpi_scale_taken_out(self):
+        """GDK_DPI_SCALE (the session's text scale for whole-scale-only GTK apps) is not for
+        this app: taken out before GTK starts"""
+        env = dict(os.environ, GDK_DPI_SCALE="1.5", PYTHONPATH=os.pathsep.join(sys.path))
+        r = subprocess.run([sys.executable, "-c", "from glassine_hwsamples import ui; import os; "
+                            "print(os.environ.get('GDK_DPI_SCALE'))"], env=env, capture_output=True, text=True,
+                           cwd=str(Path(__file__).resolve().parents[1]), timeout=60)
+        self.assertEqual(r.stdout.strip().splitlines()[-1:], ["None"], r.stderr[-400:])
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

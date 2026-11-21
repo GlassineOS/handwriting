@@ -5,10 +5,21 @@ writing area is its own widget, so the session's ink protocol gets exactly its b
 GTK ink module (GLASSINE_INK_WIDGETS names its type) and ink appears under the pen.
 
   glassine-handwriting-samples                 open (or raise) the app
-  glassine-handwriting-samples --render OUT.png [--screen S] [--theme T] [--size WxH]
+  glassine-handwriting-samples --render OUT.png [--screen S] [--theme T] [--size WxH | --px WxH]
+                                               [--factor F] [--density D] [--text PERCENT]
                                                draw one of the design's screens (SCREENS)
                                                into a PNG, from made-up data (no display, no
-                                               recognizer, no store)
+                                               recognizer, no store); --factor: device px per
+                                               design px (none: 1, the plain render), --density:
+                                               px per mm (the minimums), --text: the text size
+
+The window is drawn in design pixels (shell spec 012): GTK 3 takes whole scales only, so on
+a display of factor F (the session's $XDG_RUNTIME_DIR/glassine/output-scale) it gets
+N = max(1, round(F)) and every part is drawn scaled by F / N; the pages lay out for the
+window's size in design pixels. The text size (~/.config/glassine/text-size) and the
+minimums are glassine_ui.size's. The ink stays in GTK pixels (the samples' units).
+GDK_DPI_SCALE, the text scale the session gives whole-scale-only GTK apps, is not for this
+app (its text has absolute sizes): it is taken out before GTK starts.
 """
 import collections
 import itertools
@@ -27,6 +38,8 @@ _w = [x for x in os.environ.get("GLASSINE_INK_WIDGETS", "GtkXournal").split(",")
 if CANVAS_TYPE not in _w:
     os.environ["GLASSINE_INK_WIDGETS"] = ",".join(_w + [CANVAS_TYPE])
 
+os.environ.pop("GDK_DPI_SCALE", None)
+
 import cairo  # noqa: E402
 import gi  # noqa: E402
 gi.require_version("Gtk", "3.0")
@@ -34,11 +47,13 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from glassine_ui import paint as PT  # noqa: E402
+from glassine_ui import size as S  # noqa: E402
+from glassine_ui import voices  # noqa: E402
 
 from . import APP_ID, client, flow, fontview, models as M, neat as N, pages, prompts as P, writers as WR  # noqa: E402
 from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
-W0, H0 = 702, 884
+W0, H0 = 702, 884                   # the window's default size: below the shell's bar at Default, design px
 RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 THEME_FILE = RUN + "/glassine-shell.theme"
 ROTATION_FILE = "/run/glassine-rotation"
@@ -1751,12 +1766,30 @@ def ui_go(ui, page):
 # ---------------------------------------------------------------- widgets
 
 
-class Panel(Gtk.DrawingArea):
-    """a self-drawn part of the window; taps act on release"""
+def output_factor(gwin, n):
+    """(F, density) of the display the GDK window is on: the factor the session applied
+    (output-scale: the line of the monitor's make and model, or the only line), else (n, 0)"""
+    lines = S.read_output_scale()
+    disp = Gdk.Display.get_default()
+    mon = disp and gwin and disp.get_monitor_at_window(gwin)
+    if not lines or not mon:
+        return float(n), 0.0
+    head = "%s %s " % (mon.get_manufacturer() or "Unknown", mon.get_model() or "Unknown")
+    hit = [v for k, v in lines.items() if k.startswith(head)]
+    if len(hit) != 1:
+        hit = list(lines.values()) if len(lines) == 1 and disp.get_n_monitors() == 1 else []
+    if not hit:
+        return float(n), 0.0
+    return hit[0][0], hit[0][1]
 
-    def __init__(self, paint):
+
+class Panel(Gtk.DrawingArea):
+    """a self-drawn part of the window; taps act on release. pre(): the design px per GTK
+    px to draw at (it sets the size metrics)"""
+
+    def __init__(self, paint, pre=lambda: 1.0):
         super().__init__()
-        self.paint = paint
+        self.paint, self.pre, self.z = paint, pre, 1.0
         self.hits = Hits()
         self.down = None
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
@@ -1769,15 +1802,22 @@ class Panel(Gtk.DrawingArea):
     def on_draw(self, w, cr):
         a = self.get_allocation()
         self.hits = Hits()
-        self.paint(cr, self.hits, a.width, a.height)
+        self.z = z = self.pre()
+        W, H = a.width, a.height
+        if z != 1:
+            cr.scale(z, z)
+            W, H = W / z, H / z
+        self.paint(cr, self.hits, W, H)
         return True
 
     def press(self, x, y):
+        x, y = x / self.z, y / self.z           # the targets are in design px
         self.down = self.hits.find(x, y)[0]
         log("tap down", round(x), round(y), self.down)
         return True
 
     def release(self, x, y):
+        x, y = x / self.z, y / self.z
         box, fn = self.hits.find(x, y)
         log("tap up", round(x), round(y), box, "acts" if fn and box == self.down else "nothing")
         # a repaint between press and release makes new functions for the same boxes:
@@ -1817,6 +1857,7 @@ class Canvas(Gtk.DrawingArea):
         self.connect("touch-event", lambda w, e: True)      # fingers don't write (palms rest on it)
         self.connect("size-allocate", lambda w, a: self.pen_place())
         self.pen_tried = False
+        self.z = 1.0                        # design px per GTK px (Window.place): the paper's lines are LINE * z
 
     # ---- Neaten my writing through the pen interface (neat.PenInk), when there is one
 
@@ -1859,7 +1900,7 @@ class Canvas(Gtk.DrawingArea):
             x, y = x + px, y + py
             win = win.get_parent()
         a = self.get_allocation()
-        pi.place(x, y, a.width, a.height, LINE, LINE * 0.62)
+        pi.place(x, y, a.width, a.height, LINE * self.z, LINE * 0.62 * self.z)
 
     def pen_changed(self):
         pi = self.ui.pen_ink
@@ -2008,7 +2049,7 @@ class Canvas(Gtk.DrawingArea):
         rot = read_file(ROTATION_FILE)
         rot = int(rot) if rot in ("0", "90", "180", "270") else 0
         # the first guide line (guides(): 0.62 of a line from the top): where letters sit
-        return strokes, units, (0, 0, a.width, a.height, LINE, rot, LINE * 0.62)
+        return strokes, units, (0, 0, a.width, a.height, LINE * self.z, rot, LINE * 0.62 * self.z)
 
     def per_mm(self):
         """logical px per mm of the screen the window is on (whatever its rotation)"""
@@ -2039,10 +2080,17 @@ class Canvas(Gtk.DrawingArea):
     def on_draw(self, w, cr):
         t = self.ui.theme
         a = self.get_allocation()
+        z = self.z
         PT.fill(cr, 0, 0, a.width, a.height, t.paper)
-        area_frame(cr, self.ui, a.width, a.height)
+        if z != 1:                          # the paper in design px, the ink in GTK px as written
+            cr.save()
+            cr.scale(z, z)
+            area_frame(cr, self.ui, a.width / z, a.height / z)
+            cr.restore()
+        else:
+            area_frame(cr, self.ui, a.width, a.height)
         cr.set_source_rgba(*PT.color(t.pen))
-        cr.set_line_width(max(2.0, LINE / 110 * 1.5))
+        cr.set_line_width(max(2.0, LINE * z / 110 * 1.5))
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
         pending = self.ui.pen_ink.pending if self.ui.pen_ink and self.ui.page == "neat" else []
@@ -2222,6 +2270,13 @@ def paint_part(name, cr, ui, hits, w, h, canvas):
         cr.restore()
 
 
+def gtk_rect(r, z):
+    """a part's design px rect (x, y, w, h) in GTK px: its edges rounded, so parts still meet"""
+    x0, y0 = int(math.floor(r[0] * z + 0.5)), int(math.floor(r[1] * z + 0.5))
+    x1, y1 = int(math.floor((r[0] + r[2]) * z + 0.5)), int(math.floor((r[1] + r[3]) * z + 0.5))
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
 class Window(Gtk.ApplicationWindow):
     """a writing page is its parts (layout()) around the writing area, each its own widget;
     every other page is one self-drawn widget"""
@@ -2257,28 +2312,81 @@ class Window(Gtk.ApplicationWindow):
         self.canvas = Canvas(ui, lambda: [self.panels[n].queue_draw() for n in ("bottom", "side")])
         self.fixed = Gtk.Layout()             # unlike Gtk.Fixed, it asks no size of its own: the window can turn
         self.panels = {}
+        self.z, self.mm, self.at = 1.0, 0.0, None   # design px per GTK px, mm per design px, the display drawn on
+        self.text = S.read_text_size()
         for n in self.PARTS:
-            p = Panel(lambda cr, hits, w, h, n=n: paint_part(n, cr, ui, hits, w, h, self.canvas))
+            p = Panel(lambda cr, hits, w, h, n=n: paint_part(n, cr, ui, hits, w, h, self.canvas), self.pre)
             self.panels[n] = p
             self.fixed.put(p, 0, 0)
         self.fixed.put(self.canvas, 0, 0)
-        self.full = Panel(lambda cr, hits, w, h: pages.paint_full(cr, ui, hits, w, h))
+        self.full = Panel(lambda cr, hits, w, h: pages.paint_full(cr, ui, hits, w, h), self.pre)
         self.stack.add_named(self.fixed, "write")
         self.stack.add_named(self.full, "full")
         self.geom = None
         self.connect("size-allocate", lambda w, a: GLib.idle_add(self.fit))
         ui.on_switch = self.canvas.clear
 
+    def place(self):
+        """(z, mm) for the display the window is on: z = F / N (F: the session's factor for
+        it, N: GTK's whole scale; 1 while the two do not belong together), mm: the
+        millimetres of a design px (0: unknown); a change lays the page out again"""
+        n = self.get_scale_factor()
+        gw = self.get_window()
+        f, dens = output_factor(gw, n)
+        if max(1, math.floor(f + 0.5)) != n:
+            f, dens = float(n), 0.0
+        z, mm = f / n, S.mm_per_px(f, dens)
+        if (z, mm) != (self.z, self.mm):
+            self.z, self.mm, self.geom = z, mm, None
+            self.canvas.z = z
+            return True
+        return False
+
+    def pre(self):
+        """before a part draws: the size metrics, and a look whether the window moved to
+        another display -> z"""
+        S.set_voice_metrics(voices.voice(self.ui.theme.name), self.mm, self.text / 100.0)
+        gw = self.get_window()
+        disp = Gdk.Display.get_default()
+        mon = disp and gw and disp.get_monitor_at_window(gw)
+        if mon != self.at:
+            self.at = mon
+            GLib.idle_add(self.replace)
+        return self.z
+
+    def replace(self):
+        """the factor and the text size again: drawn again when they changed"""
+        t = S.read_text_size()
+        if self.place() or t != self.text:
+            self.text = t
+            self.geom = None
+            self.redraw()
+        return False
+
+    def watch(self):
+        """the session's output-scale and the text size: a change is read again"""
+        self.mons = []
+        for path in (S.output_scale_path(), S.text_size_path()):
+            if path:
+                m = Gio.File.new_for_path(path).monitor_file(Gio.FileMonitorFlags.NONE, None)
+                m.connect("changed", lambda *a: self.replace())
+                self.mons.append(m)
+
     def fit(self):
         """the writing page's parts placed for the window; only while the area is empty (or
-        the window turned), so ink never moves under the pen"""
+        the window turned), so ink never moves under the pen. The page lays out in design
+        px; the parts are placed in GTK px"""
         a = self.stack.get_allocation()
         if a.width <= 1 or not writing(self.ui):
             return False
         land = a.width > a.height * 1.1
         if self.canvas.strokes and self.geom and self.geom[0] == land:
             return False
-        lay = layout(self.ui, a.width, a.height, self.canvas)
+        z = self.z
+        S.set_voice_metrics(voices.voice(self.ui.theme.name), self.mm, self.text / 100.0)
+        lay = layout(self.ui, a.width / z, a.height / z, self.canvas) if z != 1 else layout(self.ui, a.width, a.height, self.canvas)
+        if z != 1:
+            lay = {k: gtk_rect(v, z) for k, v in lay.items()}
         geom = (land, a.width, a.height, tuple(sorted(lay.items())))
         if geom == self.geom:
             return False
@@ -2316,10 +2424,11 @@ class Window(Gtk.ApplicationWindow):
         if a.width <= 1:
             return
         ui.export_rect = None
-        pages.paint_full(_probe(), ui, Hits(), a.width, a.height)
+        z = self.z
+        pages.paint_full(_probe(), ui, Hits(), a.width / z, a.height / z)
         if not ui.export_rect:
             return
-        x, y, w, h = (int(v) for v in ui.export_rect)
+        x, y, w, h = (int(v * z) for v in ui.export_rect)
         self.entry.set_margin_start(x)
         self.entry.set_margin_top(y)
         self.entry.set_size_request(w, h)
@@ -2341,10 +2450,11 @@ class Window(Gtk.ApplicationWindow):
         if a.width <= 1:
             return
         ui.name_rect = None
-        pages.paint_full(_probe(), ui, Hits(), a.width, a.height)
+        z = self.z
+        pages.paint_full(_probe(), ui, Hits(), a.width / z, a.height / z)
         if not ui.name_rect:
             return
-        x, y, w, h = (int(v) for v in ui.name_rect)
+        x, y, w, h = (int(v * z) for v in ui.name_rect)
         self.name_entry.set_margin_start(x)
         self.name_entry.set_margin_top(y)
         self.name_entry.set_size_request(w, h)
@@ -2368,8 +2478,10 @@ class App(Gtk.Application):
             self.ui = UI(lambda: self.win and self.win.redraw())
             self.win = Window(self, self.ui)
             self.win.show_all()
+            self.win.place()
             self.win.redraw()
             self.watch_theme()
+            self.win.watch()
         self.win.present()
 
     def do_shutdown(self):
@@ -2786,17 +2898,43 @@ def paint(cr, ui, W, H, ink=None):
 
 
 def render(argv):
-    """--render OUT.png [--screen S] [--theme T] [--size WxH]: one of the design's screens"""
+    """--render OUT.png [--screen S] [--theme T] [--size WxH | --px WxH] [--factor F] [--density D]
+    [--text PERCENT]: one of the design's screens (see the module's help) -> the image"""
     def opt(name, default=None):
         return argv[argv.index(name) + 1] if name in argv else default
-    W, H = (int(v) for v in opt("--size", "%dx%d" % (W0, H0)).split("x"))
+    fac = float(opt("--factor", "1"))
+    if "--px" in argv:
+        W, H = (int(v) / fac for v in opt("--px").split("x"))
+    else:
+        W, H = (int(v) for v in opt("--size", "%dx%d" % (W0, H0)).split("x"))
     screen = opt("--screen", opt("--page", "write.prompt"))
     ui = demo(screen, opt("--theme", "white"))
-    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-    paint(cairo.Context(surf), ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try", "guest.try") else
+    if "--factor" in argv or "--density" in argv or "--text" in argv:
+        S.set_voice_metrics(voices.voice(ui.theme.name), S.mm_per_px(fac, float(opt("--density", "0"))),
+                            int(opt("--text", "100")) / 100.0)
+    surf, cr = surface(W, H, fac)
+    paint(cr, ui, W, H, demo_ink("quiet", 5)[0] if screen in ("write.ink", "wizard.try", "guest.try") else
           demo_ink("Call back about", 5)[0] if screen.startswith("neat.") else
           demo_ink("water", 5)[0] if screen == "char.redo" else None)
-    surf.write_to_png(opt("--render"))
+    if opt("--render") != "-":
+        surf.write_to_png(opt("--render"))
+    return surf
+
+
+def surface(W, H, fac=1.0):
+    """an image for a W x H design px window at fac device px per design px, as GTK gets it:
+    device scale N = max(1, round(fac)), the context scaled by fac / N -> (surface, context);
+    fac 1: W x H px"""
+    if fac == 1:
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(W), int(H))
+        return surf, cairo.Context(surf)
+    n = max(1, math.floor(fac + 0.5))
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(math.floor(W * fac + 0.5)), int(math.floor(H * fac + 0.5)))
+    surf.set_device_scale(n, n)
+    cr = cairo.Context(surf)
+    if fac != n:
+        cr.scale(fac / n, fac / n)
+    return surf, cr
 
 
 def main(argv=None):
