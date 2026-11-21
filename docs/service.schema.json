@@ -56,10 +56,10 @@
     },
     "area": {
       "type": "object",
-      "description": "the writing area in the units of the strokes (docs/service.md, The writing's size); a part left out is found from the writing",
+      "description": "the writing area in the units of the strokes (docs/service.md, The writing's size); a part left out is as the pen interface has it: the writing's box, no ruled line, the guide line of one line of writing",
       "properties": {
         "box": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "x0, y0, x1, y1"},
-        "line": {"type": "number", "exclusiveMinimum": 0, "description": "the line height"},
+        "line": {"type": "number", "exclusiveMinimum": 0, "description": "the spacing of the ruled lines, a size reference; left out: none"},
         "base": {"type": "number", "description": "the y of the first guide line, the next ones every line below it"},
         "rot": {"enum": [0, 90, 180, 270], "description": "the screen's turn in degrees"}
       }

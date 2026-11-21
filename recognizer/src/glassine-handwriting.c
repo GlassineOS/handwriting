@@ -43,6 +43,7 @@
 #include "hw/neaten.h"
 #include "hw/recog.h"
 #include "hw/size.h"
+#include "hw/setword.h"
 #include "hw/lookalike.h"
 #include "hw/sample.h"
 #include "hw/store.h"
@@ -322,6 +323,7 @@ struct session {
 	struct hw_area area;            /* the writing area, when the client said (area) */
 	int has_base;                   /* and its first guide line (area BASE) */
 	double base;
+	double prior;                   /* the typical small letter in its units (prior), 0 none */
 	int words;                      /* readings use the words (a prose field, the setting on) */
 	int chars;                      /* ... the character model (a prose, name or letters field, the setting on) */
 	int lean;                       /* look-alike letters and digits: HW_LEAN_* of the field */
@@ -493,7 +495,7 @@ static void text_of(const unsigned *cp, int n, char *o, size_t max)
 /* the session's size reference (FR-017) */
 static void size_ref(const struct hw_lang *l, const struct session *s, struct hw_size_ref *ref)
 {
-	hw_size_ref_for(l->lang, &s->units, &s->area, s->has_base ? s->base : NAN, ref);
+	hw_size_ref_prior(l->lang, &s->units, &s->area, s->has_base ? s->base : NAN, s->prior, ref);
 }
 
 /* what a reading reads with: the field's words and character model (READ_FIELD), the
@@ -1500,6 +1502,42 @@ out:
 	hw_aligned_free(&aligned);
 }
 
+/* set ID TEXT (contract 1.7): TEXT set in the person's font as pen strokes (setword.h) */
+static void do_set(const char *id, const char *text)
+{
+	size_t len = strlen(text);
+	unsigned *cp = malloc((len + 1) * sizeof *cp);
+	if (!cp) { reply("error\t%s\tmemory", id); return; }
+	size_t nc = hw_utf8_decode(text, cp, len + 1);
+	if (!nc || nc > HW_MAX_LABELS) { free(cp); reply("error\t%s\tbad-text", id); return; }
+	struct hw_set st;
+	if (hw_set_text(letters_now(), cp, nc, &st)) { free(cp); reply("error\t%s\tmemory", id); return; }
+	struct buf b = { 0 };
+	bfmt(&b, "set\t%s\tok\t", id);
+	bcoord(&b, st.width);
+	bstr(&b, "\t");
+	bcoord(&b, st.xh_mm);
+	bstr(&b, "\t");
+	bcoord(&b, st.ink);
+	bfmt(&b, "\t%zu", st.n);
+	for (size_t i = 0; i < st.n; i++) {
+		bstr(&b, "\t");
+		for (size_t j = 0; j < st.s[i].n; j++) {
+			if (j) bstr(&b, " ");
+			bcoord(&b, st.s[i].x[j]);
+			bstr(&b, ",");
+			bcoord(&b, st.s[i].y[j]);
+		}
+	}
+	if (b.s) {
+		bstr(&out, b.s);
+		bput(&out, "\n", 1);
+	} else reply("error\t%s\tmemory", id);
+	free(b.s);
+	hw_set_free(&st);
+	free(cp);
+}
+
 static int nfields(char **f, int max, char *line)
 {
 	int n = 0;
@@ -1634,7 +1672,7 @@ static void request(char *line, int skip_read)
 	struct session *s = n >= 3 ? find_session(f[2]) : NULL;
 	if (!strcmp(v, "stroke") || !strcmp(v, "read") || !strcmp(v, "align") || !strcmp(v, "remove") ||
 	    !strcmp(v, "clear") || !strcmp(v, "end") || !strcmp(v, "confirm") || !strcmp(v, "donate") ||
-	    !strcmp(v, "area") || !strcmp(v, "mark") || !strcmp(v, "neaten")) {
+	    !strcmp(v, "area") || !strcmp(v, "mark") || !strcmp(v, "neaten") || !strcmp(v, "prior")) {
 		if (n < 3) { reply("error\t%s\tbad-line", id); return; }
 		if (!s) { reply("error\t%s\tunknown-session", id); return; }
 		if (relay && strcmp(s->client, client)) { reply("error\t%s\tunknown-session", id); return; }
@@ -1702,12 +1740,25 @@ static void request(char *line, int skip_read)
 		NEED(4);
 		if (parse_area(f[3], &s->area, &s->has_base, &s->base)) { reply("error\t%s\tbad-area", id); return; }
 		reply("area\t%s\tok", id);
+	} else if (!strcmp(v, "prior")) {
+		/* prior ID S XH: the typical small letter, in the session's units */
+		NEED(4);
+		char *e;
+		double x = strtod(f[3], &e);
+		if (e == f[3] || *e || !isfinite(x) || x < 0) { reply("error\t%s\tbad-prior", id); return; }
+		s->prior = x;
+		reply("prior\t%s\tok", id);
 	} else if (!strcmp(v, "neaten")) {
 		/* neaten ID S STRENGTH [TEXT [ALIGN]] */
 		if (n < 4 || n > 6) { reply("error\t%s\tbad-line", id); return; }
 		if (n >= 5) UNESC(4);
 		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
 		do_neaten(id, s, f[3], n >= 5 ? f[4] : NULL, n == 6 ? f[5] : NULL);
+	} else if (!strcmp(v, "set")) {
+		NEED(3);
+		UNESC(2);
+		if (hw_store_writer()) { reply("error\t%s\twriter-store", id); return; }
+		do_set(id, f[2]);
 	} else if (!strcmp(v, "forget")) {
 		NEED(3);
 		do_forget(id, f[2]);

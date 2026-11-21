@@ -303,6 +303,8 @@ static void person(const char *lang)
 	free(v);
 }
 
+static void one_guide(struct hw_size_ref *out);
+
 /* from x (and what else is known) to a whole reference */
 static void complete(struct hw_size_ref *r)
 {
@@ -321,6 +323,7 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	out->area_line = a && a->set && a->line > 0;
 	out->has_base = line > 0 && isfinite(base);
 	out->base = out->has_base ? base : 0;
+	out->given_base = isfinite(base) ? base : NAN;
 	const char *e = getenv("GLASSINE_HANDWRITING_SIZE");
 	if (e && *e) {
 		/* "noweigh" or "weigh", alone or after the letters */
@@ -334,6 +337,7 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 			out->x = v[0]; out->c = v[1];
 			out->xs = k == 4 ? v[2] : 0; out->cs = k == 4 ? v[3] : 0;
 			complete(out);
+			one_guide(out);
 			return;
 		}
 		if (!strcmp(e, "off")) return;
@@ -342,6 +346,17 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	out->pending = 1;
 	snprintf(out->lang, sizeof out->lang, "%s", lang);
 	out->per_mm = !em && u->per_mm > 0 ? u->per_mm : 0;
+}
+
+/* an area without a line but with its guide line (BASE): that one guide, the letters on it
+ * measured against the reference (the next ones a line of 1 / HW_LINE_XH small letters apart) */
+static void one_guide(struct hw_size_ref *out)
+{
+	if (out->kind != HW_SIZE_NONE && !(out->line > 0) && isfinite(out->given_base) && out->x > 0) {
+		out->line = out->x / HW_LINE_XH;
+		out->has_base = 1;
+		out->base = out->given_base;
+	}
 }
 
 static void resolve(struct hw_size_ref *out)
@@ -367,7 +382,21 @@ static void resolve(struct hw_size_ref *out)
 		out->x = HW_LINE_XH * line;
 		out->c = 0.5 * line;
 		complete(out);
+	} else if (out->prior > 0) {
+		/* the typical size (prior) as the line alone is: small letters HW_LINE_XH of a line */
+		out->kind = HW_SIZE_LINE;
+		out->x = out->prior;
+		out->c = 0.5 * out->prior / HW_LINE_XH;
+		complete(out);
 	}
+	one_guide(out);
+}
+
+void hw_size_ref_prior(const char *lang, const struct hw_units *u, const struct hw_area *a, double base, double prior,
+		       struct hw_size_ref *out)
+{
+	hw_size_ref_for(lang, u, a, base, out);
+	out->prior = prior > 0 && isfinite(prior) ? prior : 0;
 }
 
 /* ---------------------------------------------------------------- glyphs */
@@ -655,6 +684,88 @@ static double line_reference(double h, const struct hw_stroke *s, size_t ns)
 	return fmax(INK_SCALE * x, h / INK_MAXF);
 }
 
+/* The ink's small-letter height for the size prior (docs/recognizer.md, Size), robust to a
+ * pen's jitter: a turn counts only once the pen went back MEASURE_BACK of the ink's height
+ * (raw points; the turns of the height measure above count every wobble, and a jittery pen
+ * shrinks it to a fraction of the letters), at least INK_TURNS turns at each side, the
+ * median foot less the median top over MEASURE_X. MEASURE_BACK and MEASURE_X from the
+ * person's words (a train half): 0.05 of the height measures 7 in 10 of them, its median
+ * 0.85 of their small letters as the store measures them. 0 when it can't be measured;
+ * *height the ink's height. */
+#define MEASURE_BACK 0.05
+#define MEASURE_X 0.85
+
+static int push(double **v, size_t *n, size_t *cap, double y)
+{
+	if (*n == *cap) {
+		size_t c = *cap ? 2 * *cap : 64;
+		double *t = realloc(*v, c * sizeof *t);
+		if (!t) return -1;
+		*v = t; *cap = c;
+	}
+	(*v)[(*n)++] = y;
+	return 0;
+}
+
+static double measured_letters(const struct hw_stroke *s, size_t ns, double *width, double *height)
+{
+	double xmin = INFINITY, xmax = -INFINITY, ymin = INFINITY, ymax = -INFINITY;
+	for (size_t i = 0; i < ns; i++)
+		for (size_t k = 0; k < s[i].n; k++) {
+			xmin = fmin(xmin, s[i].x[k]); xmax = fmax(xmax, s[i].x[k]);
+			ymin = fmin(ymin, s[i].y[k]); ymax = fmax(ymax, s[i].y[k]);
+		}
+	*width = xmax > xmin ? xmax - xmin : 0;
+	*height = ymax > ymin ? ymax - ymin : 0;
+	double th = MEASURE_BACK * *height, *top = NULL, *bot = NULL, r = 0;
+	size_t nt = 0, nb = 0, ct = 0, cb = 0;
+	if (!(th > 0)) return 0;
+	for (size_t i = 0; i < ns; i++) {
+		const struct hw_stroke *q = &s[i];
+		if (q->n < 3) continue;
+		/* dir: 1 going down (y grows), -1 up, 0 not yet; ext the extreme since the last turn */
+		double ext = q->y[0];
+		int dir = 0;
+		for (size_t k = 1; k < q->n; k++) {
+			double y = q->y[k];
+			if (dir >= 0 && y > ext) { ext = y; if (!dir && y - q->y[0] > th) dir = 1; continue; }
+			if (dir <= 0 && y < ext) { ext = y; if (!dir && q->y[0] - y > th) dir = -1; continue; }
+			if (dir == 1 && ext - y > th) { if (push(&bot, &nb, &cb, ext)) goto out; ext = y; dir = -1; }
+			else if (dir == -1 && y - ext > th) { if (push(&top, &nt, &ct, ext)) goto out; ext = y; dir = 1; }
+		}
+	}
+	if (nt >= INK_TURNS && nb >= INK_TURNS) r = (median(bot, nb) - median(top, nt)) / MEASURE_X;
+out:
+	free(top); free(bot);
+	return r > 0 ? r : 0;
+}
+
+/* the reference for the size prior alone: the prior is a typical size, never the writing's
+ * own. A line of writing whose small letters can be measured (measured_letters, at least
+ * INK_WIDE of them wide) is read at MEASURED_SCALE times their height, whatever the prior.
+ * Ink that can't be measured: the prior settles what its height means (a small letter or a
+ * capital) only while the ink is at most LONE_MAX (one or two glyphs) or WORDS_MAX times as
+ * high as the prior; taller, it is read without a reference (by its own height, as without
+ * any size). All from the person's writing (a train half): a reference helps a lone
+ * character up to 1.5 times the reference high, is level with none up to 2 and costs more
+ * beyond; for words it helps up to 3, is level up to 4 and costs beyond; a measured line read
+ * best at 1.5 times its letters (of 1, 1.25, 1.5 and 2) at every size. */
+#define LONE_MAX 2.0
+#define WORDS_MAX 4.0
+#define MEASURED_SCALE 1.5
+
+static double prior_reference(double h, const struct hw_stroke *s, size_t ns)
+{
+	double w, H, x = measured_letters(s, ns, &w, &H);
+	if (x > 0 && w >= INK_WIDE * x) return MEASURED_SCALE * x;
+	int *gid = malloc((ns + 1) * sizeof *gid);
+	struct glyph *g = malloc((ns + 1) * sizeof *g);
+	int ng = gid && g ? group(s, ns, 0.2 * h, gid, g) : -1;
+	free(gid); free(g);
+	if (ng >= 1 && H > (ng <= 2 ? LONE_MAX : WORDS_MAX) * h) return 0;
+	return h;
+}
+
 double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke *s, size_t ns, double *base)
 {
 	*base = NAN;
@@ -677,6 +788,7 @@ double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke
 			free(y);
 		}
 	}
+	if (rf.kind == HW_SIZE_LINE && s && ns && rf.prior > 0 && !rf.area_line) return prior_reference(rf.x, s, ns);
 	if (rf.kind == HW_SIZE_LINE && s && ns) return line_reference(rf.x, s, ns);
 	return rf.x;
 }

@@ -11,6 +11,7 @@ all:
 check:
 	$(PY) -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' glassine_hwservice/*.py glassine-handwriting-service examples/*.py tests/*.py
 	HW_BIN=$(HW_BIN) $(PY) tests/test_service.py
+	$(PY) tests/test_regions.py
 
 # a trained model through the pen interface against the keyboard's path (tests/check_sizes.py)
 check-model:
