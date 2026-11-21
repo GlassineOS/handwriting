@@ -163,7 +163,7 @@ class Api:
             return {}
         if method == "letters.status":
             need(app, "samples")
-            d = {"state": "none", "covered": 0, "font": None}
+            d = {"state": "current", "covered": 0, "font": None}
             for line in (await e.cli("letters", "status")).splitlines():
                 f = line.split("\t")
                 if f[0] == "state":
