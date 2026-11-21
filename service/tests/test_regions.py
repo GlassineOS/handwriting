@@ -150,7 +150,7 @@ class FakePen:
         self.out.append(m)
 
     def ops(self, op):
-        return [m for m in self.out if m["op"] == op]
+        return [m for m in self.out if m["op"] == "region_" + op]
 
 
 class FakeSurface:
@@ -180,7 +180,7 @@ class Regions(unittest.TestCase):
     def region(self, rid=1, **m):
         g = regions.Region(self.surface, rid)
         self.loop.call_soon(lambda: None)
-        m = dict({"text": True, "size": [400, 200], "units": "device:5"}, **m)
+        m = dict({"reading": True, "size": [400, 200], "units": "device:5"}, **m)
         self.run_(self._set(g, m))
         return g
 
@@ -206,7 +206,15 @@ class Regions(unittest.TestCase):
         return self.k
 
     def value(self):
-        return self.pen.ops("value")[-1]
+        """the newest value, each word with its text and line (from start, length in UTF-8
+        bytes of the text)"""
+        v = json.loads(json.dumps(self.pen.ops("value")[-1]))
+        b = v["text"].encode()
+        for w in v["words"]:
+            w["text"] = b[w["start"]:w["start"] + w["length"]].decode()
+            w["line"] = b[:w["start"]].count(b"\n")
+            self.assertEqual(("strokes" in w) + ("path" in w), 1)
+        return v
 
     # ------------------------------------------------------------------ the value
 
@@ -237,7 +245,7 @@ class Regions(unittest.TestCase):
         self.assertEqual(self.pen.ops("report")[-1]["result"], "stored")
         self.assertEqual(self.value()["text"], "onex")
         self.assertEqual(self.pen.engine.samples, [("picked", "onex", ["one"])])
-        self.assertTrue(self.value()["words"][0]["kept"])
+        self.assertEqual([w.kind for w in g.words], ["kept"])
         self.assertEqual(self.value()["words"][0]["strokes"], [a])
         # a report never ends the writing, and a confirmed word is never read again
         self.write(g, 80, 40, "two")
@@ -272,6 +280,8 @@ class Regions(unittest.TestCase):
         v = self.value()
         self.assertEqual(v["text"], "keep")
         self.assertEqual(sorted(v["gone"]), sorted([b, s]))
+        gs = self.pen.ops("gesture")[-1]
+        self.assertEqual((gs["kind"], gs["strokes"], gs["serial"]), ("strike", [s], v["serial"]))
         self.assertEqual(v["words"][0]["strokes"], [a])
 
     def test_strike_over_a_confirmed_word(self):
@@ -332,8 +342,8 @@ class Regions(unittest.TestCase):
         self.run_(g.update())
         self.run_(g.report({"serial": serial, "action": "accepted"}))
         self.assertEqual([s[1] for s in self.pen.engine.samples], ["one"])
-        kept = {w["text"]: w.get("kept", False) for w in self.value()["words"]}
-        self.assertEqual(kept, {"one": True, "later": False})
+        self.assertEqual([w.text for w in g.words], ["one"])
+        self.assertEqual([w.text for w in g.read], ["later"])
 
     # ------------------------------------------------------------------ text edits
 
@@ -350,15 +360,16 @@ class Regions(unittest.TestCase):
         ws = v["words"]
         self.assertEqual([w["text"] for w in ws], ["the", "black", "dog", "sat"])
         self.assertEqual(ws[0]["strokes"], [a])
-        self.assertNotIn("dx", ws[0])
-        self.assertIn("set", ws[1])
-        self.assertIn("set", ws[2])
+        self.assertEqual(ws[0]["dx"], 0)
+        self.assertIn("path", ws[1])
+        self.assertIn("path", ws[2])
         self.assertEqual(ws[3]["strokes"], [c])
         self.assertIn(b, v["gone"])                     # the replaced ink leaves
         # set words on the line of the word before them, at the writing's size
-        self.assertAlmostEqual(ws[1]["set"]["base"], ws[2]["set"]["base"])
-        self.assertGreater(ws[1]["set"]["size"], 0)
-        self.assertGreater(ws[2]["set"]["x"], ws[1]["set"]["x"])
+        self.assertAlmostEqual(ws[1]["box"][3], ws[2]["box"][3])
+        self.assertGreater(ws[1]["box"][3] - ws[1]["box"][1], 0)
+        self.assertGreater(ws[2]["box"][0], ws[1]["box"][2])
+        self.assertEqual(ws[1]["path"][0], "M")
         # the kept ink after them moved by what the line grew
         self.assertGreater(ws[3]["dx"], 0)
         # samples: "the" and "sat" unchanged, and "cat"'s ink as the word that took its
@@ -382,7 +393,7 @@ class Regions(unittest.TestCase):
         v = self.value()
         self.assertEqual(v["text"], "dear madam")
         self.assertIn("strokes", v["words"][0])
-        self.assertIn("set", v["words"][1])
+        self.assertIn("path", v["words"][1])
         self.assertEqual(sorted(s[1] for s in self.pen.engine.samples), ["dear", "madam"])
 
     def test_whole_value_set_when_no_word_matches(self):
@@ -394,9 +405,9 @@ class Regions(unittest.TestCase):
         self.run_(g.set_text("xyz\nnew line here"))
         v = self.value()
         self.assertEqual(v["text"], "xyz\nnew line here")
-        self.assertTrue(all("set" in w for w in v["words"]))
+        self.assertTrue(all("path" in w for w in v["words"]))
         self.assertEqual(g.strokes, {})                 # none of the ink is shown
-        lines = sorted({w["set"]["base"] for w in v["words"]})
+        lines = sorted({round(w["box"][3], 3) for w in v["words"]})
         self.assertEqual(len(lines), 2)
 
     def test_new_writing_after_an_edit_joins_where_written(self):
@@ -407,7 +418,7 @@ class Regions(unittest.TestCase):
         self.write(g, 20, 80, "three")
         self.run_(g.update())
         self.assertEqual(self.value()["text"], "one two\nthree")
-        self.assertIn("set", self.value()["words"][1])  # the set word stays as it is
+        self.assertIn("path", self.value()["words"][1])  # the set word stays as it is
 
     def test_neatest_keeps_ink(self):
         g = self.region(neaten=True, strength=1.0)

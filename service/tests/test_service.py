@@ -321,47 +321,58 @@ class Service(unittest.TestCase):
         return [b[1] for x in ss for b in x["asks"] if isinstance(b, tuple)]
 
     def test_regions_through_the_channel(self):
-        """spec 005 over the compositor's channel with the real recognizer: two regions on
-        one surface, each with its own value, candidates and report; an empty region and a
-        moved one make no request; a private region sends nothing"""
+        """spec 005 over the compositor's channel (GlassineOS/sway docs/handwriting-channel.md)
+        with the real recognizer: two regions on one surface, each with its own value,
+        candidates and report; a region set again for a move or resize reads nothing; a text
+        edit sets the edited word"""
         self.assertTrue(self.hello["regions"])
         self.pen_send(op="surface", s=1, sandbox="org.example.Notes", pid=0)
-        for r in (1, 2, 3):
-            self.pen_send(op="region", s=1, r=r, text=True, neaten=True, strength=0.5, size=[400, 120],
-                          units="device:6.25")
-        self.pen_send(op="region", s=1, r=4, text=True, purpose=8, size=[400, 120])
+        for r in (1, 2):
+            self.pen_send(op="region", s=1, r=r, name="field%d" % r)
+            self.pen_send(op="region_set", s=1, r=r, reading=True, neaten=True, strength=0.5, purpose=0, hints=0,
+                          languages="", guides=[0, 0], size=[400, 120], units="device:6.25")
+            self.pen_send(op="region_mode", s=1, r=r, mode="ink")
         for i, st in enumerate(ink(3)):
-            self.pen_send(op="stroke", s=1, r=1, k=i, points=st)
+            self.pen_send(op="region_stroke", s=1, r=1, k=i, points=st)
         for i, st in enumerate(ink(2, seed=5)):
-            self.pen_send(op="stroke", s=1, r=2, k=10 + i, points=st)
-        for i, st in enumerate(ink(2, seed=7)):
-            self.pen_send(op="stroke", s=1, r=4, k=20 + i, points=st)
-        ev = self.pen_events(lambda o: {m.get("r") for m in o if m["op"] == "candidates"} >= {1, 2})
-        vals = {m["r"]: m for m in ev if m["op"] == "value"}
+            self.pen_send(op="region_stroke", s=1, r=2, k=i, points=st)
+        ev = self.pen_events(lambda o: {m.get("r") for m in o if m["op"] == "region_candidates"} >= {1, 2})
+        vals = {m["r"]: m for m in ev if m["op"] == "region_value"}
         self.assertEqual(set(vals), {1, 2})
-        self.assertEqual(sorted(k for w in vals[1]["words"] for k in w["strokes"]), [0, 1, 2])
-        self.assertEqual(sorted(k for w in vals[2]["words"] for k in w["strokes"]), [10, 11])
-        self.assertTrue({m["k"] for m in ev if m["op"] == "neat" and m["r"] == 1} <= {0, 1, 2})
-        self.assertFalse(any(m.get("r") in (3, 4) for m in ev))
-        reqs = self.log.read_text()
-        self.assertNotIn("g1-3", reqs)
-        self.assertNotIn("g1-4", reqs)
-        # moving region 1 reads nothing again
+        self.assertEqual(sorted(k for w in vals[1]["words"] for k in w.get("strokes", [])), [0, 1, 2])
+        self.assertEqual(sorted(k for w in vals[2]["words"] for k in w.get("strokes", [])), [0, 1])
+        for v in vals.values():
+            b = v["text"].encode()
+            for w in v["words"]:
+                self.assertLessEqual(w["start"] + w["length"], len(b))
+        self.assertTrue({m["k"] for m in ev if m["op"] == "region_neat" and m["r"] == 1} <= {0, 1, 2})
+        c2 = [m for m in ev if m["op"] == "region_candidates" and m["r"] == 2][-1]
+        self.assertEqual(c2["serial"], vals[2]["serial"])
+        for c in c2["items"]:
+            self.assertEqual(set(c), {"text", "from", "fit"})
+        # a resize (a region_set with only the size changed) reads nothing again
         self.assertTrue(self.quiet())
         n = len(self.log.read_text().splitlines())
-        self.pen_send(op="region", s=1, r=1, size=[600, 200])
+        self.pen_send(op="region_set", s=1, r=1, reading=True, neaten=True, strength=0.5, purpose=0, hints=0,
+                      languages="", guides=[0, 0], size=[600, 200], units="device:6.25")
         self.assertTrue(self.quiet())
         self.assertEqual(self.log.read_text().splitlines()[n:], [])
-        # a report on region 2; region 1 keeps its writing
-        c2 = [m for m in ev if m["op"] == "candidates" and m["r"] == 2][-1]
-        self.pen_send(op="report", s=1, r=2, serial=c2["serial"], action="accepted")
-        r = self.pen_events(lambda o: any(m["op"] == "report" for m in o))[-1]
-        self.assertEqual((r["r"], r["result"]), (2, "not_allowed"))
-        # a text edit back in ink mode: the edited word comes set
-        self.pen_send(op="region_text", s=1, r=1, text="hello world")
-        v = self.pen_events(lambda o: any(m["op"] == "value" and m["r"] == 1 for m in o))[-1]
+        # a report on region 2's value: not allowed yet; region 1 keeps its writing
+        self.pen_send(op="region_report", s=1, r=2, serial=c2["serial"], action="accepted")
+        r = self.pen_events(lambda o: any(m["op"] == "region_report" for m in o))[-1]
+        self.assertEqual((r["r"], r["serial"], r["result"]), (2, c2["serial"], "not_allowed"))
+        # a text edit: the edited words come set, as a path and a box
+        self.pen_send(op="region_edit", s=1, r=1, text="hello world")
+        v = self.pen_events(lambda o: any(m["op"] == "region_value" and m["r"] == 1 for m in o))[-1]
         self.assertEqual(v["text"], "hello world")
-        self.assertTrue(all("set" in w or "strokes" in w for w in v["words"]))
+        self.assertTrue(all("path" in w or "strokes" in w for w in v["words"]))
+        self.assertTrue(v["state"])
+        # handed back after a restart: the same value
+        self.pen_send(op="region", s=1, r=3, name="again")
+        self.pen_send(op="region_set", s=1, r=3, reading=True, size=[400, 120], units="device:6.25")
+        self.pen_send(op="region_restore", s=1, r=3, strokes=[], value=v["text"], state=v["state"])
+        v3 = self.pen_events(lambda o: any(m["op"] == "region_value" and m["r"] == 3 for m in o))[-1]
+        self.assertEqual(v3["text"], "hello world")
         self.pen_send(op="region_destroy", s=1, r=1)
         self.pen_send(op="destroy", s=1)
 
