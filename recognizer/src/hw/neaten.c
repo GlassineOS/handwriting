@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "neaten.h"
+#include "aligner.h"
 #include "cut.h"
 
 static double clampd(double x, double a, double b) { return x < a ? a : x > b ? b : x; }
@@ -23,11 +24,12 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
 /* $GLASSINE_HANDWRITING_NEATEN (measurements): "base=0,slant=0,size=0,space=0,pull=0"
  * leaves a correction out, "trace=0" the check of the glyph traced on the ink's points,
  * "set=0" the words set at Neatest (above Strong the pull goes on, all the way at 1),
- * "margin=M" sets the shape guard's margin */
-static struct { int base, slant, size, space, pull, trace, set; double margin; } on;
+ * "margin=M" sets the shape guard's margin, "tail=0", "bar=0", "frag=0" leave out Neatest's
+ * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules */
+static struct { int base, slant, size, space, pull, trace, set, tail, bar, frag; double margin; } on;
 static void knobs(void)
 {
-	on.base = on.slant = on.size = on.space = on.pull = on.trace = on.set = 1;
+	on.base = on.slant = on.size = on.space = on.pull = on.trace = on.set = on.tail = on.bar = on.frag = 1;
 	on.margin = HW_NEAT_GUARD_MARGIN;
 	const char *e = getenv("GLASSINE_HANDWRITING_NEATEN");
 	if (!e) return;
@@ -35,7 +37,7 @@ static void knobs(void)
 	if (m && atof(m + 7) > 0) on.margin = atof(m + 7);
 	struct { const char *k; int *v; } kv[] = { { "base=", &on.base }, { "slant=", &on.slant }, { "size=", &on.size },
 						 { "space=", &on.space }, { "pull=", &on.pull }, { "trace=", &on.trace },
-						 { "set=", &on.set } };
+						 { "set=", &on.set }, { "tail=", &on.tail }, { "bar=", &on.bar }, { "frag=", &on.frag } };
 	for (size_t i = 0; i < sizeof kv / sizeof *kv; i++) {
 		const char *p = strstr(e, kv[i].k);
 		if (p) *kv[i].v = atoi(p + strlen(kv[i].k)) != 0;
@@ -1029,6 +1031,69 @@ static int guard_fails(const struct hw_neat *q, size_t k, double xh, unsigned ch
 	return rn > rr;
 }
 
+/* the aligner's cut of stroke j among the letters c0..c1 (those the alignment lists for it,
+ * with ALIGN; the spaces and the characters the aligner doesn't know left out): 0 cut, 1 not
+ * (fewer than two letters it knows), -1 out of memory */
+/* the cut the aligner's strokes get (cut.h): the aligner's, the shape cut where it can't */
+static hw_cut_fn join_cut = hw_cut_aligner;
+
+static int aligner_cut(struct hw_neat *q, size_t j, int c0, int c1, const struct hw_letters *V, const int *gvar,
+		       const long *gjo, double xh)
+{
+	const struct hw_ink *k = &q->ink[j];
+	size_t m = k->n, nc = q->nc, R = 0;
+	int *let = malloc((size_t)(c1 - c0 + 2) * sizeof *let), *cls = malloc((size_t)(c1 - c0 + 2) * sizeof *cls);
+	if (!let || !cls) { free(let); free(cls); return -1; }
+	for (int c = c0; c <= c1; c++) {
+		if (is_space(q->cp[c]) || (q->share && !q->share[j * nc + (size_t)c])) continue;
+		int z = hw_aligner_class(q->aligned, q->cp[c]);
+		if (z <= 0) continue;
+		let[R] = c; cls[R] = z; R++;
+	}
+	if (R < 2) { free(let); free(cls); return 1; }
+	/* the glyphs' strokes where every letter has one (the parts' candidates), else none */
+	struct hw_cut_ref *gr = calloc(R, sizeof *gr);
+	size_t *off = malloc((R + 1) * sizeof *off), *at = malloc((R + 1) * sizeof *at);
+	if (!gr || !off || !at) { free(let); free(cls); free(gr); free(off); free(at); return -1; }
+	int glyphs = V && gvar;
+	for (size_t r = 0; r < R; r++) {
+		size_t c = (size_t)let[r];
+		const struct hw_letter *le = glyphs && gvar[c] >= 0 && !(gjo && gjo[c] >= 0) ? letter_of(V, q->cp[c]) : NULL;
+		const struct hw_variant *v = le && gvar[c] < le->nvar ? &le->var[gvar[c]] : NULL;
+		size_t before = 0;
+		for (size_t jj = 0; v && jj < j; jj++)
+			for (size_t i = 0; i < q->ink[jj].n; i++)
+				if (q->own[jj][i] == (int)c && (!i || q->own[jj][i - 1] != (int)c)) before++;
+		const struct hw_lstroke *g = v && v->nstrokes ? &v->s[before < v->nstrokes ? before : v->nstrokes - 1] : NULL;
+		if (!g || g->n < 2) { glyphs = 0; continue; }
+		hw_cut_ref_make(g->x, g->y, g->n, &gr[r]);
+		off[r] = r;
+	}
+	off[R] = R;
+	int rc = 1;
+	if (glyphs) {
+		struct hw_cut_ctx ctx = { q->aligned, q->aligned->frame[j], cls };
+		double total;
+		rc = join_cut(k->x, k->y, m, xh, R, gr, off, at, NULL, &total, &ctx);
+		if (rc < 0) { free(let); free(cls); free(gr); free(off); free(at); return -1; }
+	}
+	if (rc) {
+		/* (no glyph to fall back on: the aligner's split as it is) */
+		const int *fr = q->aligned->frame[j];
+		long f0 = fr[0], f1 = fr[m - 1];
+		int *lab = f1 >= f0 ? malloc((size_t)(f1 - f0 + 1) * sizeof *lab) : NULL;
+		rc = lab ? hw_aligner_split(q->aligned, f0, f1, cls, R, lab) : -1;
+		if (rc < 0 && lab) rc = -1;
+		if (!rc) for (size_t i = 0; i < m; i++) q->own[j][i] = let[lab[fr[i] - f0]];
+		free(lab);
+		if (rc < 0) { free(let); free(cls); free(gr); free(off); free(at); return -1; }
+	} else
+		for (size_t r = 0; r < R; r++)
+			for (size_t i = at[r]; i < at[r + 1]; i++) q->own[j][i] = let[r];
+	free(let); free(cls); free(gr); free(off); free(at);
+	return rc ? 1 : 0;
+}
+
 /* the shape cut: a stroke the alignment shares among several letters of a word (a joined
  * word written in one go) is cut where its parts best match the letters' glyphs, each
  * letter's part its glyph's stroke as its pieces come in writing order; the alignment's
@@ -1065,6 +1130,13 @@ static int shape_cut(struct hw_neat *q, const struct hw_letters *V, const int *g
 			if (!wrong && (size_t)np < le->var[gvar[c]].nstrokes) { if (side) c1 = c; else c0 = c; }
 		}
 		if (c0 < 0 || c1 <= c0) continue;
+		/* with the point aligner: its cut (hw_cut_aligner) over the letters it knows, a word
+		 * gap or not, each part's shape against its glyph where every letter has one */
+		if (q->aligned && q->aligned->frame && q->aligned->frame[j] && q->aligned->np[j] == m) {
+			int r = aligner_cut(q, j, c0, c1, V, gvar, gjo, xh);
+			if (r < 0) return -1;
+			if (!r) continue;
+		}
 		/* one word, every letter with its glyph, no pair the font joins */
 		size_t R = (size_t)(c1 - c0 + 1);
 		int ok = 1;
@@ -1093,7 +1165,7 @@ static int shape_cut(struct hw_neat *q, const struct hw_letters *V, const int *g
 		}
 		off[R] = R;
 		double total = INFINITY;
-		int rc = ok ? hw_cut_shape(k->x, k->y, m, xh, R, gr, off, at, NULL, &total) : 1;
+		int rc = ok ? hw_cut_shape(k->x, k->y, m, xh, R, gr, off, at, NULL, &total, NULL) : 1;
 		if (rc < 0) { free(gr); free(off); free(at); free(cum); return -1; }
 		if (!rc) {
 			hw_cut_arc(k->x, k->y, m, cum);
@@ -2060,7 +2132,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 	 * own strokes the letter's lead-in: the pen was lifted between the two, they aren't
 	 * joined there (a dot is too short to be a letter's own body, a bowl or a bar too low
 	 * beside its stem) */
-	for (size_t k = 0; k + 1 < nc; k++) {
+	for (size_t k = 0; on.tail && k + 1 < nc; k++) {
 		if (is_space(q->cp[k]) || is_space(q->cp[k + 1])) continue;
 		for (size_t j = 0; j < n; j++) {
 			int *ow = q->own[j];
@@ -2101,7 +2173,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 	 * HW_NEAT_SET_ON of the letter's height) as written, is the letter's (the reading gives it
 	 * the neighbour; set over the neighbour's glyph it would be lost). The neighbour keeps the
 	 * rest of its piece, at least HW_NEAT_BAR_KEEP of it */
-	for (size_t k = 0; k < nc; k++) {
+	for (size_t k = 0; on.bar && k < nc; k++) {
 		if (is_space(q->cp[k])) continue;
 		double lo = INFINITY, hi = -INFINITY, y0 = INFINITY, y1 = -INFINITY;
 		for (size_t j = 0; j < n; j++)
@@ -2264,7 +2336,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V, const struct
 			for (int i = 0; lo && i < lo->nvar; i++) most = (int)lo->var[i].nstrokes > most ? (int)lo->var[i].nstrokes : most;
 			over |= lo && np > most;
 		}
-		if (!over) continue;
+		if (!over || !on.frag) continue;
 		const struct hw_variant *v = &l->var[gv[k]];
 		double iy0 = INFINITY, iy1 = -INFINITY, vy0 = INFINITY, vy1 = -INFINITY;
 		for (size_t j = 0; j < n; j++)

@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "adapt.h"
+#include "aligner.h"
 #include "cut.h"
 #include "letters.h"
 #include "sample.h"
@@ -854,6 +855,14 @@ int hw_letters_inputs(char out[17])
 	h = fnv(h, v, strlen(v));
 	for (size_t i = 0; i < k; i++) { if (keys[i]) h = fnv(h, keys[i], strlen(keys[i]) + 1); free(keys[i]); }
 	free(keys);
+	/* the point aligner of each language the samples are in (it cuts their joined strokes) */
+	for (size_t i = 0; i < n; i++) {
+		if (strcmp(es[i].meta.source, "prompted")) continue;
+		int seen = 0;
+		for (size_t z = 0; z < i && !seen; z++) seen = !strcmp(es[z].meta.source, "prompted") && !strcmp(es[z].meta.lang, es[i].meta.lang);
+		const struct hw_model *am = seen ? NULL : hw_aligner_get(es[i].meta.lang);
+		if (am) { char b[64]; snprintf(b, sizeof b, "\naligner %s %016llx\n", es[i].meta.lang, (unsigned long long)am->hash); h = fnv(h, b, strlen(b)); }
+	}
 	struct hw_pref *pr;
 	size_t np;
 	if (hw_prefs(&pr, &np, NULL)) return -1;
@@ -3100,7 +3109,7 @@ static void jobs_free(void)
  * ends at a joint let go (up to half the part at each joint end): the rest of the part is the
  * joining stroke, its entry before it and its exit after it. */
 #define JOIN_LET_GO 0.5         /* of its part a letter's entry or exit takes at most this much */
-static hw_cut_fn join_cut = hw_cut_shape;
+static hw_cut_fn join_cut = hw_cut_aligner;
 /* the model the cut looks up a letter in that the build doesn't make (one character's build:
  * the model as it was) */
 static const struct hw_letters *build_ref;
@@ -3143,6 +3152,16 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 		if (nc > 4096) nc = 4096;
 		if (nc < 2) continue;
 		np = 0;
+		/* the point aligner's run over the sample, when there is one (the cut is its, else
+		 * the shape cut) */
+		struct hw_aligned al = { 0 };
+		const struct hw_model *am = hw_aligner_get(s->lang[0] ? s->lang : "en");
+		int have_al = 0;
+		if (am) {
+			int ar = hw_aligner_run(am, s->strokes, s->nstrokes, NULL, &al);
+			if (ar < 0) goto out;
+			have_al = !ar;
+		}
 		/* the strokes shared by letters next to each other in a word, cut */
 		for (size_t j = 0; j < s->nstrokes; j++) {
 			const struct hw_ink *ink = &s->strokes[j];
@@ -3158,6 +3177,7 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 			double *dx = malloc((2 * ink->n + 2) * sizeof *dx), *cum = malloc((ink->n + 1) * sizeof *cum);
 			if (!refs || !off || !at || !idx || !which || !dx || !cum) {
 				free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum);
+				hw_aligned_free(&al);
 				goto out;
 			}
 			int ok = 1;
@@ -3192,8 +3212,14 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 			double *dy = dx + nd;
 			for (size_t i = 0; i < nd; i++) { dx[i] = ink->x[idx[i]]; dy[i] = ink->y[idx[i]]; }
 			double cost;
-			int rc = ok ? join_cut(dx, dy, nd, m->xh, R, refs, off, at, which, &cost) : 1;
-			if (rc < 0) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); goto out; }
+			/* (the aligner's frames of the points cut at, each letter's class) */
+			int *afr = have_al && al.frame[j] && al.np[j] == m2 ? malloc((nd + R + 1) * sizeof *afr) : NULL;
+			struct hw_cut_ctx ctx = { &al, afr, afr ? afr + nd : NULL };
+			for (size_t i = 0; afr && i < nd; i++) afr[i] = al.frame[j][idx[i]];
+			for (size_t r = 0; afr && r < R; r++) afr[nd + r] = hw_aligner_class(&al, cps[(size_t)k0 + r]);
+			int rc = ok ? join_cut(dx, dy, nd, m->xh, R, refs, off, at, which, &cost, afr ? &ctx : NULL) : 1;
+			free(afr);
+			if (rc < 0) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); hw_aligned_free(&al); goto out; }
 			hw_cut_arc(dx, dy, nd, cum);
 			size_t np0 = np;
 			for (size_t r = 0; !rc && r < R; r++) {
@@ -3211,7 +3237,7 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 				if (np == cp_) {
 					cp_ = cp_ ? 2 * cp_ : 64;
 					struct jpart *x = realloc(P, cp_ * sizeof *x);
-					if (!x) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); goto out; }
+					if (!x) { free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum); hw_aligned_free(&al); goto out; }
 					P = x;
 				}
 				/* (as points of the stroke: the last of the cut's ends is its end) */
@@ -3224,6 +3250,7 @@ static int joined_insts(struct inst **pin, size_t *pnin, size_t *pcin, struct sm
 					jobs_add(ink, P[q].l - 1, P[q + 1].f, m, cps[P[q].k], cps[P[q + 1].k], (int)si, P[q].k);
 			free(refs); free(off); free(at); free(idx); free(which); free(dx); free(cum);
 		}
+		hw_aligned_free(&al);
 		if (!np) continue;
 		/* each letter whose strokes are its own or cut here: an instance */
 		for (size_t k = 0; k < nc && k < s->nspans; k++) {

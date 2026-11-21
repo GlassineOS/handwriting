@@ -439,6 +439,17 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   pair's one glyph, both letters together. It is the variant itself (a version left out isn't
   in the font), not its best version (below), which neatening doesn't use. The font, its
   preview and neatening choose the glyphs the same way (`hw_letters_glyphs`).
+- **Ownership (the point aligner).** With `aligner.ghm` in the language's directory (a small
+  model in the base model's format: one frame every 0.2 x-heights along the ink, no
+  downsampling, per frame a log-probability for each letter, class 0 a blank only ever between
+  two equal letters in a row), whose ink is whose comes from it rather than from the
+  reading's alignment. With the text alone, each point's character is the best path through
+  the chain of the text's letters over the frames that hold points, where a whole stroke after
+  the first may instead be a delayed one: a letter already passed, of its word or the word
+  before (an i's dot, a t's or f's bar, a 5's roof written after the word), at a log-penalty of
+  1 (`HW_ALIGNER_DELAY`, chosen on synthetic dev lines). A stroke `ALIGN` lists for several letters is cut by it too: the best
+  split of the stroke's frames over those letters in order (below, the joined cut). Without the
+  file, or with `GLASSINE_HANDWRITING_ALIGNER=off`, everything is as before.
 - **The pull (FR-014, FR-035, FR-036).** From above Light, a character with a fit of 0.5 or
   more (or from `ALIGN`) goes towards its target. Its
   pieces are its runs of points: a stroke of its own, or its part of a stroke joined with a
@@ -448,7 +459,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   order, each part and its glyph stroke at 24 points along them, centred, at the line's
   x-height (their RMS distance and a quarter of the log of their lengths' ratio), the cut
   placed at no more than 96 of the stroke's points (12 per letter for more than 8 letters:
-  every so many and the last; the cost grows with the cube of the points). The
+  every so many and the last; the cost grows with the cube of the points); with a point
+  aligner (Ownership, above) it is the aligner's split of the stroke over those letters
+  instead, the shape cut only where that gives a letter fewer than two points. The
   alignment's frames put an edge a letter off often enough that joined letters lose their own
   ink; without `ALIGN` the letters are those it gives the stroke points and those between,
   and a neighbour it gives fewer pieces than its glyph has strokes, its others after the
@@ -921,7 +934,7 @@ samples written apart alone. Then each stroke that the spans give two or more le
 in order, each part against the stroke of a version with the letter's stroke count that it takes
 the place of (the best of them: centred RMS at the sample's x-height plus a quarter of the log of
 the lengths' ratio), the least total, the cut placed at no more than 96 of the stroke's points
-(12 per letter for more than 8 letters), as neatening's shape cut is (the cut is a function of its own, so another way of matching can take its place). Within its
+(12 per letter for more than 8 letters), as neatening's shape cut is (the cut is a function of its own: with a point aligner, Neatening, it is the aligner's split, the shape cut where that gives a letter fewer than two points; the aligner is then one of the model's inputs). Within its
 part a letter's own ink is where that part matches the version's stroke best when up to half
 the part at a joint end is let go: what is let go is the joining stroke, the letter's entry
 before it and its exit after it. A letter whose strokes are all its own or cut so, not left out
@@ -1399,7 +1412,7 @@ none exists.
 One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
 `$GLASSINE_HANDWRITING_MODELS/LANG/`, else the setting `models`'s `LANG/`) with `recognizer.ghm` (the model), `chars.gclm` (the
 character model, optional; Characters) with `chars.json` (its recipe) and `CHARS-LICENSE`,
-`calibration` (the base model's temperature, optional; Calibration), `README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
+`calibration` (the base model's temperature, optional; Calibration), `aligner.ghm` (the point aligner, optional; Neatening, Ownership), `README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
 line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, one per line, and
 `SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
 `glassine-train release` makes the whole directory as a release tarball
@@ -1489,7 +1502,8 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_HANDWRITING_CALIB` | for measurements: `off` reads with no calibration, a number in [0.5, 4] with that temperature (Calibration) |
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default) |
+| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default), `tail=0`, `bar=0` and `frag=0` leave out Neatest's giving back of an exit tail, of a bar written on into a neighbour, and the keeping as written of a letter whose ink is a fragment beside one kept with more pieces than its versions have (Neatening) |
+| `GLASSINE_HANDWRITING_ALIGNER` | for measurements: `off` uses no point aligner (Neatening, Ownership) |
 | `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
 | `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV RM RV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), RM those samples' mean roughness (per stroke, evenly spaced along it, the squared turning at each point less its neighbours' turning, summed: how much it wobbles rather than bends), HV, AV and RV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |
