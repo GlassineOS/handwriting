@@ -35,8 +35,9 @@ in millimetres once there are enough of them, and before that a typical small le
 is the prior. The app's area and ruled lines count when it sets them; no line is found from the
 writing, so a lone character is never read against a line found from itself or from writing
 elsewhere. On an output whose physical size the compositor doesn't know, the person sets its
-px per millimetre once in Settings; until then the units stay the pen's own and the prior is
-applied at the default density of 96 px per inch (3.78 px per millimetre).
+px per millimetre once in Settings (the compositor keeps it per output); until then the units
+stay the pen's own and the prior is applied at the default density of 96 px per inch (3.78 px
+per millimetre).
 
 **Privacy (FR-010).** Nothing reaches the service for a surface with neatening and text both
 off, nor for a private field: a purpose of `password` or `pin`, or the hints

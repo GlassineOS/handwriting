@@ -87,30 +87,6 @@ class AreaRules(unittest.TestCase):
         self.assertAlmostEqual(A.prior("device"), A.TYPICAL_XH_MM * A.DEFAULT_PX_PER_MM)
         self.assertIsNone(A.prior("em"))
 
-    def test_output_density(self):
-        """an output of unknown size: the person's density for it, kept by its name"""
-        from glassine_hwservice import outputs
-        d = tempfile.mkdtemp(prefix="hws-out-", dir="/tmp")
-        self.addCleanup(shutil.rmtree, d, True)
-        old = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = d
-        try:
-            self.assertEqual(outputs.units("device", "DSI-1"), "device")
-            outputs.set_density("DSI-1", 8.94)
-            self.assertEqual(outputs.units("device", "DSI-1"), "device:8.94")
-            self.assertEqual(outputs.units("device", "HDMI-A-1"), "device")
-            self.assertEqual(outputs.units("device:6.25", "DSI-1"), "device:6.25")   # a known size wins
-            self.assertEqual(outputs.units("em", "DSI-1"), "em")
-            for bad in (0, -1, float("nan"), 5000):
-                self.assertRaises(ValueError, outputs.set_density, "DSI-1", bad)
-            outputs.set_density("DSI-1", None)
-            self.assertEqual(outputs.units("device", "DSI-1"), "device")
-        finally:
-            if old is None:
-                os.environ.pop("XDG_CONFIG_HOME")
-            else:
-                os.environ["XDG_CONFIG_HOME"] = old
-
 
 class Service(unittest.TestCase):
     def setUp(self):
@@ -363,9 +339,9 @@ class Service(unittest.TestCase):
     def test_lone_character_never_borrows_a_line(self):
         """a lone character: no line found from itself nor from earlier writing on the
         surface, no guide line, only the prior; on an output of unknown size the units stay
-        the pen's own, the prior at the default density, until the person sets the output's"""
+        the pen's own, the prior at the default density"""
         self.pen_send(op="surface", s=14, sandbox="org.example.Notes", pid=0)
-        self.pen_send(op="set", s=14, text=True, units="device", output="DSI-1")
+        self.pen_send(op="set", s=14, text=True, units="device")
         self.write(14, ink(4, seed=8))
         self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
         self.pen_send(op="clear", s=14)
@@ -376,19 +352,13 @@ class Service(unittest.TestCase):
         from glassine_hwservice import area as A
         areas = self.assert_every_read_has_an_area("device")
         self.assertEqual(set(areas), {A.text(A.box(one), 0)})
-        r = self.call("output.set", output="DSI-1", px_per_mm=8.94)["result"]
-        self.assertEqual(r["outputs"], {"DSI-1": 8.94})
-        self.assertAlmostEqual(r["default"], A.DEFAULT_PX_PER_MM)
+        # with the person's density the compositor sends units with it
         self.pen_send(op="clear", s=14)
-        self.pen_send(op="set", s=14, text=True, units="device", output="DSI-1")
+        self.pen_send(op="set", s=14, text=True, units="device:8.94")
         self.log.write_text("")
         self.write(14, one, k0=20)
         self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
         self.assert_every_read_has_an_area("device:8.94:143")
-        # only the person's own tools set it
-        a = self.app("org.example.A")
-        self.assertEqual(a("output.set", output="DSI-1", px_per_mm=1)["error"]["code"], "not-allowed")
-        self.assertEqual(self.call("output.set", output="DSI-1", px_per_mm=-2)["error"]["code"], "bad-request")
 
     def test_area_of_the_ink_area(self):
         """an ink area with ruled lines: that box, its line and its first guide line"""

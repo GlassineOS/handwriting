@@ -19,14 +19,14 @@ by the lines found in it (lines()).
 Every session has a writing area (area.py): the app's box when it set one, else the box of the
 writing held; the line of the app's ruled lines, else none (no line is found from the
 writing); the guide line the app's, else the one found from the line of writing the session
-holds. Its units are the compositor's (device:PER_MM when it knows the output's size, or the
-density the person set for the output, outputs.py) with the pen's rate added once measured;
+holds. Its units are the compositor's (device:PER_MM when it knows the output's size or the
+person set its density, else device) with the pen's rate added once measured;
 the size prior is a typical small letter in them (area.prior)."""
 import asyncio
 import json
 import math
 
-from . import area, ident, outputs, perms
+from . import area, ident, perms
 
 from .engine import Error, align_strokes, esc, map_align, parse_text, points
 
@@ -106,7 +106,6 @@ class Surface:
         self.neaten, self.strength, self.text = False, 0.0, False
         self.purpose, self.hints, self.before, self.langs = 0, 0, "", ""
         self.units = "device"
-        self.output = ""            # the output the pen writes on (its density, outputs.py)
         self.rate = 0               # the pen's points per second, once measured (area.rate)
         self.area_sent = None       # the area the main session has
         self.guides, self.box = (0.0, 0.0), None
@@ -139,7 +138,7 @@ class Surface:
 
     def set(self, m):
         was = (self.neaten, self.strength, self.text)
-        fld = (self.purpose, self.hints, self.before, self.langs, self.units, self.output, self.guides, self.box)
+        fld = (self.purpose, self.hints, self.before, self.langs, self.units, self.guides, self.box)
         self.neaten = bool(m.get("neaten", self.neaten))
         self.strength = min(1.0, max(0.0, float(m.get("strength", self.strength))))
         self.text = bool(m.get("text", self.text))
@@ -148,7 +147,6 @@ class Surface:
         self.before = str(m.get("before", self.before))[-4000:]
         self.langs = str(m.get("languages", self.langs))
         self.units = str(m.get("units", self.units)) or "device"
-        self.output = str(m.get("output", self.output))
         g = m.get("guides")
         if isinstance(g, list) and len(g) == 2:
             self.guides = (max(0.0, float(g[0])), float(g[1]))
@@ -160,7 +158,7 @@ class Surface:
             return
         if not self.order:
             return
-        if fld != (self.purpose, self.hints, self.before, self.langs, self.units, self.output, self.guides, self.box) \
+        if fld != (self.purpose, self.hints, self.before, self.langs, self.units, self.guides, self.box) \
                 and self.session is not None:
             self.session = None            # the field changed: the session is begun again, as it is now
         if (self.neaten, self.strength, self.text) != was and self.active():
@@ -203,9 +201,8 @@ class Surface:
         return [self.strokes[k] for k in self.order if k not in self.gestures]
 
     def own_units(self):
-        """the compositor's units, with the density the person set for the output when the
-        compositor doesn't know its size (outputs.py)"""
-        return outputs.units(self.units, self.output)
+        """the compositor's units (device without a density: the prior's default applies)"""
+        return self.units
 
     def session_units(self):
         if not self.rate:
