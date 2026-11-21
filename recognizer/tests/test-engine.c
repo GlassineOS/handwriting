@@ -925,6 +925,17 @@ static void test_letters_glyphs(void)
 	CHECK(jo[7] == 0 && jo[8] == 0 && jo[6] < 0 && jo[9] < 0, "glyphs: the joined pair");
 	hw_letters_view_free(&V);
 	hw_letters_free(&L);
+	/* the model file's versions: the one written and the one before (no context rules) are
+	 * read, any other not (a reader of version 1 refuses a model with context rules) */
+	char *hv = strstr(model, "\"version\":");
+	for (int ver = 0; hv && ver <= HW_LETTERS_VERSION + 1; ver++) {
+		hv[10] = (char)('0' + ver);
+		struct hw_letters M = { 0 };
+		int r = hw_letters_parse(model, &M);
+		CHECK(!r == (ver >= HW_LETTERS_VERSION_MIN && ver <= HW_LETTERS_VERSION), "letters: version %d %s", ver, r ? "not read" : "read");
+		if (!r) hw_letters_free(&M);
+	}
+	CHECK(HW_LETTERS_VERSION == 2 && hv, "letters: the version written");
 }
 
 /* two letters joined in one stroke (FR-036): each part pulled to its own letter, the
@@ -1010,7 +1021,9 @@ static void test_neaten_joined(void)
 		 "{\"joined\":\"cu\",\"samples\":3,\"written\":3,\"of\":3,\"variant\":{\"width\":1.05,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}}\n", ps);
 	if (hw_letters_parse(model2, &L) || L.njoined != 1) { CHECK(0, "neaten joined pair: model"); hw_ink_free(&ink); return; }
 	for (int lv = 0; lv < 2; lv++) {
-		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh, .confirmed = 1 };
+		/* (set on the straight line: the conditioned setting maps the set word onto the ink) */
+		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh,
+				     .confirmed = 1, .cond = -1 };
 		if (hw_neaten(&q)) { CHECK(0, "neaten joined pair: memory"); break; }
 		int w = lv ? HW_NEAT_WHY_SET : HW_NEAT_WHY_PULLED;
 		CHECK(q.pulled && q.pulled[0] && q.pulled[1] && q.why[0] == w && q.why[1] == w, "neaten joined pair: %d: not both", lv);

@@ -9,8 +9,10 @@
 #include <stddef.h>
 
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
-#define HW_LETTERS_VERSION 1
-#define HW_LETTERS_BUILD 19     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_LETTERS_VERSION 2     /* written; 2: a rule may have both neighbours (a context rule),
+				  * which a reader of version 1 would take for one of them alone */
+#define HW_LETTERS_VERSION_MIN 1 /* the oldest read (version 1 has no context rules) */
+#define HW_LETTERS_BUILD 20     /* how it is built: part of the inputs, so a change rebuilds it */
 #define HW_FONT_BUILD 2         /* how the font is made from it: part of its fingerprint, so a change makes it again */
 #define HW_LETTERS_LATE_SHARE 0.8 /* a stroke longer than this of the rest of its character's ink is no late stroke */
 #define HW_LETTERS_TOUCH 0.1    /* a neighbour's stroke starting or ending this near (of a character's height) its ink is part of it */
@@ -31,7 +33,7 @@
 #define HW_RULE_SHARE_DEN 4
 #define HW_RULE_LIFT 0.25       /* and in that much more of them than its share of the cycle */
 #define HW_LETTERS_RULES 16     /* rules per character at most */
-/* context rules (with $GLASSINE_HANDWRITING_LETTERS_CONTEXT=1, for measurements: off by default):
+/* context rules (FR-046; $GLASSINE_HANDWRITING_LETTERS_CONTEXT=0 leaves them out, for measurements):
  * a character written between the same two neighbours (a letter triple) at least HW_CTX_MIN
  * times, the same variant in at least HW_RULE_SHARE of them, where that isn't the variant the
  * neighbour rules and the cycle show there, and the rule picking the variant written more
