@@ -1710,7 +1710,7 @@ class ReferenceHeight(unittest.TestCase):
     """a model that reads the ink scaled by a reference height (ghm version 2, FR-018): it
     reads, its readings follow the ink's size (a version 1 model's don't), and it adapts"""
 
-    def scores(self, ref, scale, area=None, size=None, units="em", prior=None):
+    def scores(self, ref, scale, area=None, size=None, units="em", prior=None, ink=None):
         env = Env(ref=ref)
         try:
             if size:
@@ -1718,7 +1718,7 @@ class ReferenceHeight(unittest.TestCase):
             c = env.start("-i", "0")
             c.ask("hello", "1", "org.example.keyboard")
             out = []
-            for s in INK[:6]:
+            for s in ink or INK[:6]:
                 c.ask("begin", "s", "en", "normal", units, "")
                 if prior is not None:
                     self.assertEqual(c.ask("prior", "s", prior)[2:], ["ok"])
@@ -1760,8 +1760,25 @@ class ReferenceHeight(unittest.TestCase):
         none = self.scores(True, 1, **dev)
         small, big = self.scores(True, 1, prior="0.08", **dev), self.scores(True, 1, prior="0.3", **dev)
         self.assertTrue(all(x is not None for x in small))
-        self.assertNotEqual(small, none)
-        self.assertNotEqual(small, big)
+        # a prior far below the writing (more than four times as high) says nothing of it: it
+        # is read as without one; a prior it fits is its reference
+        self.assertEqual(small, none)
+        self.assertNotEqual(big, none)
+        # a line whose small letters can be measured (ten humps of 0.4, a little jitter) is
+        # read at their height, whatever the prior
+        rng = random.Random(5)
+        hump = [[i * 0.05, 0.4 * abs(math.sin(i * math.pi / 20)) + rng.uniform(-0.004, 0.004), i * 5]
+                for i in range(200)]
+        line = [dict(INK[0], strokes=[hump])]
+        a, b, n = (self.scores(True, 1, prior=p, units="device", ink=line) for p in ("0.05", "0.3", None))
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, n)
+        # a lone character can't be measured: a prior it fits is its reference, one far below
+        # it (the character more than twice as high) is none
+        lone = [dict(r, strokes=r["strokes"][:1]) for r in INK[:6]]
+        fits, below, free = (self.scores(True, 1, prior=p, units="device", ink=lone) for p in ("0.5", "0.05", None))
+        self.assertEqual(below, free)
+        self.assertNotEqual(fits, free)
         # an area without a line keeps the prior; a ruled line replaces it
         self.assertEqual(self.scores(True, 1, prior="0.3", area="-5,-5,10,10,0,0", **dev), big)
         self.assertEqual(self.scores(True, 1, prior="0.3", area="-5,-5,10,10,1,0", **dev),

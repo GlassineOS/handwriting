@@ -314,10 +314,18 @@ unweighed). The reference below serves both; the weighing only a version 1 model
   its LINE, else an `em` one in em. Without enough samples in those units, the line alone (the
   area's LINE, or 1 for `em`; small letters 0.2 lines high, capitals 0.5), which only tells
   dots and dashes apart; without a line, the session's `prior` as the line alone is (small
-  letters `XH` high, capitals 2.5 times that), and a line of writing whose own small letters
-  (measured as below) come out over 1.6 times `XH` is read at 1.5 times their height (a typical
-  size says nothing of writing far larger than it). Without any of these, nothing below
-  applies.
+  letters `XH` high, capitals 2.5 times that), but the prior is a typical size, never the
+  writing's own. Writing whose small letters can be measured is read at 1.5 times their height,
+  whatever `XH`: each stroke's turns, a turn counting only once the pen went back a twentieth of
+  the ink's height (so a pen's jitter makes no turns), the median foot less the median top over
+  0.85, with at least 5 of each and the ink at least 4 of its letters wide. Ink that can't be
+  measured takes `XH` as its reference only while it is at most twice as high (one or two
+  glyphs: a lone character) or four times as high (more) as `XH`; taller, the prior says
+  nothing of it and it is read without a reference, by its own height. These figures come from
+  the person's writing (a train half): a reference helps a lone character up to 1.5 times its
+  height, is level with none up to 2 and costs more beyond; for words it helps up to 3 and is
+  level up to 4; a measured line reads best at 1.5 times its letters (of 1, 1.25, 1.5, 2 and 3)
+  at every size. Without any of these, nothing below applies.
   An area with `LINE` 0 and a `BASE` has that one guide line, the next ones a line of
   1 / 0.2 reference small letters apart.
   The line's 0.2 is a guess, and people write smaller than it: a version 2 model reads ink at
