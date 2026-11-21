@@ -16,6 +16,7 @@
 #include "letters.h"
 #include "model.h"
 #include "sample.h"
+#include "recog.h"
 #include "store.h"
 #include "size.h"
 #include "words.h"
@@ -55,6 +56,15 @@ int hw_writers_dir(char *out, size_t n)
 	char b[3800];
 	if (base_dir(b, sizeof b, "XDG_DATA_HOME", ".local/share")) return -1;
 	int r = snprintf(out, n, "%s/handwriting-writers", b);
+	return r < 0 || (size_t)r >= n ? -1 : 0;
+}
+
+/* the person's own models (local.h), beside the store and never inside it */
+int hw_local_models_dir(char *out, size_t n)
+{
+	char b[3800];
+	if (base_dir(b, sizeof b, "XDG_DATA_HOME", ".local/share")) return -1;
+	int r = snprintf(out, n, "%s/handwriting-models", b);
 	return r < 0 || (size_t)r >= n ? -1 : 0;
 }
 
@@ -234,6 +244,8 @@ void hw_store_adaptation_dir(char *rel, size_t n, const char *lang)
 			name[j] = 0;
 		}
 	}
+	/* the person's own recognizer in use (local.h): its head apart from every shipped set's */
+	if (hw_lang_local(lang)) snprintf(name, sizeof name, "local");
 	if (name[0]) snprintf(rel, n, "adaptation/%s@%s", lang, name);
 	else snprintf(rel, n, "adaptation/%s", lang);
 }

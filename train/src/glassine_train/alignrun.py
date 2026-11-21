@@ -270,7 +270,7 @@ def export_ghm(ckpt: Path, out: Path) -> Path:
         torch.onnx.export(Single(m.m).eval(), (x0,), onnx, input_names=["ink"], output_names=["logp"],
                           dynamic_axes={"ink": {1: "points"}, "logp": {1: "frames"}}, opset_version=17, dynamo=False)
         out.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, str(tool), str(onnx), "--charset", A.LETTERS, "-o", str(out)],
+        subprocess.run([sys.executable, str(tool), str(onnx), "--charset", A.LETTERS, "--kind", "aligner", "-o", str(out)],
                        check=True, stdout=subprocess.DEVNULL)
     return out
 
