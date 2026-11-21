@@ -333,7 +333,8 @@ size, spacing) and keep their shape.
   alternates that text shaping applies by default (no setting in the app). The preview,
   spaced as the font spaces it,
   (Scenario 3) shows the same variants as the installed font for the same text, and the
-  same neighbour rules (FR-038) and joined pairs (FR-039); it sets joined letters (FR-044)
+  same context and neighbour rules (FR-046, FR-038) and joined pairs (FR-039); it sets
+  joined letters (FR-044)
   as two letters, apart.
 - **FR-038**: Where the person's samples show that they write a character a particular way
   next to a particular neighbour (the character before it or after it), the font uses that
@@ -345,6 +346,19 @@ size, spacing) and keep their shape.
   the cycle does. Everywhere else the
   cycle chooses. A character's page shows how often the cycle shows each way ("6 in 10");
   a rule changes only the places it names.
+- **FR-046**: Where the person's samples show that they write a character a particular way
+  between two particular neighbours (the character before it and the character after it),
+  the font uses that way there, by contextual alternates that text shaping applies by
+  default. These context rules come before the character's neighbour rules (FR-038): the
+  first rule that applies wins. A context rule needs clear support: the three characters
+  written together at least 4 times in usable samples, the character the same way in at
+  least three quarters of them, a way the neighbour rules and the cycle don't show there,
+  its share there at least a quarter above its share in the cycle of FR-010, and, checked
+  on samples the rule was not made from, it picks the way the person wrote more often than
+  the neighbour rules and the cycle do. A character has at most 8 context rules. Everywhere
+  else the neighbour rules and the cycle choose, as without them; the preview (FR-010),
+  the pull's targets (FR-035) and the set words of Neatest (FR-043) follow them as the font
+  does.
 - **FR-039**: A pair of letters the person writes joined in one stroke (FR-007) is drawn as
   one glyph made from their own joined samples, as a ligature that text shaping applies by
   default, in each of the three styles: when the pair is written joined in at least 4 usable
@@ -382,7 +396,7 @@ size, spacing) and keep their shape.
   end to the second's start along the learned shape, turned and scaled to fit between those
   ends (its curve grown by no more than half again its own), the halves meeting at the
   height the person's joins pass halfway. The cycle
-  (FR-010), the neighbour rules (FR-038) and the joined pairs (FR-039) choose the letters'
+  (FR-010), the context and neighbour rules (FR-046, FR-038) and the joined pairs (FR-039) choose the letters'
   ways as without joins. Joined letters are set where the spacing places them (FR-007) as
   closely as one meeting place for each way of writing a letter and join allows, but never
   so near that the second letter's start comes before the first one's end plus the way the
@@ -396,7 +410,7 @@ size, spacing) and keep their shape.
   them, apps whose text shaping applies random alternates (it does by default in HarfBuzz,
   so in GTK, Pango and the apps built on them) pick each character's way at random,
   weighted as in the cycle, the same way each time for the same text, and other apps keep
-  the cycle; neighbour rules, joined pairs and joins apply either way. Which apps honour them is
+  the cycle; context and neighbour rules, joined pairs and joins apply either way. Which apps honour them is
   documented with the recognizer.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
@@ -428,8 +442,8 @@ size, spacing) and keep their shape.
     words towards the word spacing, by a limited step).
   - **Medium**: also pulls each covered character half way towards its target (FR-035).
   - **Strong**: pulls it most of the way (0.85).
-  - **Neatest**: sets each word anew in the person's font (FR-043); a word that can't be
-    set gets Strong's pull.
+  - **Neatest**: sets each word anew in the person's font, where and as the person wrote
+    it (FR-043); a word that can't be set gets Strong's pull.
 
   A character is pulled only when its target has its structure, tested coarsely: the same
   number of strokes (after a late dot, bar or arm is placed with its character, FR-007)
@@ -441,7 +455,7 @@ size, spacing) and keep their shape.
 - **FR-035**: The target of a pull is exactly the glyph the font draws for that character at
   that place in the text: the same version of the letter model (never a blend of
   versions), chosen as the font chooses it for the same text, by the cycle (FR-010), the
-  neighbour rules (FR-038) and the joined pairs (FR-039). It is fitted to the written
+  context and neighbour rules (FR-046, FR-038) and the joined pairs (FR-039). It is fitted to the written
   character by similarity only: moved to its place, scaled uniformly to the line's
   x-height and set at the line's slant (or the letter model's), never stretched, sheared
   or mirrored. At Neatest the word itself is set in the font instead (FR-043). A character
@@ -472,16 +486,26 @@ size, spacing) and keep their shape.
   its shape would come closer to another character (FR-037), in a word read with
   low confidence (FR-017), or drawing or a gesture (FR-020).
 - **FR-043**: At Neatest each word whose text is known is set anew in the person's font,
-  as the font sets that text: the font's glyph for each character (the cycle, the
-  neighbour rules, the joined pairs: FR-035, FR-038, FR-039) unless the ink calls for
-  another way of writing it (below), and the font's advances and kerning, placed on the line where the written word starts, on the line's baseline, at
-  the line's x-height, with the slant the font draws. The strokes stay the person's (FR-013):
+  conditioned on the word as written. It is set as the font sets that text: the font's
+  glyph for each character (the cycle, the context and neighbour rules, the joined pairs:
+  FR-035, FR-046, FR-038, FR-039) unless the ink calls for another way of writing it
+  (below), joined as the font joins the ways set (FR-044), at the font's advances and
+  kerning. Then it is placed as the person wrote it: along its own baseline (through its
+  letters' lowest points), at its own lean and at its own x-height (its letters' median),
+  each drawn towards the line's when the word gives little to measure it by (a word with
+  fewer than two letters on the baseline, or narrower than an x-height, takes the line's
+  baseline; a short word's baseline, lean and x-height lean towards the line's), and with
+  the font's advances scaled (by 0.8 to 1.25) and moved so the letters' middles fall where
+  they were written. Each word stays where it was written, so a line written on a slope
+  or leaning keeps its direction. The strokes stay the person's (FR-013):
   each character's ink, its pieces in the order written, is drawn along the centre lines of
   its glyph's strokes, each point by its share of the ink's length, so the timing and
   pressure run along the glyph as written. Each letter is set onto a way of writing it
   (FR-006) with as many strokes as its ink has pieces, each piece along its own stroke: the
   font's there when it has that many, else the one with that many made from the most
-  samples; a letter with none keeps its written ink as the line-level corrections leave it,
+  samples; of the ways with that number of strokes made from at least 3 samples, the one
+  nearest to the letter's ink as written takes its place (the context and neighbour
+  rules and the cycle choose where the ways are equally near); a letter with none keeps its written ink as the line-level corrections leave it,
   moved to its place in the set word (a piece set over two strokes would draw the pen's
   lift between them, and a stroke no piece runs along would not be drawn). A letter whose
   version there was made from very few samples and doesn't fit the height of its ink is set
@@ -494,8 +518,7 @@ size, spacing) and keep their shape.
   (the start of that letter's stroke crossing, or starting on, the letter before as
   written, along the line) is the letter before's, so it is not lost in the next letter's
   glyph; the next letter keeps the rest of its ink. No letter of the reading is left out:
-  each keeps ink of its own. Between two words the gap stays at least as wide as written,
-  or as the font's word gap where that is less; the word on the right moves along the line.
+  each keeps ink of its own.
   A letter's tail that the reading gives the next letter (it lies wholly before that
   letter's own strokes and is shorter and lower than they are) stays the letter's, and a lead-in the
   reading gives the letter before stays the next letter's: the pen was lifted there, so the
@@ -512,7 +535,8 @@ size, spacing) and keep their shape.
   set word: each character with ink of its own, strokes of no other word, no drawing or
   gesture among them, the ink about as wide as the set word (neither more than 1.6 times the
   other) and each character's ink about where its glyph is (within 0.6 x-heights, scaled to
-  the font's width). Any other word gets Strong's pull (FR-014).
+  the font's width). Any other word gets Strong's pull (FR-014), placed along its own
+  baseline, lean and size as written in the same way, so the line keeps its direction.
 - **FR-015**: The same ink, letter model and strength always give the same result.
 - **FR-016**: Neatening is a request in the recognizer's interface (docs/recognizer.md), so
   every app gets the same result; apps reach it through the neat ink layer (FR-018), keep the
@@ -665,6 +689,15 @@ Host level:
   font shapes it that way after that neighbour and by the cycle elsewhere; with too few
   such samples, too mixed a way, or a rule that loses to the cycle on held-back samples,
   there is no rule; the preview shows what shaping shows;
+- with samples where a character is written one way between two neighbours often enough,
+  and another way after the first of them alone, the font shapes it the first way between
+  the two and the second after the first alone, by the cycle elsewhere; with too few such
+  samples, too mixed a way, or a rule that loses to the neighbour rules and the cycle on
+  held-back samples, there is no context rule; the preview and Neatest's set words follow
+  what shaping shows;
+- at Neatest a line written on a slope and leaning further than the font keeps its slope
+  and lean: each set word stays where it was written, along its own baseline and lean, and
+  every letter of it is on one of its ways once the word's slope and lean are taken off;
 - a pair written joined often enough is one glyph in each of the three styles, shaped as
   a ligature with no feature requested, spaced within 0.02 x-heights of where its letters'
   gaps put its neighbours, with the characters around it as without it; a pair written
@@ -685,7 +718,7 @@ Host level:
   covered characters are closer to the font's glyph for them than at the level before
   (every one whose target has its structure, however badly written), at Neatest the
   glyph itself fitted by position, uniform scale and slant only (its outline at the
-  font's version for that place: cycle, neighbour rules, joined pairs), unless the shape check
+  font's version for that place: cycle, context and neighbour rules, joined pairs), unless the shape check
   keeps it as it was (FR-037), and the reply names why each character that wasn't pulled
   wasn't; a line with a name or another word missing from the dictionary is neatened like
   any other; a character is pulled towards a version with its own number of strokes; no point of a pulled stroke moves backwards along the stroke; uneven gaps between
