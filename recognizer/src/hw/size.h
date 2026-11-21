@@ -27,6 +27,10 @@ struct hw_size_ref {
 	int pending;                    /* the person's letters not looked up yet */
 	char lang[36];
 	double per_mm;                  /* the session's points per mm (0: not known) */
+	double prior;                   /* the session's typical small letter (prior), in its
+	                                   units: the reference when neither the person's letters
+	                                   in its units nor an area line give one; 0 none */
+	double given_base;              /* the area's BASE as given (NAN none): with the prior */
 	int weigh;                      /* 0: by the model (version 1 weighs, version 2 does not);
 	                                   1: weigh ("weigh"); -1: never ("noweigh") */
 };
@@ -40,6 +44,11 @@ struct hw_size_ref {
  * not read the size, ghm version 1, is weighed). */
 void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw_area *a, double base,
 		     struct hw_size_ref *out);
+/* the same with a typical small letter's height in the session's units (prior; 0 none): the
+ * reference, as the line alone is one, when neither the person's letters in its units nor
+ * an area line give one (docs/recognizer.md, Size; `prior`) */
+void hw_size_ref_prior(const char *lang, const struct hw_units *u, const struct hw_area *a, double base, double prior,
+		       struct hw_size_ref *out);
 
 /* The reference height a model that reads it (ghm version 2) scales the ink by: the
  * person's small letters, else HW_LINE_XH lines, or for a line of writing far smaller than

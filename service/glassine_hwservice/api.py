@@ -42,8 +42,9 @@ def strokes_of(p):
 
 def area_of(p, strokes, units):
     """the request's writing area as the recognizer's AREA (FR-016): the one given, its
-    missing parts found from the writing (area.py). None: no area, for em units without one
-    given (em says how high a line is) and for writing too little to find a line in"""
+    missing parts as the pen interface has them (area.py: the writing's box, no ruled line,
+    the guide line of one line of writing). None for em units without one given (em says
+    how high a line is)"""
     a = p.get("area")
     if a is None:
         if units == "em":
@@ -53,9 +54,7 @@ def area_of(p, strokes, units):
         raise Fail("bad-request", "area: an object with box, line, base, rot")
     try:
         bx = [float(v) for v in a["box"]] if "box" in a else list(area.box(strokes))
-        ln = float(a["line"]) if "line" in a else 1.0 if units == "em" else area.line(strokes)
-        if not ln and "line" not in a:
-            return None
+        ln = float(a["line"]) if "line" in a else 1.0 if units == "em" else 0.0
         rot = int(a.get("rot", 0))
         if "base" in a:
             bs = float(a["base"])
@@ -63,7 +62,7 @@ def area_of(p, strokes, units):
             bs = area.base(strokes) if len(lines(dict(enumerate(strokes)))) == 1 else None
     except (TypeError, ValueError, KeyError):
         raise Fail("bad-request", "area: box [x0, y0, x1, y1], line, base and rot are numbers")
-    if len(bx) != 4 or bx[2] <= bx[0] or bx[3] <= bx[1] or not ln > 0 or rot not in (0, 90, 180, 270):
+    if len(bx) != 4 or bx[2] <= bx[0] or bx[3] <= bx[1] or ("line" in a and not ln > 0) or rot not in (0, 90, 180, 270):
         raise Fail("bad-request", "area: a box that isn't empty, a line above 0, rot 0, 90, 180 or 270")
     return area.text(bx, ln, bs, rot)
 
@@ -85,6 +84,9 @@ class Api:
                                   area.with_rate(units, area.rate(strokes)), esc(str(ctx.get("before", ""))[-4000:]))
         if r[1] == "private":
             return None
+        pr = area.prior(units)
+        if pr:
+            await self.engine.ask(app, "prior", s, area._num(pr))
         for st in strokes:
             await self.engine.ask(app, "stroke", s, points(st))
         if where is not None:

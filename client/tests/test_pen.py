@@ -240,13 +240,14 @@ class Pen(unittest.TestCase):
         c.ask("begin", "s", "-", "normal", units, "")
         for s in raw2:
             c.ask("stroke", "s", rec_points(s))
-        # the area the service documents (docs/service.md, The writing's size): the box of
-        # the writing, its line and, for one line of writing, its guide line
+        # the area and prior the service documents (docs/service.md, The writing's size):
+        # the box of the writing, no ruled line, for one line of writing its guide line, and
+        # the typical size at the default density (the units don't say theirs)
         from glassine_hwservice import area as A
         from glassine_hwservice.pen import lines
         bs = A.base(raw2) if len(lines(dict(enumerate(raw2)))) == 1 else None
-        self.assertTrue(A.line(raw2))
-        c.ask("area", "s", A.text(A.box(raw2), A.line(raw2), bs))
+        c.ask("prior", "s", A._num(A.prior(units)))
+        c.ask("area", "s", A.text(A.box(raw2), 0, bs))
         c.ask("read", "s", "5")
         r = c.ask("confirm", "s", "picked", TR.esc(text))
         c.close()

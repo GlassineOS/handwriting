@@ -1,21 +1,22 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The writing area and units of every request the service makes (spec 004 FR-016, FR-017;
-docs/service.md, The writing's size). A model that reads the ink's size (spec 001 FR-018)
-needs a reference: the person's letters in millimetres (units with PER_MM), else the area's
-line. So each session gets an area: the app's when it gave one, else the box of the writing
-with a line and a guide line found from the writing itself.
+"""The writing area, units and size prior of every request the service makes (spec 004
+FR-016, FR-017; docs/service.md, The writing's size). A model that reads the ink's size
+(spec 001 FR-018) judges it in physical size: the ink's points per millimetre and the
+person's letters in millimetres, before there are enough of them a typical handwriting size
+in millimetres (TYPICAL_XH_MM, the prior). A ruled line is a reference only when the app
+sets one: no line is found from the writing, so a lone character is never measured against
+a line found from itself, nor against one borrowed from other writing.
 
-Found from the writing: a stroke's size is the larger of its height and a quarter of its
-width (as the recognizer measures ink); the line is LINE_SIZES median stroke sizes, the
-guide line of one line of writing the median of its strokes' lowest points (a descender or
-a dot is one stroke among many). On the recorded ink and the synthetic held-out fonts this
-reads within a point of the keyboard's paper (a known line and guide line) at every writing
-size; a fixed line in millimetres is either as good or, when the person writes smaller
-than it guesses, far worse."""
+The area's box is the app's, else the bounding box of the writing; its line the app's ruled
+lines' spacing, else 0 (none); its guide line the app's first ruled line, else for one line
+of writing with at least MIN_GLYPHS glyphs the median of its strokes' lowest points (where the
+letters sit, which tells the marks on the line apart: a comma from an apostrophe; it is no
+size reference)."""
 import math
 
-LINE_SIZES = 6.0        # a line found from the writing: six median stroke sizes
-MIN_GLYPHS = 3          # writing with fewer glyphs tells nothing of its line
+TYPICAL_XH_MM = 2.5     # the prior: a typical small letter (x-height) in handwriting, mm
+DEFAULT_PX_PER_MM = 96 / 25.4   # an output of unknown size, until the person sets its density
+MIN_GLYPHS = 3          # writing with fewer glyphs tells nothing of its guide line
 MIN_STEPS = 8           # the pen's rate needs this many time steps
 
 
@@ -28,11 +29,6 @@ def _median(v):
 def _num(v):
     v = round(float(v), 3)
     return str(int(v)) if v.is_integer() else repr(v)
-
-
-def stroke_size(st):
-    xs, ys = [p[0] for p in st], [p[1] for p in st]
-    return max(max(ys) - min(ys), (max(xs) - min(xs)) / 4)
 
 
 def box(strokes):
@@ -55,26 +51,42 @@ def glyphs(strokes):
     return n
 
 
-def line(strokes):
-    """the line height found from the writing; 0 when it has fewer than MIN_GLYPHS glyphs
-    (a lone character's line, found from itself, would hide its size: o or O)"""
-    if glyphs(strokes) < MIN_GLYPHS:
-        return 0.0
-    return LINE_SIZES * _median([stroke_size(s) for s in strokes if s])
-
-
 def base(strokes):
-    """the guide line of one line of writing: the median of its strokes' lowest points"""
+    """the guide line of one line of writing: the median of its strokes' lowest points; None
+    for writing of fewer than MIN_GLYPHS glyphs (a lone character's own bottom would hide
+    where it sits: a comma from an apostrophe)"""
+    if glyphs(strokes) < MIN_GLYPHS:
+        return None
     low = [max(p[1] for p in s) for s in strokes if s]
     return _median(low) if low else None
 
 
 def text(bx, ln, bs=None, rot=0):
-    """the recognizer's area: X0,Y0,X1,Y1,LINE,ROT[,BASE]"""
+    """the recognizer's area: X0,Y0,X1,Y1,LINE,ROT[,BASE] (LINE 0: no ruled line)"""
     f = [_num(v) for v in bx] + [_num(ln), str(rot)]
     if bs is not None and math.isfinite(bs):
         f.append(_num(bs))
     return ",".join(f)
+
+
+def per_mm(units):
+    """the units' points per millimetre, 0 when they don't say"""
+    f = units.split(":")
+    try:
+        return float(f[1]) if f[0] == "device" and len(f) >= 2 and float(f[1]) > 0 else 0.0
+    except ValueError:
+        return 0.0
+
+
+def prior(units):
+    """the typical small letter in the units (the recognizer's `prior`): TYPICAL_XH_MM at the
+    units' points per millimetre, for `device` units without one at DEFAULT_PX_PER_MM (the
+    units stay the pen's own: no size in millimetres is claimed); None for em (the units say
+    how high a line is)"""
+    f = units.split(":")
+    if f[0] != "device":
+        return None
+    return TYPICAL_XH_MM * (per_mm(units) or DEFAULT_PX_PER_MM)
 
 
 def rate(strokes):

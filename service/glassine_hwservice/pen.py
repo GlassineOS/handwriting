@@ -16,10 +16,12 @@ only a confirmed text in the font, spec 003 FR-043; a word read wrongly would be
 another). The writing is neatened line by line: by the area's guides (set_guides), else
 by the lines found in it (lines()).
 
-Every session has a writing area (area.py): the app's box and guides when it set them, else
-the box of the writing held with a line found from it; the guide line is the app's, else the
-one found from the line of writing the session holds. Its units are the compositor's
-(device:PER_MM when it knows the output's size) with the pen's rate added once measured."""
+Every session has a writing area (area.py): the app's box when it set one, else the box of the
+writing held; the line of the app's ruled lines, else none (no line is found from the
+writing); the guide line the app's, else the one found from the line of writing the session
+holds. Its units are the compositor's (device:PER_MM when it knows the output's size or the
+person set its density, else device) with the pen's rate added once measured;
+the size prior is a typical small letter in them (area.prior)."""
 import asyncio
 import json
 import math
@@ -106,7 +108,6 @@ class Surface:
         self.units = "device"
         self.rate = 0               # the pen's points per second, once measured (area.rate)
         self.area_sent = None       # the area the main session has
-        self.line = 0.0             # the line found from this surface's writing, kept (area.line)
         self.guides, self.box = (0.0, 0.0), None
         self.strokes = {}           # stroke number -> points (as the compositor sent them)
         self.order = []             # stroke numbers in writing order
@@ -199,37 +200,42 @@ class Surface:
         """the writing held, gestures left out"""
         return [self.strokes[k] for k in self.order if k not in self.gestures]
 
+    def own_units(self):
+        """the compositor's units (device without a density: the prior's default applies)"""
+        return self.units
+
     def session_units(self):
         if not self.rate:
             self.rate = area.rate(self.ink())
-        return area.with_rate(self.units, self.rate)
+        return area.with_rate(self.own_units(), self.rate)
 
     def area_of(self, ks=None):
         """the area for a session holding strokes ks (None: all held): the app's box, else the
-        writing's; the app's line, else the writing's (the last one found on this surface
-        while the writing is too little to tell); the app's guide line, else that of the
-        session's line of writing (none when the session holds more than one line). None
-        while no line is known: the recognizer goes by the ink's own size."""
+        writing's; the app's line, else none; the app's guide line, else that of the session's
+        line of writing (none when the session holds more than one line, or too little writing
+        to show one)"""
         held = self.ink()
         if not held:
             return None
         bx = self.box or area.box(held)
         if self.guides[0] > 0:
             return area.text(bx, self.guides[0], self.guides[1])
-        self.line = area.line(held) or self.line
-        if not self.line:
-            return None
         own = held if ks is None else [self.strokes[k] for k in ks]
         bs = area.base(own) if len(lines(dict(enumerate(own)))) == 1 else None
-        return area.text(bx, self.line, bs)
+        return area.text(bx, 0, bs)
 
     async def begin(self, name):
-        """a session for this surface's writing (its field and units; its area follows its
-        strokes, set_area())"""
+        """a session for this surface's writing (its field, units and size prior; its area
+        follows its strokes, set_area())"""
         e = self.pen.engine
         r = await e.ask(self.app, "begin", name, self.langs or "-", field(self.purpose, self.hints),
                         self.session_units(), self.before)
-        return r[1] == "ok"
+        if r[1] != "ok":
+            return False
+        pr = area.prior(self.own_units())
+        if pr:
+            await e.ask(self.app, "prior", name, area._num(pr))
+        return True
 
     async def set_area(self, name, ks=None):
         a = self.area_of(ks)
