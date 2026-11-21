@@ -531,6 +531,69 @@ class Service(unittest.TestCase):
 
 
 
+    def installed(self, seed=9):
+        """a replacement recognizer the person installs themselves (spec 006)"""
+        m = self.dir / ("mine%d.ghm" % seed)
+        subprocess.run([sys.executable, str(REC / "tests" / "mkmodel.py"), str(m), "--seed", str(seed), "--kind",
+                        "recognizer"], check=True)
+        return m
+
+    def test_installed_model_no_app_told(self):
+        """spec 006: installing, switching and removing a model changes the next reading of
+        every app, with no restart of the recognizer and nothing on either interface about it"""
+        a = self.app("org.example.A")
+        st = ink(3, seed=2)
+        hello = self.call("hello")["result"]
+        shipped = a("read", strokes=st, count=3)["result"]
+        self.assertTrue(self.quiet(0.5))
+        self.e.run("model", "install", str(self.installed()))
+        mine = a("read", strokes=st, count=3)["result"]
+        self.assertNotEqual(mine, shipped)
+        self.e.run("model", "use", "recognizer", "shipped")
+        self.assertEqual(a("read", strokes=st, count=3)["result"], shipped)
+        self.e.run("model", "use", "recognizer", "local")
+        self.assertEqual(a("read", strokes=st, count=3)["result"], mine)
+        self.e.run("model", "remove", "recognizer")
+        self.assertEqual(a("read", strokes=st, count=3)["result"], shipped)
+        self.assertTrue(self.quiet(1.0))                  # nothing on the pen channel
+        self.assertEqual(self.call("hello")["result"], hello)
+        s = self.call("status")["result"]["engine"]
+        self.assertEqual((s["running"], s["starts"]), (True, 1))
+        self.assertFalse(any("model" in json.dumps(v) for v in (hello, shipped, mine)))
+
+    def test_restore_after_a_model_change_keeps_confirmed_words(self):
+        """spec 005 FR-026 with spec 006: stored ink handed back after the person switched to an
+        installed model keeps its confirmed words; ink alone takes the new reading"""
+        self.pen_send(op="surface", s=1, sandbox="org.example.Notes", pid=0)
+
+        def region(r, **kw):
+            self.pen_send(op="region", s=1, r=r, name="f%d" % r)
+            self.pen_send(op="region_set", s=1, r=r, reading=True, size=[400, 120], units="device:6.25")
+            for k, v in kw.items():
+                self.pen_send(op=k, s=1, r=r, **v)
+
+        def value(r):
+            return self.pen_events(lambda o: any(m["op"] == "region_value" and m["r"] == r for m in o))[-1]
+        strokes = ink(3, seed=7)
+        region(1)
+        for i, p in enumerate(strokes):
+            self.pen_send(op="region_stroke", s=1, r=1, k=i, points=p)
+        ev = self.pen_events(lambda o: any(m["op"] == "region_candidates" and m["r"] == 1 for m in o))
+        v1 = [m for m in ev if m["op"] == "region_value" and m["r"] == 1][-1]
+        self.pen_send(op="region_report", s=1, r=1, serial=v1["serial"], action="accepted")
+        ev = self.pen_events(lambda o: any(m["op"] == "region_report" for m in o))
+        v1 = ([m for m in ev if m["op"] == "region_value" and m["r"] == 1] or [v1])[-1]
+        self.assertTrue(v1["state"])
+        kept = [{"k": k, "points": p} for k, p in enumerate(strokes)]
+        region(2, region_restore={"strokes": kept})
+        alone_before = value(2)
+        self.e.run("model", "install", str(self.installed()))
+        region(3, region_restore={"strokes": kept, "value": v1["text"], "state": v1["state"]})
+        self.assertEqual(value(3)["text"], v1["text"])
+        region(4, region_restore={"strokes": kept})
+        self.assertNotEqual(value(4)["text"], alone_before["text"])
+        self.pen_send(op="destroy", s=1)
+
     def test_example_against_schema(self):
         """the client example (service/examples) talks to the service; every line it sends
         and gets passes docs/service.schema.json"""

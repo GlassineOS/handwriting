@@ -28,6 +28,7 @@ import importlib.util
 import json
 import math
 import random
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -1389,7 +1390,8 @@ class Neaten(unittest.TestCase):
 
         whole = lambda at: ";".join(",".join(sorted({str(j) for j, _, _ in m}, key=int)) for m in at)
         plain = {lv: run(lv, True, whole) for lv in (0.75, 1)}
-        subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(al), "--strided", "1", "--seed", "5"], check=True)
+        subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(al), "--strided", "1", "--seed", "5", "--kind", "aligner"],
+                       check=True)
         changed = 0
         try:
             for lv in (0.75, 1):
@@ -1409,6 +1411,42 @@ class Neaten(unittest.TestCase):
         finally:
             al.unlink()
         self.assertGreater(changed, 0)   # (the aligner was used)
+
+    def test_installed_aligner(self):
+        """spec 006: an aligner the person installs (model install) neatens as the same file
+        shipped does, while the shipped recognizer reads; chosen back to shipped (no aligner
+        shipped here), neatening is as without one"""
+        self.letters()
+        rnd = random.Random(37)
+        small = "abcdefghijklmnopqrstuvwxyz"
+        lines = [joined_line(rnd, ["".join(rnd.choice(small) for _ in range(rnd.randint(2, 4))) for _ in range(3)])
+                 for _ in range(4)]
+        whole = lambda at: ";".join(",".join(sorted({str(j) for j, _, _ in m}, key=int)) for m in at)  # noqa: E731
+
+        def run():
+            outs = []
+            for lv in ("0.75", "1"):
+                for s, at, _ in lines:
+                    self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                    c = self.e.start()
+                    self.begin(c, s)
+                    outs.append(parse(c.ask("neaten", "s", lv, TR.esc(s["text"]), whole(at)), why=True))
+                    c.close()
+            return outs
+        plain = run()
+        al = self.e.dir / "installed-aligner.ghm"
+        subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(al), "--aligner", "--seed", "5"], check=True)
+        shipped = self.e.models / "en" / "aligner.ghm"
+        shutil.copy(al, shipped)
+        try:
+            as_shipped = run()
+        finally:
+            shipped.unlink()
+        self.assertTrue(as_shipped != plain, "the aligner changed nothing")
+        self.assertEqual(self.e.run("model", "install", str(al)).stdout, "installed\taligner\ten\n")
+        self.assertTrue(run() == as_shipped, "installed != shipped")
+        self.e.run("model", "use", "aligner", "shipped")
+        self.assertTrue(run() == plain, "shipped chosen != no aligner")
 
     def test_joined_words_keep_every_letter(self):
         """joined words of two to five letters (one stroke through them, as written in a

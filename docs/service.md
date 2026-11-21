@@ -30,6 +30,14 @@ belongs to the app it was made for, as if that app had spoken to the recognizer 
 pick through the pen interface therefore stores the same sample as a direct client confirming
 the same pen input in the same units and area (The writing's size, below).
 
+**Models.** The recognizer reads with the shipped model of each language, or with one the
+person installed themselves (spec 006; docs/recognizer.md, Installed models). The service says
+nothing about which: no field, capability or message of either interface names a model, and a
+change of model or of the person's choice takes effect at the next reading of every app, with
+the same recognizer process (it looks at the chosen file at each request). Writing handed back
+after a change is read with the model there is then; confirmed and edited words stay (Writing
+regions, Stored ink).
+
 ## Permissions (FR-014)
 
 Per app, the person decides two things:
