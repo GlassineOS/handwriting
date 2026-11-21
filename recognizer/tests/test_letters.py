@@ -260,7 +260,9 @@ def overhang_word(text, rnd, dist, where="word"):
 
 
 class Env:
-    def __init__(self):
+    """a test user; base: Autograph's base font file (docs/recognizer.md), none by default"""
+
+    def __init__(self, base=None):
         self.dir = Path(tempfile.mkdtemp(prefix="hw-letters-"))
         self.home = self.dir / "home"
         self.home.mkdir()
@@ -268,7 +270,8 @@ class Env:
                         XDG_CACHE_HOME=str(self.dir / "cache"), HOME=str(self.home),
                         GLASSINE_HANDWRITING_MODELS=str(self.dir / "models"),
                         GLASSINE_HANDWRITING_SYSFS=str(self.dir / "power"),
-                        GLASSINE_HANDWRITING_LOADAVG=str(self.dir / "load"))
+                        GLASSINE_HANDWRITING_LOADAVG=str(self.dir / "load"),
+                        GLASSINE_HANDWRITING_BASE=str(base) if base else "off")
         self.env.pop("FONTCONFIG_FILE", None)
         (self.dir / "load").write_text("0.10 0.20 0.30 1/100 1\n")
         bat = self.dir / "power" / "battery"
@@ -849,7 +852,7 @@ class LateStrokes(unittest.TestCase):
         ss = [late_sample("a" + c + "o", rnd, "shared") for c in "tix" for _ in range(3)]
         self.e.put(ss)
         st = self.e.status()
-        self.assertEqual(st["state"], ["none"])
+        self.assertEqual(st["state"], ["outdated"])      # the empty model hasn't learned them
         before = (st["samples"], st["covered"], {c: n for c, (n, _) in st["chars"].items()})
         self.assertEqual(before[2]["t"], 3)
         self.assertTrue(all(nv == 0 for _, nv in st["chars"].values()))
@@ -1330,31 +1333,32 @@ class Font(unittest.TestCase):
             e.put(alphabet_samples(seed=12, per=3))
             e.run("letters", "build", "-r")
             out = e.run("font", "install").stdout.strip().split("\t")
-            self.assertEqual(out[:3], ["installed", "My handwriting", "1"])
+            self.assertEqual(out[:3], ["installed", "Autograph", "1"])
             path = Path(out[3])
             self.assertEqual(path.parent, e.fonts)
-            m = subprocess.run(["fc-match", "-f", "%{family}\n%{file}\n", "My handwriting"], env=e.env,
+            m = subprocess.run(["fc-match", "-f", "%{family}\n%{file}\n", "Autograph"], env=e.env,
                                capture_output=True, text=True, check=True).stdout.splitlines()
-            self.assertEqual(m, ["My handwriting", str(path)])
-            # renamed and rebuilt: a new version and file, the old one gone
-            out = e.run("font", "install", "-n", "Ünïcode hand").stdout.strip().split("\t")
-            self.assertEqual(out[:3], ["installed", "Ünïcode hand", "2"])
-            self.assertFalse(path.exists())
+            self.assertEqual(m, ["Autograph", str(path)])
+            # rebuilt: the same name, a new version and file, the old one gone
             out = e.run("font", "install").stdout.strip().split("\t")
-            self.assertEqual(out[:3], ["installed", "Ünïcode hand", "3"])
+            self.assertEqual(out[:3], ["installed", "Autograph", "2"])
+            self.assertFalse(path.exists())
             path = Path(out[3])
-            self.assertEqual(e.run("font", "status").stdout.splitlines()[0].split("\t"), ["Ünïcode hand", "3", str(path)])
+            self.assertEqual(e.run("font", "status").stdout.splitlines()[0].split("\t"), ["Autograph", "2", str(path)])
             lst = subprocess.run(["fc-list", ":", "family", "file"], env=e.env, capture_output=True, text=True,
                                  check=True).stdout
             self.assertIn(str(path), lst)
             self.assertEqual(len(list(e.fonts.iterdir())), 3)     # the three styles
-            self.assertEqual(e.run("font", "install", "-n", "bad\tname", check=False).returncode, 2)
-            # erasing the samples takes the letter model and the font
+            # the name is Autograph's: a name is for an export (FR-012)
+            self.assertEqual(e.run("font", "install", "-n", "Other", check=False).returncode, 2)
+            self.assertEqual(e.run("font", "export", "-n", "bad\tname", str(e.dir), check=False).returncode, 2)
+            # erasing the samples takes the letter model; without a base Autograph has nothing
+            # to draw and goes (with one it goes back to the base: Autograph)
             e.run("samples", "erase")
             self.assertFalse(path.exists())
-            self.assertFalse((e.store / "letters").exists())
+            self.assertFalse((e.store / "letters" / "model").exists())
             self.assertEqual(e.run("font", "status").stdout.strip(), "none")
-            self.assertEqual(e.status()["state"], ["none"])
+            self.assertEqual(e.status()["state"], ["current"])
         finally:
             e.close()
 
@@ -1377,7 +1381,8 @@ class Font(unittest.TestCase):
     def test_no_model_no_font(self):
         e = Env()
         try:
-            self.assertEqual(e.run("font", "install").stdout.strip(), "skip\tno-letters")
+            # the empty model and no base: nothing to draw
+            self.assertEqual(e.run("font", "install").stdout.strip(), "skip\tnothing-covered")
             self.assertFalse(e.fonts.exists())
         finally:
             e.close()
@@ -1666,7 +1671,7 @@ class Styles(unittest.TestCase):
         ss += [spaced_sample(w, rnd) for w in ("hello world", "lol ok", "the cat") * 3]
         cls.e.put(ss)
         cls.e.run("letters", "build", "-r")
-        cls.out = cls.e.run("font", "install", "-n", "Test hand").stdout.strip().split("\t")
+        cls.out = cls.e.run("font", "install").stdout.strip().split("\t")
         cls.status = cls.e.run("font", "status").stdout.splitlines()
         cls.files = {f[1]: Path(f[2]) for f in (ln.split("\t") for ln in cls.status[1:]) if f[0] == "style"}
 
@@ -1675,8 +1680,8 @@ class Styles(unittest.TestCase):
         cls.e.close()
 
     def test_installed_together(self):
-        self.assertEqual(self.out[:3], ["installed", "Test hand", "1"])
-        self.assertEqual(self.status[0].split("\t"), ["Test hand", "1", self.out[3]])
+        self.assertEqual(self.out[:3], ["installed", "Autograph", "1"])
+        self.assertEqual(self.status[0].split("\t"), ["Autograph", "1", self.out[3]])
         self.assertEqual(set(self.files), set(STYLES))
         self.assertEqual(str(self.files["Regular"]), self.out[3])
         self.assertEqual(self.status[-1], "nib\t35")
@@ -1694,11 +1699,11 @@ class Styles(unittest.TestCase):
             n = f["name"]
             ps.add(n.getDebugName(6))
             if st == "Regular":
-                self.assertEqual((n.getDebugName(1), n.getDebugName(2), n.getDebugName(16)), ("Test hand", "Regular", None))
+                self.assertEqual((n.getDebugName(1), n.getDebugName(2), n.getDebugName(16)), ("Autograph", "Regular", None))
             else:
                 self.assertEqual((n.getDebugName(1), n.getDebugName(2), n.getDebugName(16), n.getDebugName(17)),
-                                 ("Test hand " + st, "Regular", "Test hand", st))
-            self.assertEqual(n.getDebugName(6), "Testhand-" + st)
+                                 ("Autograph " + st, "Regular", "Autograph", st))
+            self.assertEqual(n.getDebugName(6), "Autograph-" + st)
             # every contour turns the same way, so overlapping pieces fill as one ink
             for g in f.getGlyphOrder():
                 if f["glyf"][g].numberOfContours > 0:
@@ -1739,7 +1744,7 @@ class Styles(unittest.TestCase):
         """Regular's outlines are the pen's width alone: the profiles change nothing in it"""
         model = self.e.model()
         a = self.e.dir / "a.ttf"
-        self.e.run("font", "build", "-n", "Test hand", str(a))
+        self.e.run("font", "build", str(a))
         lines = [json.loads(x) for x in model.splitlines()]
         for d in lines:
             for v in d.get("variants", []):
@@ -1748,20 +1753,20 @@ class Styles(unittest.TestCase):
         (self.e.store / "letters" / "model").write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n")
         try:
             b = self.e.dir / "b.ttf"
-            self.e.run("font", "build", "-n", "Test hand", str(b))
+            self.e.run("font", "build", str(b))
             self.assertEqual(a.read_bytes(), b.read_bytes())
             c = self.e.dir / "c.ttf"
-            self.e.run("font", "build", "-n", "Test hand", "--style", "brush", str(c))
+            self.e.run("font", "build", "--style", "brush", str(c))
             self.assertNotEqual(c.read_bytes(), self.files["Brush"].read_bytes())    # Brush does use them
         finally:
             (self.e.store / "letters" / "model").write_text(model)
 
     def test_fontconfig_finds_the_family(self):
-        m = subprocess.run(["fc-match", "-f", "%{file}\n", "Test hand"], env=self.e.env, capture_output=True,
+        m = subprocess.run(["fc-match", "-f", "%{file}\n", "Autograph"], env=self.e.env, capture_output=True,
                            text=True, check=True).stdout.strip()
         self.assertEqual(m, str(self.files["Regular"]))
         for st in ("Calligraphy", "Brush"):
-            m = subprocess.run(["fc-match", "-f", "%{file}\n", "Test hand:style=" + st], env=self.e.env,
+            m = subprocess.run(["fc-match", "-f", "%{file}\n", "Autograph:style=" + st], env=self.e.env,
                                capture_output=True, text=True, check=True).stdout.strip()
             self.assertEqual(m, str(self.files[st]))
 
@@ -2743,6 +2748,255 @@ class RandomAlternates(unittest.TestCase):
             # the rule and the joined pair apply all the same
             self.assertEqual(got[-4:], [("variant", "l", got[-4][2]), ("variant", "o", lo), ("space", got[-2][1]), ("joined", "th")])
             self.assertTrue(f)
+
+
+# ---------------------------------------------------------------- Autograph (FR-009, FR-011, FR-012, FR-045)
+
+BASE_CHARS = ALNUM + ".,;:!?'-()@/&+#%_=$\""
+
+
+def base_strokes(c):
+    """a made-up base letter (x-heights, y up from the baseline): a stem as tall as its class
+    and a hook whose shape depends on the character, so every one differs; marks a dot or a
+    short line"""
+    k = ord(c)
+    if c.isalnum():
+        top = 1.8 if c.isupper() or c.isdigit() or c in "bdfhklt" else 1.0
+        bot = -0.7 if c in "gjpqy" else 0.0
+        w = 0.4 + (k % 5) / 10
+        return [[[0, top], [0, bot]], [[0, 0.5 + (k % 3) / 10], [w, top * 0.8], [w, 0.1], [0.1 + (k % 4) / 20, 0]]]
+    if c in ".,:;":
+        return [[[0.05, 0.0]]] + ([[[0.05, 0.8]]] if c in ":;" else [])
+    return [[[0, 1.0 + (k % 7) / 10], [0.3 + (k % 3) / 10, 0.2]]]
+
+
+def write_base(path, chars=BASE_CHARS):
+    """a base font file as tools/base-font.py writes it (docs/recognizer.md, The base font)"""
+    head = {"format": "glassine-handwriting-base", "version": 1, "family": "Test Base",
+            "copyright": "Copyright the test", "licence": "OFL-1.1", "licence_url": "https://openfontlicense.org",
+            "source": "none", "sha256": "0", "slant": 0, "measured_slant": 0, "cap_height": 1.8,
+            "ascender": 1.8, "descender": -0.7, "ink_width": 0.12, "letter_spacing": 0.3, "word_spacing": 1.0}
+    lines = [json.dumps(head)] + [json.dumps({"char": c, "strokes": base_strokes(c)}) for c in chars]
+    Path(path).write_text("\n".join(lines) + "\n")
+    return path
+
+
+def font_files(e):
+    """the installed Autograph: version, {style: path}"""
+    st = e.run("font", "status").stdout.splitlines()
+    if st == ["none"]:
+        return None, {}
+    first = st[0].split("\t")
+    files = {"Regular": Path(first[2])}
+    files.update({f[1]: Path(f[2]) for f in (ln.split("\t") for ln in st[1:]) if f[0] == "style"})
+    return int(first[1]), files
+
+
+class Autograph(unittest.TestCase):
+    """Autograph: installed from the start as the base, the person's letters replacing the
+    base's as they cover them, the same name on every rebuild, exported under a name of the
+    person's, back to the base when the samples are erased, rebuilt in the background while
+    charging"""
+
+    def setUp(self):
+        d = Path(tempfile.mkdtemp(prefix="hw-base-"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.base = write_base(d / "base.jsonl")
+        self.e = Env(base=self.base)
+        self.addCleanup(self.e.close)
+
+    def cmap(self, ttf):
+        from fontTools.ttLib import TTFont
+        return TTFont(str(ttf)).getBestCmap()
+
+    def check_styles(self, files, family="Autograph"):
+        """all three styles pass fontTools, carry the name and the base's licence, and shape alike"""
+        from fontTools.ttLib import TTFont
+        self.assertEqual(set(files), set(STYLES))
+        shaped = set()
+        for st, path in files.items():
+            f = valid_font(self, path)
+            n = f["name"]
+            self.assertEqual(n.getDebugName(1), family if st == "Regular" else family + " " + st)
+            self.assertIn("Copyright the test", n.getDebugName(0))
+            self.assertIn("Open Font License", n.getDebugName(13))
+            self.assertEqual(n.getDebugName(14), "https://openfontlicense.org")
+            for g in f.getGlyphOrder():
+                if f["glyf"][g].numberOfContours > 0:
+                    self.assertTrue(all(a < 0 for a in signed_areas(f, g)), (st, g))
+            shaped.add(subprocess.run(["hb-shape", "--no-glyph-names", str(path), "Hello, world! 42"],
+                                      capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(len(shaped), 1)
+        return TTFont(str(files["Regular"]))
+
+    def test_fresh_person_has_the_base(self):
+        """before any sample: installed, found by the font cache, every character the base's"""
+        self.assertEqual(self.e.status()["state"], ["current"])
+        out = self.e.run("font", "auto").stdout.strip().split("\t")
+        self.assertEqual(out[:3], ["installed", "Autograph", "1"])
+        v, files = font_files(self.e)
+        f = self.check_styles(files)
+        cmap = f.getBestCmap()
+        self.assertEqual({chr(c) for c in cmap}, set(BASE_CHARS) | {" "})
+        # .notdef, the space's steps, then one glyph per base character: nothing in the cycle
+        self.assertEqual(len(f.getGlyphOrder()), 1 + SLOTS + len(BASE_CHARS))
+        m = subprocess.run(["fc-match", "-f", "%{family}\n%{file}\n", "Autograph"], env=self.e.env,
+                           capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertEqual(m, ["Autograph", str(files["Regular"])])
+        # a second run has nothing to do; the empty model is up to date
+        self.assertEqual(self.e.run("font", "auto").stdout.strip(), "skip\tcurrent")
+        self.assertEqual(font_files(self.e)[0], 1)
+        # the preview's model: the base's metrics, every character a base line
+        show = [json.loads(x) for x in self.e.run("font", "show").stdout.splitlines()]
+        self.assertEqual({d["base"] for d in show if "base" in d}, set(BASE_CHARS))
+        met = next(d["metrics"] for d in show if "metrics" in d)
+        self.assertEqual((met["cap_height"], met["ink_width"]), (1.8, 0.12))
+        self.assertFalse(any(d.get("covered") for d in show if "char" in d))
+
+    def test_covered_characters_replace_the_base(self):
+        rnd = random.Random(41)
+        self.e.put([sample("".join(c for c in "abcdefghij" * 3)[i:i + 5], rnd) for i in range(0, 30, 5)])
+        self.e.run("letters", "build", "-r")
+        st = self.e.status()
+        covered = {c for c, (n, nv) in st["chars"].items() if nv > 0}
+        self.assertEqual(covered, set("abcdefghij"))
+        self.e.run("font", "install")
+        v, files = font_files(self.e)
+        f = self.check_styles(files)
+        cmap = f.getBestCmap()
+        order = f.getGlyphOrder()
+        self.assertEqual({chr(c) for c in cmap}, set(BASE_CHARS) | {" "})
+        cov = sorted(covered)
+        nvar = sum(json.loads(x)["variants"].__len__() for x in self.e.model().splitlines()
+                   if '"char"' in x and json.loads(x).get("covered"))
+        first_base = 1 + (len(cov) + 1) * SLOTS + nvar
+        for c in BASE_CHARS:
+            gid = order.index(cmap[ord(c)])
+            if c in covered:
+                self.assertEqual(gid, 1 + (1 + cov.index(c)) * SLOTS, c)      # its step-0 glyph
+            else:
+                self.assertGreaterEqual(gid, first_base, c)                       # the base's, last
+        self.assertEqual(len(order), first_base + len(BASE_CHARS) - len(covered))
+        # a base character stands outside the cycle: after it the run starts again at step 0
+        text = "abc!abc k,a"
+        got = [g["g"] for g in hb(files["Regular"], text)]
+        want, prev = [], None
+        for c in text:
+            if c in covered or c == " ":
+                prev = step(prev)
+                want.append(1 + ((1 + cov.index(c)) if c != " " else 0) * SLOTS + prev)
+            else:
+                prev = None
+                want.append(order.index(cmap[ord(c)]))
+        self.assertEqual(got, want)
+        # the preview's model draws the same: a base line exactly for each character it lacks
+        show = [json.loads(x) for x in self.e.run("font", "show").stdout.splitlines()]
+        self.assertEqual({d["base"] for d in show if "base" in d}, set(BASE_CHARS) - covered)
+
+    def test_export_and_erase(self):
+        rnd = random.Random(42)
+        self.e.put([sample("abcde", rnd) for _ in range(3)])
+        self.e.run("letters", "build", "-r")
+        self.e.run("font", "install")
+        v, files = font_files(self.e)
+        out = self.e.dir / "out"
+        out.mkdir()
+        ex = self.e.run("font", "export", "-n", "Mïne", str(out)).stdout.splitlines()
+        got = {f[1]: Path(f[2]) for f in (ln.split("\t") for ln in ex)}
+        self.assertEqual({p.name for p in got.values()}, {"Mne-Regular.ttf", "Mne-Calligraphy.ttf", "Mne-Brush.ttf"})
+        self.check_styles(got, family="Mïne")
+        self.assertEqual(font_files(self.e), (v, files))             # the installed one stays
+        self.assertEqual(self.e.run("font", "export", "-n", "x", str(self.e.dir / "none"), check=False).returncode, 1)
+        # erased: back to the base under the same name, its version counting on
+        self.e.run("samples", "erase")
+        self.assertFalse((self.e.store / "letters" / "model").exists())
+        v2, files2 = font_files(self.e)
+        self.assertEqual(v2, v + 1)
+        self.assertTrue(all(not p.exists() for p in files.values()))
+        f = self.check_styles(files2)
+        self.assertEqual(len(f.getGlyphOrder()), 1 + SLOTS + len(BASE_CHARS))
+        self.assertEqual(self.e.status()["state"], ["current"])
+
+    def test_rebuilt_while_charging(self):
+        self.e.run("font", "auto")
+        self.assertEqual(font_files(self.e)[0], 1)
+        rnd = random.Random(43)
+        self.e.put([sample("abcde", rnd) for _ in range(3)])
+        bat = self.e.dir / "power" / "battery" / "status"
+        bat.write_text("Discharging\n")
+        self.assertEqual(self.e.run("font", "auto").stdout.strip(), "skip\tcharging")
+        self.assertEqual(font_files(self.e)[0], 1)
+        self.assertFalse((self.e.store / "letters" / "model").exists())
+        bat.write_text("Charging\n")
+        out = self.e.run("font", "auto").stdout.strip().split("\t")
+        self.assertEqual(out[:3], ["installed", "Autograph", "2"])
+        st = self.e.status()
+        self.assertEqual((st["state"], st["font-letters"]), (["current"], ["same"]))
+        self.assertEqual(self.cmap(font_files(self.e)[1]["Regular"]).keys(), self.cmap(font_files(self.e)[1]["Brush"]).keys())
+        self.assertEqual(self.e.run("font", "auto").stdout.strip(), "skip\tcurrent")
+        # learning off: the letters aren't built in the background (FR-008)
+        self.e.put([sample("fghij", rnd) for _ in range(3)])
+        self.e.run("learning", "off")
+        self.assertEqual(self.e.run("font", "auto").stdout.strip(), "skip\tlearning")
+        self.assertEqual(font_files(self.e)[0], 2)
+        self.e.run("learning", "on")
+        self.assertEqual(self.e.run("font", "auto").stdout.strip().split("\t")[:3], ["installed", "Autograph", "3"])
+        # a writer's store has no font
+        w = self.e.run("writer", "new").stdout.strip()
+        self.assertEqual(self.e.run("--writer", w, "font", "auto", check=False).returncode, 2)
+
+    def test_a_font_from_before_takes_the_name(self):
+        """a font installed under another name (before Autograph) is made again as Autograph"""
+        rnd = random.Random(44)
+        self.e.put([sample("abcde", rnd) for _ in range(3)])
+        self.e.run("letters", "build", "-r")
+        self.e.run("font", "install")
+        rec = self.e.store / "letters" / "font"
+        rec.write_text(rec.read_text().replace("Autograph\t", "My handwriting\t", 1))
+        (self.e.dir / "power" / "battery" / "status").write_text("Discharging\n")    # at once, charging or not
+        self.assertEqual(self.e.run("font", "auto").stdout.strip().split("\t")[:3], ["installed", "Autograph", "2"])
+
+
+@unittest.skipUnless(os.environ.get("HW_BASE"), "HW_BASE: the packaged base font file (make base)")
+class AutographBase(unittest.TestCase):
+    """the base as packaged (HW_BASE, made by tools/base-font.py from Edu SA Beginner): a fresh
+    person's Autograph and one with letters of their own, every style valid, every base
+    character mapped, the base's copyright and licence carried on"""
+
+    def test_packaged_base(self):
+        from fontTools.ttLib import TTFont
+        base = Path(os.environ["HW_BASE"])
+        head = json.loads(base.read_text().splitlines()[0])
+        chars = {json.loads(x)["char"] for x in base.read_text().splitlines()[1:]}
+        self.assertEqual(head["licence"], "OFL-1.1")
+        # every character the recognizer reads (FR-045; the trainer's set, tests/mkmodel.py)
+        import re
+        rec = re.search(r'^CHARS = "(.*)"$', (HERE / "mkmodel.py").read_text(), re.M).group(1)
+        self.assertEqual(set(rec) - {" "} - chars, set())
+        e = Env(base=base)
+        self.addCleanup(e.close)
+        for step in ("fresh", "letters"):
+            if step == "letters":
+                rnd = random.Random(45)
+                e.put([sample("abcdefg", rnd) for _ in range(3)])
+            self.assertEqual(e.run("font", "auto").stdout.split("\t")[0], "installed", step)
+            _, files = font_files(e)
+            self.assertEqual(set(files), set(STYLES))
+            for st, path in files.items():
+                f = valid_font(self, path)
+                self.assertEqual({chr(c) for c in f.getBestCmap()}, chars | {" "}, (step, st))
+                n = f["name"]
+                self.assertEqual(n.getDebugName(0).split(". Characters")[0], head["copyright"])
+                self.assertIn("Open Font License", n.getDebugName(13))
+                self.assertNotIn("Edu", n.getDebugName(1))       # the base's name is not Autograph's
+                # every glyph drawn (outlines or a composite of them) for each character but the space
+                order = f.getGlyphOrder()
+                for c, g in f.getBestCmap().items():
+                    if c != 32:
+                        self.assertNotEqual(f["glyf"][g].numberOfContours, 0, (step, st, chr(c), order.index(g)))
+            if step == "letters":
+                reg = TTFont(str(files["Regular"]))
+                self.assertGreater(len(reg.getGlyphOrder()), 1 + SLOTS + len(chars))     # the letters' steps
 
 
 if __name__ == "__main__":
