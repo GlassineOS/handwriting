@@ -12,8 +12,10 @@ The recognizer (spec 001) and the samples app (spec 002) already collect a perso
 handwriting with exact labels: every character's strokes are known. The same samples can
 describe how the person writes each letter at their best. Two features follow from that:
 
-- **A handwriting font**: the person's letters as an ordinary font, so their hand can set
-  any text on the system (notes, titles, cards) the way a typeface does.
+- **Autograph, the person's font**: their letters as an ordinary font, so their hand can
+  set any text on the system (notes, titles, cards) the way a typeface does. Autograph is
+  always installed: it starts as a plain base font and grows towards the person's hand as
+  their samples teach it each character.
 - **Neatening**: hasty ink moved towards the person's own best letters, with straight
   lines and even sizes. The result is still their handwriting, not a typeface: the target
   is learned from them. Neatening is a layer around the ink surface of the e-ink stack: it
@@ -48,19 +50,27 @@ shown side by side, ink only, and a tap on one records the preference; "Both fin
 
 ### Scenario 3 – My handwriting as a font (Priority: P1)
 
-**Given** enough samples, **When** the person opens the font page on the Your font tab,
-**Then** a preview shows
-a sentence in it, characters that are not yet covered are listed with a way to write them
-now, and on confirmation the font is installed for this person and appears wherever fonts
-are chosen (the settings app, text editors, notes apps).
+**Given** a person with no samples yet, **When** they look for fonts anywhere fonts are
+chosen (the settings app, text editors, notes apps), **Then** Autograph is there, drawn in
+the plain base font.
+
+**Given** samples, **When** the person opens the font page on the Your font tab, **Then**
+a preview shows a sentence in Autograph with the characters their samples cover in their
+own hand and the rest in the base, the characters still in the base are listed with a way
+to write them now, and on confirmation Autograph is updated and apps that use it show the
+new version.
+
+**Given** the font page, **When** the person exports Autograph under a name they choose,
+**Then** they get the font files under that name, to keep or install elsewhere; the
+installed Autograph stays as it is.
 
 **Given** the font page, **When** the person picks one of the font's three styles (an even
 pen line, a broad nib, a brush that follows their own pressure and speed), **Then** the
 preview shows the same sentence in that style, letter for letter in the same places as
 in the others.
 
-**Given** the font is installed, **When** the person writes more samples and asks again,
-**Then** the font is rebuilt under the same name and apps that use it show the new version.
+**Given** Autograph has grown, **When** the person writes more samples and asks again,
+**Then** it is rebuilt under the same name and apps that use it show the new version.
 
 **Given** the font page, **When** the person opens a character, **Then** they see each way
 they write it, drawn large, with how often the font shows it ("6 in 10"), and its samples,
@@ -216,14 +226,16 @@ size, spacing) and keep their shape.
   always give the same letter model.
 - **FR-008**: The letter model is rebuilt when samples, markings or preferences changed,
   under the same conditions as adaptation (spec 001 FR-009: charging and idle, or when the
-  person asks), and stays on the device. A page that shows or uses it (the font page,
-  neatening) says when it is missing or out of date (its samples, markings, marks or
+  person asks), and stays on the device. Before the first sample it is empty: it covers no
+  character and has no spacing of its own. A page that shows or uses it (the font page,
+  neatening) says when it is out of date (its samples, markings, marks or
   preferences changed, or the way it is built changed) and offers to build it at once; the
   person asking has it built in the background at the lowest priority, with its progress shown
   and the device usable meanwhile. Building the letter model never changes the installed font
   (FR-011). Erasing samples (all, or one client's) erases the
-  letter model, the preferences and the font with them; deleting one sample leaves the
-  letter model out of date until its next rebuild.
+  letter model's learned letters and the preferences with them and returns Autograph to the
+  base font; deleting one sample leaves the letter model out of date until its next
+  rebuild.
 - **FR-031**: The person can mark the letter model, per character:
   - a **favourite** variant (at most one per character): the font shows it a fixed amount
     more often than the person writes it that way;
@@ -264,21 +276,39 @@ size, spacing) and keep their shape.
   Each way of writing a character offers its samples: exactly the samples that form it,
   each opening the same way.
 - **FR-030**: How many usable samples each character has is known from the samples
-  themselves, whether a letter model is built or not: a page about the person's letters shows
-  these counts as soon as it opens, says whether the letter model is built, out of date or
-  being built, and never shows an empty page because the model isn't built yet.
+  themselves, whether the letter model has learned them yet or not: a page about the
+  person's letters shows these counts as soon as it opens, says whether the letter model is
+  up to date, out of date or being built, and never shows an empty page because the model
+  hasn't learned the samples yet.
 
 ### The font
 
-- **FR-009**: The font is a standard outline font the system installs for this person
-  only, named by the person (default: "My handwriting"). It maps exactly the covered
-  characters and the space (the person's word spacing), drawn in the person's ink width
-  (the pen's width on the writing paper they wrote their samples on, relative to their
-  x-height); a character's other variants are in the font without a character of their own.
+- **FR-009**: The font, **Autograph**, is a standard outline font the system installs for
+  each person from the start, for them only. It is made of the person's letter model over a
+  base font: it maps every character of the base and the space; a covered character is
+  drawn from the letter model, every other character from the base, so no character falls
+  back to a system font. The base's letters are taken as pen strokes (their centre lines),
+  so they are drawn like the person's: in the person's ink width (the pen's width on the
+  writing paper they wrote their samples on, relative to their x-height), scaled to the
+  person's line metrics (FR-007), in all three styles (FR-034); before the person has
+  samples, at the base's own metrics and ink width. A covered character's other variants
+  are in the font without a character of their own; a base character has one way.
   Letters are set at the letter model's spacing: side bearings from the profiles and pair
   kerning that text shaping applies by default, for every pair of variants, so each pair
   of variants comes out where the spacing places it (FR-007) and words at the word spacing;
-  letters the font joins are set as their join places them (FR-044). Every other character falls back to the system's default font.
+  letters the font joins are set as their join places them (FR-044). A base character takes
+  part in the spacing as a variant does, by its profiles; a pair the person hasn't written
+  is placed as FR-007 places an unseen pair.
+- **FR-045**: The base font is redistributable under the repository's rules on models and
+  data, covers every character of the languages the recognizer reads, and is plain: an
+  upright, unjoined, school-like print hand with no ornament, so the person's own letters
+  replace it without a clash of styles. [NEEDS CLARIFICATION: which base. Candidates under
+  the OFL: **Kalam** (already the font the samples app shows words in where there is no
+  ink; Latin and Devanagari; a casual, slightly slanted print rather than a plain one, and a
+  held-out hand of the recognizer's synthetic test set); an **Edu … Beginner** family
+  (school print models, the plainest of the three; Latin only, and in the synthetic
+  training pool); a **Playwrite** family (school handwriting models for many countries;
+  Latin only, with joined and print forms).]
 - **FR-034**: The font comes in three styles of one family, installed and updated together,
   that differ only in how wide the ink is along each stroke; the letters' shapes, their
   variants and how the font switches between them, the spacing and the kerning are the
@@ -290,6 +320,7 @@ size, spacing) and keep their shape.
   - **Brush**: the width follows how the person wrote each stroke (FR-006): wider where they
     pressed harder, and, more lightly, where they wrote slowly; strokes taper where they
     start and end, and quick flicks thin out. Where the pen gave no pressure, speed alone.
+    A base character, written by no one, is drawn at an even pressure and speed.
 
   The font page shows the preview in the style the person picks. Each style is a full
   outline font of its own on the system (style names Regular, Calligraphy and Brush);
@@ -368,12 +399,15 @@ size, spacing) and keep their shape.
   documented with the recognizer.
 - **FR-011**: The font carries a version that changes with every rebuild, in the font and in
   its file name, so apps and the font cache pick up the new outlines without a restart of
-  the session. A rebuild keeps the name; the font is rebuilt only when the person asks.
+  the session. A rebuild keeps the name Autograph; the font is rebuilt only when the person
+  asks.
   Updating the font learns the letters first when the letter model is out of date, then
   makes the font from it; learning the letters alone (to see the preview first) leaves the
   installed font as it was.
 - **FR-012**: The font never leaves the device except by the person's own export; it is not
-  part of a contribution.
+  part of a contribution. The person can export Autograph, all three styles, under a name
+  they choose: the exported fonts carry that name, and the installed Autograph keeps its
+  own.
 
 ### Neatening
 
@@ -387,8 +421,9 @@ size, spacing) and keep their shape.
   what the one before it does and more:
   - **Light**: line-level corrections only: a straight baseline, a steady slant, even letter
     size, and spacing (each pair of neighbouring letters moved so their gap goes towards the
-    letter model's spacing for that pair, without a letter model towards the line's own
-    median gap, and the gaps between words towards the word spacing, by a limited step).
+    letter model's spacing for that pair, and while the letter model has no spacing of its
+    own towards the line's own median gap, never the base font's, and the gaps between
+    words towards the word spacing, by a limited step).
   - **Medium**: also pulls each covered character half way towards its target (FR-035).
   - **Strong**: pulls it most of the way (0.85).
   - **Neatest**: sets each word anew in the person's font (FR-043); a word that can't be
@@ -407,7 +442,9 @@ size, spacing) and keep their shape.
   neighbour rules (FR-038) and the joined pairs (FR-039). It is fitted to the written
   character by similarity only: moved to its place, scaled uniformly to the line's
   x-height and set at the line's slant (or the letter model's), never stretched, sheared
-  or mirrored. At Neatest the word itself is set in the font instead (FR-043).
+  or mirrored. At Neatest the word itself is set in the font instead (FR-043). A character
+  Autograph draws from the base font is never a target: neatening moves ink only towards
+  the person's own letters, so an uncovered character keeps its shape (Scenario 5).
 - **FR-036**: A pull follows the stroke: each point of the person's stroke goes to the place
   on the version's stroke that matches it in shape (direction and curvature along the
   stroke), in order, so no point moves backwards along the stroke and the ink never folds
@@ -512,8 +549,8 @@ size, spacing) and keep their shape.
   strokes back. What the app saves (raw, neatened or both) is its choice; the layer itself
   keeps nothing after the app is done with a piece of writing.
 - **FR-022**: Neatening is off until the app or the person turns it on for the app. With it
-  off, without a letter model or without a recognizer, the layer passes the raw strokes on
-  unchanged and the app works as on the bare ink surface. Without a letter model, ink gets
+  off or without a recognizer, the layer passes the raw strokes on unchanged and the app
+  works as on the bare ink surface. While the letter model covers no character, ink gets
   only the line-level corrections.
 - **FR-023**: Ink in a private field (a password, a PIN; spec 001's field rules) is neither
   read nor neatened, and the layer sends the recognizer nothing from it.
@@ -551,8 +588,11 @@ size, spacing) and keep their shape.
   left-out sample (FR-031).
 - **Letter model**: per character, the person's best variants with their profiles, the line
   metrics and the spacing; derived
-  data, rebuilt from samples, markings and preferences.
-- **Handwriting font**: the letter model as an installed font, named and versioned.
+  data, rebuilt from samples, markings and preferences; empty before the first sample.
+- **Autograph**: the person's font: the letter model over the base font, always installed,
+  versioned; exportable under a name the person chooses.
+- **Base font**: the plain, redistributable font Autograph starts as and draws every
+  character the letter model doesn't cover from (FR-045).
 - **Neat ink layer**: what an app draws pen ink through: pen strokes and field context in;
   raw and neatened vector strokes, and on request the text they are read as, out; the
   person's choice of a reading back in.
@@ -570,6 +610,7 @@ size, spacing) and keep their shape.
 | E-ink stack pen preview (the panel engine draws the stroke at the pen's tip) | consumed | — | GlassineOS/epd |
 | GTK ink areas module | consumed: unchanged, it announces areas only; neatening needs an app that draws through the layer | — | GlassineOS/shell spec 003 |
 | Per-person font installation | consumed (freedesktop font directories, the system font cache) | — | — |
+| Base font | consumed (an OFL font, shipped with its licence) | — | FR-045 |
 | Font choice in the settings app | consumed (GlassineOS/shell settings) | — | shell specs |
 | Writing paper: strokes, text candidates and Neaten | consumed by GlassineOS/shell spec 006 (the keyboard's writing paper, GlassineOS/wvkbd), through the neat ink layer instead of the recognizer directly | — | shell spec 006 |
 
@@ -598,9 +639,15 @@ Host level:
 - a character written one way in about two thirds of its samples and another way in a
   third gets a variant for each, weighted alike, and the font shows them in about that
   proportion along a long text; a way written once among many gets none;
-- without a letter model, and with one that is out of date, the usable samples per character
-  are reported as a built model would count them; the font page and neatening show them, say
-  the model isn't built or is out of date, and build it when asked without installing the font;
+- with an empty letter model and samples it hasn't learned, and with an out-of-date one, the
+  usable samples per character are reported as a built model would count them; the font page
+  and neatening show them, say the model is out of date, and build it when asked without
+  updating the font;
+- a new test user has Autograph installed and found by the system font cache before any
+  sample, every character drawn from the base; after a build, covered characters come from
+  the letter model and the rest from the base, with no character from a system fallback;
+  erasing the samples returns it to the base; an export under a chosen name gives fonts
+  with that name while the installed one stays Autograph;
 - word samples with a fixed gap for a pair give that pair that gap, a rare pair its side
   shapes' value and an unseen pair spacing from the profiles; with sentences that set a
   pair closer than single words do, the font sets it as in the sentences, and pairs seen
@@ -608,11 +655,10 @@ Host level:
   never widen it; a variant is as tall as the samples it is made from, within 2 %, and as
   wide as they are times the person's running-text width ratio (1 with too few
   characters seen in both), within 2 %, with pair distances unchanged by the narrowing;
-- the font built from it passes a standard font validator, maps exactly the covered
-  characters and the space, alternates variants deterministically when shaped with no
+- the font built from it passes a standard font validator, maps the base's characters and
+  the space, the covered ones from the letter model, alternates variants deterministically when shaped with no
   feature requested, sets each shaped pair within 0.02 x-heights of its gap and words at
   the word spacing, and the preview places letters where shaping does, and installs and is found by the system font cache in a test user;
-  erasing the samples removes it;
 - with samples where a character is written one way after a neighbour often enough, the
   font shapes it that way after that neighbour and by the cycle elsewhere; with too few
   such samples, too mixed a way, or a rule that loses to the cycle on held-back samples,
@@ -664,16 +710,17 @@ Host level:
   text, a surface with text output off gets no candidates, and strength 0 gives raw strokes
   and text.
 
-Product level: in the images acceptance suite, a test user with a prepared sample store
-builds the font, the font appears in the settings app's font list, and a text set in it
-renders; in the handwriting app's writing page with neatening on, written ink is replaced
+Product level: in the images acceptance suite, a new test user finds Autograph in the
+settings app's font list; with a prepared sample store the user updates it, and a text set
+in it renders with the covered letters in the person's hand; in the handwriting app's writing page with neatening on, written ink is replaced
 by its neatened version and the original comes back at strength 0.
 
 ## Out of scope
 
 - Generated handwriting beyond the person's own letters and joins for text never written
   (a learned writing model that invents ways of writing or joining; a later spec).
-- Neatening with another person's letter model, or sharing a handwriting font.
+- Neatening with another person's letter model, or a way to share Autograph with others
+  beyond the person's own export (FR-012).
 - Fonts for scripts the recognizer has no model for.
 
 ## Success criteria
