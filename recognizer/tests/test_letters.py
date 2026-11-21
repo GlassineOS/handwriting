@@ -1490,7 +1490,7 @@ def hw_inputs(ids, rev):
         for x in b:
             h = ((h ^ x) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
         return h
-    h = fnv(h, b"letters 1 %d\n" % rev)
+    h = fnv(h, b"letters 2 %d context\n" % rev)
     for k in sorted("%s  " % i for i in ids):
         h = fnv(h, k.encode() + b"\0")
     h = fnv(h, b"\npreferences\n")
@@ -1589,8 +1589,9 @@ class Profiles(unittest.TestCase):
             e.run("letters", "build", "-r")
             ids = [ln.split("\t")[0] for ln in e.run("samples", "list").stdout.splitlines()]
             head = json.loads(e.model().splitlines()[0])
-            self.assertEqual(head["inputs"], hw_inputs(ids, 19))
-            old = dict(head, inputs=hw_inputs(ids, 18))
+            self.assertEqual(head["version"], 2)
+            self.assertEqual(head["inputs"], hw_inputs(ids, 20))
+            old = dict(head, inputs=hw_inputs(ids, 19))
             text = e.model().split("\n", 1)
             (e.store / "letters" / "model").write_text(json.dumps(old, separators=(",", ":")) + "\n" + text[1])
             self.assertEqual(e.status()["state"], ["outdated"])
@@ -2302,10 +2303,11 @@ class NeighbourRules(unittest.TestCase):
 
 @unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
 class ContextRules(unittest.TestCase):
-    """context rules (GLASSINE_HANDWRITING_LETTERS_CONTEXT=1, off by default): an o written its
-    second way between a b and a d (6 times) but its first after a b or before a d elsewhere
-    (8 times each, no neighbour rule) gets a rule for that letter triple; between a p and an x
-    3 times gets none (too few); without the option no model has one"""
+    """spec 003 FR-046, context rules (on by default; GLASSINE_HANDWRITING_LETTERS_CONTEXT=0
+    leaves them out, for measurements): an o written its second way between a b and a d (6
+    times) but its first after a b or before a d elsewhere (8 times each, no neighbour rule)
+    gets a rule for that letter triple; between a p and an x 3 times gets none (too few); with
+    them left out no model has one, and the model is the same but for those rules"""
     @classmethod
     def setUpClass(cls):
         rnd = random.Random(43)
@@ -2314,10 +2316,11 @@ class ContextRules(unittest.TestCase):
         ss += [sample("bo", rnd) for _ in range(8)] + [sample("od", rnd) for _ in range(8)]
         ss += [sample("pox", rnd, styles={"o": 1}) for _ in range(3)]
         cls.plain = Env()
+        cls.plain.env["GLASSINE_HANDWRITING_LETTERS_CONTEXT"] = "0"
         cls.plain.put(ss)
         cls.plain.run("letters", "build", "-r")
         cls.e = Env()
-        cls.e.env["GLASSINE_HANDWRITING_LETTERS_CONTEXT"] = "1"
+        cls.e.env.pop("GLASSINE_HANDWRITING_LETTERS_CONTEXT", None)
         cls.e.put(ss)
         cls.e.run("letters", "build", "-r")
         cls.model = cls.e.model()
@@ -2346,11 +2349,22 @@ class ContextRules(unittest.TestCase):
         self.assertFalse(any(x.get("next") == "d" and "prev" not in x for x in self.chars["o"].get("rules", [])))
         self.assertFalse(any(("p", "x") == (x["prev"], x["next"]) for x in r))
 
-    def test_off_by_default(self):
+    def test_left_out_with_the_switch(self):
         plain = [json.loads(x) for x in self.plain.model().splitlines()]
         self.assertFalse(any("prev" in r and "next" in r for d in plain if "char" in d for r in d.get("rules", [])))
-        # with the option the model is made again: its inputs differ
-        self.assertNotEqual(self.plain.model().splitlines()[0], self.model.splitlines()[0])
+        # switched, the model is made again: its inputs differ
+        self.assertNotEqual(plain[0]["inputs"], json.loads(self.model.splitlines()[0])["inputs"])
+        # and it is the same model but for the context rules
+        def strip(d):
+            d = dict(d)
+            if "inputs" in d:
+                d.pop("inputs"); d.pop("built", None)
+            if "rules" in d:
+                d["rules"] = [r for r in d["rules"] if not ("prev" in r and "next" in r)]
+                if not d["rules"]:
+                    del d["rules"]
+            return d
+        self.assertEqual([strip(d) for d in plain], [strip(json.loads(x)) for x in self.model.splitlines()])
 
     def shown(self, ttf, text):
         return [self.gl[g["g"]] for g in hb(ttf, text)]

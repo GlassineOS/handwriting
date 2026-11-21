@@ -497,7 +497,7 @@ class Neaten(unittest.TestCase):
         """at Neatest the covered characters are closer to the glyph the font draws there,
         set on it (FR-043)"""
         self.letters()
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         rnd = random.Random(11)
         n = m = 0
         for text in ("hello", "World", "q7x2b"):
@@ -600,14 +600,15 @@ class Neaten(unittest.TestCase):
         return out, "hb-shape"
 
     def test_neatest_sets_the_word(self):
-        """at Neatest a word whose text is known is set anew in the font (FR-043): every point
+        """at Neatest a word whose text is known is set anew in the font (FR-043; on the straight
+        line, cond=0, the set word the conditioned setting maps onto the word as written): every point
         of a character on the centre line of the glyph the font sets for it, the glyphs where
         hb-shape (or the preview's layout, without it) puts them, all at one size (the line's
         x-height) and on one baseline; HOW pulled, the characters' reason set. (With the text
         alone the alignment of this random-weight model decides whose ink is whose: set too,
         the strokes kept, tested in test_keeps_strokes_order_time_pressure.)"""
         self.letters()
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         rnd = random.Random(50)
         words = 0
         for text in ("hello world", "see the tree", "quick brown fox", "jumps over"):
@@ -641,12 +642,12 @@ class Neaten(unittest.TestCase):
         self.assertEqual(words, 10)
 
     def test_neatest_follows_context_rules(self):
-        """with the letter model's context rules (GLASSINE_HANDWRITING_LETTERS_CONTEXT=1) Neatest
-        sets a letter as the font does between its two neighbours: an l written its second way
-        after an a (20 of 26 times) but its first, the cycle's, between an a and an e (the other
-        6) gets a context rule ahead of the neighbour rule; "ale" is set with the context rule's
-        l, "al" with the neighbour rule's, each where the font draws them"""
-        self.e.env["GLASSINE_HANDWRITING_LETTERS_CONTEXT"] = "1"
+        """with the letter model's context rules (FR-046, on by default) Neatest sets a letter as
+        the font does between its two neighbours: an l written its second way after an a (20 of
+        26 times) but its first, the cycle's, between an a and an e (the other 6) gets a context
+        rule ahead of the neighbour rule; "ale" is set with the context rule's l, "al" with the
+        neighbour rule's, each where the font draws them (on the straight line, cond=0: the
+        conditioned setting starts from the same glyphs, test_conditioned_setting_...)"""
         rnd = random.Random(57)
         L = self.letters(more=[TL.sample("ale", rnd) for _ in range(6)] +
                          [TL.sample("al", rnd, styles={"l": 1}) for _ in range(20)] +
@@ -661,22 +662,22 @@ class Neaten(unittest.TestCase):
         model = FV.parse((self.e.store / "letters" / "model").read_text())
         self.assertEqual(FV.variants(model, "ale")[1], ctx[0]["variant"])
         self.assertEqual(FV.variants(model, "al")[1], pair[0]["variant"])
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         for text in ("ale", "al"):
             s = TL.sample(text, rnd)
             lay, how_laid = self.set_layout(text)
-            _, xy = self.neaten_letters(s, 1)
+            _, xy = self.neaten_letters(s, 1, knob="cond=0")
             self.assertEqual([w for w in self.why if w != "space"], ["set"] * len(text), text)
             wp = [p for k in range(len(text)) for j in s["spans"][k] for p in xy[j]]
             wg = [lay[k] for k in range(len(text)) for j in s["spans"][k] for _ in xy[j]]
             self.assertLess(on_set(wp, wg)[0], 0.003, (text, how_laid))
 
     def test_conditioned_setting_keeps_the_lines_direction(self):
-        """(measurements) with cond=1 Neatest sets the same words as by default, but each along
-        its own baseline and lean as written: a line written on a slope and leaning further
-        stays so, each word where it was written, every letter on one of its versions once its
-        word's slope and lean are taken off; by default the words are set on the straight line
-        at the font's lean, as before (cond=0 the same)"""
+        """by default (FR-043; cond=1 the same) Neatest sets each word along its own baseline and
+        lean as written: a line written on a slope and leaning further stays so, each word where
+        it was written, every letter on one of its versions once its word's slope and lean are
+        taken off; with cond=0 (measurements) the same words are set on the straight line at
+        the font's lean"""
         self.letters()
         model = [json.loads(m) for m in (self.e.store / "letters" / "model").read_text().splitlines()]
         L = {m["char"]: m for m in model if "char" in m}
@@ -691,11 +692,11 @@ class Neaten(unittest.TestCase):
                     p[0] += lean * (y0 - p[1])
                     p[1] += slope * (p[0] - x0)
             written = [[(p[0], p[1]) for p in st] for st in s["strokes"]]
-            how0, xy0 = self.neaten_letters(s, 1)
+            how0, xy0 = self.neaten_letters(s, 1, knob="cond=0")
             why0 = self.why
-            self.assertEqual(self.neaten_letters(s, 1, knob="cond=0")[1], xy0)
-            how1, xy1 = self.neaten_letters(s, 1, knob="cond=1")
+            how1, xy1 = self.neaten_letters(s, 1)
             self.assertEqual(self.why, why0)
+            self.assertEqual(self.neaten_letters(s, 1, knob="cond=1")[1], xy1)
             self.assertEqual(how1, how0)
             self.assertEqual([len(a) for a in xy1], [len(a) for a in written])
             # the baseline through the letters' lowest points: straight by default, as written
@@ -753,7 +754,7 @@ class Neaten(unittest.TestCase):
                             "--models", str(self.e.models), "--tilt", "0.15", "--dump", str(dump)],
                            capture_output=True, text=True, env=self.e.env, check=True)
         rows = {ln.split("  ")[0].strip(): ln for ln in p.stdout.splitlines() if ln.startswith(("Light", "Medium", "Strong", "pull 1", "set"))}
-        self.assertEqual(set(rows), {"Light", "Medium", "Strong", "pull 1", "set", "set, conditioned", "set, line-conditioned"})
+        self.assertEqual(set(rows), {"Light", "Medium", "Strong", "pull 1", "set, straight line", "set", "set, line-conditioned"})
         self.assertIn("tilted:", p.stdout)
         self.assertEqual(dump.stat().st_mode & 0o777, 0o600)
         d = json.loads(dump.read_text())
@@ -916,8 +917,10 @@ class Neaten(unittest.TestCase):
     def test_neatest_keeps_the_word_gap(self):
         """two words, the first written narrower than the font sets it: set, it would reach
         into the second; the gap stays at least as wide as written or the font's word gap,
-        whichever is less (FR-043)"""
+        whichever is less (on the straight line, cond=0; conditioned, each word stays where it
+        was written)"""
         self.letters(seed=9)
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         s = TL.sample("nun nun", random.Random(97))
         x0 = min(p[0] for j in s["spans"][0] for p in s["strokes"][j])
         for sp in s["spans"][:3]:
@@ -1109,8 +1112,10 @@ class Neaten(unittest.TestCase):
         """at Neatest the ink the person didn't lift between two letters the font joins runs
         along the font's join (FR-043, FR-044): the set word's points lie in the ink the font
         draws for it, its halves of the join with it (the font's glyphs for it the join's
-        alternates); without the model's joins it is set otherwise"""
+        alternates); without the model's joins it is set otherwise (on the straight line,
+        cond=0, the font's own outline)"""
         rnd = random.Random(71)
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         more = [TL.joined(TL.sample("er", rnd), [0]) for _ in range(5)] + [TL.sample("er", rnd) for _ in range(3)]
         self.letters(seed=7, more=more)
         model = self.e.store / "letters" / "model"
@@ -1175,7 +1180,7 @@ class Neaten(unittest.TestCase):
         written in a set word (FR-043): moved, not reshaped, into the box the font has for it
         (its .notdef, one x-height wide), the word's other characters set around it"""
         self.letters()
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         rnd = random.Random(51)
         seen = 0
         for text in ("hi, you.", "a-b c;d"):
@@ -1217,12 +1222,13 @@ class Neaten(unittest.TestCase):
     def test_neatest_puts_what_the_font_lacks_on_its_base_glyph(self):
         """with Autograph's base a character the letter model doesn't cover is in the box of
         the glyph the font draws there from the base (FR-043, FR-045): at that glyph's advance
-        and kerning, as hb-shape puts it, not at .notdef's; its ink moved only"""
+        and kerning, as hb-shape puts it, not at .notdef's; its ink moved only (on the straight
+        line, cond=0)"""
         if TL.SKIP_TOOLS or not TL.shutil.which("hb-shape"):
             self.skipTest("needs hb-shape")
         self.letters()
         self.e.env["GLASSINE_HANDWRITING_BASE"] = str(TL.write_base(self.e.dir / "base.jsonl"))
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         rnd = random.Random(51)
         seen = off = 0
         for text in ("hi, you.", "a-b c;d"):
@@ -1285,7 +1291,7 @@ class Neaten(unittest.TestCase):
             got = {}
             for b in ("off", str(base)):
                 self.e.env["GLASSINE_HANDWRITING_BASE"] = b
-                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
                 c = self.e.start()
                 self.begin(c, s)
                 got[b] = [parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
@@ -1358,7 +1364,7 @@ class Neaten(unittest.TestCase):
         raw = [[(p[0], p[1]) for p in st] for st in s["strokes"]]
         res = {}
         for lv in (0.25, 0.5, 0.75, 1):
-            res[lv] = self.neaten_letters(s, lv)
+            res[lv] = self.neaten_letters(s, lv, knob="cond=0")
             if lv == 0.5:
                 self.why5 = self.why
         gl = self.glyphs(s["text"])
@@ -1417,7 +1423,7 @@ class Neaten(unittest.TestCase):
         self.assertIn("best", v)
         rnd = random.Random(22)
         s = TL.sample("oo", rnd)
-        _, xy = self.neaten_letters(s, 1)
+        _, xy = self.neaten_letters(s, 1, knob="cond=0")
         gl = self.glyphs("oo")
         for k in range(2):
             ink = [xy[j] for j in s["spans"][k]]
@@ -1810,7 +1816,7 @@ class Neaten(unittest.TestCase):
             align = ";".join(",".join(f"{j}:{a}-{b}" for j, a, b in m) for m in at)
             glyphs = self.glyphs(text)
             lay, how_laid = self.set_layout(text)
-            for lv, knob in (("0.5", ""), ("0.75", ""), ("1", ""), ("full", "set=0")):
+            for lv, knob in (("0.5", ""), ("0.75", ""), ("1", "cond=0"), ("full", "set=0")):
                 self.e.env["GLASSINE_HANDWRITING_NEATEN"] = knob
                 c = self.e.start()
                 self.begin(c, s)
@@ -2073,7 +2079,7 @@ class Neaten(unittest.TestCase):
         f.write_text("\n".join(lines) + "\n")
         self.e.run("samples", "import", str(f))
         self.e.run("letters", "build", "-r")
-        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+        self.e.env["GLASSINE_HANDWRITING_NEATEN"] = "cond=0"
         # written with the bar above the x-height, as alone: the gap would set the o at the stem
         s = TL.overhang_word("fo", random.Random(53), {"fo": 0.75}, "alone")
         c = self.e.start()
