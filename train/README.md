@@ -924,6 +924,52 @@ With the aligner the exit-tail rule no longer changes anything (its ownership al
 the tail back) and the fragment rule next to nothing; the bar rule still helps a little. As
 the aligner is optional (none is installed by default), the guards stay.
 
+**Joined ink from connected school fonts** (`joined.py`, `alignrun joined`, `alignrun mix`).
+Joined (cursive) ink of synthetic writers, made from the Playwrite families (TypeTogether, SIL
+OFL 1.1, the national school scripts; `synth/joined.toml`, fetched by `glassine-synth fetch`): each
+word shaped by HarfBuzz (`uharfbuzz`; the fonts' contextual forms and their connector glyphs
+`cnct.*`), each glyph filled at weight 150, thinned to its skeleton and written as one pen
+path through it (an Euler walk entering where the previous letter left and leaving where the
+next begins), connectors and the letters' bodies chained pen down, dots and bars after the
+word at a writer's rate. Per writer one font and a slant, width, ascender and descender, a
+smooth warp, bend and drift; the labels are the letters, the connectors' points the join (at
+least ±0.2 core heights). Six fonts are held out as test writers, two for dev; the print and
+semi-joined families stay out of the joined set (`style`).
+
+```sh
+(cd ../synth && uv run glassine-synth --cache build/fonts-joined fetch --manifest joined.toml)
+uv run python -m glassine_train.alignrun joined --out build/align-joined --train 12000 --dev 300
+uv run python -m glassine_train.alignrun mix build/align-mix build/align-real/train.pkl:build/align-real/dev.pkl \
+    build/align-joined/joined-train.pkl:build/align-joined/joined-dev.pkl
+uv run python -m glassine_train.alignrun train --data build/align-mix --out aligner.pt --ce 1.0 --kind point
+```
+
+Trained as above on the realistic fonts' lines plus 11 853 joined ones (and once with a
+person's letters too), in the join / within 0.25 x-heights / letter lost, points labelled right
+(text alone, delay −1):
+
+| | joined test (6 held-out fonts, 898 strokes with joins) | realistic test |
+|---|---|---|
+| realistic fonts | 81 / 89 / 0.9 %, 93 % | 80 / 88 / 2.1 %, 91 % |
+| realistic + a person's letters | 84 / 91 / 1.1 %, 93 % | 78 / 88 / 2.4 %, 91 % |
+| realistic + joined | 94 / 95 / 0.6 %, 96 % | 79 / 89 / 2.2 %, 91 % |
+| realistic + a person's letters + joined | 94 / 95 / 0.4 %, 96 % | 77 / 87 / 2.5 %, 91 % |
+
+On a person's samples (as above, Neatest with the text; Medium and Strong read back without
+words):
+
+| | CER | with words | 0.5 | 1 |
+|---|---|---|---|---|
+| shape cut | 30.9 % | 22.4 % | 46.1 % | 46.2 % |
+| realistic fonts | 31.0 % | 22.5 % | 46.3 % | 46.6 % |
+| realistic + joined | 30.9 % | 23.3 % | 46.4 % | 47.2 % |
+| realistic + a person's letters + joined | 29.4 % | 20.9 % | 46.8 % | 47.4 % |
+
+The joined ink teaches the joins of the fonts it comes from, also of fonts it never saw, but
+not of a hand: on the person's ink the aligner from fonts alone is no better than the shape
+cut (worse with words and at Strong), so it is not released. With the person's letters it is
+the best yet with the text, as before at the cost of the read-back at Medium and Strong.
+
 The aligner trained with a person's letters is that person's: it stays on their machine, it
 is not released. The fonts-only one could be released, but it is not better on this
 person's ink, so there is no release yet.

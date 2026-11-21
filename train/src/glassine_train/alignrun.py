@@ -160,6 +160,92 @@ def make_sets(out: Path, n_train: int, n_dev: int, test_lines: int, letter_lines
     f.write_bytes(pickle.dumps(test))
 
 
+# ---------------------------------------------------------------------------- joined fonts
+
+JOINED = Path("../synth/joined.toml")
+JOINED_FONTS = Path("../synth/build/fonts-joined")
+JOINED_WGHT = 150.0  # the fonts' weight: thin enough that the skeleton keeps loops and counters
+
+
+def joined_splits(manifest: Path = JOINED) -> dict[str, list[str]]:
+    """The joined fonts (joined.toml) by split: train, dev, test; print fonts left out."""
+    import tomllib
+    out = {"train": [], "dev": [], "test": []}
+    for f in tomllib.loads(manifest.read_text())["family"]:
+        if f.get("style") != "print":
+            out[f.get("split", "train")].append(f["dir"])
+    return out
+
+
+def _joined_job(job):
+    font, texts, seed, per_line = job
+    from . import joined as J
+    fonts = J.load_fonts(JOINED_FONTS, [font], JOINED_WGHT)
+    g = J.JoinedGenerator(fonts)
+    rng = np.random.default_rng(seed)
+    w = J.draw_writer(rng, font)
+    out = []
+    for t in texts:
+        for _ in range(3):
+            try:
+                out.append(_pack(g.line(t, rng, J.draw_writer(rng, font) if per_line else w)))
+                break
+            except ValueError:
+                continue
+    return font, out
+
+
+def make_joined(out: Path, n_train: int, n_dev: int, test_lines: int, workers: int, seed: int = 91):
+    """joined-train, joined-dev (lines of the train and dev fonts, a writer drawn per line) and
+    joined-test (one writer per test font, its lines prose and words) from the joined fonts."""
+    from . import lines as L
+    out.mkdir(parents=True, exist_ok=True)
+    sp = joined_splits()
+    L.fetch_names(Path("build/names"), "ssa")
+    for name, n, s in (("train", n_train, seed), ("dev", n_dev, seed + 1), ("test", test_lines, seed + 2)):
+        f = out / f"joined-{name}.pkl"
+        if f.exists() or not n:
+            continue
+        lg = L.Generator(Path("build/text"), Path("build/release/glassine-handwriting-chars-en-1/chars.gclm"),
+                         Path("build/names"), Path("build/lexicon/en/words.txt"), held=name == "test", given="ssa")
+        fonts = sp[name]
+        rng = np.random.default_rng(s)
+        jobs = []
+        if name == "test":
+            for i, font in enumerate(fonts):
+                texts = [t for t, _ in lg.lines(n, s + 10 + i, {"prose": 0.5, "words": 0.5})]
+                jobs.append((font, texts, s + 100 + i, False))
+        else:
+            texts = [t for t, _ in lg.lines(n, s, TEXT_SHARES)]
+            pick = rng.integers(0, len(fonts), len(texts))
+            for i, font in enumerate(fonts):
+                jobs.append((font, [t for t, k in zip(texts, pick) if k == i], s + 100 + i, True))
+        t0 = time.time()
+        with mp.get_context("fork").Pool(min(workers, len(jobs))) as p:
+            res = p.map(_joined_job, jobs, chunksize=1)
+        if name == "test":
+            data = {font: {"letters": [], "test": lines} for font, lines in res}
+        else:
+            data = [x for _, lines in res for x in lines]
+            np.random.default_rng(s + 7).shuffle(data)
+        f.write_bytes(pickle.dumps(data))
+        print(f"joined {name}: {sum(len(v) for _, v in res)} lines, {time.time() - t0:.0f} s", flush=True)
+
+
+def mix(out: Path, parts: list[tuple[Path, Path]]):
+    """A training directory of several: train.pkl and dev.pkl, each the parts' lists together,
+    shuffled (training reads the first 400 dev lines)."""
+    out.mkdir(parents=True, exist_ok=True)
+    for name, k in (("train", 0), ("dev", 1)):
+        data = []
+        for p in parts:
+            data += pickle.loads(p[k].read_bytes())
+        order = np.random.default_rng(5).permutation(len(data))
+        data = [data[i] for i in order]
+        (out / f"{name}.pkl").write_bytes(pickle.dumps(data))
+        print(f"{name}: {len(data)} lines", flush=True)
+
+
 # ---------------------------------------------------------------------------- training
 
 def prepare(lines: list[dict], kind: str = "point") -> list[tuple[np.ndarray, list[int], np.ndarray]]:
@@ -482,6 +568,15 @@ def main(argv=None):
     d.add_argument("--real", action="store_true", help="the writers of REAL (curved joins, bars and dots as written)")
     d.add_argument("--letters", type=Path, help="a letter model file: its join shapes, and its versions write --share of train")
     d.add_argument("--share", type=float, default=0.0)
+    j = sub.add_parser("joined", help="lines of the joined fonts (joined.toml), with their point labels")
+    j.add_argument("--out", default="build/align-joined")
+    j.add_argument("--train", type=int, default=12000)
+    j.add_argument("--dev", type=int, default=300)
+    j.add_argument("--test-lines", type=int, default=40)
+    j.add_argument("--workers", type=int, default=12)
+    x = sub.add_parser("mix", help="one training directory from several: TRAIN.pkl:DEV.pkl ...")
+    x.add_argument("out", type=Path)
+    x.add_argument("parts", nargs="+")
     t = sub.add_parser("train")
     t.add_argument("--data", default="build/align")
     t.add_argument("--out", default="build/align/aligner.pt")
@@ -507,6 +602,10 @@ def main(argv=None):
     if a.cmd == "data":
         make_sets(Path(a.out), a.train, a.dev, a.test_lines, a.letter_lines, a.workers, real=a.real,
                   letters=a.letters, share=a.share)
+    elif a.cmd == "joined":
+        make_joined(Path(a.out), a.train, a.dev, a.test_lines, a.workers)
+    elif a.cmd == "mix":
+        mix(a.out, [tuple(Path(q) for q in p.split(":")) for p in a.parts])
     elif a.cmd == "export":
         export_ghm(a.ckpt, a.out)
     elif a.cmd == "measure":
