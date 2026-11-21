@@ -82,6 +82,10 @@ struct hw_neat {
 	int confirmed;                  /* cp is the confirmed text: its words can be set (FR-043) */
 	const struct hw_aligned *aligned;   /* the point aligner's run over the ink (aligner.h): a
 					 * stroke several letters share is cut by it; NULL: by shape */
+	int cond;                       /* (measurements) Neatest sets a word conditioned on its ink:
+					 * along its own baseline, at its own slant, x-height and
+					 * spacing, each letter onto its version nearest to it
+					 * (hw_neaten; $GLASSINE_HANDWRITING_NEATEN cond=1 too) */
 	/* out (malloc'd by hw_neaten; hw_neat_free) */
 	double **x, **y;
 	int *how;
@@ -90,6 +94,7 @@ struct hw_neat {
 	unsigned char *set;             /* per character: 1 its word set (FR-043) */
 	double line_xh, line_base;      /* the line's x-height and baseline (y) as neatened */
 	int line_hasbase;
+	double line_base0, line_slope0; /* the line's baseline as written (y = base0 + slope0 x) */
 };
 
 /* Strokes too tall to be writing: marked in keep (xh as in struct hw_neat). */

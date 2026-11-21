@@ -99,6 +99,26 @@ def guard_dist(ink, xh, v):
     return math.sqrt(sum((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 for p, q in zip(a, b)) / len(a))
 
 
+
+def lean_of(strokes):
+    """the downstrokes' lean (as the letter model measures it: tan, > 0 leaning right)"""
+    n = d = 0.0
+    for st in strokes:
+        for i in range(1, len(st)):
+            dx, dy = st[i][0] - st[i - 1][0], -(st[i][1] - st[i - 1][1])
+            if dy < 0 and -dy > 2 * abs(dx):
+                n += dx * dy
+                d += dy * dy
+    return n / d if d > 0 else 0.0
+
+
+def EV_fit(pts):
+    """least squares y = a + b x"""
+    mx, my = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    b = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx if sxx > 0 else 0
+    return my - b * mx, b
+
 def on_curve(ink, v, rounds=200, cover=False):
     """how far a character's points lie from a variant's strokes (RMS, x-heights; each
     stroke's from its stroke) once moved and scaled onto them at best (no stretch, no shear):
@@ -619,6 +639,64 @@ class Neaten(unittest.TestCase):
                 words += 1
             self.assertLess(max(bases) - min(bases), 0.3, (text, bases))
         self.assertEqual(words, 10)
+
+    def test_conditioned_setting_keeps_the_lines_direction(self):
+        """(measurements) with cond=1 Neatest sets the same words as by default, but each along
+        its own baseline and lean as written: a line written on a slope and leaning further
+        stays so, each word where it was written, every letter on one of its versions once its
+        word's slope and lean are taken off; by default the words are set on the straight line
+        at the font's lean, as before (cond=0 the same)"""
+        self.letters()
+        model = [json.loads(m) for m in (self.e.store / "letters" / "model").read_text().splitlines()]
+        L = {m["char"]: m for m in model if "char" in m}
+        slant = next(m["metrics"]["slant"] for m in model if "metrics" in m)
+        rnd = random.Random(53)
+        slope, lean = 0.2, 0.3
+        for text in ("hello world", "come on now"):
+            s = TL.sample(text, rnd)
+            x0, y0 = s["strokes"][0][0][0], s["strokes"][0][0][1]
+            for st in s["strokes"]:
+                for p in st:
+                    p[0] += lean * (y0 - p[1])
+                    p[1] += slope * (p[0] - x0)
+            written = [[(p[0], p[1]) for p in st] for st in s["strokes"]]
+            how0, xy0 = self.neaten_letters(s, 1)
+            why0 = self.why
+            self.assertEqual(self.neaten_letters(s, 1, knob="cond=0")[1], xy0)
+            how1, xy1 = self.neaten_letters(s, 1, knob="cond=1")
+            self.assertEqual(self.why, why0)
+            self.assertEqual(how1, how0)
+            self.assertEqual([len(a) for a in xy1], [len(a) for a in written])
+            # the baseline through the letters' lowest points: straight by default, as written
+            # conditioned
+            def base_slope(xy, ks):
+                bot = [max(((p[1], p[0]) for j in s["spans"][k] for p in xy[j]))[::-1] for k in ks if text[k] in "aceomnuw"]
+                return EV_fit(bot)[1]
+            every = [k for k in range(len(text)) if text[k] != " "]
+            self.assertLess(abs(base_slope(xy0, every)), 0.04, text)
+            self.assertLess(abs(base_slope(xy1, every) - slope), 0.04, text)
+            k0 = 0
+            for w in text.split(" "):
+                ks = range(k0, k0 + len(w))
+                k0 += len(w) + 1
+                if any(why0[k] != "set" for k in ks):
+                    continue
+                js = [j for k in ks for j in s["spans"][k]]
+                # the lean of the downstrokes as written
+                self.assertLess(abs(lean_of([xy1[j] for j in js]) - lean_of([written[j] for j in js])), 0.1, (text, w))
+                # where it was written: its middle within half an x-height
+                mx = lambda pts: (min(p[0] for p in pts) + max(p[0] for p in pts)) / 2
+                self.assertLess(abs(mx([p for j in js for p in xy1[j]]) - mx([p for j in js for p in written[j]])), 15, (text, w))
+                # each letter on one of its versions once its word's slope and lean are taken off
+                b, ln = base_slope(xy1, every), lean_of([xy1[j] for j in js]) - slant
+                ox, oy = xy1[js[0]][0]
+                for k in ks:
+                    ink = []
+                    for j in s["spans"][k]:
+                        st = [(x, y - b * (x - ox)) for x, y in xy1[j]]
+                        ink.append([(x - ln * (oy - y), y) for x, y in st])
+                    best = min(on_curve(ink, v) for v in L[w[k - ks[0]]]["variants"] if len(v["strokes"]) == len(ink))
+                    self.assertLess(best, 0.05, (text, w, k))
 
     def test_neatest_draws_every_stroke_apart(self):
         """at Neatest (FR-043) a letter is set onto a variant with as many strokes as its ink
