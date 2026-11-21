@@ -7,14 +7,14 @@
  * stdin, ID a small number naming a region:
  *   "region ID NAME", "rect ID X Y W H", "clip ID X Y W H", "guides ID SPACING FIRST",
  *   "context ID PURPOSE HINTS", "reading ID ON", "neaten ID ON STRENGTH", "layer ID L",
- *   "mode ID MODE", "allmode MODE", "edit ID TEXT", "report ID SERIAL ACTION RANK [TEXT]",
+ *   "mode ID MODE", "display ID DISPLAY", "allmode MODE", "edit ID TEXT", "report ID SERIAL ACTION RANK [TEXT]",
  *   "restore ID FROM" (region ID gets what the app kept of region FROM: its strokes less
  *   those gone, its value and state), "strokes-only ID FROM" (the strokes alone),
  *   "destroy ID", "sync" (answers "synced").
  * Output ("\n" in a text printed as \n):
  *   "caps C", "stroke ID K N X,Y,T,P,TX,TY …", "neat ID K HOW N X,Y …",
- *   "word ID START LENGTH ink K,K… DX DY" or "word ID START LENGTH set X Y W H NPATH" for
- *   each word, "gone ID K,K…", then "value ID SERIAL STATE_BYTES TEXT";
+ *   "word ID START LENGTH ink K,K… DX DY", "word ID START LENGTH set X Y W H NPATH" or (an
+ *   ink word shown set) "word ID START LENGTH shown K,K… X Y W H NPATH" for each word, "gone ID K,K…", then "value ID SERIAL STATE_BYTES TEXT";
  *   "candidate ID SERIAL RANK ORIGIN FIT TEXT", "done ID SERIAL COUNT",
  *   "gesture ID SERIAL KIND K,K…", "report ID SERIAL RESULT". */
 #include <poll.h>
@@ -113,7 +113,11 @@ static void on_value(void *d, struct ghw_region *r, uint32_t serial, const char 
 	int id = id_of(r);
 	for (size_t i = 0; i < nw; i++) {
 		printf("word %d %u %u", id, w[i].start, w[i].length);
-		if (w[i].set) {
+		if (w[i].set && w[i].nstrokes) {
+			printf(" shown");
+			out_list(w[i].strokes, w[i].nstrokes);
+			printf(" %.6g %.6g %.6g %.6g %zu\n", w[i].x, w[i].y, w[i].width, w[i].height, w[i].npath);
+		} else if (w[i].set) {
 			printf(" set %.6g %.6g %.6g %.6g %zu\n", w[i].x, w[i].y, w[i].width, w[i].height, w[i].npath);
 		} else {
 			printf(" ink");
@@ -212,6 +216,7 @@ static void command(struct ghw_pen *pen, struct wl_display *dpy, char *c)
 	else if (sscanf(c, "neaten %*d %d %lf", &on, &st) == 2) ghw_region_set_neaten(r, on, st);
 	else if (sscanf(c, "layer %*d %d", &layer) == 1) ghw_region_set_layer(r, layer);
 	else if (sscanf(c, "mode %*d %d", &mode) == 1) ghw_region_set_mode(r, mode);
+	else if (sscanf(c, "display %*d %d", &mode) == 1) ghw_region_set_display(r, mode);
 	else if (sscanf(c, "edit %*d %4095[^\n]", text) == 1) { unescape(text); ghw_region_edit(r, text); }
 	else if (sscanf(c, "report %*d %u %u %u %4095[^\n]", &serial, &action, &rank, text) >= 3) {
 		unescape(text);

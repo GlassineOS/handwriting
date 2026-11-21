@@ -21,7 +21,7 @@ struct wl_surface;
 struct ghw_pen;
 struct ghw_region;
 
-#define GHW_VERSION 2
+#define GHW_VERSION 3
 
 /* capabilities (ghw_pen_capabilities); GHW_CAP_REGIONS: regions are read (values,
  * candidates, gestures, word layout); without it regions still pass on raw strokes */
@@ -92,15 +92,20 @@ int ghw_pen_flush(struct ghw_pen *pen);
 
 /* region modes, gestures */
 enum { GHW_MODE_INK = 0, GHW_MODE_TEXT = 1 };
+/* region displays (version 3): words with ink shown as their strokes, or set in the person's font */
+enum { GHW_DISPLAY_INK = 0, GHW_DISPLAY_SET = 1 };
 enum { GHW_STRIKE = 0, GHW_SCRATCH = 1, GHW_CARET = 2 };
 /* path ops of a set word's outline (ghw_word.path) */
 enum { GHW_PATH_MOVE = 0, GHW_PATH_LINE = 1, GHW_PATH_QUAD = 2, GHW_PATH_CUBIC = 3, GHW_PATH_CLOSE = 4 };
 
 /* a word of a region's value: the bytes start to start + length of the value's text.
- * An ink word (set 0) is its strokes, drawn moved by dx, dy. A set word (set 1) has no ink:
- * draw its outline, path (npath numbers: each op code followed by its coordinates, 2 for
- * move and line, 4 for quad, 6 for cubic, none for close), filled with the non-zero rule;
- * x, y, width, height is its box. Region coordinates throughout. */
+ * An ink word (set 0) is its strokes, drawn moved by dx, dy. A set word (set 1) is drawn as
+ * its outline, path (npath numbers: each op code followed by its coordinates, 2 for move
+ * and line, 4 for quad, 6 for cubic, none for close), filled with the non-zero rule; x, y,
+ * width, height is its box. A set word without strokes has no ink (typed); one with strokes
+ * is an ink word shown set (GHW_DISPLAY_SET): draw its outline, keep its strokes (they stay
+ * the region's and come back as an ink word with GHW_DISPLAY_INK). Region coordinates
+ * throughout. */
 struct ghw_word {
 	uint32_t start, length;
 	int set;
@@ -158,6 +163,10 @@ void ghw_region_set_reading(struct ghw_region *region, int on);
 void ghw_region_set_neaten(struct ghw_region *region, int on, double strength);
 void ghw_region_set_layer(struct ghw_region *region, int layer);
 void ghw_region_set_mode(struct ghw_region *region, int mode);
+/* GHW_DISPLAY_INK (the start) or GHW_DISPLAY_SET: how the value's words with ink are shown;
+ * never changes the strokes, value or saved state, and reads nothing again. A value follows
+ * (with reading on). No effect on a compositor before version 3. */
+void ghw_region_set_display(struct ghw_region *region, int display);
 /* every region of the surface, and those made later */
 void ghw_pen_set_mode(struct ghw_pen *pen, int mode);
 /* the person's keyboard text for the region (send it before going back to ink mode) */

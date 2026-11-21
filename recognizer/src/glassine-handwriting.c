@@ -624,7 +624,8 @@ static void gesture_chars(struct hw_lang *l, const struct session *s, size_t g, 
 	if (!done) bstr(b, ge->kind == HW_GESTURE_CARET ? "@0" : "-");
 }
 
-static void do_read(const char *id, struct session *s, int want, int mode, int detail)
+/* writing (contract 1.11): the newest stroke is read as writing, never as a gesture */
+static void do_read(const char *id, struct session *s, int want, int mode, int detail, int writing)
 {
 	int bad;
 	if (!s->n) { reply("read\t%s\tempty", id); return; }
@@ -637,7 +638,7 @@ static void do_read(const char *id, struct session *s, int want, int mode, int d
 	if (!st) { reply("error\t%s\tmemory", id); return; }
 	struct hw_gesture *ge = malloc(sizeof *ge);
 	size_t g = s->n - 1;
-	if (ge && hw_gesture(st, s->n, g, gesture_scale(st, s->n, g, &s->units), ge)) {
+	if (ge && !writing && hw_gesture(st, s->n, g, gesture_scale(st, s->n, g, &s->units), ge)) {
 		bfmt(&b, "read\t%s\tgesture\t%s\t%d\t%.6g,%.6g,%.6g,%.6g\t", id, hw_gesture_name(ge->kind), s->ids[g],
 		     ge->bbox[0], ge->bbox[1], ge->bbox[2], ge->bbox[3]);
 		for (int j = 0; j < ge->ncovers; j++) bfmt(&b, "%s%d", j ? "," : "", s->ids[ge->covers[j]]);
@@ -1659,7 +1660,7 @@ static void request(char *line, int skip_read)
 		}
 		struct buf b0 = out;      /* the reply line, renamed from read to recognize */
 		size_t at = b0.len;
-		do_read(id, &tmp, (int)want, READ_FIELD, 0);
+		do_read(id, &tmp, (int)want, READ_FIELD, 0, 0);
 		if (out.len > at && !strncmp(out.s + at, "read\t", 5)) {
 			struct buf t = { 0 };
 			bstr(&t, "recognize");
@@ -1689,13 +1690,14 @@ static void request(char *line, int skip_read)
 		if ((sid = session_add(s, &k, w, src)) < 0) { free(src); hw_ink_free(&k); reply("error\t%s\ttoo-many", id); return; }
 		reply("stroke\t%s\tok\t%d", id, sid);
 	} else if (!strcmp(v, "read")) {
-		/* read ID S [COUNT [raw|chars] [detail]] */
-		int mode = READ_FIELD, detail = 0;
-		if (n < 3 || n > 6) { reply("error\t%s\tbad-line", id); return; }
+		/* read ID S [COUNT [raw|chars] [detail] [writing]] */
+		int mode = READ_FIELD, detail = 0, writing = 0;
+		if (n < 3 || n > 7) { reply("error\t%s\tbad-line", id); return; }
 		for (int k = 4; k < n; k++) {
-			if (!strcmp(f[k], "raw") && mode == READ_FIELD && !detail) mode = READ_INK;
-			else if (!strcmp(f[k], "chars") && mode == READ_FIELD && !detail) mode = READ_CHARS;
-			else if (!strcmp(f[k], "detail") && !detail) detail = 1;
+			if (!strcmp(f[k], "raw") && mode == READ_FIELD && !detail && !writing) mode = READ_INK;
+			else if (!strcmp(f[k], "chars") && mode == READ_FIELD && !detail && !writing) mode = READ_CHARS;
+			else if (!strcmp(f[k], "detail") && !detail && !writing) detail = 1;
+			else if (!strcmp(f[k], "writing") && !writing) writing = 1;
 			else { reply("error\t%s\tbad-line", id); return; }
 		}
 		long want = 3;
@@ -1705,7 +1707,7 @@ static void request(char *line, int skip_read)
 			if (e == f[3] || *e || want < 1 || want > MAX_CANDS) { reply("error\t%s\tbad-count", id); return; }
 		}
 		if (skip_read) { reply("drop\t%s", id); return; }
-		do_read(id, s, (int)want, mode, detail);
+		do_read(id, s, (int)want, mode, detail, writing);
 	} else if (!strcmp(v, "align")) {
 		NEED(4);
 		UNESC(3);

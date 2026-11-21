@@ -142,6 +142,19 @@ that left the field for good (`gone`: struck out, replaced by an edit, gestures)
 state. Draw the value in one go. The app never needs the person's font, computes a reading or
 matches words to ink. At a pause `candidate` events give ranked alternatives for the value;
 `gesture` says a strike, scratch or caret was written (its effect comes with the next value).
+A strike-through that covers no word is no gesture: its stroke stays ink and is read with the
+rest of the writing.
+
+**The display** (version 3). `set_display` (`ghw_region_set_display`) shows the value's words
+with ink as their strokes (`ink`, the start) or set in the person's font (`set`): then each
+such word comes as `word_shown_set`, its strokes and the outline it is shown as (in the
+library a `ghw_word` with `set` 1 and its strokes; the Python binding a word with both
+`strokes` and `path`). Draw the outline instead of the strokes, and keep the strokes: they stay
+the region's, nothing leaves, the value and saved state are the same, nothing is read again,
+and `ink` shows the strokes again. A shown word stands on its line at the person's size, from
+where its ink starts, moved right only as far as a word space after the word before it.
+Gestures act on the words where they are shown. On a compositor before version 3 the call does
+nothing and the words stay ink.
 
 **Reports.** `report` names a value or its candidates: `accepted` (the value as it is),
 `picked` (a candidate's rank), `corrected` (the person's text). It applies to the writing that

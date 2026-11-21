@@ -25,7 +25,9 @@ whose listener has some of
                                                   {"text", "strokes", "dx", "dy"}, a set word
                                                   {"text", "box": (x, y, w, h), "path": [op, …]}
                                                   with op ("M", x, y), ("L", x, y), ("Q", …),
-                                                  ("C", …), ("Z",); state: bytes to keep
+                                                  ("C", …), ("Z",); an ink word shown set
+                                                  (set_display("set")) has both: draw the
+                                                  path, keep the strokes; state: bytes to keep
     candidate(serial, rank, text, origin, fit), candidates_done(serial, count)
     gesture(serial, kind, strokes)                kind: "strike", "scratch", "caret"
     report_done(serial, result)
@@ -46,6 +48,7 @@ CAPS = ((1, "strokes"), (2, "neaten"), (4, "text"), (8, "letters"), (16, "region
 GESTURE = ("strike", "scratch", "caret")
 PATH = (("M", 2), ("L", 2), ("Q", 4), ("C", 6), ("Z", 0))
 MODE = {"ink": 0, "text": 1}
+DISPLAY = {"ink": 0, "set": 1}
 PURPOSE = {"normal": 0, "alpha": 1, "digits": 2, "number": 3, "phone": 4, "url": 5, "email": 6, "name": 7,
            "password": 8, "pin": 9, "date": 10, "time": 11, "datetime": 12, "terminal": 13}
 
@@ -138,6 +141,7 @@ def _load():
                 ("ghw_region_set_neaten", None, [vp, i, ctypes.c_double]),
                 ("ghw_region_set_layer", None, [vp, i]),
                 ("ghw_region_set_mode", None, [vp, i]),
+                ("ghw_region_set_display", None, [vp, i]),
                 ("ghw_region_edit", None, [vp, cp]),
                 ("ghw_region_report", None, [vp, u32, i, u32, cp]),
                 ("ghw_region_restore", None, [vp, ctypes.POINTER(_Stored), ctypes.c_size_t, cp, vp, ctypes.c_size_t])):
@@ -295,7 +299,7 @@ def _words(text, w, n):
              "length": w[i].length}
         if w[i].set:
             d.update(box=(w[i].x, w[i].y, w[i].width, w[i].height), path=_path(w[i].path, w[i].npath))
-        else:
+        if not w[i].set or w[i].nstrokes:
             d.update(strokes=[w[i].strokes[j] for j in range(w[i].nstrokes)], dx=w[i].dx, dy=w[i].dy)
         out.append(d)
     return out
@@ -373,6 +377,11 @@ class Region:
 
     def set_mode(self, mode):
         self._do("ghw_region_set_mode", MODE.get(mode, mode) if isinstance(mode, str) else int(mode))
+
+    def set_display(self, display):
+        """"ink" (the start) or "set": the value's words with ink shown as their strokes, or
+        set in the person's font; their strokes stay the region's"""
+        self._do("ghw_region_set_display", DISPLAY.get(display, display) if isinstance(display, str) else int(display))
 
     def edit(self, text):
         self._do("ghw_region_edit", text.encode())
