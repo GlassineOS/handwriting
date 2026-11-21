@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The handwriting font before it is installed (spec 003 Scenario 3, FR-010): text laid out
-from the letter model (`glassine-handwriting letters show`, docs/recognizer.md) with the
-variants, the neighbour rules (FR-038), the joined pairs (FR-039) and the spacing the font
-has, so the preview shows what the installed font shows.
+"""Autograph before it is installed (spec 003 Scenario 3, FR-009, FR-010): text laid out
+from the model as the font draws it (`glassine-handwriting font show`: the letter model over
+the base, docs/recognizer.md; `letters show` works too, without the base) with the variants,
+the neighbour rules (FR-038), the joined pairs (FR-039), the base's characters and the spacing
+the font has, so the preview shows what the installed font shows.
 Toolkit-free; pages.py draws the result."""
 
 import json
@@ -11,7 +12,7 @@ import sys
 
 TARGET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 MIN = 3                                  # usable samples for a character to be in the font
-DEFAULT_NAME = "My handwriting"
+NAME = "Autograph"                       # the installed font's name (FR-011)
 PREVIEW = "The quick brown fox jumps over the lazy dog."
 
 
@@ -28,7 +29,7 @@ def _skip(at, field):
 
 def parse(text):
     """the model file's lines -> {"metrics": {...}, "chars": {c: {"samples", "covered",
-    "variants"}}}; None when it isn't a letter model. An entry that isn't valid (a line that
+    "variants"}}, "base": {c: variant}}; None when it isn't a letter model. An entry that isn't valid (a line that
     isn't JSON, a character that isn't one) is left out with a warning"""
     out = {"metrics": {}, "chars": {}}
     lines = [(i + 1, ln) for i, ln in enumerate(text.splitlines()) if ln.strip()]
@@ -71,6 +72,12 @@ def parse(text):
                 _skip(at, "a rule's neighbour")
                 d["rules"] = good
             out["chars"][d["char"]] = d
+        elif "base" in d:
+            # a character the font draws from the base (font show)
+            if not _chars(d["base"], 1) or not isinstance(d.get("variant"), dict):
+                _skip(at, "its base character")
+                continue
+            out.setdefault("base", {})[d["base"]] = d["variant"]
         elif "joined" in d:
             if not _chars(d["joined"], 2):
                 _skip(at, "its pair")
@@ -135,7 +142,8 @@ def glyphs(model, text):
     every character's step of the cycle; then the joined pairs, left to right; then each
     letter's variant, by the first neighbour rule that applies, else its cycle's step.
     [(kind, text, variant index or None)]: kind "letter", "joined" (text its two letters),
-    "space" or "missing" (a character the font lacks)"""
+    "space", "base" (a character drawn from the base: outside the cycle, the run starts
+    again after it) or "missing" (a character the font lacks)"""
     model = font_view(model)
     items, prev = [], None
     for c in text:
@@ -144,7 +152,7 @@ def glyphs(model, text):
             items.append(("space", c, prev))
         elif not _in_font(model, c):
             prev = None
-            items.append(("missing", c, None))
+            items.append(("base" if c in (model.get("base") or {}) else "missing", c, None))
         else:
             prev = step(prev)
             items.append(("letter", c, prev))
@@ -348,6 +356,8 @@ def layout(model, text):
             if kind == "joined":
                 # its parts have no middles of their own: set at the gap on both sides
                 var = dict(pairs[c]["variant"], middle=None)
+            elif kind == "base":
+                var = model["base"][c]
             else:
                 var = model["chars"][c]["variants"][v]
             if prev is not None:
