@@ -303,6 +303,8 @@ static void person(const char *lang)
 	free(v);
 }
 
+static void one_guide(struct hw_size_ref *out);
+
 /* from x (and what else is known) to a whole reference */
 static void complete(struct hw_size_ref *r)
 {
@@ -321,6 +323,7 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	out->area_line = a && a->set && a->line > 0;
 	out->has_base = line > 0 && isfinite(base);
 	out->base = out->has_base ? base : 0;
+	out->given_base = isfinite(base) ? base : NAN;
 	const char *e = getenv("GLASSINE_HANDWRITING_SIZE");
 	if (e && *e) {
 		/* "noweigh" or "weigh", alone or after the letters */
@@ -334,6 +337,7 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 			out->x = v[0]; out->c = v[1];
 			out->xs = k == 4 ? v[2] : 0; out->cs = k == 4 ? v[3] : 0;
 			complete(out);
+			one_guide(out);
 			return;
 		}
 		if (!strcmp(e, "off")) return;
@@ -342,6 +346,17 @@ void hw_size_ref_for(const char *lang, const struct hw_units *u, const struct hw
 	out->pending = 1;
 	snprintf(out->lang, sizeof out->lang, "%s", lang);
 	out->per_mm = !em && u->per_mm > 0 ? u->per_mm : 0;
+}
+
+/* an area without a line but with its guide line (BASE): that one guide, the letters on it
+ * measured against the reference (the next ones a line of 1 / HW_LINE_XH small letters apart) */
+static void one_guide(struct hw_size_ref *out)
+{
+	if (out->kind != HW_SIZE_NONE && !(out->line > 0) && isfinite(out->given_base) && out->x > 0) {
+		out->line = out->x / HW_LINE_XH;
+		out->has_base = 1;
+		out->base = out->given_base;
+	}
 }
 
 static void resolve(struct hw_size_ref *out)
@@ -367,7 +382,21 @@ static void resolve(struct hw_size_ref *out)
 		out->x = HW_LINE_XH * line;
 		out->c = 0.5 * line;
 		complete(out);
+	} else if (out->prior > 0) {
+		/* the typical size (prior) as the line alone is: small letters HW_LINE_XH of a line */
+		out->kind = HW_SIZE_LINE;
+		out->x = out->prior;
+		out->c = 0.5 * out->prior / HW_LINE_XH;
+		complete(out);
 	}
+	one_guide(out);
+}
+
+void hw_size_ref_prior(const char *lang, const struct hw_units *u, const struct hw_area *a, double base, double prior,
+		       struct hw_size_ref *out)
+{
+	hw_size_ref_for(lang, u, a, base, out);
+	out->prior = prior > 0 && isfinite(prior) ? prior : 0;
 }
 
 /* ---------------------------------------------------------------- glyphs */
@@ -588,6 +617,8 @@ static int best_len(const struct hw_run *r)
 #define INK_SCALE 2.0
 #define INK_MIN 0.08
 #define INK_MAXF 5.0
+#define INK_BIG 1.6
+#define INK_BIG_SCALE 1.5
 
 /* the ink's small-letter height by its turns, 0 when it has too few; *width its width */
 static double ink_letter_height(const struct hw_stroke *s, size_t ns, double *width)
@@ -655,6 +686,16 @@ static double line_reference(double h, const struct hw_stroke *s, size_t ns)
 	return fmax(INK_SCALE * x, h / INK_MAXF);
 }
 
+/* the reference for the size prior alone: as the line alone (above), and a line of writing
+ * whose own small letters come out over INK_BIG of the prior read at INK_BIG_SCALE of them
+ * (the prior is a typical size: one far below the ink's own letters says nothing of it) */
+static double prior_reference(double h, const struct hw_stroke *s, size_t ns)
+{
+	double w, x = ink_letter_height(s, ns, &w);
+	if (x > 0 && w >= INK_WIDE * x && x > INK_BIG * h) return INK_BIG_SCALE * x;
+	return line_reference(h, s, ns);
+}
+
 double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke *s, size_t ns, double *base)
 {
 	*base = NAN;
@@ -677,6 +718,7 @@ double hw_size_ref_height(const struct hw_size_ref *ref0, const struct hw_stroke
 			free(y);
 		}
 	}
+	if (rf.kind == HW_SIZE_LINE && s && ns && rf.prior > 0 && !rf.area_line) return prior_reference(rf.x, s, ns);
 	if (rf.kind == HW_SIZE_LINE && s && ns) return line_reference(rf.x, s, ns);
 	return rf.x;
 }

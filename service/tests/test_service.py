@@ -58,21 +58,21 @@ def ink(n=4, seed=1, x0=10.0, y0=40.0, t0=1000):
 
 
 class AreaRules(unittest.TestCase):
-    """the area and units found from the writing (docs/service.md, The writing's size)"""
+    """the area, units and size prior (docs/service.md, The writing's size)"""
 
     def test_rules(self):
         from glassine_hwservice import area as A
-        # three strokes 10, 20 and 40 high (one 80 wide: its size is 20), one dipping below
+        # three strokes 10, 20 and 40 high, one dipping below
         st = [[[0, 50, 0], [2, 40, 10]], [[10, 30, 20], [90, 50, 30]], [[100, 20, 40], [101, 60, 50]]]
         self.assertEqual(A.box(st), (0, 20, 101, 60))
-        self.assertEqual(A.line(st), 120)
+        self.assertFalse(hasattr(A, "line"))                      # no line is found from writing
         self.assertEqual(A.base(st), 50)
-        self.assertEqual(A.text(A.box(st), A.line(st), A.base(st)), "0,20,101,60,120,0,50")
+        self.assertEqual(A.text(A.box(st), 0, A.base(st)), "0,20,101,60,0,0,50")
         self.assertEqual(A.text((0, 0, 1, 1), 1.23456), "0,0,1,1,1.235,0")
         self.assertEqual(A.box([[[5, 5, 0]]]), (5, 5, 6, 6))      # a dot: never an empty box
         self.assertEqual(A.glyphs(st), 3)
         self.assertEqual(A.glyphs(st[:2]), 2)
-        self.assertEqual(A.line(st[:2]), 0)                        # too little to tell its line
+        self.assertIsNone(A.base(st[:2]))                          # too little to show its line
         self.assertEqual(A.glyphs([[[0, 0, 0], [10, 0, 1]], [[5, 5, 2], [20, 5, 3]], [[30, 0, 4]]]), 2)
         self.assertEqual(A.rate(st), 0)                            # too few steps
         self.assertEqual(A.rate([[[i, 0, 5 * i] for i in range(9)]]), 200)
@@ -81,6 +81,35 @@ class AreaRules(unittest.TestCase):
         self.assertEqual(A.with_rate("device", 200), "device")
         self.assertEqual(A.with_rate("em", 200), "em")
         self.assertEqual(A.with_rate("device:6.25", 0), "device:6.25")
+        # the prior: a typical small letter in mm at the units' density, else the default one
+        self.assertAlmostEqual(A.prior("device:6.25"), A.TYPICAL_XH_MM * 6.25)
+        self.assertAlmostEqual(A.prior("device:6.25:143"), A.TYPICAL_XH_MM * 6.25)
+        self.assertAlmostEqual(A.prior("device"), A.TYPICAL_XH_MM * A.DEFAULT_PX_PER_MM)
+        self.assertIsNone(A.prior("em"))
+
+    def test_output_density(self):
+        """an output of unknown size: the person's density for it, kept by its name"""
+        from glassine_hwservice import outputs
+        d = tempfile.mkdtemp(prefix="hws-out-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, True)
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = d
+        try:
+            self.assertEqual(outputs.units("device", "DSI-1"), "device")
+            outputs.set_density("DSI-1", 8.94)
+            self.assertEqual(outputs.units("device", "DSI-1"), "device:8.94")
+            self.assertEqual(outputs.units("device", "HDMI-A-1"), "device")
+            self.assertEqual(outputs.units("device:6.25", "DSI-1"), "device:6.25")   # a known size wins
+            self.assertEqual(outputs.units("em", "DSI-1"), "em")
+            for bad in (0, -1, float("nan"), 5000):
+                self.assertRaises(ValueError, outputs.set_density, "DSI-1", bad)
+            outputs.set_density("DSI-1", None)
+            self.assertEqual(outputs.units("device", "DSI-1"), "device")
+        finally:
+            if old is None:
+                os.environ.pop("XDG_CONFIG_HOME")
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old
 
 
 class Service(unittest.TestCase):
@@ -268,9 +297,9 @@ class Service(unittest.TestCase):
         d.env["GLASSINE_HANDWRITING_FIT_OK"] = "0"
         c = d.start()
         c.ask("hello", "1", "org.example.Notes")
-        # the units with the pen's rate and the area the service documents (docs/service.md,
-        # The writing's size): the box of the writing, six median stroke sizes a line, the
-        # guide line at the median of the strokes' lowest points
+        # the units with the pen's rate, the area and the prior the service documents
+        # (docs/service.md, The writing's size): the box of the writing, no ruled line, the
+        # guide line at the median of the strokes' lowest points, a typical small letter
         from glassine_hwservice import area as A
         from glassine_hwservice.engine import points
         from glassine_hwservice.pen import lines
@@ -278,7 +307,8 @@ class Service(unittest.TestCase):
         c.ask("begin", "s", "-", "normal", "device:6.25:143", "")
         for s in st:
             c.ask("stroke", "s", points(s))
-        c.ask("area", "s", A.text(A.box(st), A.line(st), A.base(st)))
+        c.ask("prior", "s", A._num(A.prior("device:6.25")))
+        c.ask("area", "s", A.text(A.box(st), 0, A.base(st)))
         c.ask("read", "s", "5")
         r = c.ask("confirm", "s", "picked", TR.esc(text))
         c.close()
@@ -294,24 +324,30 @@ class Service(unittest.TestCase):
         for f in self.requests():
             if f[0] == "begin":
                 out.append({"name": f[2], "units": f[5], "asks": []})
-            elif len(f) > 2 and out and f[0] in ("stroke", "area", "read", "neaten", "confirm"):
+            elif len(f) > 2 and out and f[0] in ("stroke", "area", "read", "neaten", "confirm", "prior"):
                 cur = [x for x in out if x["name"] == f[2]][-1]
                 cur["asks"].append(f[0] if f[0] != "area" else ("area", f[3]))
+                if f[0] == "prior":
+                    cur["prior"] = float(f[3])
         return out
 
-    def assert_every_read_has_an_area(self, units):
+    def assert_every_read_has_an_area(self, units, prior=True):
         ss = self.sessions()
         self.assertTrue(ss)
+        from glassine_hwservice import area as A
         for x in ss:
             self.assertEqual(x["units"], units, x["name"])
+            if prior:
+                self.assertAlmostEqual(x.get("prior", 0), round(A.prior(units), 3), 3, x["name"])
             for i, a in enumerate(x["asks"]):
                 if a in ("read", "neaten", "confirm"):
                     self.assertTrue(any(isinstance(b, tuple) for b in x["asks"][:i]), "%s: %s before an area" % (x["name"], a))
         return [b[1] for x in ss for b in x["asks"] if isinstance(b, tuple)]
 
     def test_area_and_units_without_an_ink_area(self):
-        """no ink area: every session gets an area found from the writing, and the units
-        with the px per mm and the pen's rate (7 ms a point: 143 points a second)"""
+        """no ink area: every session gets an area of the writing's box with no ruled line,
+        the size prior, and the units with the px per mm and the pen's rate (7 ms a point:
+        143 points a second)"""
         self.pen_send(op="surface", s=11, sandbox="org.example.Notes", pid=0)
         self.pen_send(op="set", s=11, neaten=True, strength=0.5, text=True, units="device:6.25")
         st = ink(4, seed=3)
@@ -319,10 +355,40 @@ class Service(unittest.TestCase):
         self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
         from glassine_hwservice import area as A
         areas = self.assert_every_read_has_an_area("device:6.25:143")
-        self.assertIn(A.text(A.box(st), A.line(st), A.base(st)), areas)
+        self.assertIn(A.text(A.box(st), 0, A.base(st)), areas)
         for a in areas:
             f = [float(v) for v in a.split(",")]
-            self.assertTrue(f[2] > f[0] and f[3] > f[1] and f[4] > 0 and f[5] == 0, a)
+            self.assertTrue(f[2] > f[0] and f[3] > f[1] and f[4] == 0 and f[5] == 0, a)
+
+    def test_lone_character_never_borrows_a_line(self):
+        """a lone character: no line found from itself nor from earlier writing on the
+        surface, no guide line, only the prior; on an output of unknown size the units stay
+        the pen's own, the prior at the default density, until the person sets the output's"""
+        self.pen_send(op="surface", s=14, sandbox="org.example.Notes", pid=0)
+        self.pen_send(op="set", s=14, text=True, units="device", output="DSI-1")
+        self.write(14, ink(4, seed=8))
+        self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
+        self.pen_send(op="clear", s=14)
+        self.log.write_text("")
+        one = ink(1, seed=9)
+        self.write(14, one, k0=10)
+        self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
+        from glassine_hwservice import area as A
+        areas = self.assert_every_read_has_an_area("device")
+        self.assertEqual(set(areas), {A.text(A.box(one), 0)})
+        r = self.call("output.set", output="DSI-1", px_per_mm=8.94)["result"]
+        self.assertEqual(r["outputs"], {"DSI-1": 8.94})
+        self.assertAlmostEqual(r["default"], A.DEFAULT_PX_PER_MM)
+        self.pen_send(op="clear", s=14)
+        self.pen_send(op="set", s=14, text=True, units="device", output="DSI-1")
+        self.log.write_text("")
+        self.write(14, one, k0=20)
+        self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
+        self.assert_every_read_has_an_area("device:8.94:143")
+        # only the person's own tools set it
+        a = self.app("org.example.A")
+        self.assertEqual(a("output.set", output="DSI-1", px_per_mm=1)["error"]["code"], "not-allowed")
+        self.assertEqual(self.call("output.set", output="DSI-1", px_per_mm=-2)["error"]["code"], "bad-request")
 
     def test_area_of_the_ink_area(self):
         """an ink area with ruled lines: that box, its line and its first guide line"""
@@ -332,34 +398,36 @@ class Service(unittest.TestCase):
         self.write(12, ink(4, seed=4))
         self.pen_events(lambda o: any(m["op"] == "candidates" for m in o))
         self.assertEqual(set(self.assert_every_read_has_an_area("device:6.25:143")), {"0,0,600,400,60.5,0,45"})
-        # an ink area without ruled lines: that box, a line found from the writing
+        # an ink area without ruled lines: that box, no line
         self.pen_send(op="surface", s=13, sandbox="org.example.Notes", pid=0)
         self.pen_send(op="set", s=13, text=True, units="device:6.25", box=[10, 20, 700, 500])
         self.write(13, ink(3, seed=6))
         self.pen_events(lambda o: any(m["op"] == "candidates" and m["s"] == 13 for m in o))
         a13 = [b[1] for x in self.sessions() if x["name"] == "p13" for b in x["asks"] if isinstance(b, tuple)]
-        self.assertTrue(a13 and all(a.startswith("10,20,700,500,") for a in a13), a13)
+        self.assertTrue(a13 and all(a.startswith("10,20,700,500,0,0") for a in a13), a13)
 
     def test_service_read_has_an_area(self):
-        """the service interface: an area found from the writing, else the one given"""
+        """the service interface: the area of the writing with no ruled line, else the one given"""
         a = self.app("org.example.A")
         st = ink(3, seed=7)
         self.assertIn("candidates", a("read", strokes=st, count=1, units="device:6.25")["result"])
         from glassine_hwservice import area as A
         self.assertEqual(self.assert_every_read_has_an_area("device:6.25:143"),
-                         [A.text(A.box(st), A.line(st), A.base(st))])
+                         [A.text(A.box(st), 0, A.base(st))])
         self.log.write_text("")
         a("read", strokes=st, count=1, units="device:6.25", area={"box": [0, 0, 400, 200], "line": 80, "base": 60})
         self.assertEqual(self.assert_every_read_has_an_area("device:6.25:143"), ["0,0,400,200,80,0,60"])
         self.assertEqual(a("read", strokes=st, area={"box": [0, 0, 0, 0], "line": 80})["error"]["code"], "bad-request")
-        # em says how high a line is: no area found for it; one given is used
+        self.assertEqual(a("read", strokes=st, area={"line": 0})["error"]["code"], "bad-request")
+        # em says how high a line is: no area found for it, no prior; one given is used
         self.log.write_text("")
         a("read", strokes=[[[x / 40, y / 40, t] for x, y, t, *_ in s] for s in st], count=1, units="em")
         self.assertEqual([b for x in self.sessions() for b in x["asks"] if isinstance(b, tuple)], [])
-        # a lone character: too little writing to find a line in, no area
+        self.assertNotIn("prior", self.sessions()[0])
+        # a lone character: the box of it, no line, no guide line
         self.log.write_text("")
         a("read", strokes=st[:1], count=1, units="device:6.25")
-        self.assertEqual([b for x in self.sessions() for b in x["asks"] if isinstance(b, tuple)], [])
+        self.assertEqual(self.assert_every_read_has_an_area("device:6.25:143"), [A.text(A.box(st[:1]), 0)])
 
     def test_nothing_sent_when_off_or_private(self):
         self.pen_send(op="surface", s=3, sandbox="org.example.Draw", pid=0)

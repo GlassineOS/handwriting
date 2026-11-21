@@ -321,6 +321,7 @@ struct session {
 	struct hw_area area;            /* the writing area, when the client said (area) */
 	int has_base;                   /* and its first guide line (area BASE) */
 	double base;
+	double prior;                   /* the typical small letter in its units (prior), 0 none */
 	int words;                      /* readings use the words (a prose field, the setting on) */
 	int chars;                      /* ... the character model (a prose, name or letters field, the setting on) */
 	int lean;                       /* look-alike letters and digits: HW_LEAN_* of the field */
@@ -492,7 +493,7 @@ static void text_of(const unsigned *cp, int n, char *o, size_t max)
 /* the session's size reference (FR-017) */
 static void size_ref(const struct hw_lang *l, const struct session *s, struct hw_size_ref *ref)
 {
-	hw_size_ref_for(l->lang, &s->units, &s->area, s->has_base ? s->base : NAN, ref);
+	hw_size_ref_prior(l->lang, &s->units, &s->area, s->has_base ? s->base : NAN, s->prior, ref);
 }
 
 /* what a reading reads with: the field's words and character model (READ_FIELD), the
@@ -1622,7 +1623,7 @@ static void request(char *line, int skip_read)
 	struct session *s = n >= 3 ? find_session(f[2]) : NULL;
 	if (!strcmp(v, "stroke") || !strcmp(v, "read") || !strcmp(v, "align") || !strcmp(v, "remove") ||
 	    !strcmp(v, "clear") || !strcmp(v, "end") || !strcmp(v, "confirm") || !strcmp(v, "donate") ||
-	    !strcmp(v, "area") || !strcmp(v, "mark") || !strcmp(v, "neaten")) {
+	    !strcmp(v, "area") || !strcmp(v, "mark") || !strcmp(v, "neaten") || !strcmp(v, "prior")) {
 		if (n < 3) { reply("error\t%s\tbad-line", id); return; }
 		if (!s) { reply("error\t%s\tunknown-session", id); return; }
 		if (relay && strcmp(s->client, client)) { reply("error\t%s\tunknown-session", id); return; }
@@ -1690,6 +1691,14 @@ static void request(char *line, int skip_read)
 		NEED(4);
 		if (parse_area(f[3], &s->area, &s->has_base, &s->base)) { reply("error\t%s\tbad-area", id); return; }
 		reply("area\t%s\tok", id);
+	} else if (!strcmp(v, "prior")) {
+		/* prior ID S XH: the typical small letter, in the session's units */
+		NEED(4);
+		char *e;
+		double x = strtod(f[3], &e);
+		if (e == f[3] || *e || !isfinite(x) || x < 0) { reply("error\t%s\tbad-prior", id); return; }
+		s->prior = x;
+		reply("prior\t%s\tok", id);
 	} else if (!strcmp(v, "neaten")) {
 		/* neaten ID S STRENGTH [TEXT [ALIGN]] */
 		if (n < 4 || n > 6) { reply("error\t%s\tbad-line", id); return; }
