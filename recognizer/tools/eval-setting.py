@@ -288,11 +288,11 @@ def main():
     print(f"held-back lines with their text and spans: {len(held)}" + (f", and as many tilted ({a.tilt})" if a.tilt else ""))
     for case in ("as written", "tilted") if a.tilt else ("as written",):
         print(f"\n{case}: (as written the letters are {med(orig_font[case]):.3f} x-heights from the font)")
-        print(f"{'':18s} {'faithful:':>9s} {'move':>6s} {'shape':>6s} {'angle':>6s} {'lean':>6s} {'size':>6s}   "
+        print(f"{'':21s} {'faithful:':>9s} {'move':>6s} {'shape':>6s} {'angle':>6s} {'lean':>6s} {'size':>6s}   "
               f"{'neat:':>5s} {'font':>6s} {'base':>6s} {'sizes':>6s} {'gaps':>6s} {'cer':>6s} {'set':>6s}")
         for name, _, _ in WAYS:
             q, key = res[(case, name)], (case, name)
-            print(f"{name:18s} {'':9s} {med(q['move']):6.3f} {med(q['shape']):6.3f} {med(q['angle']):6.2f} {med(q['lean']):6.2f} "
+            print(f"{name:21s} {'':9s} {med(q['move']):6.3f} {med(q['shape']):6.3f} {med(q['angle']):6.2f} {med(q['lean']):6.2f} "
                   f"{med(q['size']):6.3f}   {'':5s} {med(q['font']):6.3f} {med(q['base']):6.3f} {med(q['sizes']):6.3f} "
                   f"{med(q['gaps']):6.3f} {100 * cer[key][0] / max(1, cer[key][1]):5.1f}% {100 * setn[key][0] / max(1, setn[key][1]):5.1f}%")
     if a.dump:
