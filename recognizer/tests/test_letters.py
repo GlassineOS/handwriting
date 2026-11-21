@@ -3035,7 +3035,6 @@ class Autograph(unittest.TestCase):
         self.assertEqual(self.e.run("font", "auto").stdout.strip().split("\t")[:3], ["installed", "Autograph", "2"])
 
 
-@unittest.skipUnless(os.environ.get("HW_BASE"), "HW_BASE: the packaged base font file (make base)")
 class BaseLanguage(unittest.TestCase):
     """the base of the language the recognizer reads by default: its own (LANG/base.jsonl) when
     that language has one and a model, else base.jsonl (docs/recognizer.md, The base font)"""
@@ -3085,6 +3084,7 @@ class BaseLanguage(unittest.TestCase):
         self.assertEqual(self.chars(langs="fr,de", models=("en", "de")), set("abcä"))
 
 
+@unittest.skipUnless(os.environ.get("HW_BASE"), "HW_BASE: the packaged base font file (make base)")
 class AutographBase(unittest.TestCase):
     """the base as packaged (HW_BASE, made by tools/base-font.py from Edu SA Beginner): a fresh
     person's Autograph and one with letters of their own, every style valid, every base
