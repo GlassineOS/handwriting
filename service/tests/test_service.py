@@ -320,6 +320,51 @@ class Service(unittest.TestCase):
                     self.assertTrue(any(isinstance(b, tuple) for b in x["asks"][:i]), "%s: %s before an area" % (x["name"], a))
         return [b[1] for x in ss for b in x["asks"] if isinstance(b, tuple)]
 
+    def test_regions_through_the_channel(self):
+        """spec 005 over the compositor's channel with the real recognizer: two regions on
+        one surface, each with its own value, candidates and report; an empty region and a
+        moved one make no request; a private region sends nothing"""
+        self.assertTrue(self.hello["regions"])
+        self.pen_send(op="surface", s=1, sandbox="org.example.Notes", pid=0)
+        for r in (1, 2, 3):
+            self.pen_send(op="region", s=1, r=r, text=True, neaten=True, strength=0.5, size=[400, 120],
+                          units="device:6.25")
+        self.pen_send(op="region", s=1, r=4, text=True, purpose=8, size=[400, 120])
+        for i, st in enumerate(ink(3)):
+            self.pen_send(op="stroke", s=1, r=1, k=i, points=st)
+        for i, st in enumerate(ink(2, seed=5)):
+            self.pen_send(op="stroke", s=1, r=2, k=10 + i, points=st)
+        for i, st in enumerate(ink(2, seed=7)):
+            self.pen_send(op="stroke", s=1, r=4, k=20 + i, points=st)
+        ev = self.pen_events(lambda o: {m.get("r") for m in o if m["op"] == "candidates"} >= {1, 2})
+        vals = {m["r"]: m for m in ev if m["op"] == "value"}
+        self.assertEqual(set(vals), {1, 2})
+        self.assertEqual(sorted(k for w in vals[1]["words"] for k in w["strokes"]), [0, 1, 2])
+        self.assertEqual(sorted(k for w in vals[2]["words"] for k in w["strokes"]), [10, 11])
+        self.assertTrue({m["k"] for m in ev if m["op"] == "neat" and m["r"] == 1} <= {0, 1, 2})
+        self.assertFalse(any(m.get("r") in (3, 4) for m in ev))
+        reqs = self.log.read_text()
+        self.assertNotIn("g1-3", reqs)
+        self.assertNotIn("g1-4", reqs)
+        # moving region 1 reads nothing again
+        self.assertTrue(self.quiet())
+        n = len(self.log.read_text().splitlines())
+        self.pen_send(op="region", s=1, r=1, size=[600, 200])
+        self.assertTrue(self.quiet())
+        self.assertEqual(self.log.read_text().splitlines()[n:], [])
+        # a report on region 2; region 1 keeps its writing
+        c2 = [m for m in ev if m["op"] == "candidates" and m["r"] == 2][-1]
+        self.pen_send(op="report", s=1, r=2, serial=c2["serial"], action="accepted")
+        r = self.pen_events(lambda o: any(m["op"] == "report" for m in o))[-1]
+        self.assertEqual((r["r"], r["result"]), (2, "not_allowed"))
+        # a text edit back in ink mode: the edited word comes set
+        self.pen_send(op="region_text", s=1, r=1, text="hello world")
+        v = self.pen_events(lambda o: any(m["op"] == "value" and m["r"] == 1 for m in o))[-1]
+        self.assertEqual(v["text"], "hello world")
+        self.assertTrue(all("set" in w or "strokes" in w for w in v["words"]))
+        self.pen_send(op="region_destroy", s=1, r=1)
+        self.pen_send(op="destroy", s=1)
+
     def test_area_and_units_without_an_ink_area(self):
         """no ink area: every session gets an area of the writing's box with no ruled line,
         the size prior, and the units with the px per mm and the pen's rate (7 ms a point:

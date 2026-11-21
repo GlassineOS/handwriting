@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.6)
+# The handwriting recognizer (contract version 1.7)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -72,6 +72,7 @@ microsecond.
 | `end ID S` | `end ID ok` |
 | `area ID S X0,Y0,X1,Y1,LINE,ROT[,BASE]` | `area ID ok` |
 | `prior ID S XH` | `prior ID ok` |
+| `set ID TEXT` | `set ID ok WIDTH XH_MM INK K {POINTS}×K` |
 | `confirm ID S SOURCE TEXT [keep]` | `confirm ID ok SAMPLE` (`prompted`: `confirm ID ok SAMPLE exact\|inferred`), or `confirm ID skip REASON` |
 | `recognize ID LANGS FIELD UNITS COUNT BEFORE STROKES` | as `read`, with the verb `recognize`; or `recognize ID private` |
 | `samples ID [all]` | `samples ID K SAMPLE…` |
@@ -86,7 +87,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 to 1.6 only add to 1.0, so a client of any
+**hello** names the contract version (1: versions 1.1 to 1.7 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -156,6 +157,16 @@ person's letters in its units nor an area line give one (Size, below). It stays 
 session ends and is not stored in samples. The handwriting service gives every session it
 begins for a `device` client a typical handwriting size in millimetres at the units' points
 per millimetre (docs/service.md, The writing's size).
+
+**set** (contract 1.7, spec 005 FR-018 to FR-024) gives `TEXT` (escaped) set in the writer's
+font as pen strokes, for a client that draws a word without the font itself: the glyphs of the
+font (The letter model and the font, below) at their places, the joins between letters
+included, in x-heights with y up and the baseline at 0, the ink's left at 0. `WIDTH` is the
+ink's width (the advance of the text without a letter model), `XH_MM` the writer's small
+letters in millimetres (0 when not known), `INK` the strokes' width as the font draws them, `K`
+the strokes, each `x,y x,y …`. Without a letter model, or for characters it doesn't cover, a
+character is an advance with no strokes. The same text gives the same strokes for the same
+letter model. No session; nothing is stored.
 
 **remove** removes strokes by number (unknown numbers are ignored; `REMOVED` counts the ones
 removed). An undo, or the strokes a gesture covered once the client acted on it.
