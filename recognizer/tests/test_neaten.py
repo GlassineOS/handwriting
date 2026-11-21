@@ -697,6 +697,21 @@ class Neaten(unittest.TestCase):
                         ink.append([(x - ln * (oy - y), y) for x, y in st])
                     best = min(on_curve(ink, v) for v in L[w[k - ks[0]]]["variants"] if len(v["strokes"]) == len(ink))
                     self.assertLess(best, 0.05, (text, w, k))
+            # cond=2: the same words along the line's slope, every set word at one lean (the line's)
+            how2, xy2 = self.neaten_letters(s, 1, knob="cond=2")
+            self.assertEqual(self.why, why0)
+            self.assertEqual(how2, how0)
+            self.assertEqual([len(a) for a in xy2], [len(a) for a in written])
+            self.assertLess(abs(base_slope(xy2, every) - slope), 0.04, text)
+            leans, k0 = [], 0
+            for w in text.split(" "):
+                ks = range(k0, k0 + len(w))
+                k0 += len(w) + 1
+                if all(why0[k] == "set" for k in ks):
+                    leans.append(lean_of([xy2[j] for k in ks for j in s["spans"][k]]))
+            line_lean = lean_of([written[j] for k in range(len(text)) if text[k] != " " for j in s["spans"][k]])
+            for ln in leans:
+                self.assertLess(abs(ln - line_lean), 0.1, text)
 
     def test_eval_setting(self):
         """tools/eval-setting.py: every way of neatening measured on the held-back samples,
