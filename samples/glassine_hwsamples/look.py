@@ -283,7 +283,7 @@ def bar(cr, k, x, y, w, n, on, h=10):
 
 
 # Samples and Coverage are pages beneath Learn (spec 002 FR-026)
-TABS = (("write", "Write"), ("font", "Your font"), ("learn", "Learn"), ("donate", "Contribute"))
+TABS = (("write", "Write"), ("font", "Autograph"), ("learn", "Learn"), ("donate", "Contribute"))
 GUEST_TABS = (("write", "Write"), ("donate", "Contribute"))     # a guest's session (spec 002 FR-018)
 
 

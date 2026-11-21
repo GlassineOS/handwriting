@@ -298,10 +298,10 @@ class Cli:
     # the letter model and the font (spec 003)
 
     def letters(self):
-        """{"state": none|current|outdated, "samples": N, "covered": K, "chars": {c: (usable,
+        """{"state": current|outdated, "samples": N, "covered": K, "chars": {c: (usable,
         versions)}, "font": (name, version) or None, "font_nib": its nib angle}: the counts from the samples as they are
         now, built model or not (spec 003 FR-030); the versions from the model as built"""
-        d = {"state": "none", "samples": 0, "covered": 0, "chars": {}, "font": None}
+        d = {"state": "current", "samples": 0, "covered": 0, "chars": {}, "font": None}
         for line in self.run("letters", "status").splitlines():
             f = line.split("\t")
             if f[0] == "state":
@@ -366,17 +366,23 @@ class Cli:
             raise Error("letters build failed")
         return last
 
-    def font_install(self, name=None, nib=None):
-        """builds and installs the font in its three styles (under its name, or this one; at
-        its nib angle, or this one): its (name, version)"""
-        f = self.run("font", "install", *(["-n", name] if name else []),
-                     *(["--nib", str(nib)] if nib is not None else [])).strip().split("\t")
+    def font_install(self, nib=None):
+        """builds and installs Autograph in its three styles (at its nib angle, or this one):
+        its (name, version)"""
+        f = self.run("font", "install", *(["--nib", str(nib)] if nib is not None else [])).strip().split("\t")
         if f[0] != "installed":
             raise Error("no font: " + (f[1] if len(f) > 1 else "?"))
         return f[1], int(f[2])
 
-    def font_remove(self):
-        self.run("font", "remove")
+    def font_show(self):
+        """the model as Autograph draws it: the letter model over the base (the preview's)"""
+        return self.run("font", "show")
+
+    def font_export(self, name, folder):
+        """Autograph's three styles under name, as files in folder (spec 003 FR-012): their paths"""
+        os.makedirs(folder, exist_ok=True)
+        return [ln.split("\t")[2] for ln in self.run("font", "export", "-n", name, folder).splitlines()
+                if ln.startswith("exported\t")]
 
     def erase(self):
         return int(self.run("samples", "erase", "-c", self.client).strip() or 0)

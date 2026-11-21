@@ -115,8 +115,9 @@ class Engine:
 
     async def cli(self, *args):
         """one run of the recognizer's command line (the store's status, builds)"""
-        p = await asyncio.create_subprocess_exec(self.binary, *args, stdout=asyncio.subprocess.PIPE,
-                                                 stderr=asyncio.subprocess.PIPE, env=self.env)
+        p = await asyncio.create_subprocess_exec(self.binary, *args, stdin=asyncio.subprocess.DEVNULL,
+                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                                                 env=self.env)
         out, err = await p.communicate()
         if p.returncode:
             raise Error(err.decode().strip() or "failed")

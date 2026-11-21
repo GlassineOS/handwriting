@@ -9,7 +9,7 @@ PREFIX ?= /usr
 # -ffp-contract=fast: fused multiply-add in the engine (-std=c11 would turn it off)
 XCFLAGS = -std=c11 -ffp-contract=fast -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE $(shell pkg-config --cflags json-c)
 LIBS = $(shell pkg-config --libs json-c) -lm
-HW = model ctc sample recog store adapt gesture words chars letters spacing ttf size neaten lookalike calib cut aligner setword local
+HW = model ctc sample recog store adapt gesture words chars letters spacing ttf base size neaten lookalike calib cut aligner setword local
 OBJ = $(OUT)/featurize.o $(HW:%=$(OUT)/%.o)
 HDR = $(wildcard src/hw/*.h)
 PY ?= python3
@@ -49,7 +49,23 @@ check-model: $(OUT)/glassine-handwriting
 install: $(OUT)/glassine-handwriting
 	install -Dm755 $(OUT)/glassine-handwriting $(DESTDIR)$(PREFIX)/bin/glassine-handwriting
 
+# Autograph's base font (docs/recognizer.md, The base font): the centre lines of an Edu
+# Beginner font (BASE_TTF, its licence BASE_OFL), made and checked by tools/base-font.py
+# (fontTools, numpy); then installed with its licence and a note of where it comes from
+BASE_DIR = $(PREFIX)/share/glassine/handwriting/autograph
+$(OUT)/base.jsonl: tools/base-font.py
+	@test -n "$(BASE_TTF)" || { echo "make base BASE_TTF=EduSABeginner.ttf"; exit 2; }
+	$(PY) tools/base-font.py $(BASE_TTF) $@
+
+base: $(OUT)/base.jsonl
+
+install-base: $(OUT)/base.jsonl
+	@test -n "$(BASE_OFL)" || { echo "make install-base BASE_OFL=OFL.txt"; exit 2; }
+	install -Dm644 $(OUT)/base.jsonl $(DESTDIR)$(BASE_DIR)/base.jsonl
+	install -Dm644 $(BASE_OFL) $(DESTDIR)$(BASE_DIR)/OFL.txt
+	$(PY) -c 'import json, sys; h = json.loads(open(sys.argv[1]).readline()); print("Autograph draws the characters a person has not written from the centre lines of %s (%s, %s; sha256 %s), a Modified Version under the SIL Open Font License 1.1 (OFL.txt). %s" % (h["family"], h["source"], h["licence"], h["sha256"], h["copyright"]))' $(OUT)/base.jsonl > $(DESTDIR)$(BASE_DIR)/README
+
 clean:
 	rm -f $(OUT)/glassine-handwriting $(OUT)/test-engine $(OBJ)
 
-.PHONY: all check check-model install clean
+.PHONY: all check check-model install base install-base clean

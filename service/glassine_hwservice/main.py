@@ -44,6 +44,32 @@ def default_socket():
     return os.path.join(run, "glassine-handwriting", "service")
 
 
+def autograph_period():
+    """seconds between Autograph's checks (GLASSINE_HANDWRITING_AUTOGRAPH_S, 0 none)"""
+    try:
+        return max(0.0, float(os.environ.get("GLASSINE_HANDWRITING_AUTOGRAPH_S", "1800")))
+    except ValueError:
+        return 1800.0
+
+
+async def keep_autograph(engine, stop):
+    """Autograph kept (spec 003 FR-009, FR-011): installed at start, then rebuilt in the
+    background while charging once new samples changed the letter model. The recognizer's
+    `font auto` does the work at the lowest priority and only while charging and idle."""
+    period = autograph_period()
+    while not stop.is_set():
+        try:
+            await engine.cli("font", "auto")
+        except Exception as x:          # (the next round tries again)
+            print("glassine-handwriting-service: font auto: %s" % x, file=sys.stderr)
+        if not period:
+            return
+        try:
+            await asyncio.wait_for(stop.wait(), period)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def amain(a):
     engine = Engine()
     p = pen.Pen(engine, features)
@@ -78,7 +104,9 @@ async def amain(a):
         asyncio.ensure_future(run_pen())
     elif srv is None:
         return 1
+    keeper = asyncio.ensure_future(keep_autograph(engine, stop))
     await stop.wait()
+    keeper.cancel()
     if srv:
         srv.close()
         try:

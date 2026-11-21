@@ -28,6 +28,7 @@ BIN = str(Path(os.environ.get("HW_BIN") or REC / "glassine-handwriting").resolve
 sys.path.insert(0, str(REC / "tests"))
 sys.path.insert(0, str(ROOT))
 import test_recognizer as TR  # noqa: E402
+import test_letters as TL  # noqa: E402
 
 HELPER = r'''
 import json, socket, sys
@@ -100,8 +101,11 @@ class Service(unittest.TestCase):
         rec = self.dir / "recognizer"
         rec.write_text('#!/bin/sh\ntee -a "%s" | exec "%s" "$@"\n' % (self.log, BIN))
         rec.chmod(0o755)
+        # Autograph's base (spec 003 FR-009): a made-up one, checked once at start
+        self.base = TL.write_base(self.dir / "base.jsonl")
         env = dict(self.e.env, GLASSINE_HANDWRITING_BIN=str(rec), GLASSINE_HANDWRITING_FIT_OK="0",
-                   GLASSINE_HWSERVICE_PROC=str(self.proc), PYTHONPATH=str(ROOT))
+                   GLASSINE_HWSERVICE_PROC=str(self.proc), PYTHONPATH=str(ROOT),
+                   GLASSINE_HANDWRITING_BASE=str(self.base), GLASSINE_HANDWRITING_AUTOGRAPH_S="0")
         self.env = env
         a, b = socket.socketpair()
         self.pen = a
@@ -530,6 +534,19 @@ class Service(unittest.TestCase):
         self.assertEqual(a("nope")["error"]["code"], "unknown-method")
 
 
+
+    def test_autograph_installed_from_the_start(self):
+        """a person without samples has Autograph (the base alone) once the service ran, and
+        the letter model is up to date: there is no state without one"""
+        for _ in range(200):
+            st = subprocess.run([BIN, "font", "status"], env=self.env, capture_output=True, text=True).stdout
+            if st.startswith("Autograph\t"):
+                break
+            time.sleep(0.1)
+        self.assertTrue(st.startswith("Autograph\t1\t"), st)
+        self.call("permission.set", app=self.call("hello")["result"]["app"], samples="allowed")
+        r = self.call("letters.status")["result"]
+        self.assertEqual(r, {"state": "current", "covered": 0, "font": {"name": "Autograph", "version": 1}})
 
     def installed(self, seed=9):
         """a replacement recognizer the person installs themselves (spec 006)"""

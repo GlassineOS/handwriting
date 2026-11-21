@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The pages, as the design draws them (GlassineOS/ui designs/handwriting): the first-start
-introduction, Write, Your font, Learn with Samples and Coverage, Contribute. Each paint
+introduction, Write, Autograph, Learn with Samples and Coverage, Contribute. Each paint
 function draws one page into a cairo context and adds its tap targets; none reads or
 writes anything itself, the UI object (ui.py) does."""
 import math
@@ -263,7 +263,7 @@ def write_top(cr, ui, hits, w, h=None, head=True):
     if best and ui.guest:               # a set there (spec 002 FR-018)
         dropdown(cr, k, hits, w - PAD, y, "Write it your best", ui.open_sets)
     elif best:
-        dropdown(cr, k, hits, w - PAD, y, "Your font", ui.open_best)
+        dropdown(cr, k, hits, w - PAD, y, "Autograph", ui.open_best)
     else:
         dropdown(cr, k, hits, w - PAD, y, SET_NAMES.get(ui.state.set, ui.state.set), ui.open_sets)
     y += 56
@@ -336,15 +336,15 @@ def neat_top(cr, ui, hits, w, h=None, head=True):
     if h:
         fill(cr, k, w, h)
     y = chrome(cr, ui, hits, w) if head else 0
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your font", "Neaten my writing",
+    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Autograph", "Neaten my writing",
                   "Write anything below, in a hurry if you like. When you pause, it shows neater, in your own hand. "
                   "Nothing you write here is kept.", small=True, keep_lead=True)
     return y + 6
 
 
 def neat_unlearned(ui):
-    st = (ui.font or {}).get("status") or {}
-    return ui.font is not None and st.get("state") == "none"
+    """no letter learned yet: neatening has no letters of the person's to go by"""
+    return ui.font is not None and not (ui.font or {}).get("model")
 
 
 def neat_bottom(cr, ui, hits, w, h, canvas):
@@ -396,7 +396,7 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
     else:
         _, th = PT.text(cr, "Nothing here becomes a sample.", k["sub"], PAD, y, k.ink, maxw=w - 2 * PAD)
         y += th + 10
-    btn(cr, k, hits, PAD, y, "Your font", ui.open_best, icon_name="arrow_back")
+    btn(cr, k, hits, PAD, y, "Autograph", ui.open_best, icon_name="arrow_back")
     return y + BTN_H + 16
 
 
@@ -657,7 +657,7 @@ def wizard_page(cr, ui, hits, w, h):
             y += 60
             sep(cr, k, PAD, y, cw)
         icon(cr, "draw", 18, PAD + 10, y + 26, k.soft)
-        PT.text(cr, "You can also make a font of your handwriting, any time, in Your font.", k["sub"], PAD + 32, y + 16,
+        PT.text(cr, "Autograph, your handwriting as a font, grows as you write.", k["sub"], PAD + 32, y + 16,
                 k.soft, maxw=cw - 32)
     wizard_foot(cr, ui, hits, w, h)
 
@@ -1172,11 +1172,11 @@ def learn_page(cr, ui, hits, w, h):
     msg_line(cr, ui, by - 30, w)
 
 
-# ---------------------------------------------------------------- Your font
+# ---------------------------------------------------------------- Autograph
 
 
 def font_page(cr, ui, hits, w, h):
-    """the Your font tab: the font page, or Which one is nicer? opened from it"""
+    """the Autograph tab: the font page, or Which one is nicer? opened from it"""
     fill(cr, ui.theme, w, h)
     if ui.best == "pick":
         return best_pick(cr, ui, hits, w, h)
@@ -1187,7 +1187,7 @@ def best_pick(cr, ui, hits, w, h):
     """two of the person's own versions of one character, ink only, large"""
     k = ui.theme
     y = chrome(cr, ui, hits, w)
-    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Your font", "Which one is nicer?",
+    y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Autograph", "Which one is nicer?",
                   "Tap the one you like better." if ui.pick else None, small=True)
     pk = ui.pick
     by = h - 20 - BTN_H
@@ -1338,15 +1338,14 @@ def draw_hand(cr, k, model, text, x, y, xh, maxw, col=None, style="regular", nib
 
 
 def font_mode(ui):
-    """where the font page stands: none, learning, relearn, outdated, relearned (installed,
-    the preview has letters the installed font hasn't), installed, current"""
+    """where the font page stands: learning, relearn, outdated, relearned (installed, the
+    preview has letters the installed font hasn't), installed, current (the letter model
+    starts empty and up to date: there is no state without one, FR-008)"""
     st = (ui.font or {}).get("status") or {}
     if ui.letters_progress() is not None:
         return "learning"
     if ui.relearn:
         return "relearn"
-    if st.get("state") == "none":
-        return "none"
     if st.get("state") == "outdated":
         return "outdated"
     if st.get("font"):
@@ -1464,11 +1463,16 @@ def font_keys(cr, ui, hits, x, y, w, cols, kh, cov):
 
 
 def styles_shown(ui, mode):
-    """the font's styles can be picked (FR-034): while the preview shows letters"""
+    """the font's styles can be picked (FR-034): while the preview shows Autograph (the base's
+    letters are drawn in all three styles too)"""
+    return bool(preview_model(ui) and mode != "learning")
+
+
+def preview_model(ui):
+    """the model the preview draws: the letters over the base, as Autograph has them
+    (font show); without one, the letter model"""
     f = ui.font or {}
-    model = f.get("model")
-    return bool(model and mode not in ("none", "learning") and
-                any(ok for _, _, ok in FV.coverage(model, status=f.get("status"))))
+    return f.get("preview") or f.get("model")
 
 
 STYLE_W = 350                   # the style control's width: the design's, with room for "Calligraphy" in every voice
@@ -1486,9 +1490,7 @@ def preview_card(cr, ui, hits, x, y, w, mode, land=False):
     preview); turned, they sit above the keys (best_font)"""
     k = ui.theme
     f = ui.font or {}
-    model = f.get("model")
-    cov = FV.coverage(model, status=f.get("status"))
-    have = any(ok for _, _, ok in cov)
+    model = preview_model(ui)
     st_card = styles_shown(ui, mode) and not land
     act_head = st_card and mode == "outdated"
     rel = ui.relearn[0] if ui.relearn else ""
@@ -1496,29 +1498,26 @@ def preview_card(cr, ui, hits, x, y, w, mode, land=False):
         note_ = "Learning your letters… %d%%" % round(100 * ui.letters_progress())
     elif mode == "relearn":
         note_ = "Learning %s again… %d%%" % (rel, round(100 * ui.relearn_progress()))
-    elif mode == "none":
-        note_ = "Not learned yet"
     elif mode == "outdated":
         note_ = "You wrote more since"
     elif mode == "relearned":
         note_ = "Newer than your installed font"
-    elif model and any(c in FV.TARGET and not ok for c, _, ok in FV.coverage(model, FV.PREVIEW.replace(" ", "").replace(".", ""), f.get("status"))):
-        note_ = "Plain letters aren’t in it yet"
+    elif any(not ok for _, _, ok in FV.coverage(f.get("model"), FV.PREVIEW.replace(" ", "").replace(".", ""))):
+        note_ = "Plain letters are the base’s still"
     else:
         note_ = ""
     iw = w - 36
-    show = model and have and mode not in ("none", "learning")
+    show = bool(model) and mode != "learning"
     pv_h = 112 if land else 56
     if show:
         xh = hand_fit(model, FV.PREVIEW, 22 if not land else 18, iw, pv_h)
         body = pv_h
     else:
-        t = ("The counts below come straight from your samples. The preview comes once your letters are learned."
-             if mode == "none" else "The preview comes when this is done. You can go on using the tablet meanwhile."
-             if mode == "learning" else "Write a few words with care first: once letters have 3 samples, they show here.")
+        t = ("The preview comes when this is done. You can go on using the tablet meanwhile." if mode == "learning"
+             else "Autograph isn’t there to preview.")
         _, body = PT.measure(cr, t, k["sub"], maxw=iw, wrap=True)
     extra = 0
-    if mode == "none" or (mode == "outdated" and not act_head):
+    if mode == "outdated" and not act_head:
         extra = BTN_H + 12
     elif mode in ("learning", "relearn"):
         extra = 22
@@ -1559,9 +1558,8 @@ def preview_card(cr, ui, hits, x, y, w, mode, land=False):
     else:
         PT.text(cr, t, k["sub"], x + 18, yy, k.ink, maxw=iw, wrap=True)
     yy += body + 12
-    if mode == "none" or (mode == "outdated" and not act_head):
-        label = "Learn letters now" if mode == "none" else "Update letters"
-        bw = btn(cr, k, hits, x + 18, yy, label, ui.build_letters)
+    if mode == "outdated" and not act_head:
+        bw = btn(cr, k, hits, x + 18, yy, "Update letters", ui.build_letters)
         PT.text(cr, "Or it does this on its own while the tablet charges.", k["sub"], x + 18 + bw + 12,
                 yy + 14, k.soft, maxw=iw - bw - 12)
         yy += BTN_H + 12
@@ -1578,41 +1576,40 @@ def font_status_line(ui, mode):
     st = (ui.font or {}).get("status") or {}
     inst = st.get("font")
     if ui.font_busy == "making":
-        return "Making your font… The tablet stays usable meanwhile."
+        return "Updating Autograph… The tablet stays usable meanwhile."
     if ui.font_busy == "waiting":
-        return "Your font is made once %s is learned again." % (ui.relearn[0] if ui.relearn else "the letter")
-    # the three styles go in together, under one name (FR-034)
+        return "Autograph is updated once %s is learned again." % (ui.relearn[0] if ui.relearn else "the letter")
+    # the three styles go in together, under one name (FR-034); it updates itself while the
+    # tablet charges (FR-011)
     if not inst:
-        if mode == "current":
-            return "Not installed. Install puts in all three styles, under this one name. Only you have it; it is never contributed."
-        return "Not installed. Only you have it, on this tablet. It is never contributed."
-    if mode == "outdated":
-        return "Installed, version %d. Update makes all three styles again, under the same name." % inst[1]
-    if mode in ("relearn", "relearned"):
-        return "Installed, version %d. Update puts the new letters in all three styles." % inst[1]
+        return "Not installed yet: it installs itself in a moment. Only you have it; it is never contributed."
+    if mode in ("outdated", "relearn", "relearned"):
+        return "Version %d. It takes your new letters while the tablet charges, or now with Update." % inst[1]
     if ui.nib_changed():
-        return "Installed, version %d. Update puts the new nib angle in it." % inst[1]
-    return "Installed, version %d. Apps list it under this one name, in all three styles." % inst[1]
+        return "Version %d. Update puts the new nib angle in it." % inst[1]
+    return ("Version %d. Apps list it as Autograph, in all three styles. Only you have it; Export gives you a copy "
+            "under a name of your own." % inst[1])
 
 
 def font_name_block(cr, ui, hits, x, y, w, mode, stacked=False):
-    """the name, the install state and Rename between two rules -> the y below"""
+    """the name, the install state and Export between two rules -> the y below"""
     k = ui.theme
     sep(cr, k, x, y, w)
     y += 12
-    rename = ui.rename_font if not ui.font_busy else None
+    inst = ((ui.font or {}).get("status") or {}).get("font")
+    rename = ui.export_font if inst and not ui.font_busy else None
     tw, _ = lbl(cr, k, "Name", x, y + 6)
     nx = x + tw + 14 if stacked else x + 70
-    rw = btn_w(cr, k, "Rename")
+    rw = btn_w(cr, k, "Export")
     PT.text(cr, ui.font_shown_name(), k["row"], nx, y, k.ink, weight=600, maxw=w - (nx - x) - (0 if stacked else rw + 12))
     line = font_status_line(ui, mode)
     if stacked:
         _, lh = PT.text(cr, line, k["sub"], x, y + 30, k.ink, maxw=w, wrap=True)
-        btn(cr, k, hits, x, y + 30 + lh + 12, "Rename", rename, w=rw)
+        btn(cr, k, hits, x, y + 30 + lh + 12, "Export", rename, w=rw)
         y += 30 + lh + 12 + BTN_H + 12
     else:
         _, lh = PT.text(cr, line, k["sub"], nx, y + 26, k.ink, maxw=w - (nx - x) - rw - 12, wrap=True)
-        btn(cr, k, hits, x + w - rw, y + max(0, (26 + lh - BTN_H) / 2), "Rename", rename, w=rw)
+        btn(cr, k, hits, x + w - rw, y + max(0, (26 + lh - BTN_H) / 2), "Export", rename, w=rw)
         y += max(26 + lh, BTN_H) + 12
     sep(cr, k, x, y, w)
     return y
@@ -1623,19 +1620,15 @@ def font_buttons(cr, ui, hits, w, by, mode, land):
     st = (ui.font or {}).get("status") or {}
     inst = st.get("font")
     f = ui.font or {}
-    have = any(ok for _, _, ok in FV.coverage(f.get("model"), status=st))
     miss = FV.missing(f.get("model"), status=st)
-    x = PAD                     # no Back: the font page is the Your font tab
+    x = PAD                     # no Back: the font page is the Autograph tab
     if land and miss:
         x += btn(cr, k, hits, x, by, "Write these now", ui.write_missing, icon_name="edit") + 10
     busy = bool(ui.font_busy)
-    if not inst:
-        can = have and mode in ("current", "outdated", "relearned", "relearn") and not busy
-        right = btns_right(cr, k, hits, w - PAD, by, [("Install", ui.make_font if can else None, True)])
-    else:
-        stale = mode in ("outdated", "relearned", "relearn") or bool(ui.font_name) or ui.nib_changed()
-        right = btns_right(cr, k, hits, w - PAD, by, [("Remove", ui.ask_remove_font if not busy else None, False),
-                                                      ("Update", ui.make_font if stale and not busy else None, True)])
+    # Autograph is always installed (FR-009): Update rebuilds it at once (FR-011), there is
+    # nothing to remove
+    stale = not inst or mode in ("outdated", "relearned", "relearn") or ui.nib_changed()
+    right = btns_right(cr, k, hits, w - PAD, by, [("Update", ui.make_font if stale and not busy else None, True)])
     if ui.font_style == "calligraphy" and styles_shown(ui, mode):
         nib_stepper(cr, ui, hits, x, right - 10, by)
 
@@ -1662,7 +1655,7 @@ def nib_stepper(cr, ui, hits, x0, x1, y):
             x += tw + 14
 
 
-# the rest of Your font, as rows below the font's letters (spec 003 FR-042)
+# the rest of Autograph, as rows below the font's letters (spec 003 FR-042)
 FONT_PARTS = (("draw", "Write it your best", "start_best"), ("compare", "Which one is nicer?", "start_pick"),
               ("edit_note", "Neaten my writing", "open_neat"))
 PART_H = 60
@@ -1685,15 +1678,15 @@ def font_parts(cr, ui, hits, x, y, w):
 
 
 def best_font(cr, ui, hits, w, h):
-    """Your font (spec 003 Scenario 3, the design's font.* boards): a preview in the font
+    """Autograph (spec 003 Scenario 3, the design's font.* boards): a preview in the font
     with where the letter model stands, a key per character (each opens its sheet), the
     name, install and update. The counts come from the samples, built model or not (FR-030)"""
     k = ui.theme
     if ui.sheet:
         return char_sheet(cr, ui, hits, w, h)
     y = chrome(cr, ui, hits, w)
-    if ui.renaming:
-        return rename_dialog(cr, ui, hits, w, h, y)
+    if ui.exporting:
+        return export_dialog(cr, ui, hits, w, h, y)
     land = w > h
     # the tab's own page: no eyebrow; turned, no head at all, so the keys keep their width
     y = y + 18 if land else page_head(
@@ -1701,7 +1694,7 @@ def best_font(cr, ui, hits, w, h):
         "A character is in it once it has 3 good samples. Tap any key to see how you write it.", small=True)
     cw = w - 2 * PAD
     by = h - 20 - BTN_H
-    py = by - 14 - PART_H                     # the rows to the rest of Your font
+    py = by - 14 - PART_H                     # the rows to the rest of Autograph
     f = ui.font or {}
     st, model = f.get("status") or {}, f.get("model")
     if not ui.font:
@@ -1710,16 +1703,16 @@ def best_font(cr, ui, hits, w, h):
         return
     mode = font_mode(ui)
     cov = FV.coverage(model, status=st)
-    if mode in ("none", "learning") or not model:
+    if mode == "learning" or not model:
         cov = [(c, n, n >= FV.MIN) for c, n, _ in cov]
     have = sum(1 for c in cov if c[2])
     miss = [c for c, _, ok in cov if not ok]
-    where = "with enough samples" if mode in ("none", "learning") else "in your font"
+    where = "with enough samples" if mode == "learning" or not model else "in your hand"
     # turned, the styles take the count line's room: the label is shorter, the line drops the
     # shaded keys' note
     head = "Letters · %d of %d" % (have, len(cov)) + ("" if land else " " + where)
-    sub = ((where[0].upper() + where[1:] + "; " if land else "") + "%d not in it yet" % len(miss) +
-           ("" if land else "; shaded ones have a sample or two")) if miss else "Every one is in it."
+    sub = ((where[0].upper() + where[1:] + "; " if land else "") + "%d still the base’s" % len(miss) +
+           ("" if land else "; shaded ones have a sample or two")) if miss else "Every one is in your hand."
     if land:
         lw_ = int(cw * 0.32)
         rx, rw = PAD + lw_ + 24, cw - lw_ - 24
@@ -1755,31 +1748,29 @@ def best_font(cr, ui, hits, w, h):
         msg_line(cr, ui, by - 30, w)
 
 
-def rename_dialog(cr, ui, hits, w, h, y):
+def export_dialog(cr, ui, hits, w, h, y):
     """the name, typed in a small dialog in the upper half: the keyboard comes up below"""
     k = ui.theme
     hits.add(0, y, w, h - y, lambda: None)
-    st = (ui.font or {}).get("status") or {}
     dw = w - 2 * PAD
     x = PAD
     y += 20
-    text = ("Apps list your font under this name. It is installed, so “Use this name” makes it again under the new "
-            "name; your letters stay as they are." if st.get("font") else
-            "Apps list your font under this name once it is installed. Only you have it, on this tablet.")
+    text = ("Export saves Autograph’s three styles under this name in Documents › Handwriting, to keep or install "
+            "elsewhere. The installed Autograph stays as it is.")
     _, th = PT.measure(cr, text, k["sub"], maxw=dw - 40, wrap=True)
     dh = 20 + 30 + 56 + 14 + th + 14 + BTN_H + 20
     PT.box(cr, x, y, dw, dh, k["cardR"], bg=k.paper, shadow=k["dialogSh"])
-    PT.text(cr, "Name of your font", k["row"], x + 20, y + 20, k.ink, weight=600, maxw=dw - 40)
+    PT.text(cr, "Export Autograph as", k["row"], x + 20, y + 20, k.ink, weight=600, maxw=dw - 40)
     fy = y + 20 + 34
     PT.box(cr, x + 20, fy, dw - 40, 52, k["cellR"], bg=k.paper, shadow="inset 0 0 0 1.5px " + k.ink)
-    ui.rename_rect = (x + 34, fy + 6, dw - 68, 40)
+    ui.export_rect = (x + 34, fy + 6, dw - 68, 40)
     if ui.demo:
-        tw, tth = PT.measure(cr, ui.renaming["text"], k["row"])
-        PT.text(cr, ui.renaming["text"], k["row"], x + 36, fy + (52 - tth) / 2, k.ink)
+        tw, tth = PT.measure(cr, ui.exporting["text"], k["row"])
+        PT.text(cr, ui.exporting["text"], k["row"], x + 36, fy + (52 - tth) / 2, k.ink)
         PT.fill(cr, x + 38 + tw, fy + 13, 1.5, 26, k.ink)
     PT.text(cr, text, k["sub"], x + 20, fy + 52 + 14, k.ink, maxw=dw - 40, wrap=True)
     btns_right(cr, k, hits, x + dw - 20, y + dh - 20 - BTN_H,
-               [("Cancel", ui.cancel_rename, False), ("Use this name", ui.use_name, True)])
+               [("Cancel", ui.cancel_export, False), ("Export", ui.export_named, True)])
 
 
 # ---------------------------------------------------------------- the character sheet
@@ -1815,10 +1806,10 @@ def sheet_head(cr, ui, hits, x, y, w, tabs=True):
         PT.text(cr, c, k.script % 40, x + 32, y + (64 - th) / 2, k.ink, align=1)
     PT.text(cr, char_name(c), k["row"], x + 80, y + 10, k.ink, weight=600, maxw=w - 230)
     if inf:
-        line = "In your font · %d samples%s" % (n, " · %d ways you write it" % nv if nv > 1 else "")
+        line = "In your hand · %d samples%s" % (n, " · %d ways you write it" % nv if nv > 1 else "")
     else:
-        line = "Not in your font yet · %d of %d samples" % (min(n, FV.MIN), FV.MIN) if n < FV.MIN else \
-            "Not in your font yet · %d samples" % n
+        line = "Still the base’s · %d of %d samples" % (min(n, FV.MIN), FV.MIN) if n < FV.MIN else \
+            "Still the base’s · %d samples" % n
     PT.text(cr, line, k["sub"], x + 80, y + 36, k.ink, maxw=w - 230)
     cw = btn_w(cr, k, "Close", "close")
     btn(cr, k, hits, x + w - cw, y + 8, "Close", ui.close_char, icon_name="close", w=cw)
@@ -1838,15 +1829,11 @@ def sheet_head(cr, ui, hits, x, y, w, tabs=True):
 
 def sheet_foot_text(ui):
     c, n, d, inf, nv = sheet_info(ui)
-    st = (ui.font or {}).get("status") or {}
-    if st.get("state") == "none":
-        return ("What you write here counts at once. Your letters aren’t learned yet: Learn letters now on the font "
-                "page puts %s in the preview." % c)
     if n < FV.MIN:
         return ("What you write here counts at once. Once %s has 3 samples, it is learned in the background and "
                 "comes into the preview." % c)
-    return ("When you close this, %s is learned again in the background and the preview shows it. Your installed "
-            "font changes only when you update it." % c)
+    return ("When you close this, %s is learned again in the background and the preview shows it. Autograph takes "
+            "it while the tablet charges, or now with Update." % c)
 
 
 def sheet_foot(cr, ui, x, y, w):
@@ -1968,7 +1955,7 @@ def sheet_versions(cr, ui, hits, x, y, w, h):
     rows = (len(vs) + per - 1) // per
     bottom = y + h
     y += rows * (ch + gap) + 4
-    t = ("Your font switches between the ways you write %s, each about as often as you do. A favourite is used more. "
+    t = ("Autograph switches between the ways you write %s, each about as often as you do. A favourite is used more. "
          "Leaving one out doesn’t delete anything." % c)
     _, th = PT.measure(cr, t, k["sub"], maxw=w - 70, wrap=True)
     if not row and y + th + 28 <= bottom:      # turned, the cards take the room
@@ -2478,9 +2465,9 @@ def sheet_write_top(cr, ui, hits, w, h=None, head=True):
                 PT.text(cr, str(i + 1), k["mono"], sx + 28, y + 12 + (64 - tth) / 2, k.ink, align=1)
             sx += 64
         more = FV.MIN - n
-        PT.text(cr, "%d more, and %s is in your font" % (more, c), k["row"], sx + 8, y + 14, k.ink, weight=600,
+        PT.text(cr, "%d more, and %s is in your hand" % (more, c), k["row"], sx + 8, y + 14, k.ink, weight=600,
                 maxw=x + cw - sx - 22)
-        PT.text(cr, "Write it with care, on its own or in a word. Until then, apps show the usual font’s %s." % c,
+        PT.text(cr, "Write it with care, on its own or in a word. Until then, Autograph draws %s from its base." % c,
                 k["sub"], sx + 8, y + 40, k.ink, maxw=x + cw - sx - 22, wrap=True)
         y += ch + 14
     wr = ui.writer

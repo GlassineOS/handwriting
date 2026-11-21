@@ -62,7 +62,7 @@ class Env:
                         XDG_CONFIG_HOME=str(self.dir / "conf"), XDG_STATE_HOME=str(self.dir / "state"),
                         HOME=str(self.dir / "home"), GLASSINE_HANDWRITING_SYSFS=str(self.dir / "power"),
                         GLASSINE_HANDWRITING_LOADAVG=str(self.dir / "load"), GLASSINE_HANDWRITING_FIT_OK="0",
-                        GLASSINE_PREDICT_MODELS=str(self.dir / "predict"))
+                        GLASSINE_PREDICT_MODELS=str(self.dir / "predict"), GLASSINE_HANDWRITING_BASE="off")
         bat = self.dir / "power" / "battery"
         bat.mkdir(parents=True)
         (bat / "type").write_text("Battery\n")
@@ -817,7 +817,7 @@ class Pages(Case):
         u.wizard_done()
         u.start_best()
         self.settle(u)
-        self.assertEqual((u.page, u.tab), ("write", "font"))     # a part of Your font
+        self.assertEqual((u.page, u.tab), ("write", "font"))     # a part of Autograph
         kinds = []
         for _ in range(4):
             sh = self.submit(u)
@@ -839,7 +839,8 @@ class Pages(Case):
 
     def test_your_font(self):
         """spec 003 Scenario 3: the letters it has, the preview's variants as the font's, the
-        missing ones written now, install, a rebuild under a new name, remove"""
+        missing ones written now, Update, an export under the person's name; Autograph over a
+        base: the preview draws what the installed font draws, the base's characters too"""
         from glassine_hwsamples import fontview
         sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
         import test_letters as TL
@@ -851,9 +852,10 @@ class Pages(Case):
                                [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
                                             "source": "prompted"}) for i, s in enumerate(ss)]) + "\n")
         self.e.cli.run("samples", "import", str(f))
-        # before any letter model: the counts are there all the same (FR-030)
+        # before any letter model: the counts are there all the same (FR-030); the empty model
+        # hasn't learned them
         st = self.e.cli.letters()
-        self.assertEqual(st["state"], "none")
+        self.assertEqual(st["state"], "outdated")
         self.assertTrue(all(st["chars"][c] == (3, 0) for c in "abcdefghijk"))
         self.assertEqual(st["chars"]["l"], (12, 0))
         u = self.make()
@@ -862,7 +864,8 @@ class Pages(Case):
         # learned in the background and the font stays as it is
         u.open_font()
         self.settle(u, lambda: u.font is not None and not u.letters_loading)
-        self.assertEqual(u.font["status"]["state"], "none")
+        self.assertEqual(u.font["status"]["state"], "outdated")
+        self.assertIsNone(u.font["model"])
         self.assertIsNone(u.letters_job)
         u.build_letters()
         self.settle(u, lambda: u.font is not None and not u.letters_job and not u.letters_loading
@@ -873,7 +876,7 @@ class Pages(Case):
         u.make_font()
         self.settle(u, lambda: not u.font_busy and u.font and u.font["status"]["font"])
         st, model = u.font["status"], u.font["model"]
-        self.assertEqual(st["font"], ("My handwriting", 1))
+        self.assertEqual(st["font"], ("Autograph", 1))
         self.assertEqual(st["state"], "current")
         self.assertEqual({c for c, _, ok in fontview.coverage(model) if ok}, set("abcdefghijklmno"))
         # the preview picks the variants the font's alternates pick
@@ -918,14 +921,48 @@ class Pages(Case):
         self.assertEqual((u.writer.prompt.text, u.writer.prompt.written), ("p", "careful"))
         u.close_char()
         self.settle(u, lambda: not u.relearn and not u.letters_loading)
-        # a new name: made again under it, the version counts on
+        # Update: made again, the same name, the version counts on
         u.open_font()
         self.settle(u, lambda: u.font is not None and not u.letters_job and not u.letters_loading)
-        u.font_name = "Notes hand"
         u.make_font()
-        self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Notes hand", 2))
-        u.remove_font()
-        self.settle(u, lambda: u.font["status"]["font"] is None)
+        self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Autograph", 2))
+        # Export: the three styles under the person's name; the installed one stays
+        u.export_font()
+        self.assertEqual(u.exporting, {"text": ""})
+        out = Path(self.U.documents_dir()) / "Handwriting"     # (GLib keeps the first test's)
+        for old in out.glob("Noteshand-*.ttf"):
+            old.unlink()
+        u.entry_text = lambda: "Notes hand"
+        u.export_named()
+        self.settle(u, lambda: not u.busy and (out / "Noteshand-Brush.ttf").exists())
+        self.assertEqual(sorted(p.name for p in out.glob("*.ttf")),
+                         ["Noteshand-Brush.ttf", "Noteshand-Calligraphy.ttf", "Noteshand-Regular.ttf"])
+        from fontTools.ttLib import TTFont
+        self.assertEqual(TTFont(str(out / "Noteshand-Regular.ttf"))["name"].getDebugName(1), "Notes hand")
+        self.assertEqual(self.e.cli.letters()["font"], ("Autograph", 2))
+        # over a base (FR-009): the characters the letters don't cover drawn from it, the
+        # preview's pen positions where shaping puts them, the base's characters too
+        self.e.env["GLASSINE_HANDWRITING_BASE"] = str(TL.write_base(self.e.dir / "base.jsonl"))
+        u.make_font()
+        self.settle(u, lambda: not u.font_busy and u.font["status"]["font"] == ("Autograph", 3) and not u.letters_loading)
+        pv = u.font["preview"]
+        self.assertEqual(set(pv["base"]), set(TL.BASE_CHARS) - set("abcdefghijklmno"))
+        files = {f[1]: f[2] for f in (ln.split("\t") for ln in self.e.cli.run("font", "status").splitlines())
+                 if f[0] == "style"}
+        files["Regular"] = self.e.cli.run("font", "status").splitlines()[0].split("\t")[2]
+        for style, ttf in files.items():
+            for text in ("Hello, kid! 42", "lxl pq.", "zz Ab9"):
+                sh = json.loads(subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", ttf, text],
+                                               capture_output=True, text=True, check=True).stdout)
+                xs, x = [], 0
+                for g in sh:
+                    xs.append(x + g["dx"])
+                    x += g["ax"]
+                lay = fontview.layout(pv, text)
+                self.assertEqual(len(lay), len(xs), (style, text))
+                self.assertTrue(all(st is not None for _, st, _, _, _ in lay), text)    # nothing left to the system
+                for (c, _, lx, _, _), hx in zip(lay, xs):
+                    self.assertAlmostEqual(lx * fontview.XH, hx, delta=1.01, msg=(style, text, c))
 
     def test_font_styles(self):
         """FR-034: the preview draws each style with the font's widths (the same numbers as
@@ -1815,14 +1852,14 @@ class Window(Case):
                     a.height > 100:
                 seen.append(("sheet", u.writer.prompt.text, a.width > 600))
                 u.close_char()
-                u.rename_font()
+                u.export_font()
                 return True
             if seen[3:] and not seen[4:] and w.entry.get_visible():
                 ea = w.entry.get_allocation()
                 seen.append(("rename", w.stack.get_visible_child_name(), ea.y < sa.height / 2, w.entry.get_text()))
                 w.entry.set_text("Garden letters")
-                u.use_name()
-                seen.append(("named", u.font_name, w.entry.get_visible()))
+                u.export_named()
+                seen.append(("named", u.export_name, w.entry.get_visible()))
                 # opened again while it runs: the same window, as it is
                 second.append(subprocess.Popen([sys.executable, "-c", "import sys; from glassine_hwsamples import ui; "
                                                 "sys.exit(ui.App().run(['glassine-handwriting-samples']))"],
@@ -1867,7 +1904,7 @@ class Window(Case):
         GLib.timeout_add(60000, app.quit)
         app.run(["glassine-handwriting-samples"])
         self.assertEqual(seen, ["full", ("try", "write", True), ("turned", True), ("sheet", "Q", True),
-                                ("rename", "full", True, "My handwriting"), ("named", "Garden letters", False),
+                                ("rename", "full", True, ""), ("named", "Garden letters", False),
                                 ("again", 0, True, "font"), ("private", True, True, True), ("added", "Rose", False, ""),
                                 ("guest", "wizard", "g-hello"), ("wrote", "kept"), ("finished", False, "Rose", 1, True)])
         self.assertEqual(self.e.cli.samples(), [])          # the guest's sample is in their store alone
@@ -1980,7 +2017,7 @@ class Drawn(unittest.TestCase):
             self.assertTrue(u.nib_changed())
             self.assertEqual(len(taps(u, size).boxes), upd + 1)      # Update is on
             self.assertEqual(pages.font_status_line(u, pages.font_mode(u)),
-                             "Installed, version 3. Update puts the new nib angle in it.")
+                             "Version 3. Update puts the new nib angle in it.")
         # the demo screens of the styles
         for s, st in (("font.style-calligraphy", "calligraphy"), ("font.style-brush", "brush")):
             self.assertEqual(ui.demo(s).font_style, st)

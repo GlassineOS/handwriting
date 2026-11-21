@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include "adapt.h"
 #include "aligner.h"
+#include "base.h"
 #include "cut.h"
 #include "letters.h"
 #include "sample.h"
@@ -4499,13 +4500,19 @@ static int valid_name(const char *s)
 int hw_letters_fingerprint(const struct hw_letters *L, char out[17])
 {
 	size_t len;
-	/* what the font is made of: the best versions are neatening's alone */
+	/* what the font is made of: the best versions are neatening's alone; a model built from
+	 * no sample is the empty one (FR-008) */
+	struct hw_letters E;
+	if (L->samples <= 0) { memset(&E, 0, sizeof E); L = &E; }
 	char *t = format_model(L, &len, 0);
 	if (!t) return -1;
 	char *body = memchr(t, '\n', len);
 	body = body ? body + 1 : t + len;
 	uint64_t h = fnv(FNV0, body, (size_t)(t + len - body));
 	free(t);
+	/* and the base it draws the rest from (FR-009): a new base makes the font again */
+	const struct hw_base *B = hw_base_get();
+	h = fnv(h, B ? B->hash : "no base", B ? 16 : 7);
 	snprintf(out, 17, "%016llx", (unsigned long long)h);
 	return 0;
 }
@@ -4547,51 +4554,96 @@ int hw_font_random(void)
 	return on;
 }
 
-int hw_font_install(const char *name, int nib, int random, int verbose)
+char *hw_font_model_format(const struct hw_letters *L, size_t *len)
 {
-	struct hw_letters L;
-	int r = hw_letters_load(&L);
+	struct hw_letters V;
+	if (hw_letters_view(L, &V)) return NULL;
+	const struct hw_base *B = hw_base_get();
+	hw_base_defaults(&V, B);
+	struct hw_base_glyph *bg;
+	size_t nbg;
+	char *t = NULL;
+	if (!hw_base_glyphs(&V, B, &bg, &nbg)) {
+		size_t n;
+		t = format_model(&V, &n, 0);
+		struct sbuf b = { t, n, n };
+		for (size_t k = 0; t && k < nbg; k++) {
+			sput(&b, "{\"base\":");
+			char_out(&b, bg[k].cp);
+			sput(&b, ",\"variant\":");
+			variant_out(&b, &bg[k].v, 0);
+			sput(&b, "}\n");
+		}
+		t = b.s;
+		if (len) *len = b.n;
+		hw_base_glyphs_free(bg, nbg);
+	}
+	hw_letters_view_free(&V);
+	return t;
+}
+
+/* the letter model as the font is made from it: the stored one, or the empty one before the
+ * first build (it covers nothing and has no spacing of its own). 0, -1 unreadable. */
+static int font_letters(struct hw_letters *L)
+{
+	int r = hw_letters_load(L);
 	if (r < 0) return -1;
-	if (r == 0) { if (verbose) puts("skip\tno-letters"); return 1; }
-	int covered = 0;
-	for (size_t i = 0; i < L.n; i++) covered += L.l[i].covered;
-	if (!covered) { hw_letters_free(&L); if (verbose) puts("skip\tnothing-covered"); return 1; }
-	char oname[256] = HW_FONT_NAME_DEFAULT, opath[HW_STYLES][4096];
-	unsigned ov;
-	int had = hw_font_record(oname, sizeof oname, &ov, NULL, 0) == 1, onib = -1;
-	if (!had) snprintf(oname, sizeof oname, "%s", HW_FONT_NAME_DEFAULT);
-	if (hw_font_styles(opath, &onib) != 1) for (int k = 0; k < HW_STYLES; k++) opath[k][0] = 0;
-	if (name && !valid_name(name)) { hw_letters_free(&L); return -2; }
-	/* the nib angle: asked for, else the one the font has, else the default (FR-034) */
-	if (nib < 0) nib = onib >= HW_FONT_NIB_MIN && onib <= HW_FONT_NIB_MAX ? onib : HW_FONT_NIB_DEFAULT;
-	/* random alternates: asked for or not, else as the font has them (FR-040) */
-	if (random < 0) random = had && hw_font_random() == 1;
-	const char *nm = name ? name : oname;
-	char dir[4096], path[HW_STYLES][4200], tmp[sizeof path + 8];
-	if (fonts_dir(dir, sizeof dir)) { hw_letters_free(&L); return -1; }
-	int fd = hw_store_lock();
-	if (fd < 0) { hw_letters_free(&L); return -1; }
-	unsigned v = last_version() + 1;
-	char fp[18] = "";
-	if (!hw_letters_fingerprint(&L, fp)) strcat(fp, "\n");
-	int ret = -1, made = 0;
-	mkdirs(dir);
-	/* all three styles, or none (FR-034) */
+	if (r == 0) memset(L, 0, sizeof *L);
+	return 0;
+}
+
+/* the font's three styles under name into the files path[k] (all or none); 0, -1 */
+static int write_styles(const struct hw_letters *L, const char *name, unsigned v, int nib, int random,
+			char path[HW_STYLES][4200])
+{
+	char tmp[4200 + 8];
+	int made = 0;
 	for (int k = 0; k < HW_STYLES; k++, made++) {
 		size_t len;
-		unsigned char *ttf = hw_font_build_style(&L, nm, v, k, nib, random, &len);
+		unsigned char *ttf = hw_font_build_style(L, name, v, k, nib, random, &len);
 		if (!ttf) break;
-		style_path(path[k], sizeof path[k], dir, v, k);
 		snprintf(tmp, sizeof tmp, "%s.tmp", path[k]);
 		FILE *f = fopen(tmp, "we");
 		int bad = !f || fwrite(ttf, 1, len, f) != len;
 		free(ttf);
 		if ((f && fclose(f)) || bad || rename(tmp, path[k])) { unlink(tmp); break; }
 	}
-	hw_letters_free(&L);
-	if (made < HW_STYLES) { for (int k = 0; k < made; k++) unlink(path[k]); goto out; }
+	if (made == HW_STYLES) return 0;
+	for (int k = 0; k < made; k++) unlink(path[k]);
+	return -1;
+}
+
+/* whether the font would draw anything: a covered letter, or the base */
+static int font_has_letters(const struct hw_letters *L)
+{
+	if (hw_base_get()) return 1;
+	for (size_t i = 0; i < L->n; i++) if (L->l[i].covered && L->l[i].nvar) return 1;
+	return 0;
+}
+
+/* the store's lock held: Autograph made from L and installed. 0, 1 nothing to draw, -1 */
+static int install_locked(const struct hw_letters *L, int nib, int random, int verbose, char *dir, size_t ndir)
+{
+	if (!font_has_letters(L)) { if (verbose) puts("skip\tnothing-covered"); return 1; }
+	char opath[HW_STYLES][4096];
+	unsigned ov;
+	int had = hw_font_record(NULL, 0, &ov, NULL, 0) == 1, onib = -1;
+	if (hw_font_styles(opath, &onib) != 1) for (int k = 0; k < HW_STYLES; k++) opath[k][0] = 0;
+	/* the nib angle: asked for, else the one the font has, else the default (FR-034) */
+	if (nib < 0) nib = onib >= HW_FONT_NIB_MIN && onib <= HW_FONT_NIB_MAX ? onib : HW_FONT_NIB_DEFAULT;
+	/* random alternates: asked for or not, else as the font has them (FR-040) */
+	if (random < 0) random = had && hw_font_random() == 1;
+	char path[HW_STYLES][4200];
+	if (fonts_dir(dir, ndir)) return -1;
+	unsigned v = last_version() + 1;
+	char fp[18] = "";
+	if (!hw_letters_fingerprint(L, fp)) strcat(fp, "\n");
+	mkdirs(dir);
+	for (int k = 0; k < HW_STYLES; k++) style_path(path[k], sizeof path[k], dir, v, k);
+	/* all three styles, or none (FR-034); the name is always Autograph (FR-011) */
+	if (write_styles(L, HW_FONT_NAME, v, nib, random, path)) return -1;
 	char rec[13000], vs[32];
-	int n = snprintf(rec, sizeof rec, "%s\t%u\t%s\n", nm, v, path[HW_STYLE_REGULAR]);
+	int n = snprintf(rec, sizeof rec, "%s\t%u\t%s\n", HW_FONT_NAME, v, path[HW_STYLE_REGULAR]);
 	for (int k = 1; k < HW_STYLES && n > 0 && (size_t)n < sizeof rec; k++)
 		n += snprintf(rec + n, sizeof rec - (size_t)n, "style\t%s\t%s\n", hw_font_style_names[k], path[k]);
 	if (n > 0 && (size_t)n < sizeof rec) n += snprintf(rec + n, sizeof rec - (size_t)n, "nib\t%d\n", nib);
@@ -4600,18 +4652,77 @@ int hw_font_install(const char *name, int nib, int random, int verbose)
 	if (n <= 0 || (size_t)n >= sizeof rec || hw_store_mkdir("letters") || hw_store_replace("letters/font-version", vs, strlen(vs)) ||
 	    hw_store_replace("letters/font", rec, (size_t)n) || hw_store_replace("letters/font-model", fp, strlen(fp))) {
 		for (int k = 0; k < HW_STYLES; k++) unlink(path[k]);
-		goto out;
+		return -1;
 	}
 	for (int k = 0; had && k < HW_STYLES; k++)
 		if (opath[k][0] && strcmp(opath[k], path[0]) && strcmp(opath[k], path[1]) && strcmp(opath[k], path[2])) unlink(opath[k]);
-	ret = 0;
-out:
+	if (verbose) printf("installed\t%s\t%u\t%s\n", HW_FONT_NAME, v, path[HW_STYLE_REGULAR]);
+	return 0;
+}
+
+int hw_font_install(int nib, int random, int verbose)
+{
+	struct hw_letters L;
+	if (font_letters(&L)) return -1;
+	char dir[4096];
+	int fd = hw_store_lock();
+	if (fd < 0) { hw_letters_free(&L); return -1; }
+	int ret = install_locked(&L, nib, random, verbose, dir, sizeof dir);
 	hw_store_unlock(fd);
-	if (!ret) {
-		fc_cache(dir);
-		if (verbose) printf("installed\t%s\t%u\t%s\n", nm, v, path[HW_STYLE_REGULAR]);
-	}
+	hw_letters_free(&L);
+	if (!ret) fc_cache(dir);
 	return ret;
+}
+
+int hw_font_export(const char *name, const char *dir, int verbose)
+{
+	if (!valid_name(name)) return -2;
+	struct hw_letters L;
+	if (font_letters(&L)) return -1;
+	if (!font_has_letters(&L)) { hw_letters_free(&L); if (verbose) puts("skip\tnothing-covered"); return 1; }
+	/* the installed font's settings and version; the files named by the name's letters */
+	char sp[HW_STYLES][4096];
+	int nib = -1;
+	if (hw_font_styles(sp, &nib) != 1 || nib < HW_FONT_NIB_MIN || nib > HW_FONT_NIB_MAX) nib = HW_FONT_NIB_DEFAULT;
+	unsigned v = 0;
+	if (hw_font_record(NULL, 0, &v, NULL, 0) != 1 || !v) v = 1;
+	char base[64];
+	int bn = 0;
+	for (const char *c = name; *c && bn < 40; c++)
+		if ((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9')) base[bn++] = *c;
+	base[bn] = 0;
+	if (!bn) snprintf(base, sizeof base, "Handwriting");
+	char path[HW_STYLES][4200];
+	for (int k = 0; k < HW_STYLES; k++) snprintf(path[k], sizeof path[k], "%s/%s-%s.ttf", dir, base, hw_font_style_names[k]);
+	int r = write_styles(&L, name, v, nib, hw_font_random() == 1, path);
+	hw_letters_free(&L);
+	if (r) { fprintf(stderr, "glassine-handwriting: %s: %s\n", dir, strerror(errno ? errno : EIO)); return -1; }
+	for (int k = 0; verbose && k < HW_STYLES; k++) printf("exported\t%s\t%s\n", hw_font_style_names[k], path[k]);
+	return 0;
+}
+
+int hw_font_auto(int verbose)
+{
+	char name[256];
+	unsigned v;
+	int f = hw_font_record(name, sizeof name, &v, NULL, 0);
+	if (f < 0) return -1;
+	/* installed from the start (FR-009) */
+	if (!f) return hw_font_install(-1, -1, verbose);
+	/* a font from before Autograph (another name): made again at once, the letters as they are */
+	if (strcmp(name, HW_FONT_NAME)) return hw_font_install(-1, -1, verbose);
+	/* then rebuilt in the background while charging, once the letter model changed (FR-011),
+	 * under the conditions adaptation has (FR-008: learning on, charging, idle) */
+	if (!hw_charging() || !hw_idle()) { if (verbose) puts("skip\tcharging"); return 2; }
+	if (!hw_learning_on()) { if (verbose) puts("skip\tlearning"); return 2; }
+	struct hw_letters_opts lo = { 0, 0, 0, 0 };
+	if (hw_letters_run(&lo) < 0) return -1;
+	struct hw_letters L;
+	if (font_letters(&L)) return -1;
+	int cur = hw_font_current(&L);
+	hw_letters_free(&L);
+	if (cur) { if (verbose) puts("skip\tcurrent"); return 2; }
+	return hw_font_install(-1, -1, verbose);
 }
 
 static void remove_font_locked(void)
@@ -4639,14 +4750,26 @@ int hw_font_remove(void)
 
 void hw_letters_erase_locked(void)
 {
-	remove_font_locked();
 	char p[4096];
 	if (hw_store_path(p, sizeof p, "letters")) return;
-	const char *files[] = { "model", "model.tmp", "font", "font.tmp", "font-version", "font-version.tmp", "usable", "usable.tmp",
-				"font-model", "font-model.tmp" };
+	const char *files[] = { "model", "model.tmp", "usable", "usable.tmp", "font-model", "font-model.tmp" };
 	for (size_t i = 0; i < sizeof files / sizeof *files; i++) {
 		char q[4200];
 		snprintf(q, sizeof q, "%s/%s", p, files[i]);
+		unlink(q);
+	}
+	/* Autograph back to the base (FR-008), its version counting on; without a base, gone */
+	if (hw_font_record(NULL, 0, NULL, NULL, 0) == 1 && !hw_store_writer()) {
+		struct hw_letters E;
+		memset(&E, 0, sizeof E);
+		char dir[4096];
+		if (!install_locked(&E, -1, -1, 0, dir, sizeof dir)) { fc_cache(dir); return; }
+	}
+	remove_font_locked();
+	const char *rest[] = { "font", "font.tmp" };     /* font-version stays: versions count on */
+	for (size_t i = 0; i < sizeof rest / sizeof *rest; i++) {
+		char q[4200];
+		snprintf(q, sizeof q, "%s/%s", p, rest[i]);
 		unlink(q);
 	}
 	rmdir(p);
