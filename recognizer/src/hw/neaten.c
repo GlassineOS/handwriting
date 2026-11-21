@@ -27,7 +27,7 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
  * "set=0" the words set at Neatest (above Strong the pull goes on, all the way at 1),
  * "margin=M" sets the shape guard's margin, "tail=0", "bar=0", "frag=0" leave out Neatest's
  * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules, "cond=1" sets
- * words conditioned on their ink (struct hw_neat cond) */
+ * words conditioned on their ink, "cond=2" on their line's (struct hw_neat cond) */
 static struct { int base, slant, size, space, pull, trace, set, tail, bar, frag, cond; double margin; } on;
 static void knobs(void)
 {
@@ -46,6 +46,8 @@ static void knobs(void)
 		const char *p = strstr(e, kv[i].k);
 		if (p) *kv[i].v = atoi(p + strlen(kv[i].k)) != 0;
 	}
+	const char *c = strstr(e, "cond=");
+	if (c && atoi(c + 5) == 2) on.cond = 2;
 }
 
 static int cmpd(const void *a, const void *b)
@@ -2159,7 +2161,8 @@ static int set_pieces(const struct hw_neat *q, const int *sw, int w, size_t k, i
  * middles were written (least squares). The set word is made on the straight line as the
  * font sets it, then mapped so (the line-level map's way: sheared along the line, the
  * baseline followed by the letter's foot), its kept letters with it; a word not set has
- * Strong's ink mapped the same way, so the line keeps its direction. */
+ * Strong's ink mapped the same way, so the line keeps its direction. On the line's (line, cond
+ * 2): every word along the line's baseline as written, at its lean and x-height. */
 #define COND_FIT 2
 #define COND_SLOPE 0.35
 #define COND_SHEAR 0.6
@@ -2173,7 +2176,7 @@ struct wframe {
 	double fx, fy;                  /* on the straight line: x of the middle, the baseline */
 };
 
-static void cond_frames(const struct hw_neat *q, const struct hw_letters *V, const int *word, int nw, struct wframe *F)
+static void cond_frames(const struct hw_neat *q, const struct hw_letters *V, const int *word, int nw, int line, struct wframe *F)
 {
 	size_t nc = q->nc, n = q->n;
 	double xh0 = q->line_xh;
@@ -2240,6 +2243,13 @@ static void cond_frames(const struct hw_neat *q, const struct hw_letters *V, con
 		f->xh = clampd(xh, 0.75 * xh0, 1.33 * xh0);
 		double own = wd[w] > 0 ? wn[w] / wd[w] : lean, prior = 0.5 * f->xh;
 		f->lean = (wl[w] * own + prior * lean) / (wl[w] + prior);
+		/* (on the line's: its baseline, lean and x-height for every word) */
+		if (line) {
+			f->slope = clampd(q->line_slope0, -COND_SLOPE, COND_SLOPE);
+			f->yb = q->line_hasbase ? q->line_base0 + q->line_slope0 * f->xc : f->yb;
+			f->lean = lean;
+			f->xh = xh0;
+		}
 		f->ok = 1;
 	}
 	free(b); free(px); free(wn);
@@ -2315,7 +2325,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 	int *gv = malloc((nc + 1) * sizeof *gv), *jk = malloc((nc + 1) * sizeof *jk);
 	unsigned char *kept = calloc(nc + 1, 1);
 	double *fa = malloc((nc + 1) * sizeof *fa), *fb = malloc((nc + 1) * sizeof *fb);
-	int cond = q->cond || on.cond;
+	int cond = q->cond ? q->cond : on.cond;
 	struct wframe *F = NULL;
 	if (!pen || !word || !sw || !npts || !ron || !gv || !jk || !kept || !fa || !fb || hw_base_layout(V0, &W, &bg, &nbg)) goto out;
 	for (size_t k = 0; k < nc; k++) fa[k] = 1, fb[k] = 0;
@@ -2476,7 +2486,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 	if (cond) {
 		F = calloc((size_t)nw + 1, sizeof *F);
 		if (!F) goto out;
-		cond_frames(q, V, word, nw, F);
+		cond_frames(q, V, word, nw, cond == 2, F);
 	}
 	/* each letter set onto a variant with as many strokes as its ink has pieces, the font's
 	 * there when it has, else the one of its variants with that many made from the most

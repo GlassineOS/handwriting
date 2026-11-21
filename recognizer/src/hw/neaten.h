@@ -83,9 +83,10 @@ struct hw_neat {
 	const struct hw_aligned *aligned;   /* the point aligner's run over the ink (aligner.h): a
 					 * stroke several letters share is cut by it; NULL: by shape */
 	int cond;                       /* (measurements) Neatest sets a word conditioned on its ink:
-					 * along its own baseline, at its own slant, x-height and
-					 * spacing, each letter onto its version nearest to it
-					 * (hw_neaten; $GLASSINE_HANDWRITING_NEATEN cond=1 too) */
+					 * 1 along its own baseline, at its own slant, x-height and
+					 * spacing, 2 along its line's baseline at the line's slant
+					 * and x-height, its own spacing; each letter onto its version
+					 * nearest to it ($GLASSINE_HANDWRITING_NEATEN cond=1, 2 too) */
 	/* out (malloc'd by hw_neaten; hw_neat_free) */
 	double **x, **y;
 	int *how;
