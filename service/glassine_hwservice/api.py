@@ -6,7 +6,7 @@ directory. Each request {"id", "method", "params"} gets {"id", "result"} or {"id
 import json
 import os
 
-from . import area, ident, outputs, perms
+from . import area, ident, perms
 from .engine import Error, esc, parse_text, points, unesc
 from .pen import field, lines
 
@@ -113,19 +113,6 @@ class Api:
                 if k in p:
                     perms.set_state(str(p["app"]), k, p[k])
             return perms.all_states(str(p["app"]))
-        if method == "output.get":
-            return {"outputs": outputs.load(), "default": area.DEFAULT_PX_PER_MM}
-        if method == "output.set":
-            if sandboxed:
-                raise Fail("not-allowed", "only the person's own tools set an output's density")
-            v = p.get("px_per_mm")
-            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
-                raise Fail("bad-request", "px_per_mm: a number above 0, or null")
-            try:
-                outputs.set_density(p.get("output"), v)
-            except ValueError as x:
-                raise Fail("bad-request", "output: a name; px_per_mm above 0 and below 1000 (%s)" % x)
-            return {"outputs": outputs.load(), "default": area.DEFAULT_PX_PER_MM}
         if method == "read":
             st = strokes_of(p)
             count = int(p.get("count", 3))

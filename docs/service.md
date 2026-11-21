@@ -62,8 +62,6 @@ with the same `id` and either `"result": {…}` or `"error": {"code", "message"}
 | `samples.list` | | `samples` kept through the caller: `id`, `time`, `source`, `language`, `text` (needs `samples`) |
 | `samples.delete` | `id` | `{}`, or `not-yours` (needs `samples`) |
 | `letters.status` | | `state`, `covered`, `font` (needs `samples`) |
-| `output.get` | | `outputs` (output name: the points per millimetre the person set), `default` (the density the size prior is applied at without one) |
-| `output.set` | `output`, `px_per_mm` (above 0, or null: unknown again) | as `output.get`; unsandboxed callers only (Settings) |
 
 Strokes are lists of points `[x, y, t]`, `[x, y, t, pressure]` or
 `[x, y, t, pressure, tilt_x, tilt_y]`, with t in ms, pressure 0 to 1 and tilt in degrees.
@@ -114,11 +112,11 @@ handwriting size in millimetres.
 - **Units**: the compositor's, `device:PX_PER_MM` when it knows the size of the output the pen
   writes on (its px over its millimetres, in logical px), with the pen's rate added once the
   surface's writing has 8 time steps: 1000 / the median step in ms, as the keyboard measures it.
-  The rate is kept for the surface. For an output of unknown size the compositor names the
-  output (`output`): when the person has set its points per millimetre in Settings
-  (`output.set`, kept by the output's name in `$XDG_CONFIG_HOME/glassine/handwriting-outputs.json`)
-  the units are `device:` that density; until then they stay `device`, the pen's own, and no
-  size in millimetres is assumed beyond the prior at the default density.
+  The rate is kept for the surface. For an output of unknown size the compositor sends the
+  density the person set for it in Settings (GlassineOS/sway `docs/handwriting-channel.md`,
+  Units); without one the units stay `device`, the pen's own, and no size in millimetres is
+  assumed beyond the prior at the **default density of 96 points per inch (3.78 per
+  millimetre)**.
 
 The words of a line and the lines of the writing are read and neatened in sessions of their
 own, with the surface's box, no line unless the app ruled one, the guide line of their line
@@ -165,7 +163,7 @@ From the compositor:
 | `op` | Fields | Meaning |
 |---|---|---|
 | `surface` | `s`, `sandbox` or `pid` | a surface that wants the service, and whose it is |
-| `set` | `s`, `neaten`, `strength`, `text`, `purpose`, `hints`, `before`, `after`, `languages`, `guides` ([spacing, first]), `box` ([x0, y0, x1, y1], when the area is set), `units`, `output` (the name of the output the pen writes on, for units without its size) | its choices; a private field (`password`, `pin`, the hints `hidden_text` or `sensitive_data`) is followed by `destroy` instead |
+| `set` | `s`, `neaten`, `strength`, `text`, `purpose`, `hints`, `before`, `after`, `languages`, `guides` ([spacing, first]), `box` ([x0, y0, x1, y1], when the area is set), `units` | its choices; a private field (`password`, `pin`, the hints `hidden_text` or `sensitive_data`) is followed by `destroy` instead |
 | `stroke` | `s`, `k`, `points` ([x, y, t, pressure, tilt_x, tilt_y]) | a raw stroke |
 | `clear` | `s` | the app is done with the writing held |
 | `report` | `s`, `serial`, `action` (`picked`, `accepted`, `corrected`, `discarded`), `rank`, `text` | what the person did with the candidates `serial` |
