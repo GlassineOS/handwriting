@@ -106,9 +106,11 @@ handwriting size in millimetres.
   the session's units: at the units' points per millimetre, and for `device` units without
   them at the default density of 96 points per inch (3.78 per millimetre, `DEFAULT_PX_PER_MM`).
   The recognizer uses it only when neither the person's letters in the session's units nor the
-  app's ruled line give a reference; for a line of writing whose own small letters measure
-  more than 1.6 times it, their height (Size). Ink in `em` gets none (its units say how high a
-  line is).
+  app's ruled line give a reference, and never over the writing's own size: writing whose small
+  letters can be measured is read at their height, and the prior only settles what the height
+  of writing too short to measure means (a small letter or a capital), for ink at most twice
+  (a lone character) or four times (more) as high as it; taller ink is read by its own height
+  (docs/recognizer.md, Size). Ink in `em` gets none (its units say how high a line is).
 - **Units**: the compositor's, `device:PX_PER_MM` when it knows the size of the output the pen
   writes on (its px over its millimetres, in logical px), with the pen's rate added once the
   surface's writing has 8 time steps: 1000 / the median step in ms, as the keyboard measures it.
@@ -134,20 +136,24 @@ surface, or none):
 
 | model 4 (ghm 2) | 1.5 mm | 3 mm | 6 mm |
 |---|---|---|---|
-| lines, the prior | 17.8 | 24.4 | 33.1 |
+| lines, the prior and the writing's own size | 7.4 | 8.3 | 11.6 |
 | lines, the found line before | 24.0 | 24.0 | 24.0 |
+| lines, no area (no reference) | 13.6 | 13.6 | 13.6 |
 | lines, the keyboard's paper | 20.7 | 20.7 | 20.7 |
-| lone characters, the prior | 36.2 | 42.9 | 95.2 |
+| lone characters, the prior and the writing's own size | 30.5 | 34.3 | 55.7 |
 | lone characters, before (no area) | 55.7 | 55.7 | 55.7 |
 | lone characters, the keyboard's paper | 25.7 | 25.7 | 25.7 |
 
 With the writer's letters known both rules read the same (lines 2.1, lone characters 31.9; the
 keyboard's paper 2.1 and 9.5, its ruled guide line placing a lone character). A version 1
 model (model 2) reads as before (lines 5.0; lone characters 21.0, one more error at 1.5 mm).
-The prior reads small and middling writing better than a found line did and large writing
-worse: model 4 reads ink far larger than its reference with too many points per letter
-(train/README.md, Size against the reference), and a lone character of 6 mm small letters is
-twice as large as the typical one. The person's letters, once known, replace the prior.
+Every size reads at least as well as before; a lone character of 6 mm small letters is more
+than twice as high as the prior and is read by its own height, as before. The figures the
+rule uses come from the person's writing, not from this ink (docs/recognizer.md, Size); on the
+person's other half, the prior alone, at 1.5, 3 and 6 mm small letters, it reads their words
+at 35.1, 35.9 and 35.5 % CER (the prior as it was: 34.9, 41.1, 38.9; no reference: 38.9) and
+their lone characters at 58.9, 68.3 and 66.6 (the prior as it was: 55.7, 72.5, 90.6; no
+reference: 66.6). The person's letters, once known, replace the prior.
 
 A sample stored from such a session keeps that area, as every sample keeps its session's; the
 prior is not stored.
