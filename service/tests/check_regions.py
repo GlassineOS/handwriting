@@ -61,7 +61,7 @@ async def main(models):
             j = 0
             while True:
                 g = regions.Region(s, i)
-                g.set({"text": True, "units": "device:%g" % PER_MM, "size": [4000, 400]})
+                g.set({"reading": True, "units": "device:%g" % PER_MM, "size": [4000, 400]})
                 for k, st in enumerate(r["strokes"]):
                     g.stroke(k, [[x * u + 20, y * u + 3 * u, t * 1000, 0.5, 0, 0] for x, y, t, *_ in st])
                 g.cancel()
