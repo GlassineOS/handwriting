@@ -1071,6 +1071,32 @@ class Neaten(unittest.TestCase):
                     seen += 1
         self.assertEqual(seen, 4)
 
+    def test_the_base_is_never_a_target(self):
+        """Autograph's base (FR-045) is not the person's: a character only it draws is
+        neatened as one the font lacks, at every level, whatever the base has for it; the
+        ink is the same with the base as without (FR-014, FR-022, FR-035, FR-043)"""
+        self.letters()
+        base = TL.write_base(self.e.dir / "base.jsonl")
+        rnd = random.Random(61)
+        for text in ("hi, you.", "a-b c;d", "hello world"):
+            s = TL.sample(text, rnd)
+            align = ";".join(",".join(map(str, sp)) for sp in s["spans"])
+            got = {}
+            for b in ("off", str(base)):
+                self.e.env["GLASSINE_HANDWRITING_BASE"] = b
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                c = self.e.start()
+                self.begin(c, s)
+                got[b] = [parse(c.ask("neaten", "s", st, TR.esc(text), align), why=True)
+                          for st in ("0.25", "0.5", "0.75", "1")]
+                c.close()
+            self.assertEqual(got["off"], got[str(base)], text)
+            for _, _, why in got[str(base)]:
+                for k, ch in enumerate(text):
+                    if ch in ",.;-":
+                        self.assertIn(why[k], ("not-covered", "level"), (text, k, why))
+        self.e.env["GLASSINE_HANDWRITING_BASE"] = "off"
+
     def test_neatest_without_the_text(self):
         """without the text no word is set (FR-043: a word read wrongly would be set as
         another word): the ink is Strong's; with the text (and ALIGN: this model's own

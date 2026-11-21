@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.8)
+# The handwriting recognizer (contract version 1.9)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -87,7 +87,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 to 1.8 only add to 1.0, so a client of any
+**hello** names the contract version (1: versions 1.1 to 1.9 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -801,8 +801,9 @@ Nothing in it leaves the device except by export or a donation the person writes
   the installed font, PATH its Regular style's file; then `style STYLE PATH` for Calligraphy and Brush and `nib DEG`,
   the nib angle it was made with, and `random on` when made with random alternates; a font installed before the styles has the first line alone) and `letters/font-version` (the last version made, so a removed and
   remade font doesn't reuse one) and `letters/font-model` (a hash of the letters the installed
-  font was made from). An erase of all samples or of a client's takes out the letter
-  model, the installed font and these files (the erased samples' preferences go with them).
+  font was made from, and of the base). An erase of all samples or of a client's takes out the letter
+  model and its files (the erased samples' preferences go with them) and makes Autograph again
+  from the base, its version counting on (without a base the font and its files go).
 - `donation/licence` (`CC0-1.0` or `CC-BY-4.0`), `donation/samples.jsonl` (kept like
   `samples.jsonl`) with its index `donation/index` (first line `glassine-handwriting-donation-index
   1 INODE 0`, then `ID OFFSET LENGTH` or `- OFFSET LENGTH`), and `donation/donor-id`: the donor ID,
@@ -1079,7 +1080,8 @@ it changes the font only at the next `font install`.
 and marks as they are now (any power, lowest priority; only the samples with it are read, so it
 takes a second or two), puts its line in the model in place of the old one and keeps the rest
 (the spacing, the other characters and the model's inputs). It prints `relearned COVERED
-VERSIONS` or `skip no-model` (it needs a model); `--progress` first prints `progress DONE TOTAL`
+VERSIONS`; before the first build (the empty model) it builds the whole model instead and
+prints what `letters build` prints; `--progress` first prints `progress DONE TOTAL`
 lines as `letters build` does. Its versions get their side shapes from the
 model's spacing.
 
@@ -1193,13 +1195,18 @@ speed. Otherwise, and for a pair written joined less often, it is two letters; i
 font at the next build. A model holds at most 256 joined pairs. They are made by a whole build
 (`-c` keeps them).
 
-**The font:** `font install` makes a TrueType font of the covered characters (everything else
-falls back to the system's fonts) in three styles (FR-034) and installs them together as
+**The font, Autograph (contract 1.9, FR-009, FR-011):** `font install` makes a TrueType font of the covered
+characters over the base (below: every character of the base the letters don't cover is drawn
+from it, so nothing falls back to a system font) in three styles (FR-034) and installs them
+together as
 `$XDG_DATA_HOME/fonts/glassine-handwriting/handwriting-VERSION.ttf` (Regular),
 `handwriting-VERSION-calligraphy.ttf` and `handwriting-VERSION-brush.ttf`, replacing the ones before
 (all three, or none when one can't be made), then runs `fc-cache` on that directory. Its family
-name is the person's (`-n`; first `My handwriting`, later the name it has), the version counts on
-with every install, so apps see a new font. Along the
+name is always `Autograph` (a font installed under another name before is made again as
+Autograph by the next install), the version counts on with every install, so apps see a new
+font. The letter model starts empty (no covered characters, no spacing of its own; a model
+built from no usable sample counts as the empty one), so before the first sample Autograph is
+the base alone, at the base's metrics, ink width and spacing. Along the
 text the font steps through a cycle of 10, the same way every time: a run starts at step 0, and
 after a character or space at step s the next one is at step s + 1 (after 9, 0; after a character
 the font lacks, 0 again); a character shows the version its `slots` give for that step. Each
@@ -1300,6 +1307,36 @@ apps, show the random versions; tested with `hb-shape`, `pango-view` and GTK thr
 (HarfBuzz 13.2.1, Pango 1.57.1). Apps that don't apply `rand` keep the cycle; Firefox, Chromium
 and LibreOffice are not tested. The neighbour rules and joined pairs apply either way.
 
+**The base font (FR-045):** `/usr/share/glassine/handwriting/autograph/base.jsonl` (or the
+file in `GLASSINE_HANDWRITING_BASE`), made when the recognizer is packaged by
+`tools/base-font.py` from Edu SA Beginner (SIL Open Font License 1.1; an Edu Beginner school
+print model; the licence goes along in the same directory). JSON lines: first
+`{"format":"glassine-handwriting-base","version":1,"family","copyright","licence","licence_url","source","sha256","slant","measured_slant","cap_height","ascender","descender","ink_width","letter_spacing","word_spacing"}`
+(the metrics in x-heights, as the letter model's), then `{"char":C,"strokes":[[[x,y],…],…]}` per
+character: its centre lines, x-heights, y up from the baseline, x from the glyph's left edge,
+upright (the font's slant measured and taken out; `--keep-slant` keeps it). The tool fills
+each glyph at a fine raster, thins it to a one-pixel skeleton, follows the skeleton's branches
+(junctions, spurs and small loops of the thinning pruned, the branches through a junction
+paired by the straightest continuation), smooths and simplifies them, orders the strokes as a
+hand writes them (top to bottom, left to right; each from its upper or left end), and checks
+every glyph by drawing its centre lines at the measured ink width back over the outline
+(intersection over union at least 0.8, the dots apart): a glyph below it fails the build.
+
+The base is never the person's: only the font, its preview (`font show`) and the fingerprint
+read it, never the letter model, so neatening never pulls towards a base character (FR-014,
+FR-022, FR-035, FR-043: a character only the base draws is one the letters don't cover). A base
+character gets the person's metrics: small letters keep their x-height and go to the person's
+ascender and descender above and below it, capitals, digits and the Latin-1 capitals scale
+uniformly to the person's cap height; it is sheared to the person's slant and drawn in the
+person's ink width, in all three styles (Brush at an even pressure and speed: it has no
+profiles). It has one glyph of its own (no step glyphs: after it the cycle starts again, as
+after a character the font lacks), takes part in no neighbour rule, joined pair or join, and
+is kerned by its profiles like a version, a pair with it placed as an unseen pair. With a base
+the font's name table carries the base's copyright (name 0) and the licence (13, 14): the font
+is a Modified Version of the base under the OFL, also when exported. `GLASSINE_HANDWRITING_BASE=off`
+(tests) or a missing file: no base, and the font is the covered characters alone (`skip
+nothing-covered` without any).
+
 ## Command line
 
 Part of contract 1, for the settings app and anything else that shows or changes the samples.
@@ -1319,7 +1356,8 @@ glassine-handwriting adaptation [show|revert] [-l LANG]
 glassine-handwriting charging                   charging or battery
 glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show
 glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | marks | samples CHAR
-glassine-handwriting font install [-n NAME] [--nib DEG] [--random|--no-random] | remove | status | build [-n NAME] [--style S] [--nib DEG] [--random] FILE | widths [--style S] [--nib DEG]
+glassine-handwriting font install [--nib DEG] [--random|--no-random] | auto | status | show | remove | export -n NAME DIR
+glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE | widths [--style S] [--nib DEG]
 glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
@@ -1370,8 +1408,9 @@ donations then count as another writer's. `erase` keeps the donor ID.
 
 `letters build` prints `built SAMPLES COVERED` or `skip REASON` (`charging`, `nothing-new`,
 `erased`); with `--progress` first `progress DONE TOTAL` lines (samples read of those stored) while
-it reads the samples. `letters status` prints `state none|current|outdated` (outdated: samples,
-picks, marks or the way it is built changed since it was made), then from the samples as they are now,
+it reads the samples. `letters status` prints `state current|outdated` (outdated: samples,
+picks, marks or the way it is built changed since it was made; before the first build, the
+empty model, outdated once there is a usable sample), then from the samples as they are now,
 model or not: `samples N` (usable), `covered K` (characters with 3 usable samples), one `char C
 SAMPLES VERSIONS` per character seen (C escaped like a text field; VERSIONS the versions it has
 in the model as built, 0 when none), and `font NAME VERSION PATH` or `font -`; with a font,
@@ -1391,13 +1430,27 @@ version), `unread` (the writing wasn't read clearly: no exact strokes per charac
 `joined-before` or `joined-after` (a stroke shared with the neighbour), `odd` (too far from its
 other versions in size to count).
 
-`font install` makes the font in its three styles from the letter model as it is and prints
-`installed NAME VERSION PATH` (PATH the Regular style's file), or `skip
-no-letters|nothing-covered`; a name that isn't 1 to 63 bytes of UTF-8 without control characters,
-or a nib angle that isn't a whole number from 0 to 90, is a usage error. `font status` prints
+`font install` (contract 1.9: Autograph, `-n` gone, `export`, `auto` and `show` new) makes Autograph in its three styles from the letter model as it is (the empty
+one before the first build) over the base and prints `installed Autograph VERSION PATH` (PATH
+the Regular style's file), or `skip nothing-covered` (no base and no covered character); a
+nib angle that isn't a whole number from 0 to 90 is a usage error, and so is a name (`-n` is for
+`export`). `font auto` is the background's (FR-011; the service runs it at start and every
+half hour, at the lowest priority: nice 19 and `SCHED_IDLE`): with no font installed it
+installs Autograph at once (FR-009); else, while charging and idle, it builds the letter model
+when it changed (as `letters build`) and installs the font again when it isn't made from the
+letters and the base as they are now; it prints what `font install` prints, or `skip charging`
+or `skip current`. `font export -n NAME DIR` writes the three styles as the installed font is
+made (its nib angle and random alternates) under the family name NAME into DIR as
+`NAME-Regular.ttf`, `NAME-Calligraphy.ttf` and `NAME-Brush.ttf` (the file names NAME's ASCII
+letters and digits), printing `exported STYLE PATH` per style; the installed Autograph stays
+(FR-012); a name that isn't 1 to 63 bytes of UTF-8 without control characters is a usage error.
+`font show` prints the model as Autograph draws it: the letter model as the font has it
+(versions left out taken out) with the base's metrics and spacing where it has none of its own,
+then one `{"base":C,"variant":{…}}` per character drawn from the base, the variant as a
+model's (strokes in the person's metrics, profiles, middle; no ids), for the preview. `font status` prints
 `NAME VERSION PATH` or `none`, then for a font `style STYLE PATH` per style it has (Regular,
 Calligraphy, Brush; a font from before the styles: Regular alone), `nib DEG` (as `letters
-status`) and `random on` for a font with random alternates; `font remove` takes out all of its
+status`) and `random on` for a font with random alternates; `font remove` (testing: Autograph is always installed, and the next `font auto` puts it back) takes out all of its
 files; `font build FILE` writes one style (`--style regular|calligraphy|brush`, Regular unless
 given; the installed font's nib angle unless `--nib`; random alternates only with `--random`) to
 FILE without installing it, and `font widths` prints the width rules' output as JSON lines: first
@@ -1569,6 +1622,7 @@ afterwards is used only after `model use KIND local`. In a writer's store `model
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME` | the store, the writer stores' directory and the settings, as above; never which writer's store |
 | `GLASSINE_HANDWRITING_SYSFS` | for tests: a directory laid out like `/sys/class/power_supply` |
 | `GLASSINE_HANDWRITING_LOADAVG` | for tests: a file laid out like `/proc/loadavg` |
+| `GLASSINE_HANDWRITING_BASE` | Autograph's base font file instead of `/usr/share/glassine/handwriting/autograph/base.jsonl`; `off` none (The letter model and the font) |
 | `GLASSINE_HANDWRITING_DEBUG` | `adapt` prints the loss of each epoch |
 | `GLASSINE_HANDWRITING_FIT_OK` | for tests: the prompted check's threshold instead of 0.6 |
 | `GLASSINE_HANDWRITING_SIZE` | for tests and measurements: `X,C[,XS,CS]` the person's letters in the session's units instead of the measured ones; `off` no size; `noweigh` or `weigh` (alone or after the letters) the weighing off or on whatever the model (by default a version 1 model is weighed, a version 2 model not) |

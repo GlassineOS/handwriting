@@ -11,7 +11,8 @@
 //   glassine-handwriting donation start LICENCE|add ID|list|samples|earlier|donor [new]|write FILE|erase|prompts
 //   glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR]|status|show|marks|mark KIND CHAR ID...|samples CHAR
 //                                                                  the letter model (spec 003)
-//   glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE|install [-n NAME] [--nib DEG] [--random|--no-random]|remove|status|widths
+//   glassine-handwriting font install [--nib DEG] [--random|--no-random]|auto|status|show|remove|export -n NAME DIR
+//   glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE|widths   Autograph (spec 003)
 //   glassine-handwriting read [-n N] [-l LANG] FILE  (host: read sample-format lines)
 //   glassine-handwriting bench [-l LANG] FILE        (host: time per line, memory)
 //
@@ -1925,7 +1926,8 @@ static void usage(void)
 	      "       glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMPLE | list | samples | earlier [-c CLIENT] | donor [new] | write FILE | erase | prompts [LANG]\n"
 	      "       glassine-handwriting letters build [-f] [-r] [--progress] [-c CHAR] | status | show | marks\n"
 	      "       glassine-handwriting letters mark clear|out|way-out|favourite CHAR ID... | samples CHAR\n"
-	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE | install [-n NAME] [--nib DEG] [--random|--no-random] | remove | status | widths [--style S] [--nib DEG]\n"
+	      "       glassine-handwriting font install [--nib DEG] [--random|--no-random] | auto | status | show | remove | export -n NAME DIR\n"
+	      "       glassine-handwriting font build [-n NAME] [--style S] [--nib DEG] [--random] FILE | widths [--style S] [--nib DEG]\n"
 	      "       glassine-handwriting read [-n N] [-l LANG] FILE\n"
 	      "       glassine-handwriting bench [-l LANG] FILE\n"
 	      "       glassine-handwriting calibrate [-l LANG] FILE\n"
@@ -2179,8 +2181,9 @@ static int cmd_letters(int argc, char **argv)
 		if (nice(19) == -1) {}
 		if (one) {
 			int r = hw_letters_relearn(one, o.progress ? 2 : 1);
-			if (r == 0) puts("skip\tno-model");
-			return r < 0 ? 1 : 0;
+			if (r != 0) return r < 0 ? 1 : 0;
+			/* the empty model (none built yet): the character learned with the rest */
+			o.requested = 1;
 		}
 		return hw_letters_run(&o) < 0 ? 1 : 0;
 	}
@@ -2251,13 +2254,16 @@ static int cmd_letters(int argc, char **argv)
 		if (r < 0) return 1;
 		char now[17];
 		if (hw_letters_inputs(now)) { if (r == 1) hw_letters_free(&L); return 1; }
-		printf("state\t%s\n", r == 0 ? "none" : strcmp(L.inputs, now) || hw_letters_marks_changed(&L) ? "outdated" : "current");
 		/* the counts from the samples as they are now, built model or not (FR-030); the
 		 * versions from the model as built */
 		struct hw_lcount *c;
 		size_t nc;
 		long usable;
 		if (hw_letters_usable(&c, &nc, &usable, NULL)) { if (r == 1) hw_letters_free(&L); return 1; }
+		/* before the first build the model is empty (FR-008): up to date while no sample would
+		 * teach it anything */
+		printf("state\t%s\n", r == 0 ? (usable ? "outdated" : "current")
+					      : strcmp(L.inputs, now) || hw_letters_marks_changed(&L) ? "outdated" : "current");
 		int covered = 0;
 		for (size_t i = 0; i < nc; i++) covered += c[i].samples >= HW_LETTERS_MIN;
 		printf("samples\t%ld\ncovered\t%d\n", usable, covered);
@@ -2274,7 +2280,8 @@ static int cmd_letters(int argc, char **argv)
 			free(b.s);
 		}
 		free(c);
-		int fcur = r == 1 && hw_font_current(&L);
+		if (r == 0) memset(&L, 0, sizeof L);    /* the empty model, as the font is made from it */
+		int fcur = hw_font_current(&L);
 		if (r == 1) hw_letters_free(&L);
 		char name[256], path[4096];
 		unsigned v;
@@ -2325,7 +2332,7 @@ static int cmd_font(int argc, char **argv)
 			if (*e || e == argv[i] || d < HW_FONT_NIB_MIN || d > HW_FONT_NIB_MAX) { usage(); return 2; }
 			nib = (int)d;
 		}
-		else if (!file && !strcmp(sub, "build")) file = argv[i];
+		else if (!file && (!strcmp(sub, "build") || !strcmp(sub, "export"))) file = argv[i];
 		else { usage(); return 2; }
 	}
 	if (style >= 0 && strcmp(sub, "build") && strcmp(sub, "widths")) { usage(); return 2; }
@@ -2333,11 +2340,43 @@ static int cmd_font(int argc, char **argv)
 	/* random alternates (FR-040): asked for at a build or an install only */
 	if (random >= 0 && strcmp(sub, "install") && (strcmp(sub, "build") || !random)) { usage(); return 2; }
 	if (!strcmp(sub, "install")) {
-		int r = hw_font_install(name, nib, random, 1);
+		/* always Autograph (FR-011): a name is for an export */
+		if (name) { usage(); return 2; }
+		return hw_font_install(nib, random, 1) < 0 ? 1 : 0;
+	}
+	if (!strcmp(sub, "export")) {
+		/* export -n NAME DIR: the three styles under the person's name (FR-012) */
+		if (!name || !file) { usage(); return 2; }
+		int r = hw_font_export(name, file, 1);
 		if (r == -2) { fputs("glassine-handwriting: a font name is 1 to 63 bytes of UTF-8 without control characters\n", stderr); return 2; }
 		return r < 0 ? 1 : 0;
 	}
 	if (name && strcmp(sub, "build")) { usage(); return 2; }
+	if (!strcmp(sub, "auto")) {
+		if (argc != 1) { usage(); return 2; }
+		/* the background's work: the lowest priority, the device stays usable */
+		if (nice(19) == -1) {}
+#ifdef SCHED_IDLE
+		struct sched_param spr = { 0 };
+		sched_setscheduler(0, SCHED_IDLE, &spr);
+#endif
+		return hw_font_auto(1) < 0 ? 1 : 0;
+	}
+	if (!strcmp(sub, "show")) {
+		/* the model as Autograph draws it: the letters over the base (the preview) */
+		if (argc != 1) { usage(); return 2; }
+		struct hw_letters L;
+		int r = hw_letters_load(&L);
+		if (r < 0) return 1;
+		if (!r) memset(&L, 0, sizeof L);
+		size_t len;
+		char *t = hw_font_model_format(&L, &len);
+		hw_letters_free(&L);
+		if (!t) return 1;
+		fwrite(t, 1, len, stdout);
+		free(t);
+		return 0;
+	}
 	if (!strcmp(sub, "remove")) return hw_font_remove() < 0 ? 1 : 0;
 	if (!strcmp(sub, "status")) {
 		char nm[256], path[4096], sp[HW_STYLES][4096];
@@ -2365,7 +2404,7 @@ static int cmd_font(int argc, char **argv)
 		struct hw_letters L;
 		int r = hw_letters_load(&L);
 		if (r < 0) return 1;
-		if (!r) { fputs("glassine-handwriting: no letter model (letters build)\n", stderr); return 1; }
+		if (!r) memset(&L, 0, sizeof L);         /* the empty model: the base alone */
 		if (style < 0) style = HW_STYLE_REGULAR;
 		if (nib < 0) {
 			char sp[HW_STYLES][4096];
@@ -2404,7 +2443,7 @@ static int cmd_font(int argc, char **argv)
 		unsigned v = 0;
 		if (hw_font_record(NULL, 0, &v, NULL, 0) != 1) v = 0;
 		size_t len;
-		unsigned char *t = hw_font_build_style(&L, name ? name : HW_FONT_NAME_DEFAULT, v + 1, style, nib, random == 1, &len);
+		unsigned char *t = hw_font_build_style(&L, name ? name : HW_FONT_NAME, v + 1, style, nib, random == 1, &len);
 		hw_letters_free(&L);
 		if (!t) return 1;
 		FILE *f = fopen(file, "we");

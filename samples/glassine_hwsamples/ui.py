@@ -218,10 +218,10 @@ class UI:
         self.ep = 0                     # its page
         self.confirm = None             # (title, text, yes-label, fn) for a destructive action
         self.sets_open = False
-        self.best = None                # on the Your font tab: "font" (its page) or "pick"; else None
+        self.best = None                # on the Autograph tab: "font" (its page) or "pick"; else None
         self.font = None                # the font page: {"status": cli.letters(), "model": fontview.parse()}
         self.font_busy = None           # "making" while the letter model and the font are built
-        self.font_name = None           # a name chosen before the font is installed
+        self.export_name = None         # the name Autograph was last exported under (FR-012)
         self.font_style = "regular"     # the style the preview is drawn in (spec 003 FR-034)
         self.font_nib = None            # a nib angle chosen before Install or Update (None: the font's)
         self.letters_job = None         # (done, total) while the letter model is built
@@ -232,9 +232,9 @@ class UI:
         self.sheet = None
         self.relearn = None             # (char, done, total) while one character is learned again
         self.relearn_then = []          # what waits for it
-        self.renaming = None            # {"text"}: the font's name being typed
+        self.exporting = None           # {"text"}: the name to export Autograph under, being typed
         self.entry_text = None          # the window's text field, read when the name is used
-        self.rename_rect = None         # where the dialog's field is (pages.rename_dialog)
+        self.export_rect = None         # where the dialog's field is (pages.export_dialog)
         self.pick_loading = False
         self.neat = None                # Neaten my writing: a neat.Neat while the page is open
         self.neat_strength = N.DEFAULT
@@ -377,7 +377,7 @@ class UI:
         self.close_neat()
         if self.sheet:
             self.sheet = None
-        self.renaming = None
+        self.exporting = None
         self.session = session
         self.view_reset()
         if self.on_switch:
@@ -541,7 +541,7 @@ class UI:
 
     def go(self, page):
         """a tab, or a page beneath one: Samples and Coverage beneath Learn, a guest's Samples
-        beneath Contribute, Neaten my writing beneath Your font (spec 002 FR-026)"""
+        beneath Contribute, Neaten my writing beneath Autograph (spec 002 FR-026)"""
         if self.guest and page in ("font", "learn", "coverage", "neat", "others", "models"):
             page = "write"              # not in a guest's session (spec 002 FR-018)
         if (not self.guest and self.page == "write" and self.tab == "font" and self.writer
@@ -561,7 +561,7 @@ class UI:
         self.reviewing = False
         if self.sheet:
             self.close_char()
-        self.renaming = None
+        self.exporting = None
         self.best = "font" if page == "font" else None
         self.pick = None
         if page != "write" and not self.demo:
@@ -743,7 +743,7 @@ class UI:
 
     def choose_set(self, name):
         """a prompt set; in a guest's session also Write it your best, a set there (spec 002
-        FR-018: no Your font tab; Which one is nicer? isn't offered to a guest)"""
+        FR-018: no Autograph tab; Which one is nicer? isn't offered to a guest)"""
         self.sets_open = False
         if name == "best":
             return self.start_best()
@@ -946,18 +946,18 @@ class UI:
         cli, lang = self.cli, self.state.lang
         self.run(lambda: cli.revert(lang), lambda _: self.refresh())
 
-    # ---------------------------------------------------------- Your font
+    # ---------------------------------------------------------- Autograph
 
     def open_best(self):
-        """back to the font page, the Your font tab, from its parts; the careful writing
-        stops. In a guest's session (no Your font tab): back to the sets"""
+        """back to the font page, the Autograph tab, from its parts; the careful writing
+        stops. In a guest's session (no Autograph tab): back to the sets"""
         if self.guest:
             self.go("write")
             return self.open_sets()
         self.go("font")
 
     def start_best(self):
-        """Write it your best: Write's page, as a part of Your font (in a guest's session, a
+        """Write it your best: Write's page, as a part of Autograph (in a guest's session, a
         set in Write)"""
         self.go("write")
         self.run(self.writer.start_best)
@@ -966,7 +966,7 @@ class UI:
         self.redraw()
 
     def open_font(self):
-        """Your font: the letters it has, a preview, what is missing"""
+        """Autograph: the letters it has, a preview, what is missing"""
         if not self.guest:
             self.go("font")
 
@@ -990,8 +990,11 @@ class UI:
 
         def get():
             st = cli.letters()
-            text = cli.letters_model() if st["state"] != "none" else ""
-            return {"status": st, "model": fontview.parse(text) if text else None}
+            text = cli.letters_model()
+            # the preview's model: the letter model over the base, as Autograph draws it
+            pv = cli.font_show()
+            return {"status": st, "model": fontview.parse(text) if text else None,
+                    "preview": fontview.parse(pv) if pv else None}
 
         def got(r, err):
             self.letters_loading -= 1
@@ -1052,8 +1055,8 @@ class UI:
         return done / total if total else 0.0
 
     def make_font(self):
-        """the letter model brought up to date, then the font built and installed (under its
-        name; the first time, the name chosen here or the default)"""
+        """the letter model brought up to date, then Autograph built and installed (FR-011: at
+        once, as it does on its own while the tablet charges)"""
         if self.font_busy or self.demo:
             return
         if self.relearn:                # the character being learned again goes in too
@@ -1063,7 +1066,7 @@ class UI:
             return
         self.font_busy = "making"
         self.msg = ""
-        name, nib, cli = self.font_name, self.font_nib, self.cli
+        nib, cli = self.font_nib, self.cli
 
         def fin(r, err):
             self.busy -= 1
@@ -1072,8 +1075,8 @@ class UI:
                 print("glassine-handwriting-samples: error: %s" % err, file=sys.stderr, flush=True)
                 self.msg = "The font couldn’t be made: %s" % err
             else:
-                self.font_name = self.font_nib = None
-                self.msg = "Installed as %s. It is in the font lists of your apps." % r[0]
+                self.font_nib = None
+                self.msg = "%s is updated, version %d. Apps that use it show the new letters." % r
                 self.load_font()
             self.redraw()
 
@@ -1082,18 +1085,9 @@ class UI:
                 self.font_busy = None
                 return
             self.busy += 1
-            self.work.do(lambda: cli.font_install(name, nib), fin)
+            self.work.do(lambda: cli.font_install(nib), fin)
         self.build_letters(then=built)
         self.redraw()
-
-    def ask_remove_font(self):
-        self.confirm = ("Remove your font?", "Apps go back to their usual font where you used it. Your samples stay, "
-                        "and you can make the font again any time.", "Remove", self.remove_font)
-        self.redraw()
-
-    def remove_font(self):
-        self.confirm = None
-        self.run(self.cli.font_remove, lambda _: (setattr(self, "msg", "Your font was removed."), self.load_font()))
 
     def set_font_style(self, style):
         """the style the preview is drawn in (FR-034): only the preview changes"""
@@ -1122,32 +1116,35 @@ class UI:
         return bool(st.get("font")) and self.font_nib is not None and self.font_nib != self.nib_installed()
 
     def font_shown_name(self):
-        st = (self.font or {}).get("status") or {}
-        return self.font_name or (st.get("font") or (fontview.DEFAULT_NAME,))[0]
+        return fontview.NAME
 
-    def rename_font(self):
-        """the name, typed in a dialog in the page's upper half (the keyboard takes the lower)"""
-        self.renaming = {"text": self.font_shown_name()}
+    def export_font(self):
+        """Export: the name to export under, typed in a dialog in the page's upper half (the
+        keyboard takes the lower)"""
+        self.exporting = {"text": self.export_name or ""}
         self.redraw()
 
-    def cancel_rename(self):
-        self.renaming = None
+    def cancel_export(self):
+        self.exporting = None
         self.redraw()
 
-    def use_name(self):
-        """Use this name: an installed font is made again under it (its letters as they are);
-        otherwise it is the name the first install uses"""
-        if not self.renaming:
+    def export_named(self):
+        """Export: Autograph's three styles under the typed name, in Documents › Handwriting
+        (spec 003 FR-012); the installed Autograph stays as it is"""
+        if not self.exporting:
             return
-        name = (self.entry_text() if self.entry_text else self.renaming["text"]).strip()[:40]
-        self.renaming = None
-        if not name or name == self.font_shown_name():
+        name = (self.entry_text() if self.entry_text else self.exporting["text"]).strip()[:40]
+        self.exporting = None
+        if not name or self.demo:
             self.redraw()
             return
-        st = (self.font or {}).get("status") or {}
-        self.font_name = name
-        if st.get("font"):
-            self.make_font()
+        self.export_name = name
+        folder, cli = os.path.join(documents_dir(), "Handwriting"), self.cli
+
+        def done(paths):
+            self.msg = ("Saved in Documents › Handwriting as %s, in all three styles." % name if paths
+                        else "Autograph couldn’t be exported.")
+        self.run(lambda: cli.font_export(name, folder), done)
         self.redraw()
 
     def write_missing(self):
@@ -1226,8 +1223,7 @@ class UI:
             return
         if sh["seg"] == "write" and self.writer and self.writer.best is not None and not self.demo:
             self.run(self.writer.stop_best)
-        st = (self.font or {}).get("status") or {}
-        if sh["changed"] and st.get("state") != "none":
+        if sh["changed"] and (self.font or {}).get("model"):     # (before the first build: built whole)
             self.relearn_char(sh["char"])
         self.load_font()
         self.redraw()
@@ -1464,7 +1460,7 @@ class UI:
                               undo=None if sh["undo"] == sid else sh["undo"])
                     self.sheet_changed()
                     self.load_occ()
-                elif ((self.font or {}).get("status") or {}).get("state") != "none":
+                elif (self.font or {}).get("model"):
                     self.relearn_char(c)        # the sheet closed meanwhile: learned again as on close
                 self.load_font()
                 self.refresh()
@@ -1614,7 +1610,7 @@ class UI:
         self.redraw()
 
     def start_pick(self):
-        """Which one is nicer?, on the Your font tab; not offered to a guest (spec 002 FR-018)"""
+        """Which one is nicer?, on the Autograph tab; not offered to a guest (spec 002 FR-018)"""
         if self.guest:
             return
         self.go("font")
@@ -2119,7 +2115,7 @@ def writing(ui):
 def sheet_writing(ui):
     """the character sheet on Write more, or writing a sample again: a writing page inside
     the sheet"""
-    return bool(ui.page == "font" and ui.best == "font" and ui.sheet and not ui.renaming and
+    return bool(ui.page == "font" and ui.best == "font" and ui.sheet and not ui.exporting and
                 (redoing(ui) or (ui.sheet["seg"] == "write" and not pages.drilled(ui.sheet))))
 
 
@@ -2244,7 +2240,7 @@ class Window(Gtk.ApplicationWindow):
         # on-screen keyboard comes up for it)
         self.entry = Gtk.Entry(has_frame=False, max_length=40, halign=Gtk.Align.START, valign=Gtk.Align.START,
                                no_show_all=True)
-        self.entry.connect("activate", lambda e: ui.use_name())
+        self.entry.connect("activate", lambda e: ui.export_named())
         overlay.add_overlay(self.entry)
         ui.entry_text = self.entry.get_text
         # a writer's name: a private field (spec 002 FR-014, shell spec 006 FR-007). GTK 3 has no
@@ -2313,22 +2309,22 @@ class Window(Gtk.ApplicationWindow):
     def place_entry(self):
         self.place_name()
         ui = self.ui
-        if not ui.renaming:
+        if not ui.exporting:
             self.entry.hide()
             return
         a = self.stack.get_allocation()
         if a.width <= 1:
             return
-        ui.rename_rect = None
+        ui.export_rect = None
         pages.paint_full(_probe(), ui, Hits(), a.width, a.height)
-        if not ui.rename_rect:
+        if not ui.export_rect:
             return
-        x, y, w, h = (int(v) for v in ui.rename_rect)
+        x, y, w, h = (int(v) for v in ui.export_rect)
         self.entry.set_margin_start(x)
         self.entry.set_margin_top(y)
         self.entry.set_size_request(w, h)
         if not self.entry.get_visible():
-            self.entry.set_text(ui.renaming["text"])
+            self.entry.set_text(ui.exporting["text"])
             self.entry.show()
             self.entry.grab_focus()
 
@@ -2482,14 +2478,30 @@ def demo_font(installed, state="current"):
     model = {"head": {}, "metrics": {"cap_height": 1.5, "ascender": 1.6, "descender": -0.5, "slant": 0.1,
                                      "letter_spacing": 0.2, "word_spacing": 0.9, "ink_width": 0.08}, "chars": chars}
     counts = {c: (d["samples"], len(d["variants"])) for c, d in chars.items()}
-    status = {"state": state, "covered": sum(1 for d in chars.values() if d["covered"]),
-              "samples": 160, "chars": counts, "font": ("My handwriting", 3) if installed else None,
-              "font_same": True}
+    fresh = state == "fresh"            # no sample yet: Autograph is the base alone
+    status = {"state": "current" if fresh else state, "covered": 0 if fresh else sum(1 for d in chars.values() if d["covered"]),
+              "samples": 0 if fresh else 160, "chars": {} if fresh else counts,
+              "font": (fontview.NAME, 1 if fresh else 3) if installed else None, "font_same": True}
     if installed:
         status["font_nib"] = fontview.NIB
-    if state == "none":
+    if fresh:
         model = None
-    return {"status": status, "model": model}
+    # the preview's model: the letters over a made-up base (plain loops, no one's writing)
+    view = fontview.font_view(model) if model else None
+    base = {}
+    for c in fontview.TARGET + ".,'":
+        d = (view or {}).get("chars", {}).get(c) or {}
+        if d.get("covered") and d.get("variants"):
+            continue
+        tall = c.isupper() or c in "bdfhklt0123456789"
+        pts = [[0.25 + 0.22 * math.sin(i / 18 * 2 * math.pi), (1.4 if tall else 0.9) * (0.5 - 0.5 * math.cos(i / 18 * 2 * math.pi))]
+               for i in range(19)] if c.isalnum() else [[0.05, 0.0], [0.04, -0.15]]
+        base[c] = {"width": 0.5 if c.isalnum() else 0.1, "strokes": [pts]}
+    preview = dict(view or {"head": {}, "metrics": model["metrics"] if model else
+                            {"cap_height": 1.4, "ascender": 1.5, "descender": -0.5, "letter_spacing": 0.2,
+                             "word_spacing": 0.9, "ink_width": 0.08}, "chars": {}}, base=base)
+    preview.pop("_view", None)
+    return {"status": status, "model": model, "preview": preview}
 
 
 # t's samples as the design's boards have them: version A 13, B 6, C 3, two that can't be used
@@ -2633,8 +2645,8 @@ def demo(screen, voice="white"):
     elif sec == "font":
         ui.page = ui.tab = "font"
         ui.best = "font"
-        ui.font = demo_font(sub in ("installed", "outdated", "rename", "relearn") or sub.startswith("style-"),
-                            {"none": "none", "learning": "none", "outdated": "outdated"}.get(sub, "current"))
+        # font.none: a person with no samples yet, Autograph the base alone (FR-009)
+        ui.font = demo_font(True, {"none": "fresh", "learning": "outdated", "outdated": "outdated"}.get(sub, "current"))
         if sub.startswith("style-"):
             ui.font_style = sub[6:]
         if sub == "learning":
@@ -2642,7 +2654,7 @@ def demo(screen, voice="white"):
         elif sub == "relearn":
             ui.relearn = ("t", 24, 60)
         elif sub == "rename":
-            ui.renaming = {"text": "Garden letters"}
+            ui.exporting = {"text": "Garden letters"}
     elif sec == "char":
         ui.page = ui.tab = "font"
         ui.best = "font"
@@ -2690,7 +2702,7 @@ def demo(screen, voice="white"):
             del n
     elif sec == "neat":
         ui.page, ui.tab = "neat", "font"
-        ui.font = demo_font(False, "none" if sub == "unlearned" else "current")
+        ui.font = demo_font(True, "fresh" if sub == "unlearned" else "current")
         ui.neat_text = "Call back about the train at ten"
         ui.neat_orig = sub == "original"
     elif sec == "donate":

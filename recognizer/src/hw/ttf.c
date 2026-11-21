@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "base.h"
 #include "letters.h"
 #include "sample.h"
 
@@ -1008,9 +1009,9 @@ static void gsub(struct bb *b, int nch, int (*gl)(int, int, void *), void *ctx, 
 
 static void name_rec(struct bb *recs, struct bb *str, unsigned id, const char *utf8)
 {
-	unsigned cp[256];
-	size_t n = hw_utf8_decode(utf8, cp, 256);
-	if (n > 256) n = 256;
+	unsigned cp[512];
+	size_t n = hw_utf8_decode(utf8, cp, 512);
+	if (n > 512) n = 512;
 	size_t off = str->n;
 	for (size_t i = 0; i < n; i++) {
 		unsigned c = cp[i];
@@ -1478,15 +1479,24 @@ static int gl_at(int i, int s, void *ctx)
 }
 
 static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, int style, double nib,
-				 int random, size_t *len);
+				 int random, const struct hw_base_glyph *bg, size_t nbg, size_t *len);
 
-/* the font of the letters as the person marked them: variants left out are not in it */
+/* the font of the letters as the person marked them (variants left out are not in it) over
+ * the base (FR-009): every character of the base the letters don't cover drawn from it */
 unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name, unsigned version, int style,
 				   double nib, int random, size_t *len)
 {
 	struct hw_letters V;
 	if (style < 0 || style >= HW_STYLES || hw_letters_view(L, &V)) return NULL;
-	unsigned char *r = font_build(&V, name, version, style, nib, random, len);
+	const struct hw_base *B = hw_base_get();
+	hw_base_defaults(&V, B);
+	struct hw_base_glyph *bg;
+	size_t nbg;
+	unsigned char *r = NULL;
+	if (!hw_base_glyphs(&V, B, &bg, &nbg)) {
+		r = font_build(&V, name, version, style, nib, random, bg, nbg, len);
+		hw_base_glyphs_free(bg, nbg);
+	}
 	hw_letters_view_free(&V);
 	return r;
 }
@@ -1497,7 +1507,7 @@ unsigned char *hw_font_build(const struct hw_letters *L, const char *name, unsig
 }
 
 static unsigned char *font_build(const struct hw_letters *L, const char *name, unsigned version, int style, double nib,
-				 int random, size_t *len)
+				 int random, const struct hw_base_glyph *bg, size_t nbg, size_t *len)
 {
 	enum { S = HW_LETTERS_SLOTS };
 	int nl = 0;
@@ -1544,6 +1554,11 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 		hid[q] = -1;
 		if ((q & 1 ? FJ.B : FJ.A)[q / 2] != LONG_MIN) hid[q] = ngl++;
 	}
+	/* the base's characters (FR-009), last: one glyph each, outside the cycle, the joined
+	 * pairs, the rules and the joins (after one, the cycle starts again, as after a character
+	 * the font lacks) */
+	int bg0 = ngl;
+	ngl += (int)nbg;
 	struct glyph *G = calloc((size_t)ngl, sizeof *G);
 	int *ref = malloc((size_t)ngl * sizeof *ref);       /* the glyph a step glyph refers to, -1 none */
 	/* a join alternate's components (variant, exit half, entry half), all at its x offset */
@@ -1563,6 +1578,7 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 		for (int s2 = 0; s2 < S; s2++) ref[gl_at(i + 1, s2, NULL)] = outl[i] + (ls[i]->slot[s2] < ls[i]->nvar ? ls[i]->slot[s2] : 0);
 	}
 	for (int k = 0; k < nj; k++) glyph_of(&G[lig0 + k], L, &js[k]->v, gap, ink, style, nib);
+	for (size_t k = 0; k < nbg; k++) glyph_of(&G[bg0 + (int)k], L, &bg[k].v, gap, ink, style, nib);
 	/* the halves of the joins, in the variant's place */
 	for (int i = 0; i < nl && nk; i++)
 		for (int v = 0; v < ls[i]->nvar; v++) {
@@ -1668,6 +1684,14 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 						if (q.nc && q.ymax > rymax) rymax = q.ymax;
 						free(q.p); free(q.ends);
 					}
+		for (size_t k = 0; k < nbg; k++) {
+			struct glyph q;
+			glyph_of(&q, L, &bg[k].v, gap, ink, HW_STYLE_REGULAR, nib);
+			glyph_box(&q);
+			if (q.nc && q.ymin < rymin) rymin = q.ymin;
+			if (q.nc && q.ymax > rymax) rymax = q.ymax;
+			free(q.p); free(q.ends);
+		}
 		if (rymin > rymax) rymin = rymax = 0;
 	}
 	int asc = (int)lround(fmax(L->m.asc, L->m.cap) * XH + r), desc = (int)lround(L->m.desc * XH - r);
@@ -1681,7 +1705,7 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	int have_gsub = 1;
 	{
 		/* the kerning classes: the letters' variants, then the joined pairs */
-		int nv = nj;
+		int nv = nj + (int)nbg;
 		for (int i = 0; i < nl; i++) nv += ls[i]->nvar;
 		int g1 = gl_at(1, 0, NULL), ng = ngl - g1, *cls = malloc((size_t)(ng + 1) * sizeof(int)), *first = malloc((size_t)(nl + 1) * sizeof(int));
 		struct kent *E = malloc((size_t)(nv + 1) * sizeof *E);
@@ -1696,12 +1720,15 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 		}
 		for (int k = 0; k < nj; k++)
 			E[e++] = kent_joined(js[k]);
+		int eb = e;
+		for (size_t k = 0; k < nbg; k++) E[e++] = kent_var(bg[k].cp, &bg[k].v);
 		for (int g = 0; g < ng; g++) cls[g] = -1;
 		for (int i = 0; i < nl; i++) {
 			for (int s2 = 0; s2 < S; s2++) cls[gl_at(i + 1, s2, NULL) - g1] = first[i] + (ls[i]->slot[s2] < ls[i]->nvar ? ls[i]->slot[s2] : 0);
 			for (int v = 0; v < ls[i]->nvar; v++) cls[outl[i] + v - g1] = first[i] + v;
 		}
-		for (int k = 0; k < nj; k++) cls[lig0 + k - g1] = e - nj + k;
+		for (int k = 0; k < nj; k++) cls[lig0 + k - g1] = eb - nj + k;
+		for (size_t k = 0; k < nbg; k++) cls[bg0 + (int)k - g1] = eb + (int)k;
 		/* a join alternate: its variant's class but on its joined sides */
 		int *cls2 = malloc((size_t)(ng + 1) * sizeof(int));
 		if (!cls2) { free(cls); free(first); free(E); goto fail; }
@@ -1754,12 +1781,13 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 	}
 
 	/* cmap: format 4 (BMP) and format 12 (all), Windows */
-	unsigned *cps = malloc((size_t)(nl + 1) * sizeof *cps);
-	int *gid = malloc((size_t)(nl + 1) * sizeof *gid), nm = 0;
+	unsigned *cps = malloc(((size_t)nl + nbg + 1) * sizeof *cps);
+	int *gid = malloc(((size_t)nl + nbg + 1) * sizeof *gid), nm = 0;
 	if (!cps || !gid) { free(cps); free(gid); goto fail; }
 	cps[nm] = ' '; gid[nm] = gl_at(0, 0, NULL); nm++;
 	for (int i = 0; i < nl; i++) { cps[nm] = ls[i]->cp; gid[nm] = base[i]; nm++; }
-	/* sorted by code point already except the space, which is lowest of all but controls */
+	for (size_t k = 0; k < nbg; k++) { cps[nm] = bg[k].cp; gid[nm] = bg0 + (int)k; nm++; }
+	/* by code point (the letters' and the base's each sorted already) */
 	for (int a = 1; a < nm; a++) for (int b2 = a; b2 > 0 && cps[b2] < cps[b2 - 1]; b2--) {
 		unsigned tc = cps[b2]; cps[b2] = cps[b2 - 1]; cps[b2 - 1] = tc;
 		int tg = gid[b2]; gid[b2] = gid[b2 - 1]; gid[b2 - 1] = tg;
@@ -1884,14 +1912,30 @@ static unsigned char *font_build(const struct hw_letters *L, const char *name, u
 		else snprintf(fam, sizeof fam, "%s %s", name, sty);
 		snprintf(full, sizeof full, "%s", fam);
 		struct bb recs = { 0 }, str = { 0 };
+		int nrec = 6;
+		/* letters from the base (FR-045): the font is a Modified Version of it under its
+		 * licence, so it carries the base's copyright and the licence on */
+		const struct hw_base *B = nbg ? hw_base_get() : NULL;
+		char cpy[768];
+		if (B) {
+			snprintf(cpy, sizeof cpy, "%s%sCharacters the person's samples don't cover are drawn from the centre lines of %s.",
+				 B->copyright, B->copyright[0] ? ". " : "", B->family[0] ? B->family : "the base font");
+			name_rec(&recs, &str, 0, cpy);
+			nrec++;
+		}
 		name_rec(&recs, &str, 1, fam);
 		name_rec(&recs, &str, 2, "Regular");
 		name_rec(&recs, &str, 3, uniq);
 		name_rec(&recs, &str, 4, full);
 		name_rec(&recs, &str, 5, ver);
 		name_rec(&recs, &str, 6, ps);
-		int nrec = 6;
-		if (style != HW_STYLE_REGULAR) { name_rec(&recs, &str, 16, name); name_rec(&recs, &str, 17, sty); nrec = 8; }
+		if (B) {
+			name_rec(&recs, &str, 13, "This Font Software is licensed under the SIL Open Font License, Version 1.1. "
+				 "This license is available with a FAQ at: https://openfontlicense.org");
+			name_rec(&recs, &str, 14, B->licence_url[0] ? B->licence_url : "https://openfontlicense.org");
+			nrec += 2;
+		}
+		if (style != HW_STYLE_REGULAR) { name_rec(&recs, &str, 16, name); name_rec(&recs, &str, 17, sty); nrec += 2; }
 		struct bb *h = &t[NAME];
 		u16(h, 0); u16(h, (unsigned)nrec); u16(h, (unsigned)(6 + recs.n));
 		bgrow(h, recs.n + str.n);
