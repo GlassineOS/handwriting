@@ -413,7 +413,7 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   the chain of the text's letters over the frames that hold points, where a whole stroke after
   the first may instead be a delayed one: a letter already passed, of its word or the word
   before (an i's dot, a t's or f's bar, a 5's roof written after the word), at a log-penalty of
-  3 (`HW_ALIGNER_DELAY`). A stroke `ALIGN` lists for several letters is cut by it too: the best
+  1 (`HW_ALIGNER_DELAY`, chosen on synthetic dev lines). A stroke `ALIGN` lists for several letters is cut by it too: the best
   split of the stroke's frames over those letters in order (below, the joined cut). Without the
   file, or with `GLASSINE_HANDWRITING_ALIGNER=off`, everything is as before.
 - **The pull (FR-014, FR-035, FR-036).** From above Light, a character with a fit of 0.5 or

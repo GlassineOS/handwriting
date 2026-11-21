@@ -16,7 +16,7 @@
 #define HW_ALIGNER_FILE "aligner.ghm"
 /* the log-penalty of a stroke written after a later letter (decode with delayed strokes);
  * picked on synthetic data (train/README.md) */
-#define HW_ALIGNER_DELAY -3.0
+#define HW_ALIGNER_DELAY -1.0
 
 /* The aligner of the models' directory for lang (loaded on first use); NULL when there is
  * none or it can't be used. GLASSINE_HANDWRITING_ALIGNER=off: none. */
