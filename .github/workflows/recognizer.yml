@@ -23,7 +23,7 @@ jobs:
             git clone -q https://github.com/GlassineOS/ui /tmp/ui
             git -C /tmp/ui checkout -q 77ed45f37ff8fbc1ce2acf8321a17b87a64cbbc5
             make -C recognizer OUT=/tmp check
-            # Autograph's base: Edu SA Beginner as the packages fetch it, its centre lines made
+            # the base of Autograph: Edu SA Beginner as the packages fetch it, its centre lines made
             # and checked, then the font over it valid in all three styles
             gf=https://raw.githubusercontent.com/google/fonts/0b58fb370093f9a9f4ff785d94405710b79de67c/ofl/edusabeginner
             wget -q -O /tmp/EduSABeginner.ttf "$gf/EduSABeginner%5Bwght%5D.ttf"
