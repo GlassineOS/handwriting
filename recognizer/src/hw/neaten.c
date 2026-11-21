@@ -26,11 +26,13 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
  * leaves a correction out, "trace=0" the check of the glyph traced on the ink's points,
  * "set=0" the words set at Neatest (above Strong the pull goes on, all the way at 1),
  * "margin=M" sets the shape guard's margin, "tail=0", "bar=0", "frag=0" leave out Neatest's
- * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules */
-static struct { int base, slant, size, space, pull, trace, set, tail, bar, frag; double margin; } on;
+ * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules, "cond=1" sets
+ * words conditioned on their ink (struct hw_neat cond) */
+static struct { int base, slant, size, space, pull, trace, set, tail, bar, frag, cond; double margin; } on;
 static void knobs(void)
 {
 	on.base = on.slant = on.size = on.space = on.pull = on.trace = on.set = on.tail = on.bar = on.frag = 1;
+	on.cond = 0;
 	on.margin = HW_NEAT_GUARD_MARGIN;
 	const char *e = getenv("GLASSINE_HANDWRITING_NEATEN");
 	if (!e) return;
@@ -38,7 +40,8 @@ static void knobs(void)
 	if (m && atof(m + 7) > 0) on.margin = atof(m + 7);
 	struct { const char *k; int *v; } kv[] = { { "base=", &on.base }, { "slant=", &on.slant }, { "size=", &on.size },
 						 { "space=", &on.space }, { "pull=", &on.pull }, { "trace=", &on.trace },
-						 { "set=", &on.set }, { "tail=", &on.tail }, { "bar=", &on.bar }, { "frag=", &on.frag } };
+						 { "set=", &on.set }, { "tail=", &on.tail }, { "bar=", &on.bar }, { "frag=", &on.frag },
+						 { "cond=", &on.cond } };
 	for (size_t i = 0; i < sizeof kv / sizeof *kv; i++) {
 		const char *p = strstr(e, kv[i].k);
 		if (p) *kv[i].v = atoi(p + strlen(kv[i].k)) != 0;
@@ -1466,6 +1469,7 @@ static int neaten_once(struct hw_neat *q, const unsigned char *mask, unsigned ch
 	}
 	double target_base = ba + bb * (wx0 + wx1) / 2;
 	q->line_xh = xh; q->line_base = target_base; q->line_hasbase = hasbase;
+	q->line_base0 = ba; q->line_slope0 = bb;
 
 	/* the slant: steady, towards the person's (the line's own without a letter model) */
 	double snum = 0, sden = 0;
@@ -2044,6 +2048,34 @@ static int set_fits(const struct hw_neat *q, const struct hw_letters *V, const s
 	return 1;
 }
 
+/* a word's left: Strong's leftmost ink (xl), the set word's leftmost glyph point there (gl) */
+static void word_left(const struct hw_neat *q, const struct hw_letters *V, const struct hw_base_glyph *bg, size_t nbg,
+		      const int *gv, const long *gjo, const double *pen, double bear, const int *sw, int w, size_t k0, size_t k1,
+		      double xh, double *pxl, double *pgl)
+{
+	size_t n = q->n;
+	double xl = INFINITY, gl = INFINITY;
+	for (size_t j = 0; j < n; j++)
+		if (sw[j] == w) for (size_t i = 0; i < q->ink[j].n; i++) xl = fmin(xl, q->x[j][i]);
+	for (size_t k = k0; k < k1; k++) {
+		const struct hw_variant *v = gjo[k] >= 0 ? &V->joined[gjo[k]].v : gv[k] >= 0 ? &letter_of(V, q->cp[k])->var[gv[k]] : NULL;
+		if (gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k]) continue;
+		if (!v) {
+			/* not covered: its ink in the middle of the font's box for it */
+			double a = INFINITY, b = -INFINITY, c, d;
+			for (size_t j = 0; j < n; j++)
+				for (size_t i = 0; sw[j] == w && i < q->ink[j].n; i++)
+					if (q->own[j][i] == (int)k) { a = fmin(a, q->x[j][i]); b = fmax(b, q->x[j][i]); }
+			lacks_box(q, bg, nbg, pen, bear, k, &c, &d);
+			if (a <= b) gl = fmin(gl, (c + d - (b - a) / xh) / 2);
+			continue;
+		}
+		for (size_t t = 0; t < v->nstrokes; t++)
+			for (size_t i = 0; i < v->s[t].n; i++) gl = fmin(gl, pen[k] + bear + v->s[t].x[i]);
+	}
+	*pxl = xl; *pgl = gl;
+}
+
 /* The join between characters k and k + 1 set (FR-044), side 0 k's part (from its exit), 1
  * k + 1's (to its entry), in that letter's variant's coordinates: the font's halves where the
  * font joins them, else the learned shape between where the two are set split where the
@@ -2117,6 +2149,150 @@ static int set_pieces(const struct hw_neat *q, const int *sw, int w, size_t k, i
 	return np;
 }
 
+/* Conditioned setting (struct hw_neat cond): each word set along its own baseline as written
+ * (through its letters' lowest points; a word with fewer than two letters on the baseline, or
+ * narrower than an x-height, along the line's, the others drawn towards the line's as if they
+ * had COND_FIT letters more on it), at its own lean (its downstrokes', drawn towards the
+ * line's as if it had half an x-height more of them leaning so) and x-height (its letters'
+ * median, drawn towards the line's with fewer than COND_FIT + 1 letters), its letters at the
+ * font's advances scaled (within COND_SCALE_MIN and _MAX) and moved to fit where their
+ * middles were written (least squares). The set word is made on the straight line as the
+ * font sets it, then mapped so (the line-level map's way: sheared along the line, the
+ * baseline followed by the letter's foot), its kept letters with it; a word not set has
+ * Strong's ink mapped the same way, so the line keeps its direction. */
+#define COND_FIT 2
+#define COND_SLOPE 0.35
+#define COND_SHEAR 0.6
+#define COND_SCALE_MIN 0.8
+#define COND_SCALE_MAX 1.25
+struct wframe {
+	int ok;
+	double xc, yb, slope, xh, lean; /* as written: the middle, the baseline there, its slope,
+					 * the x-height, the lean */
+	double sh;                      /* its lean less the lean of what is set (or Strong's ink) */
+	double fx, fy;                  /* on the straight line: x of the middle, the baseline */
+};
+
+static void cond_frames(const struct hw_neat *q, const struct hw_letters *V, const int *word, int nw, struct wframe *F)
+{
+	size_t nc = q->nc, n = q->n;
+	double xh0 = q->line_xh;
+	double *b = malloc(5 * (nc + 1) * sizeof *b), *px = malloc(2 * (nc + 1) * sizeof *px);
+	if (!b || !px) { free(b); free(px); for (int w = 0; w < nw; w++) F[w].ok = 0; return; }
+	double *x0 = b, *x1 = b + nc + 1, *y0 = b + 2 * (nc + 1), *y1 = b + 3 * (nc + 1), *foot = b + 4 * (nc + 1), *py = px + nc + 1;
+	for (size_t k = 0; k < nc; k++) x0[k] = y0[k] = INFINITY, x1[k] = y1[k] = -INFINITY;
+	/* the boxes as written, and the leans of the line and of each word */
+	double ln = 0, ld = 0;
+	double *wn = calloc(3 * ((size_t)nw + 1), sizeof *wn), *wd = wn ? wn + nw + 1 : NULL, *wl = wn ? wn + 2 * (nw + 1) : NULL;
+	if (!wn) { free(b); free(px); for (int w = 0; w < nw; w++) F[w].ok = 0; return; }
+	for (size_t j = 0; j < n; j++)
+		for (size_t i = 0; i < q->ink[j].n; i++) {
+			int o = q->own[j][i];
+			if (o < 0 || (size_t)o >= nc) continue;
+			double x = q->ink[j].x[i], y = q->ink[j].y[i];
+			if (y > y1[o]) foot[o] = x;
+			x0[o] = fmin(x0[o], x); x1[o] = fmax(x1[o], x); y0[o] = fmin(y0[o], y); y1[o] = fmax(y1[o], y);
+			if (i && q->own[j][i - 1] == o) {
+				double dx = x - q->ink[j].x[i - 1], dy = -(y - q->ink[j].y[i - 1]);
+				if (dy < 0 && -dy > 2 * fabs(dx)) {
+					ln += dx * dy; ld += dy * dy;
+					if (word[o] >= 0) { wn[word[o]] += dx * dy; wd[word[o]] += dy * dy; wl[word[o]] -= dy; }
+				}
+			}
+		}
+	double lean = ld > 0 ? ln / ld : V->m.slant;
+	for (int w = 0; w < nw; w++) {
+		struct wframe *f = &F[w];
+		f->ok = 0;
+		double a = INFINITY, c = -INFINITY, low = -INFINITY;
+		int m = 0, nh = 0;
+		double hs[64];
+		for (size_t k = 0; k < nc; k++) {
+			if (word[k] != w || !(x0[k] <= x1[k])) continue;
+			a = fmin(a, x0[k]); c = fmax(c, x1[k]); low = fmax(low, y1[k]);
+			if (on_base(q->cp[k])) { px[m] = foot[k]; py[m] = y1[k]; m++; }
+			double r = ratio_of(cls_of(q->cp[k]), q->L);
+			if (r > 0 && y1[k] > y0[k] && nh < 64) hs[nh++] = (y1[k] - y0[k]) / r;
+		}
+		if (!(a <= c) || !(xh0 > 0)) continue;
+		f->xc = (a + c) / 2;
+		/* the slope: the line's, drawn towards the word's own */
+		double sl = q->line_slope0;
+		if (m >= 2) {
+			double mx = 0, my = 0, sxx = 0, sxy = 0;
+			for (int i = 0; i < m; i++) { mx += px[i]; my += py[i]; }
+			mx /= m; my /= m;
+			for (int i = 0; i < m; i++) { sxx += (px[i] - mx) * (px[i] - mx); sxy += (px[i] - mx) * (py[i] - my); }
+			double spread = 0;
+			for (int i = 0; i < m; i++) spread = fmax(spread, fabs(px[i] - mx));
+			if (sxx > 0 && 2 * spread >= xh0) sl = (m * (sxy / sxx) + COND_FIT * q->line_slope0) / (m + COND_FIT);
+		}
+		f->slope = clampd(sl, -COND_SLOPE, COND_SLOPE);
+		/* the baseline at its middle: its letters' bottoms on the line, else the line's */
+		if (m) {
+			for (int i = 0; i < m; i++) py[i] -= f->slope * (px[i] - f->xc);
+			f->yb = median(py, (size_t)m, 0);
+		} else {
+			f->yb = q->line_hasbase ? q->line_base0 + q->line_slope0 * f->xc : low;
+		}
+		double xh = nh ? median(hs, (size_t)nh, xh0) : xh0;
+		if (nh < COND_FIT + 1) xh = (nh * xh + (COND_FIT + 1 - nh) * xh0) / (COND_FIT + 1);
+		f->xh = clampd(xh, 0.75 * xh0, 1.33 * xh0);
+		double own = wd[w] > 0 ? wn[w] / wd[w] : lean, prior = 0.5 * f->xh;
+		f->lean = (wl[w] * own + prior * lean) / (wl[w] + prior);
+		f->ok = 1;
+	}
+	free(b); free(px); free(wn);
+}
+
+/* the downstrokes' lean of a run of points (y up; as the letter model measures it) into n, d */
+static void lean_add(const double *x, const double *y, size_t m, double *n, double *d)
+{
+	for (size_t i = 1; i < m; i++) {
+		double dx = x[i] - x[i - 1], dy = y[i] - y[i - 1];
+		if (dy < 0 && -dy > 2 * fabs(dx)) { *n += dx * dy; *d += dy * dy; }
+	}
+}
+
+/* a point on the straight line (as the set word is made: x, y) mapped onto its word's frame */
+static void cond_map(const struct wframe *f, double xh0, double base, double x, double y, double *ox, double *oy)
+{
+	double u = (x - f->fx) / xh0, v = (base - y) / xh0;
+	*ox = f->xc + (u + f->sh * v) * f->xh;
+	*oy = f->yb + f->slope * u * f->xh - v * f->xh;
+}
+
+/* the centred RMS distance of a letter's ink as written (its points of character k in the
+ * strokes of word w, its pieces in writing order) to variant v, the ink taken off its word's
+ * baseline and lean onto the person's (slant) and measured at its x-height */
+static double cond_dist(const struct hw_neat *q, const int *sw, int w, size_t k, const struct wframe *f, double slant,
+			const struct hw_variant *v)
+{
+	size_t n = q->n, np = 0, tot = 0;
+	for (size_t j = 0; j < n; j++)
+		for (size_t i = 0; sw[j] == w && i < q->ink[j].n; i++)
+			if (q->own[j][i] == (int)k) { tot++; if (!i || q->own[j][i - 1] != (int)k) np++; }
+	if (np != v->nstrokes || !np) return INFINITY;
+	struct hw_ink *pc = calloc(np, sizeof *pc);
+	double *buf = malloc(2 * (tot + 1) * sizeof *buf);
+	if (!pc || !buf) { free(pc); free(buf); return INFINITY; }
+	size_t a = 0, at = 0;
+	for (size_t j = 0; j < n; j++)
+		for (size_t i = 0; sw[j] == w && i < q->ink[j].n; i++) {
+			if (q->own[j][i] != (int)k) continue;
+			if (!i || q->own[j][i - 1] != (int)k) { pc[a].x = buf + at; pc[a].y = buf + tot + 1 + at; a++; }
+			struct hw_ink *t = &pc[a - 1];
+			double u = (q->ink[j].x[i] - f->xc) / f->xh;
+			double vv = (f->yb + f->slope * (q->ink[j].x[i] - f->xc) - q->ink[j].y[i]) / f->xh;
+			t->x[t->n] = u - (f->lean - slant) * vv;
+			t->y[t->n] = -vv;
+			t->n++; at++;
+		}
+	double d = hw_neat_variant_dist(pc, np, 1, v);
+	free(pc); free(buf);
+	return d;
+}
+
 /* the words set: per character 1 when its word is set; how far (f: 0 Strong's ink, 1 set) */
 static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struct hw_font_joins *J, const int *gvar, const long *gjo,
 		     const int *gjk, double f)
@@ -2139,6 +2315,8 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 	int *gv = malloc((nc + 1) * sizeof *gv), *jk = malloc((nc + 1) * sizeof *jk);
 	unsigned char *kept = calloc(nc + 1, 1);
 	double *fa = malloc((nc + 1) * sizeof *fa), *fb = malloc((nc + 1) * sizeof *fb);
+	int cond = q->cond || on.cond;
+	struct wframe *F = NULL;
 	if (!pen || !word || !sw || !npts || !ron || !gv || !jk || !kept || !fa || !fb || hw_base_layout(V0, &W, &bg, &nbg)) goto out;
 	for (size_t k = 0; k < nc; k++) fa[k] = 1, fb[k] = 0;
 	double bear;
@@ -2294,6 +2472,12 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 		if (!any) ok[w] = 0;
 		k0 = k1;
 	}
+	/* (conditioned: the words' frames as written) */
+	if (cond) {
+		F = calloc((size_t)nw + 1, sizeof *F);
+		if (!F) goto out;
+		cond_frames(q, V, word, nw, F);
+	}
 	/* each letter set onto a variant with as many strokes as its ink has pieces, the font's
 	 * there when it has, else the one of its variants with that many made from the most
 	 * samples; with none its ink kept as written (only moved to the middle of the font's
@@ -2372,6 +2556,48 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 			if (k) jk[k - 1] = -1;
 		}
 	}
+	/* conditioned: which words are set as the font's own glyphs would be (set_fits), then
+	 * each letter (one neither kept nor set on its ink's height) onto the variant with as many
+	 * strokes as its pieces, made from at least HW_NEAT_SET_RARE samples, nearest to its ink as
+	 * written, joined to its neighbours as the font joins those variants (the learned joins,
+	 * FR-044) */
+	if (cond) {
+		hw_font_layout(V, J, bg, nbg, q->cp, nc, gv, gjo, jk, pen, &bear);
+		for (size_t k0 = 0; k0 < nc;) {
+			if (word[k0] < 0) { k0++; continue; }
+			size_t k1 = k0;
+			while (k1 < nc && word[k1] == word[k0]) k1++;
+			double xl, gl;
+			if (ok[word[k0]]) {
+				word_left(q, V, bg, nbg, gv, gjo, pen, bear, sw, word[k0], k0, k1, xh, &xl, &gl);
+				if (!set_fits(q, V, bg, nbg, gv, gjo, pen, bear, sw, word[k0], k0, k1, xl, gl, xh)) ok[word[k0]] = 0;
+			}
+			k0 = k1;
+		}
+	}
+	for (size_t k = 0; cond && k < nc; k++) {
+		if (word[k] < 0 || gjo[k] >= 0 || gv[k] < 0 || kept[k] || fa[k] != 1 || fb[k] != 0 || !ok[word[k]] || !F[word[k]].ok) continue;
+		const struct hw_letter *l = letter_of(V, q->cp[k]);
+		if (!l || gv[k] >= l->nvar) continue;
+		int b = gv[k];
+		double bd = cond_dist(q, sw, word[k], k, &F[word[k]], V->m.slant, &l->var[b]);
+		for (int i = 0; i < l->nvar; i++) {
+			if (i == gv[k] || l->var[i].nstrokes != l->var[gv[k]].nstrokes || l->var[i].members < HW_NEAT_SET_RARE) continue;
+			double d = cond_dist(q, sw, word[k], k, &F[word[k]], V->m.slant, &l->var[i]);
+			if (d < bd) { bd = d; b = i; }
+		}
+		if (b == gv[k]) continue;
+		gv[k] = b;
+		size_t li = (size_t)(l - V->l);
+		for (int d = -1; d <= 0; d++) {
+			size_t a = k + (size_t)d, c = a + 1;
+			if ((d < 0 && !k) || c >= nc || gjo[a] >= 0 || gjo[c] >= 0 || gv[a] < 0 || gv[c] < 0 || kept[a] || kept[c] ||
+			    fa[a] != 1 || fa[c] != 1 || fb[a] != 0 || fb[c] != 0) continue;
+			const struct hw_letter *la = d ? letter_of(V, q->cp[a]) : l, *lc = d ? l : letter_of(V, q->cp[c]);
+			if (!la || !lc) continue;
+			jk[a] = hw_font_join_key(V, J, d ? (size_t)(la - V->l) : li, gv[a], d ? li : (size_t)(lc - V->l), gv[c]);
+		}
+	}
 	hw_font_layout(V, J, bg, nbg, q->cp, nc, gv, gjo, jk, pen, &bear);
 	/* the set points, per stroke */
 	X = calloc(2 * (n + 1), sizeof *X);
@@ -2388,27 +2614,73 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 		while (k1 < nc && word[k1] == word[k0]) k1++;
 		if (!ok[word[k0]]) { k0 = k1; continue; }
 		/* the word's left: Strong's leftmost ink; the set word's leftmost glyph point there */
-		double xl = INFINITY, gl = INFINITY;
-		for (size_t j = 0; j < n; j++)
-			if (sw[j] == word[k0]) for (size_t i = 0; i < q->ink[j].n; i++) xl = fmin(xl, q->x[j][i]);
-		for (size_t k = k0; k < k1; k++) {
-			const struct hw_variant *v = gjo[k] >= 0 ? &V->joined[gjo[k]].v : gv[k] >= 0 ? &letter_of(V, q->cp[k])->var[gv[k]] : NULL;
-			if (gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k]) continue;
-			if (!v) {
-				/* not covered: its ink in the middle of the font's box for it */
-				double a = INFINITY, b = -INFINITY, c, d;
-				for (size_t j = 0; j < n; j++)
-					for (size_t i = 0; sw[j] == word[k0] && i < q->ink[j].n; i++)
-						if (q->own[j][i] == (int)k) { a = fmin(a, q->x[j][i]); b = fmax(b, q->x[j][i]); }
-				lacks_box(q, bg, nbg, pen, bear, k, &c, &d);
-				if (a <= b) gl = fmin(gl, (c + d - (b - a) / xh) / 2);
-				continue;
-			}
-			for (size_t t = 0; t < v->nstrokes; t++)
-				for (size_t i = 0; i < v->s[t].n; i++) gl = fmin(gl, pen[k] + bear + v->s[t].x[i]);
-		}
+		double xl, gl;
+		word_left(q, V, bg, nbg, gv, gjo, pen, bear, sw, word[k0], k0, k1, xh, &xl, &gl);
 		double ox = xl - gl * xh;
-		if (!set_fits(q, V, bg, nbg, gv, gjo, pen, bear, sw, word[k0], k0, k1, xl, gl, xh)) { ok[word[k0]] = 0; k0 = k1; continue; }
+		if (!cond && !set_fits(q, V, bg, nbg, gv, gjo, pen, bear, sw, word[k0], k0, k1, xl, gl, xh)) { ok[word[k0]] = 0; k0 = k1; continue; }
+		/* conditioned: the font's advances scaled and moved so its letters' middles fit
+		 * where they were written (least squares), the word's middle on the straight line
+		 * where the set word begins */
+		if (cond && F[word[k0]].ok) {
+			struct wframe *f = &F[word[k0]];
+			double sg = 0, su = 0, sgg = 0, sgu = 0, *g = malloc(2 * (k1 - k0 + 1) * sizeof *g), *u = g ? g + (k1 - k0 + 1) : NULL;
+			int m = 0;
+			if (!g) goto outx;
+			for (size_t k = k0; k < k1; k++) {
+				if (gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k]) continue;
+				int pair = gjo[k] >= 0 && k + 1 < k1 && gjo[k + 1] == gjo[k];
+				const struct hw_variant *v = set_glyph(V, q->cp, gv, gjo, k);
+				double c = INFINITY, d = -INFINITY, a = INFINITY, e = -INFINITY;
+				for (size_t t = 0; v && t < v->nstrokes; t++)
+					for (size_t i = 0; i < v->s[t].n; i++) { c = fmin(c, pen[k] + bear + v->s[t].x[i]); d = fmax(d, pen[k] + bear + v->s[t].x[i]); }
+				if (!v) lacks_box(q, bg, nbg, pen, bear, k, &c, &d);
+				for (size_t j = 0; j < n; j++)
+					for (size_t i = 0; sw[j] == word[k0] && i < q->ink[j].n; i++) {
+						int o = q->own[j][i];
+						if (o == (int)k || (pair && o == (int)k + 1)) { a = fmin(a, q->ink[j].x[i]); e = fmax(e, q->ink[j].x[i]); }
+					}
+				if (!(c <= d) || !(a <= e)) continue;
+				g[m] = (c + d) / 2; u[m] = ((a + e) / 2 - f->xc) / f->xh;
+				sg += g[m]; su += u[m]; m++;
+			}
+			double sc = 1;
+			if (m) {
+				sg /= m; su /= m;
+				for (int i = 0; i < m; i++) { sgg += (g[i] - sg) * (g[i] - sg); sgu += (g[i] - sg) * (u[i] - su); }
+				if (m >= 2 && sgg > 0) sc = clampd(sgu / sgg, COND_SCALE_MIN, COND_SCALE_MAX);
+			}
+			free(g);
+			/* pen + bear + x at sc (pen + bear + x - sg) + su less the glyph's own extent */
+			for (size_t k = k0; k < k1; k++) {
+				const struct hw_variant *v = set_glyph(V, q->cp, gv, gjo, k);
+				double c = INFINITY, d = -INFINITY;
+				for (size_t t = 0; v && t < v->nstrokes; t++)
+					for (size_t i = 0; i < v->s[t].n; i++) { c = fmin(c, v->s[t].x[i]); d = fmax(d, v->s[t].x[i]); }
+				double mid = c <= d ? (c + d) / 2 : 0;
+				if (gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k]) { pen[k] = pen[k - 1]; continue; }
+				double at = pen[k] + bear + mid;
+				pen[k] += sc * (at - sg) + su - at;
+			}
+			f->fx = ox;
+			f->fy = base;
+			/* the lean of what is set there: the glyphs', and the kept letters' ink */
+			double ln = 0, ld = 0;
+			for (size_t k = k0; k < k1; k++) {
+				const struct hw_variant *v = set_glyph(V, q->cp, gv, gjo, k);
+				if (gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k]) continue;
+				if (v && !kept[k]) {
+					for (size_t t = 0; t < v->nstrokes; t++) lean_add(v->s[t].x, v->s[t].y, v->s[t].n, &ln, &ld);
+					continue;
+				}
+				for (size_t j = 0; j < n; j++)
+					for (size_t i = 1; sw[j] == word[k0] && i < q->ink[j].n; i++)
+						if (q->own[j][i] == (int)k && q->own[j][i - 1] == (int)k) {
+							double xs[2] = { q->x[j][i - 1] / xh, q->x[j][i] / xh }, ys[2] = { -q->y[j][i - 1] / xh, -q->y[j][i] / xh };
+							lean_add(xs, ys, 2, &ln, &ld);
+						}
+			}
+			f->sh = clampd(f->lean - (ld > 0 ? ln / ld : V->m.slant), -COND_SHEAR, COND_SHEAR);
+		}
 		for (size_t k = k0; k < k1; k++) {
 			if (gjo[k] >= 0 && k > k0 && gjo[k - 1] == gjo[k]) continue;
 			int pair = gjo[k] >= 0 && k + 1 < k1 && gjo[k + 1] == gjo[k];
@@ -2602,8 +2874,9 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 		k0 = k1;
 	}
 	/* the gap between two words never narrower than it was written, or than the font's
-	 * word gap where that is less: the right one moved along the line (set or not) */
-	{
+	 * word gap where that is less: the right one moved along the line (set or not;
+	 * conditioned each word stays where it was written) */
+	if (!cond) {
 		double *L0 = malloc(((size_t)nw + 1) * sizeof *L0), *R0 = malloc(((size_t)nw + 1) * sizeof *R0);
 		double *L1 = malloc(((size_t)nw + 1) * sizeof *L1), *R1 = malloc(((size_t)nw + 1) * sizeof *R1);
 		if (!L0 || !R0 || !L1 || !R1) { free(L0); free(R0); free(L1); free(R1); goto outx; }
@@ -2633,13 +2906,48 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 		}
 		free(L0); free(R0); free(L1); free(R1);
 	}
+	/* conditioned: each word mapped onto its frame as written, a word not set (Strong's ink,
+	 * its middle on the straight line) too */
+	for (int w = 0; cond && w < nw; w++) {
+		struct wframe *fr = &F[w];
+		if (!fr->ok || ok[w]) continue;
+		double a = INFINITY, c = -INFINITY;
+		for (size_t j = 0; j < n; j++)
+			for (size_t i = 0; sw[j] == w && i < q->ink[j].n; i++) { a = fmin(a, q->x[j][i]); c = fmax(c, q->x[j][i]); }
+		if (!(a <= c)) { fr->ok = 0; continue; }
+		fr->fx = (a + c) / 2;
+		fr->fy = base;
+		double ln = 0, ld = 0;
+		for (size_t j = 0; j < n; j++)
+			for (size_t i = 1; sw[j] == w && i < q->ink[j].n; i++) {
+				double xs[2] = { q->x[j][i - 1], q->x[j][i] }, ys[2] = { -q->y[j][i - 1], -q->y[j][i] };
+				lean_add(xs, ys, 2, &ln, &ld);
+			}
+		fr->sh = clampd(fr->lean - (ld > 0 ? ln / ld : V->m.slant), -COND_SHEAR, COND_SHEAR);
+	}
+	for (size_t j = 0; cond && j < n; j++) {
+		int w = sw[j];
+		if (w < 0 || !F[w].ok) continue;
+		if (!X[j]) {
+			X[j] = malloc((q->ink[j].n + 1) * sizeof(double));
+			X[n + 1 + j] = malloc((q->ink[j].n + 1) * sizeof(double));
+			if (!X[j] || !X[n + 1 + j]) goto outx;
+			memcpy(X[j], q->x[j], q->ink[j].n * sizeof(double));
+			memcpy(X[n + 1 + j], q->y[j], q->ink[j].n * sizeof(double));
+		}
+		for (size_t i = 0; i < q->ink[j].n; i++) {
+			double mx, my;
+			cond_map(&F[w], xh, F[w].fy, X[j][i], X[n + 1 + j][i], &mx, &my);
+			X[j][i] = mx; X[n + 1 + j][i] = my;
+		}
+	}
 	for (size_t j = 0; j < n; j++) {
-		if (!X[j] || !ok[sw[j]]) continue;
+		if (!X[j] || !(ok[sw[j]] || (cond && F[sw[j]].ok))) continue;
 		for (size_t i = 0; i < q->ink[j].n; i++) {
 			q->x[j][i] += f * (X[j][i] - q->x[j][i]);
 			q->y[j][i] += f * (X[n + 1 + j][i] - q->y[j][i]);
 		}
-		q->how[j] = HW_NEAT_PULLED;
+		if (ok[sw[j]]) q->how[j] = HW_NEAT_PULLED;
 	}
 	ret = 0;
 outx:
@@ -2647,6 +2955,7 @@ outx:
 out:
 	hw_base_glyphs_free(bg, nbg);
 	free(pen); free(word); free(sw); free(npts); free(ok); free(ron); free(X); free(gv); free(jk); free(kept); free(fa); free(fb);
+	free(F);
 	return ret;
 }
 
