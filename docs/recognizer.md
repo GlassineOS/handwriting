@@ -1133,7 +1133,10 @@ is used (a favourite twice as often, a left-out one never), spread out (smooth w
 robin); a model without it shows its versions in turn. `rules` (only when there are any) are its
 neighbour rules, below, the strongest first: `prev` or `next` the neighbour, `variant` the
 version, `n` the times written beside it, `same` those written as that version, `hits` and
-`cycle` the held-back check. Then per joined pair, after the characters, `{"joined":"th",
+`cycle` the held-back check. A context rule (only in a model built with
+`GLASSINE_HANDWRITING_LETTERS_CONTEXT=1`) has both `prev` and `next`: the letter between those
+two neighbours; context rules come before its neighbour rules and the first that applies wins.
+Then per joined pair, after the characters, `{"joined":"th",
 "samples":N,"written":N,"of":N,"variant":{…}}` (`variant` as a character's, without `best`).
 Last, only when some join has a shape, the joins (FR-044): `{"joins":{"pairs":[["a","b",S,J],…],
 "kinds":[[E,N,S,J],…],"shapes":[{"pair":"ab"|"kind":[E,N],"n":N,"middle":M,"points":[[x,y],…13]},…]}}`:
@@ -1235,7 +1238,9 @@ through a rule or a joined pair and the letters around them show what they show 
   (its parts have no middles of their own).
 - **Neighbour rules** (FR-038, a second `calt` lookup, Extension-wrapped chain contexts): a
   letter's step glyph after (or before) any glyph of the rule's neighbour (its steps, its
-  versions, a joined pair it ends or starts) turns into the rule's version's glyph.
+  versions, a joined pair it ends or starts) turns into the rule's version's glyph; a context
+  rule's (before the neighbour rules) after any glyph of its `prev` and before any of its
+  `next`.
 - **Random alternates** (FR-040, `rand`), only in a font built with them: each letter's step
   glyphs to its versions, the cycle's 10 steps' versions as the alternates, so a random pick
   shows each as often as the cycle does. Without them the font has no `rand` feature.
@@ -1642,6 +1647,7 @@ afterwards is used only after `model use KIND local`. In a writer's store `model
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default), `tail=0`, `bar=0` and `frag=0` leave out Neatest's giving back of an exit tail, of a bar written on into a neighbour, and the keeping as written of a letter whose ink is a fragment beside one kept with more pieces than its versions have (Neatening) |
 | `GLASSINE_HANDWRITING_ALIGNER` | for measurements: `off` uses no point aligner (Neatening, Ownership) |
 | `GLASSINE_HANDWRITING_LOCAL` | for measurements: `off` uses the shipped models whatever the settings `recognizer` and `aligner` say (Installed models) |
+| `GLASSINE_HANDWRITING_LETTERS_CONTEXT` | for measurements: `1` makes the letter model's context rules too: a letter written between the same two neighbours at least 4 times, the same version in three quarters of them, a version the neighbour rules and the cycle don't show there at least a quarter above its share there, and, checked on samples the rule was not made from, picking the version written more often than they do (at most 8 per letter, before its neighbour rules); the font and Neatest follow them as they follow neighbour rules (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
 | `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
 | `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV RM RV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), RM those samples' mean roughness (per stroke, evenly spaced along it, the squared turning at each point less its neighbours' turning, summed: how much it wobbles rather than bends), HV, AV and RV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |

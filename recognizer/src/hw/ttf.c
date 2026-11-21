@@ -740,7 +740,7 @@ static void gsub(struct bb *b, int nch, int (*gl)(int, int, void *), void *ctx, 
 	for (int i = 0; i < c->nl; i++)
 		for (int r = 0; r < c->ls[i]->nrules; r++) {
 			const struct hw_rule *ru = &c->ls[i]->rule[r];
-			if (letter_of(c, ru->nb) < 0 || ru->var >= c->ls[i]->nvar) continue;
+			if (letter_of(c, ru->nb) < 0 || (ru->side == 2 && letter_of(c, ru->nb2) < 0) || ru->var >= c->ls[i]->nvar) continue;
 			nrules++;
 			int k = 0;
 			while (k < nrs && !(rsub[k][0] == i && rsub[k][1] == ru->var)) k++;
@@ -835,10 +835,22 @@ static void gsub(struct bb *b, int nch, int (*gl)(int, int, void *), void *ctx, 
 				const struct hw_rule *ru = &c->ls[i]->rule[r];
 				int nb = letter_of(c, ru->nb), k = 0;
 				if (nb < 0 || ru->var >= c->ls[i]->nvar) continue;
+				if (ru->side == 2 && letter_of(c, ru->nb2) < 0) continue;
 				while (k < nrs && !(rsub[k][0] == i && rsub[k][1] == ru->var)) k++;
 				if (k == nrs) continue;
 				struct bb *t = xsub(x);
 				if (!t) { b->bad = 1; break; }
+				if (ru->side == 2) {
+					/* a context rule: after any glyph of nb, before any of nb2 */
+					struct gset in = { 0 }, bk = { 0 }, lk = { 0 };
+					letter_glyphs(&in, c, i, 0, 0);
+					letter_glyphs(&bk, c, nb, 1, 0);
+					letter_glyphs(&lk, c, letter_of(c, ru->nb2), 1, 1);
+					gsort(&bk); gsort(&lk);
+					chain3(t, &bk, &in, &lk, irule + 1 + k);
+					free(in.g); free(bk.g); free(lk.g);
+					continue;
+				}
 				struct gset in = { 0 }, ng = { 0 };
 				letter_glyphs(&in, c, i, 0, 0);
 				letter_glyphs(&ng, c, nb, 1, ru->side);

@@ -25,6 +25,14 @@
 
 static int avg_mean(void);
 
+/* the context rules (letters.h, HW_CTX_MIN): $GLASSINE_HANDWRITING_LETTERS_CONTEXT=1, for
+ * measurements; part of the model's inputs, so a model built so is made again without it */
+static int ctx_on(void)
+{
+	const char *e = getenv("GLASSINE_HANDWRITING_LETTERS_CONTEXT");
+	return e && !strcmp(e, "1");
+}
+
 static uint64_t fnv(uint64_t h, const void *p, size_t n)
 {
 	const unsigned char *b = p;
@@ -234,7 +242,8 @@ static int model_chars_ok(const struct hw_letters *L)
 	for (size_t i = 0; i < sp->nreach; i++) if (!cp_ok(sp->reach[i].cp)) return 0;
 	for (size_t i = 0; i < L->n; i++) {
 		if (!cp_ok(L->l[i].cp)) return 0;
-		for (int r = 0; r < L->l[i].nrules; r++) if (!cp_ok(L->l[i].rule[r].nb)) return 0;
+		for (int r = 0; r < L->l[i].nrules; r++)
+			if (!cp_ok(L->l[i].rule[r].nb) || (L->l[i].rule[r].side == 2 && !cp_ok(L->l[i].rule[r].nb2))) return 0;
 	}
 	for (size_t i = 0; i < L->njoined; i++) if (!cp_ok(L->joined[i].a) || !cp_ok(L->joined[i].b)) return 0;
 	for (size_t i = 0; i < L->njpair; i++) if (!cp_ok(L->jpair[i].a) || !cp_ok(L->jpair[i].b)) return 0;
@@ -349,8 +358,9 @@ static char *format_model(const struct hw_letters *L, size_t *len, int with_best
 			sput(&b, ",\"rules\":[");
 			for (int r = 0; r < l->nrules; r++) {
 				const struct hw_rule *ru = &l->rule[r];
-				sput(&b, "%s{\"%s\":", r ? "," : "", ru->side ? "next" : "prev");
+				sput(&b, "%s{\"%s\":", r ? "," : "", ru->side == 1 ? "next" : "prev");
 				char_out(&b, ru->nb);
+				if (ru->side == 2) { sput(&b, ",\"next\":"); char_out(&b, ru->nb2); }
 				sput(&b, ",\"variant\":%d,\"n\":%d,\"same\":%d,\"hits\":", ru->var, ru->n, ru->same);
 				num(&b, ru->hits);
 				sput(&b, ",\"cycle\":");
@@ -702,14 +712,17 @@ int hw_letters_parse(const char *text, struct hw_letters *L)
 			if (json_object_object_get_ex(o, "rules", &ra) && json_object_is_type(ra, json_type_array)) {
 				size_t nr = json_object_array_length(ra);
 				for (size_t k = 0; k < nr && l->nrules < HW_LETTERS_RULES; k++) {
-					json_object *x = json_object_array_get_idx(ra, k), *nb;
+					json_object *x = json_object_array_get_idx(ra, k), *nb, *pb = NULL;
 					int side = json_object_object_get_ex(x, "next", &nb) ? 1 : json_object_object_get_ex(x, "prev", &nb) ? 0 : -1;
-					unsigned c1[2];
+					/* (a context rule: both) */
+					if (side == 1 && json_object_object_get_ex(x, "prev", &pb)) side = 2;
+					unsigned c1[2], c2[2] = { 0, 0 };
 					int var = (int)jnum(x, "variant", -1);
 					if (side < 0 || var < 0 || var >= l->nvar) continue;
-					if (!model_chars(json_object_get_string(nb), c1, 1)) { model_skip(at, "a rule's neighbour"); continue; }
+					if (!model_chars(json_object_get_string(side == 2 ? pb : nb), c1, 1) ||
+					    (side == 2 && !model_chars(json_object_get_string(nb), c2, 1))) { model_skip(at, "a rule's neighbour"); continue; }
 					l->rule[l->nrules++] = (struct hw_rule){ c1[0], side, var, (int)jnum(x, "n", 0), (int)jnum(x, "same", 0),
-										 jnum(x, "hits", 0), jnum(x, "cycle", 0) };
+										 jnum(x, "hits", 0), jnum(x, "cycle", 0), c2[0] };
 				}
 			}
 		} else if (json_object_object_get_ex(o, "joined", &v)) {
@@ -852,7 +865,8 @@ int hw_letters_inputs(char out[17])
 	qsort(keys, k, sizeof *keys, cmp_str);
 	uint64_t h = FNV0;
 	char v[32];
-	snprintf(v, sizeof v, "letters %d %d%s\n", HW_LETTERS_VERSION, HW_LETTERS_BUILD, avg_mean() ? " mean" : "");
+	snprintf(v, sizeof v, "letters %d %d%s%s\n", HW_LETTERS_VERSION, HW_LETTERS_BUILD, avg_mean() ? " mean" : "",
+		 ctx_on() ? " context" : "");
 	h = fnv(h, v, strlen(v));
 	for (size_t i = 0; i < k; i++) { if (keys[i]) h = fnv(h, keys[i], strlen(keys[i]) + 1); free(keys[i]); }
 	free(keys);
@@ -2262,6 +2276,81 @@ static int cmp_rule(const void *a, const void *b)
 	return x->nb < y->nb ? -1 : x->nb > y->nb;
 }
 
+/* A letter's context rules (letters.h, HW_CTX_MIN; after its neighbour rules are made): per
+ * pair of characters written right before and right after it, the variant written there most,
+ * when written there HW_CTX_MIN times, that variant in HW_RULE_SHARE of them and not the one
+ * the neighbour rules and the cycle show there, and the rule wins on samples it was not made
+ * from (leaving out one sample at a time, the variant the others write most there matches the
+ * left-out sample's more often than what the font shows there without it). They go before
+ * the neighbour rules, the strongest first. */
+struct tocc { unsigned a, b; int sample, var; };
+
+static int cmp_tocc(const void *x, const void *y)
+{
+	const struct tocc *p = x, *q = y;
+	if (p->a != q->a) return p->a < q->a ? -1 : 1;
+	if (p->b != q->b) return p->b < q->b ? -1 : 1;
+	return p->sample - q->sample;
+}
+
+static void letter_ctx_rules(struct hw_letter *l, const struct inst *in, const int *v, int nv, const double *share)
+{
+	if (l->nvar < 2) return;
+	struct tocc *o = malloc(((size_t)nv + 1) * sizeof *o);
+	if (!o) return;
+	size_t n = 0;
+	for (int i = 0; i < nv; i++) {
+		const struct inst *x = &in[v[i]];
+		if (x->var < 0 || x->var >= l->nvar || l->var[x->var].out || !x->prev || !x->next) continue;
+		o[n++] = (struct tocc){ x->prev, x->next, x->sample, x->var };
+	}
+	qsort(o, n, sizeof *o, cmp_tocc);
+	struct hw_rule R[64];
+	int nr = 0;
+	for (size_t i = 0; i < n;) {
+		size_t j = i;
+		while (j < n && o[j].a == o[i].a && o[j].b == o[i].b) j++;
+		int m = (int)(j - i), cnt[HW_LETTERS_VARIANTS] = { 0 }, top = 0;
+		for (size_t q = i; q < j; q++) cnt[o[q].var]++;
+		for (int k = 1; k < l->nvar; k++) if (cnt[k] > cnt[top]) top = k;
+		/* what the font shows there without it: the first neighbour rule that applies, else the cycle */
+		double base[HW_LETTERS_VARIANTS];
+		int bv = -1;
+		for (int r = 0; r < l->nrules && bv < 0; r++)
+			if ((l->rule[r].side == 0 && l->rule[r].nb == o[i].a) || (l->rule[r].side == 1 && l->rule[r].nb == o[i].b)) bv = l->rule[r].var;
+		for (int k = 0; k < l->nvar; k++) base[k] = bv >= 0 ? (k == bv) : share[k];
+		if (m >= HW_CTX_MIN && cnt[top] * HW_RULE_SHARE_DEN >= m * HW_RULE_SHARE_NUM && top != bv &&
+		    (double)cnt[top] / m >= base[top] + HW_RULE_LIFT - 1e-9) {
+			double hits = 0, was = 0;
+			for (size_t q = i; q < j;) {
+				size_t r = q;
+				int cs[HW_LETTERS_VARIANTS] = { 0 }, p = -1;
+				while (r < j && o[r].sample == o[q].sample) cs[o[r++].var]++;
+				for (int k = 0; k < l->nvar; k++)
+					if (cnt[k] - cs[k] > 0 && (p < 0 || cnt[k] - cs[k] > cnt[p] - cs[p])) p = k;
+				for (int k = 0; k < l->nvar; k++) {
+					was += cs[k] * base[k];
+					hits += p >= 0 ? (k == p) * cs[k] : cs[k] * base[k];
+				}
+				q = r;
+			}
+			if (hits > was + 1e-9 && nr < 64)
+				R[nr++] = (struct hw_rule){ o[i].a, 2, top, m, cnt[top], round(hits * 1e4) / 1e4, round(was * 1e4) / 1e4, o[i].b };
+		}
+		i = j;
+	}
+	free(o);
+	if (!nr) return;
+	qsort(R, (size_t)nr, sizeof *R, cmp_rule);
+	if (nr > HW_CTX_RULES) nr = HW_CTX_RULES;
+	struct hw_rule P[HW_LETTERS_RULES];
+	int np = l->nrules;
+	memcpy(P, l->rule, (size_t)np * sizeof *P);
+	l->nrules = 0;
+	for (int k = 0; k < nr; k++) l->rule[l->nrules++] = R[k];
+	for (int k = 0; k < np && l->nrules < HW_LETTERS_RULES; k++) l->rule[l->nrules++] = P[k];
+}
+
 /* A letter's neighbour rules from its versions v (their variants set, the cycle made): per
  * character before it and after it, the variant written there most, when written there
  * HW_RULE_MIN times, that variant in HW_RULE_SHARE of them and HW_RULE_LIFT more than in
@@ -2309,13 +2398,14 @@ static void letter_rules(struct hw_letter *l, const struct inst *in, const int *
 				q = r;
 			}
 			if (hits > cyc + 1e-9 && nr < 64)
-				R[nr++] = (struct hw_rule){ o[i].nb, o[i].side, top, m, cnt[top], round(hits * 1e4) / 1e4, round(cyc * 1e4) / 1e4 };
+				R[nr++] = (struct hw_rule){ o[i].nb, o[i].side, top, m, cnt[top], round(hits * 1e4) / 1e4, round(cyc * 1e4) / 1e4, 0 };
 		}
 		i = j;
 	}
 	free(o);
 	qsort(R, (size_t)nr, sizeof *R, cmp_rule);
 	for (int k = 0; k < nr && k < HW_LETTERS_RULES; k++) l->rule[l->nrules++] = R[k];
+	if (ctx_on()) letter_ctx_rules(l, in, v, nv, share);
 }
 
 /* ---------------------------------------------------------------- joined pairs (FR-039) */
@@ -4177,6 +4267,13 @@ void hw_letters_glyphs(const struct hw_letters *V, const struct hw_font_joins *J
 		for (int r = 0; r < l->nrules && v < 0; r++) {
 			const struct hw_rule *ru = &l->rule[r];
 			if (ru->var < 0 || ru->var >= l->nvar || !in_font(V, ru->nb)) continue;
+			if (ru->side == 2) {
+				/* a context rule: both neighbours beside it */
+				if (!k || k + 1 >= n || !in_font(V, ru->nb2) || cp[k - 1] == ' ' || cp[k + 1] == ' ' ||
+				    !in_font(V, cp[k - 1]) || !in_font(V, cp[k + 1])) continue;
+				if (cp[k - 1] == ru->nb && cp[k + 1] == ru->nb2) v = ru->var;
+				continue;
+			}
 			size_t j = ru->side == 0 ? k - 1 : k + 1;
 			if ((ru->side == 0 && k == 0) || j >= n || cp[j] == ' ' || !in_font(V, cp[j])) continue;
 			if (cp[j] == ru->nb) v = ru->var;

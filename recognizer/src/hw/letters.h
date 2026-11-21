@@ -31,6 +31,14 @@
 #define HW_RULE_SHARE_DEN 4
 #define HW_RULE_LIFT 0.25       /* and in that much more of them than its share of the cycle */
 #define HW_LETTERS_RULES 16     /* rules per character at most */
+/* context rules (with $GLASSINE_HANDWRITING_LETTERS_CONTEXT=1, for measurements: off by default):
+ * a character written between the same two neighbours (a letter triple) at least HW_CTX_MIN
+ * times, the same variant in at least HW_RULE_SHARE of them, where that isn't the variant the
+ * neighbour rules and the cycle show there, and the rule picking the variant written more
+ * often than they do on samples it was not made from; at most HW_CTX_RULES per character,
+ * before its neighbour rules (the first that applies wins) */
+#define HW_CTX_MIN 4
+#define HW_CTX_RULES 8
 /* joined pairs (FR-039): two letters written joined in at least HW_JOINED_MIN usable samples
  * and in at least HW_JOINED_SHARE_NUM / HW_JOINED_SHARE_DEN of the samples with the pair, and
  * those samples of one way (HW_JOINED_MIN of them close to each other). Written joined: one
@@ -162,11 +170,13 @@ struct hw_variant {
  * before (side 1: the one after) nb, the character shows variant var instead of its cycle's;
  * n the times written next to it, same those written as var, hits how often the rule picked
  * the variant written on samples it was not made from (leave one sample out), cycle how
- * often the cycle does (the expected count) */
+ * often the cycle does (the expected count). A context rule (side 2): between nb (before)
+ * and nb2 (after); cycle how often the neighbour rules and the cycle pick it. */
 struct hw_rule {
 	unsigned nb;
 	int side, var, n, same;
 	double hits, cycle;
+	unsigned nb2;
 };
 
 struct hw_letter {

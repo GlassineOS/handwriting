@@ -686,6 +686,29 @@ class FontPreview(Case):
         ss += [TL.sample("zxo", rnd) for _ in range(8)]
         ss += [TL.joined(TL.sample("th", rnd), [0]) for _ in range(5)]
         ss += [TL.spaced_sample(w, rnd) for w in ("hot", "oh to", "tot") * 3]
+        model = self.preview(ss, ("lo lot the lot", "hello world lo", "othello lolo th", "the 'lot' Q", "Theo hath lots"))
+        self.assertIn("th", fontview.joined_pairs(model))
+        self.assertTrue(any(r.get("prev") == "l" for r in model["chars"]["o"].get("rules", [])))
+
+    def test_preview_matches_shaping_in_context(self):
+        """with the context rules (GLASSINE_HANDWRITING_LETTERS_CONTEXT=1): an o between a b
+        and a d its own way, the same in the preview as in shaping"""
+        if not shutil.which("hb-shape"):
+            self.skipTest("no hb-shape")
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
+        rnd = random.Random(73)
+        ss = TL.alphabet_samples(seed=73, per=3)
+        ss += [TL.sample("bod", rnd, styles={"o": 1}) for _ in range(6)]
+        ss += [TL.sample("bo", rnd) for _ in range(8)] + [TL.sample("od", rnd) for _ in range(8)]
+        self.e.cli.env = dict(self.e.cli.env or os.environ, GLASSINE_HANDWRITING_LETTERS_CONTEXT="1")
+        model = self.preview(ss, ("bod", "a bod bo od", "bodbod", "lo bod"))
+        self.assertTrue(any("prev" in r and "next" in r for r in model["chars"]["o"].get("rules", [])))
+
+    def preview(self, ss, texts):
+        from glassine_hwsamples import fontview
+        sys.path.insert(0, str(ROOT.parent / "recognizer" / "tests"))
+        import test_letters as TL
         f = self.e.dir / "in.jsonl"
         f.write_text("\n".join([json.dumps({"format": "glassine-handwriting-export", "version": 1})] +
                                [json.dumps({"sample": s, "client": APP_ID, "confirmed": 1700000000 + i,
@@ -694,12 +717,10 @@ class FontPreview(Case):
         self.e.cli.run("letters", "build", "-r")
         text = self.e.cli.letters_model()
         model = fontview.parse(text)
-        self.assertIn("th", fontview.joined_pairs(model))
-        self.assertTrue(any(r.get("prev") == "l" for r in model["chars"]["o"].get("rules", [])))
         ttf = self.e.dir / "preview.ttf"
         self.e.cli.run("font", "build", "-n", "Preview", str(ttf))
         gl, view = TL.font_glyphs(text), fontview.font_view(model)
-        for t in ("lo lot the lot", "hello world lo", "othello lolo th", "the 'lot' Q", "Theo hath lots"):
+        for t in texts:
             sh = json.loads(subprocess.run(["hb-shape", "--no-glyph-names", "--output-format=json", str(ttf), t],
                                            capture_output=True, text=True, check=True).stdout)
             got = []
@@ -725,6 +746,7 @@ class FontPreview(Case):
             self.assertEqual(len(lay), len(xs))
             for (c, _, lx, _, _), hx in zip(lay, xs):
                 self.assertAlmostEqual(lx * fontview.XH, hx, delta=1.01, msg=(t, c))
+        return model
 
 
 class Pages(Case):
