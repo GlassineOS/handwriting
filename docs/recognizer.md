@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.9)
+# The handwriting recognizer (contract version 1.10)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -87,7 +87,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 to 1.9 only add to 1.0, so a client of any
+**hello** names the contract version (1: versions 1.1 to 1.10 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -601,7 +601,9 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   other's start), so the letter's ink runs along
   the glyph and its half by length as along any glyph. Only without a learned join the two points
   either side are joined by a straight line. A character the letter model doesn't cover keeps its ink as Strong leaves it, moved
-  along the line to the middle of the font's box for it (`.notdef`, one x-height wide), and
+  along the line to the middle of the font's box for it (the glyph the font draws there from
+  its base, at that glyph's advance and kerning; `.notdef`, one x-height wide, for a character
+  the base lacks too), and
   stays `not-covered`. Only with `TEXT`: without it no word is set (on real ink even the
   words read with the highest alignment fit were read wrongly more often than not, and a
   word read wrongly would be set as another). A word is set only when every
@@ -801,7 +803,7 @@ Nothing in it leaves the device except by export or a donation the person writes
   the installed font, PATH its Regular style's file; then `style STYLE PATH` for Calligraphy and Brush and `nib DEG`,
   the nib angle it was made with, and `random on` when made with random alternates; a font installed before the styles has the first line alone) and `letters/font-version` (the last version made, so a removed and
   remade font doesn't reuse one) and `letters/font-model` (a hash of the letters the installed
-  font was made from, and of the base). An erase of all samples or of a client's takes out the letter
+  font was made from, of the base and of the way the font is made). An erase of all samples or of a client's takes out the letter
   model and its files (the erased samples' preferences go with them) and makes Autograph again
   from the base, its version counting on (without a base the font and its files go).
 - `donation/licence` (`CC0-1.0` or `CC-BY-4.0`), `donation/samples.jsonl` (kept like
@@ -1027,8 +1029,12 @@ right reach plus the second's left reach, by alternating medians, for a characte
 of at least 3 pairs). A pair is set at its distance, else at its characters' reaches, applied to
 the middles of the versions used; then, where between the baseline and the x-height (the
 bands from −0.05 to 1.05) their profiles come closer than its gap, or than half the typical gap
-when that is smaller, moved apart to it. A pair without a distance (or a version without ink
-running up or down in the x-height band) is set at its gap. A version sits on the line where the
+when that is smaller, moved apart to it. A version without ink running up or down in the
+x-height band (a mark written above it, a stem that stops short of it over a dot on the line)
+takes the mean x of all its ink, each piece weighted by its length, as its middle. A pair
+without a distance is set at its gap, then moved apart where ink of one lies within a band
+(0.275 x-heights) of the other's height closer than that gap or half the typical gap: the
+bands both have ink in alone would let a mark or a crown stand over its neighbour. A version sits on the line where the
 samples it is made from sit on average (with the weights that make its shape), and is as tall
 as they are on average: what averaging versions that differ a little in shape and smoothing
 still take off is given back, its heights stretched from its centre (the width as it comes; not
@@ -1442,8 +1448,10 @@ letters and the base as they are now; it prints what `font install` prints, or `
 or `skip current`. `font export -n NAME DIR` writes the three styles as the installed font is
 made (its nib angle and random alternates) under the family name NAME into DIR as
 `NAME-Regular.ttf`, `NAME-Calligraphy.ttf` and `NAME-Brush.ttf` (the file names NAME's ASCII
-letters and digits), printing `exported STYLE PATH` per style; the installed Autograph stays
-(FR-012); a name that isn't 1 to 63 bytes of UTF-8 without control characters is a usage error.
+letters and digits), printing `exported STYLE PATH` per style; with a base (contract 1.10) it
+also writes the base's licence beside them, `OFL.txt` (the fonts are a Modified Version of the
+base under the OFL), copied from the base's directory, and prints `licence PATH` (no fonts
+are left when it can't: an error); the installed Autograph stays (FR-012); a name that isn't 1 to 63 bytes of UTF-8 without control characters is a usage error.
 `font show` prints the model as Autograph draws it: the letter model as the font has it
 (versions left out taken out) with the base's metrics and spacing where it has none of its own,
 then one `{"base":C,"variant":{…}}` per character drawn from the base, the variant as a

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "setword.h"
+#include "base.h"
 
 void hw_set_free(struct hw_set *s)
 {
@@ -54,16 +55,21 @@ int hw_set_text(const struct hw_letters *L, const unsigned *cp, size_t n, struct
 	}
 	out->xh_mm = L->m.xh_mm > 0 ? L->m.xh_mm : 0;
 	out->ink = L->m.ink > 0 ? L->m.ink : 0;
-	struct hw_letters V;
+	struct hw_letters V0, V;
 	struct hw_font_joins J = { 0 };
-	if (hw_letters_view(L, &V)) return -1;
+	struct hw_base_glyph *bg = NULL;
+	size_t nbg = 0;
+	if (hw_letters_view(L, &V0)) return -1;
+	/* as the font has the letters over its base (its defaults; the characters they don't
+	 * cover at their base glyphs' advances) */
+	if (hw_base_layout(&V0, &V, &bg, &nbg)) { hw_letters_view_free(&V0); return -1; }
 	int ret = -1, *var = malloc((n + 1) * sizeof *var), *jk = malloc((n + 1) * sizeof *jk);
 	long *jo = malloc((n + 1) * sizeof *jo);
 	double *pen = malloc((n + 1) * sizeof *pen), bear = 0;
 	size_t cap = 0;
 	if (!var || !jk || !jo || !pen || hw_font_joins_prepare(&V, &J)) goto done;
 	hw_letters_glyphs(&V, &J, cp, n, var, jo, jk);
-	hw_font_layout(&V, &J, cp, n, var, jo, jk, pen, &bear);
+	hw_font_layout(&V, &J, bg, nbg, cp, n, var, jo, jk, pen, &bear);
 	double hx[HW_JOIN_MID + 1], hy[HW_JOIN_MID + 1];
 	for (size_t k = 0; k < n; k++) {
 		const struct hw_variant *v = NULL;
@@ -99,7 +105,8 @@ int hw_set_text(const struct hw_letters *L, const unsigned *cp, size_t n, struct
 done:
 	if (ret) hw_set_free(out);
 	hw_font_joins_free(&J);
-	hw_letters_view_free(&V);
+	hw_base_glyphs_free(bg, nbg);
+	hw_letters_view_free(&V0);
 	free(var); free(jk); free(jo); free(pen);
 	return ret;
 }

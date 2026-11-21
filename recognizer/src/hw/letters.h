@@ -11,6 +11,7 @@
 #define HW_LETTERS_FORMAT "glassine-handwriting-letters"
 #define HW_LETTERS_VERSION 1
 #define HW_LETTERS_BUILD 19     /* how it is built: part of the inputs, so a change rebuilds it */
+#define HW_FONT_BUILD 2         /* how the font is made from it: part of its fingerprint, so a change makes it again */
 #define HW_LETTERS_LATE_SHARE 0.8 /* a stroke longer than this of the rest of its character's ink is no late stroke */
 #define HW_LETTERS_TOUCH 0.1    /* a neighbour's stroke starting or ending this near (of a character's height) its ink is part of it */
 #define HW_LETTERS_FAVOURITE 2  /* a favourite variant is shown this many times as often (FR-031) */
@@ -118,6 +119,12 @@ double hw_profile_open(const struct hw_profile *a, const struct hw_profile *b);
 struct hw_mid { double sx, sw; };
 void hw_mid_seg(struct hw_mid *m, double x0, double y0, double x1, double y1);
 double hw_mid_of(const struct hw_mid *m);
+/* A variant's middle as the spacing places it: its mid, or for one without (a mark written
+ * above the x-height, a stem that stops short of it over a dot on the line) the mean x of all
+ * its ink, each piece weighted by its length, so it is placed by its distance like the
+ * character's other variants, not at the gap of the few bands it shares with a neighbour */
+struct hw_variant;
+double hw_variant_middle(const struct hw_variant *v);
 
 /* A variant's entry or exit (FR-007): the joining stroke that leads into it or out of it as
  * the person writes it joined, the mean over the joined samples it was made from with one;
@@ -297,7 +304,8 @@ int hw_spacing_side(const struct hw_spacing *sp, const struct hw_profile *p, int
 double hw_spacing_gap(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, int rc,
 		      unsigned b, const struct hw_profile *pb, int lc);
 /* where b goes: its origin's distance right of a's, both profiles (and middles, NAN none)
- * relative to their own origins */
+ * relative to their own origins; set at the gap (without a distance) the two also keep the
+ * guard's distance wherever one's ink is within a band of the other's height */
 double hw_spacing_place(const struct hw_spacing *sp, unsigned a, const struct hw_profile *pa, double ma, int rc,
 			unsigned b, const struct hw_profile *pb, double mb, int lc);
 /* one observed pair of neighbouring letters, in x-heights, for hw_spacing_learn; run: in a
@@ -418,10 +426,13 @@ unsigned char *hw_font_build_style(const struct hw_letters *L, const char *name,
 /* Where the font sets a text (ttf.c, FR-043): per character the pen x (x-heights from the
  * text's start) of its glyph as the font's advances and kerning put it, a joined pair's two
  * letters both the pair's; var and jo as hw_letters_glyphs gives them, V a view
- * (hw_letters_view). bear: the glyphs' left side bearing (x-heights), their strokes' x
- * from the pen at bear + x. */
-void hw_font_layout(const struct hw_letters *V, const struct hw_font_joins *J, const unsigned *cp, size_t n, const int *var,
-		    const long *jo, const int *jk, double *pen, double *bear);
+ * (hw_letters_view). bg: the glyphs the font draws from its base (nbg of them,
+ * hw_base_layout, with V as that gives it); a character V doesn't cover takes its base glyph's
+ * advance and kerning, one it has none for .notdef's (an x-height). bear: the glyphs' left
+ * side bearing (x-heights), their strokes' x from the pen at bear + x. */
+struct hw_base_glyph;
+void hw_font_layout(const struct hw_letters *V, const struct hw_font_joins *J, const struct hw_base_glyph *bg, size_t nbg,
+		    const unsigned *cp, size_t n, const int *var, const long *jo, const int *jk, double *pen, double *bear);
 /* The joins the font draws (FR-044; ttf.c): every shape of V a join, and per join and each
  * variant of a letter in the font where its half meets the other letter's, in font units: A
  * right of the first letter's origin, B the second's origin right of it (so the second is

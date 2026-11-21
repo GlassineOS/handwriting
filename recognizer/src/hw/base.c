@@ -160,11 +160,24 @@ static int base_read(const char *path, struct hw_base *B)
 	return 0;
 }
 
+static const char *base_path(void)
+{
+	const char *p = getenv("GLASSINE_HANDWRITING_BASE");
+	return p && *p ? p : HW_BASE_PATH;
+}
+
+int hw_base_licence(char *out, size_t n)
+{
+	if (!hw_base_get()) return -1;
+	const char *p = base_path(), *sl = strrchr(p, '/');
+	int len = sl ? (int)(sl - p) + 1 : 0;
+	return snprintf(out, n, "%.*s%s", len, p, HW_BASE_LICENCE) < (int)n ? 0 : -1;
+}
+
 const struct hw_base *hw_base_get(void)
 {
 	if (!base_state) {
-		const char *p = getenv("GLASSINE_HANDWRITING_BASE");
-		if (!p || !*p) p = HW_BASE_PATH;
+		const char *p = base_path();
 		base_state = strcmp(p, "off") && !base_read(p, &base) ? 1 : -1;
 	}
 	return base_state == 1 ? &base : NULL;
@@ -267,6 +280,25 @@ int hw_base_glyphs(const struct hw_letters *V, const struct hw_base *B, struct h
 	*out = g;
 	*n = ng;
 	return 0;
+}
+
+const struct hw_base_glyph *hw_base_glyph_of(const struct hw_base_glyph *g, size_t n, unsigned cp)
+{
+	size_t lo = 0, hi = n;
+	while (lo < hi) {
+		size_t m = (lo + hi) / 2;
+		if (g[m].cp < cp) lo = m + 1;
+		else hi = m;
+	}
+	return g && lo < n && g[lo].cp == cp ? &g[lo] : NULL;
+}
+
+int hw_base_layout(const struct hw_letters *V, struct hw_letters *W, struct hw_base_glyph **g, size_t *n)
+{
+	const struct hw_base *B = hw_base_get();
+	*W = *V;
+	hw_base_defaults(W, B);
+	return hw_base_glyphs(W, B, g, n);
 }
 
 void hw_base_glyphs_free(struct hw_base_glyph *g, size_t n)
