@@ -39,7 +39,7 @@ def parse(text):
         head = json.loads(lines[0][1])
     except ValueError:
         return None
-    if not isinstance(head, dict) or head.get("format") != "glassine-handwriting-letters" or head.get("version") != 1:
+    if not isinstance(head, dict) or head.get("format") != "glassine-handwriting-letters" or head.get("version") not in (1, 2):
         return None
     out["head"] = head
     for at, ln in lines[1:]:
