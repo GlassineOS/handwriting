@@ -28,6 +28,7 @@ import importlib.util
 import json
 import math
 import random
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -1361,6 +1362,53 @@ class Neaten(unittest.TestCase):
                         where[key] = where.get(key, 0) + b + k
         self.assertGreater(pulled, 1000)
         self.assertEqual(new, 0, where)
+
+    def test_point_aligner(self):
+        """with a point aligner beside the model (LANG/aligner.ghm, here of random weights) the
+        joined strokes are cut by it, by ALIGN of whole strokes and by the text alone: every
+        stroke comes back with its points, their times as sent, every letter with ink of its
+        own, the same request the same ink; GLASSINE_HANDWRITING_ALIGNER=off gives what no
+        aligner gives"""
+        self.letters()
+        rnd = random.Random(37)
+        small = "abcdefghijklmnopqrstuvwxyz"
+        lines = [joined_line(rnd, ["".join(rnd.choice(small) for _ in range(rnd.randint(2, 4))) for _ in range(3)]) for _ in range(4)]
+        al = self.e.models / "en" / "aligner.ghm"
+
+        def run(lv, text, align):
+            outs = []
+            for s, at, _ in lines:
+                self.e.env["GLASSINE_HANDWRITING_NEATEN"] = ""
+                c = self.e.start()
+                self.begin(c, s)
+                a = [align(at)] if align else []
+                r = parse(c.ask("neaten", "s", str(lv), TR.esc(s["text"]), *a), why=True)
+                c.close()
+                outs.append((s, r))
+            return outs
+
+        whole = lambda at: ";".join(",".join(sorted({str(j) for j, _, _ in m}, key=int)) for m in at)
+        plain = {lv: run(lv, True, whole) for lv in (0.75, 1)}
+        subprocess.run([sys.executable, str(HERE / "mkmodel.py"), str(al), "--strided", "1", "--seed", "5"], check=True)
+        changed = 0
+        try:
+            for lv in (0.75, 1):
+                for align in (whole, None):
+                    got = run(lv, True, align)
+                    changed += align is whole and got != plain[lv]
+                    self.assertEqual(got, run(lv, True, align))
+                    for s, (_, out, why) in got:
+                        self.assertEqual(len(out), len(s["strokes"]))
+                        for st, o in zip(s["strokes"], out):
+                            self.assertEqual(len(EV.to_xy(o[2])), len(st))
+                        if align:
+                            self.assertNotIn("no-ink", why, (s["text"], lv))
+                self.e.env["GLASSINE_HANDWRITING_ALIGNER"] = "off"
+                self.assertEqual(run(lv, True, whole), plain[lv])
+                del self.e.env["GLASSINE_HANDWRITING_ALIGNER"]
+        finally:
+            al.unlink()
+        self.assertGreater(changed, 0)   # (the aligner was used)
 
     def test_joined_words_keep_every_letter(self):
         """joined words of two to five letters (one stroke through them, as written in a

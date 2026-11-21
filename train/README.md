@@ -775,6 +775,155 @@ to +0.55, part numbers +0.03 to +0.56, phone numbers −0.48 to −0.04. Model 2
 sets far worse than its own (43 % here), so this is a rough check, not a measure of model
 2 on the device.
 
+### A point-labelling aligner (`aligner.py`, `alignrun.py`)
+
+A small network (two convolutions, a two-layer bidirectional LSTM of 128, 0.77 M parameters)
+gives every point of a line its character. Its loss is a CTC variant for labelling every
+point: no blank runs, a one-frame blank only (and always) between two equal letters in a
+row, the states one chain (`chain_loss`, checked against a brute-force sum over the allowed
+paths). It reads the ink as `features.py` does (frames every 0.2 core heights, plus the
+move's direction) and is decoded by the best path through the chain of the text (text
+alone), or stroke by stroke over the letters a sample's spans list for it (spans known).
+
+**Data.** `gen.Generator.line(points=True)` gives each point's character and the pen-down
+joins between letters (the same ink as without). 20 000 lines of the training fonts (prose,
+words, pseudo-words), writers drawn per line with a join chance of 0.5 to 1 (the generator's
+writers: 0.15 to 0.7); test: one writer per held-out font (all 14), 40 joined lines each,
+and 60 lines written apart for that writer's letter model (the shape cut needs one).
+
+```sh
+uv run python -m glassine_train.alignrun data --out build/align
+uv run python -m glassine_train.alignrun train --data build/align --out build/align/aligner.pt --ce 1.0
+```
+
+**The chain loss alone did not find the boundaries within 2 000 of 8 000 steps.** Trained on
+it alone, the network reached a likelihood as good with the wrong cuts: it gave most frames
+a common letter and squeezed the others into a frame or two, so the best path held 10 % of
+the frames right with the true target. With a frame cross-entropy on the generator's point
+labels at weight 0.1 it did the same after 2 250 steps; at weight 1.0 (8 000 steps, 67
+minutes on 8 threads) it labels the points. So the model below is supervised by the
+generator's labels; the chain is what decodes it. Whether the chain loss alone gets there
+with longer training is not measured.
+
+**Synthetic joined ink** (the 14 held-out writers, 3359 strokes with 6078 joins between
+letters; the distance along the stroke from the cut to the join, in x-heights, 0 inside it;
+a letter lost: the cut gives one of the two letters no point of the stroke):
+
+| | in the join | within 0.25 | median | mean | letter lost |
+|---|---|---|---|---|---|
+| recognizer's alignment (`align`, model 4) | 22 % | 37 % | 0.45 | 0.60 | 4.3 % |
+| shape cut (PR 115), text alone | 40 % | 53 % | 0.18 | 0.91 | 3.7 % |
+| shape cut, whole-stroke `ALIGN` (spans known) | 46 % | 55 % | 0.08 | 1.07 | 1.3 % |
+| aligner, text alone | 86 % | 93 % | 0 | 0.11 | 3.1 % |
+| aligner, spans known | 85 % | 92 % | 0 | 0.12 | 1.4 % |
+
+On the strokes the shape cut changed (2502 of 3359) it is 47 to 48 % in the join, the
+aligner 85 to 86 %. Lines without delayed strokes alike. The joins are the generator's
+straight bridges between glyph strokes, the kind the aligner was trained on, so this
+favours it.
+
+**One writer's real prompted ink** (the fixed test session, 113 samples with exact spans,
+1043 strokes, 292 of them shared by several letters). These spans are not an independent
+truth: the recognizer makes them at confirm from its own alignment (a stroke is listed for
+each character the alignment gave points of it), with the model of the time, and keeps them
+`exact` when that alignment fits. So the table measures agreement with an earlier
+recognizer alignment, at stroke level only (not where a stroke is cut), and it favours the
+recognizer:
+
+| | strokes with their letters exactly | shared strokes exactly | letters lost in shared strokes |
+|---|---|---|---|
+| recognizer's alignment | 50 % | 73 % | 1.0 % |
+| shape cut, text alone | 48 % | 72 % | 2.7 % |
+| aligner, text alone | 64 % | 31 % | 30 % |
+
+The aligner agrees more on whole strokes but gives a different set of letters to most
+shared strokes, a letter missing in three in ten. Which of the two is right there can't be
+told from these spans; real ink with point labels would tell. Until then it is not wired in
+and not merged (the first prototype; the engine-shaped aligner below is what ships).
+
+#### The engine-shaped aligner (`PointAligner`, `aligner.ghm`)
+
+The recognizer's own architecture (`model.Recognizer`: convolutions of 128, a two-layer
+bidirectional LSTM of 128, no downsampling) on `features.py`'s five inputs, one frame every 0.2
+core heights, so it exports to the base model's file format (`alignrun export CKPT OUT`,
+through `onnx2ghm`) and runs in the recognizer's own engine (`recognizer/src/hw/aligner.c`).
+Class 0 is the blank, then the letters. Trained as above (chain loss plus frame
+cross-entropy at 1.0, 8 000 steps); the batch runs padded through the LSTM (packed is many
+times slower on the CPU), the same network as the export.
+
+**More realistic synthetic ink** (`alignrun data --real`; `gen.Style` `curve`, `bar_lead`,
+`reach`, `late_word`, all 0 by default: the old ink): the joining strokes curve (a learned
+join shape from a letter model's `joins` row with `--letters MODEL`, else a bow), bars of t,
+f, F, T and a 5's roof reach on past their letter, lead into the next letter or come after
+the next word's first letter. `--letters MODEL --share 0.3`: that share of the training lines
+in a person's letters (`LetterWriter`).
+
+```sh
+uv run python -m glassine_train.alignrun data --out build/align-real --real [--letters LETTERS/model --share 0.3]
+uv run python -m glassine_train.alignrun train --data build/align-real --out aligner.pt --ce 1.0 --kind point
+uv run python -m glassine_train.alignrun measure build/align-real/dev.pkl aligner.pt dev.json --delay -1 --delay -3
+uv run python -m glassine_train.alignrun export aligner.pt MODELS/en/aligner.ghm
+```
+
+**Delayed strokes.** With the text alone a whole stroke after the first may be given to a
+letter already passed (of its word or the word before) at a log-penalty; on synthetic dev
+lines (600, 795 delayed strokes) the points labelled right stay at 93.3 % from −0.5 to −8,
+and the delayed strokes given to their letter go from 25 % (−8) to 36 % (−1) (0: 91.1 % of
+the points, so −1, `HW_ALIGNER_DELAY`). Without it 0.4 %.
+
+**Synthetic joined ink**, two test sets of the 14 held-out writers: the realistic ink
+(`real`, 3380 strokes with joins) and the earlier straight-bridge ink (`straight`, 3295). In
+the join / within 0.25 x-heights / letter lost, then all points labelled right and delayed
+strokes given to their letter (text alone, delay −1):
+
+| | real | straight | real: points, delayed |
+|---|---|---|---|
+| recognizer's alignment | 22 / 37 / 4.9 % | 21 / 38 / 4.3 % | 76 %, 0 % |
+| shape cut, text alone | 40 / 52 / 3.7 % | 42 / 54 / 4.0 % | 52 %, 0 % |
+| shape cut, spans known | 47 / 56 / 1.0 % | 48 / 57 / 1.3 % | 86 % |
+| first aligner (prototype), text | 80 / 89 / 2.3 % | 85 / 92 / 1.3 % | 93 %, 55 % |
+| engine-shaped, straight data, text | 81 / 90 / 2.4 % | 85 / 93 / 1.2 % | 92 %, 33 % |
+| engine-shaped, realistic fonts, text | 80 / 89 / 2.1 % | 83 / 90 / 1.3 % | 92 %, 34 % |
+| engine-shaped, realistic + a person's letters, text | 79 / 88 / 2.1 % | 82 / 91 / 1.7 % | 92 %, 34 % |
+| engine-shaped, realistic + a person's letters, spans | 79 / 88 / 1.7 % | 82 / 91 / 1.2 % | 97 % |
+
+The more realistic training ink did not make the aligner better on either set, even on the
+realistic one; every aligner is about twice the shape cut in the join. The first prototype
+gives more late strokes back (55 % against 34 %), the engine-shaped ones run on the device.
+
+**A person's samples** (Neatest with the text, `tools/eval-neaten.py`, the held-back fifth
+of one writer's store, model 4 with characters; the letter model and the aligner's person
+part from the other four fifths):
+
+| | CER | with words | set | kept as written | shape guard | upper case set / kept | dropped |
+|---|---|---|---|---|---|---|---|
+| shape cut | 31.2 % | 22.7 % | 1056 | 453 | 38 | 52 / 18 | 0 |
+| aligner, fonts only | 31.2 % | 22.7 % | 1079 | 458 | 11 | 53 / 18 | 0 |
+| aligner, with the person's letters | 30.4 % | 22.0 % | 1136 | 429 | 7 | 53 / 18 | 0 |
+
+At Medium and Strong (0.5 to 1) the read-back without words is 1.3 points worse with it (46.1
+→ 47.4 %), with words the same or better (39.6 → 39.2 % at 0.5). Late strokes: of 110 i/j
+dots 42 set (38 before); a 5's roof 2 of 5 (1); the h after a t in "the" 6 of 7 (5); the T,
+F and f cases unchanged. The letter model built with the aligner's cut is as close to its
+samples as before (`tools/eval-letters.py`: 231 versions, 0.216 x-heights by arc length).
+
+Neatest's guards (`GLASSINE_HANDWRITING_NEATEN`), each left out, with the aligner and without:
+
+| left out | with the aligner | without |
+|---|---|---|
+| none | 30.4 % / 22.0 %, 1136 set | 31.2 % / 22.7 %, 1056 set |
+| exit tail given back (`tail=0`) | 30.4 % / 22.0 %, 1136 | 31.6 % / 23.6 %, 1034 |
+| bar written on into a neighbour (`bar=0`) | 30.5 % / 22.2 %, 1122 | 31.3 % / 22.7 %, 1053 |
+| fragment beside a kept letter (`frag=0`) | 30.4 % / 22.0 %, 1137 | 31.3 % / 22.7 %, 1058 |
+
+With the aligner the exit-tail rule no longer changes anything (its ownership already gives
+the tail back) and the fragment rule next to nothing; the bar rule still helps a little. As
+the aligner is optional (none is installed by default), the guards stay.
+
+The aligner trained with a person's letters is that person's: it stays on their machine, it
+is not released. The fonts-only one could be released, but it is not better on this
+person's ink, so there is no release yet.
+
 ### Many writers read as new people (`writerseval`)
 
 A base model read on other people's ink, writer by writer, as a new person meets it on the
