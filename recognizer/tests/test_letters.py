@@ -1038,6 +1038,69 @@ class Overhangs(Spacing):
                 self.assertGreaterEqual(min(body), min(gap, letter / 2) - 0.02, msg=(text, a[0] + b[0]))
 
 
+def raised_mark(c, style, rnd):
+    """a mark with little or no ink running up or down between the baseline and the
+    x-height: "=" written above it, "?" a crown over a dot on the line (pen jitter added)"""
+    def line(x0, y0, x1, y1, n=12):
+        return [(x0 + (x1 - x0) * i / (n - 1) + rnd.gauss(0, 0.01), y0 + (y1 - y0) * i / (n - 1) + rnd.gauss(0, 0.005))
+                for i in range(n)]
+    if c == "=":
+        return [line(0.0, 0.98, 1.0, 0.98), line(0.0, 1.35, 1.0, 1.35)]
+    crown = [(0.5 + 0.5 * math.cos(math.pi * (1 - i / 11)), 1.9 + 0.5 * math.sin(math.pi * (1 - i / 11)))
+             for i in range(12)]
+    crown += line(1.0, 1.9, 0.9, 1.0)[1:]
+    return [[(x + rnd.gauss(0, 0.01), y + rnd.gauss(0, 0.01)) for x, y in crown], [(0.9, 0.0)]]
+
+
+@unittest.skipIf(SKIP_TOOLS, "HW_LETTERS_NO_FONT_TOOLS=1")
+class RaisedMarks(unittest.TestCase):
+    """spec 003 FR-007, FR-009: a mark the person writes mostly outside the x-height band (a
+    raised "=", a "?" whose crown stands over a dot), never written beside the letters, is
+    set beside a small letter, not over it: where the two have ink at about the same height
+    (within a band) they keep at least half the typical gap"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.e = Env()
+        rnd = random.Random(41)
+        ss = alphabet_samples(seed=41, per=3)
+        ss += [sample(c, rnd, shapes={"=": raised_mark, "?": raised_mark}) for c in "=?" * 4]
+        cls.e.put(ss)
+        cls.e.run("letters", "build", "-r")
+        lines = [json.loads(x) for x in cls.e.model().splitlines()]
+        cls.sp = next(d["spacing"] for d in lines if "spacing" in d)
+        cls.chars = {d["char"]: d for d in lines if "char" in d}
+        cls.ttf = cls.e.dir / "f.ttf"
+        cls.e.run("font", "build", "-n", "Marks", str(cls.ttf))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.e.close()
+
+    def test_beside_not_over(self):
+        self.assertTrue(self.chars["="]["covered"] and self.chars["?"]["covered"])
+        # (the marks' own pairs with the letters were never written: set at the gap)
+        self.assertFalse([p for p in self.sp["pairs"] if "=" in p[:2] or "?" in p[:2]])
+        gl = font_glyphs(self.e.model())
+        letter, band = self.sp["letter"], (Y1 - Y0) / BANDS
+        seen = 0
+        for text in ("o=o", "c=x", "a=e", "o?o", "c?x", "a?u", "x=s?n"):
+            out, x = [], 0
+            for g in hb(self.ttf, text):
+                k = gl[g["g"]]
+                d = self.chars[k[1]]
+                v = d["variants"][d["slots"][k[2]] if k[0] == "step" else k[2]]
+                at = (x + g["dx"]) / 500 + letter / 2
+                out.append([(at + p[0], p[1]) for st in v["strokes"] for p in st])
+                x += g["ax"]
+            for a, b in zip(out, out[1:]):
+                near = [q[0] - p[0] for p in a for q in b if abs(q[1] - p[1]) < band]
+                if near:
+                    self.assertGreater(min(near), letter / 2 - 0.05, text)
+                    seen += 1
+        self.assertGreaterEqual(seen, 8)
+
+
 class Marks(unittest.TestCase):
     """the person's marks on the letter model (spec 003 FR-031) and one character learned again
     (FR-032)"""
@@ -2778,6 +2841,8 @@ def write_base(path, chars=BASE_CHARS):
             "ascender": 1.8, "descender": -0.7, "ink_width": 0.12, "letter_spacing": 0.3, "word_spacing": 1.0}
     lines = [json.dumps(head)] + [json.dumps({"char": c, "strokes": base_strokes(c)}) for c in chars]
     Path(path).write_text("\n".join(lines) + "\n")
+    # its licence beside it, as the base is installed
+    (Path(path).parent / "OFL.txt").write_text("SIL OPEN FONT LICENSE Version 1.1 (the test's stand-in)\n")
     return path
 
 
@@ -2902,8 +2967,20 @@ class Autograph(unittest.TestCase):
         out = self.e.dir / "out"
         out.mkdir()
         ex = self.e.run("font", "export", "-n", "Mïne", str(out)).stdout.splitlines()
-        got = {f[1]: Path(f[2]) for f in (ln.split("\t") for ln in ex)}
+        got = {f[1]: Path(f[2]) for f in (ln.split("\t") for ln in ex) if f[0] == "exported"}
         self.assertEqual({p.name for p in got.values()}, {"Mne-Regular.ttf", "Mne-Calligraphy.ttf", "Mne-Brush.ttf"})
+        # drawn over the base: its licence beside them, as the OFL asks (FR-012, FR-045)
+        lic = self.base.parent / "OFL.txt"
+        self.assertIn("licence\t%s" % (out / "OFL.txt"), ex)
+        self.assertEqual((out / "OFL.txt").read_bytes(), lic.read_bytes())
+        # without it nothing goes out
+        out2 = self.e.dir / "out2"
+        out2.mkdir()
+        keep = lic.read_bytes()
+        lic.unlink()
+        self.assertEqual(self.e.run("font", "export", "-n", "Mine", str(out2), check=False).returncode, 1)
+        self.assertEqual(list(out2.iterdir()), [])
+        lic.write_bytes(keep)
         self.check_styles(got, family="Mïne")
         self.assertEqual(font_files(self.e), (v, files))             # the installed one stays
         self.assertEqual(self.e.run("font", "export", "-n", "x", str(self.e.dir / "none"), check=False).returncode, 1)

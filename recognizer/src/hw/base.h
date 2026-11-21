@@ -33,6 +33,10 @@ struct hw_base {
 /* The base (GLASSINE_HANDWRITING_BASE: a file, `off` none; else HW_BASE_PATH), read once;
  * NULL when there is none or it can't be read */
 const struct hw_base *hw_base_get(void);
+/* the base's licence: HW_BASE_LICENCE beside the base's file (the OFL's text, which goes
+ * with every font made from it). 0 (out its path), -1 no base. */
+#define HW_BASE_LICENCE "OFL.txt"
+int hw_base_licence(char *out, size_t n);
 
 /* V (a view, hw_letters_view, or its copy) with the base's metrics where it has none of its
  * own (before the person's first sample: all of them) and the base's letter and word spacing
@@ -46,5 +50,11 @@ void hw_base_defaults(struct hw_letters *V, const struct hw_base *B);
 struct hw_base_glyph { unsigned cp; struct hw_variant v; };
 int hw_base_glyphs(const struct hw_letters *V, const struct hw_base *B, struct hw_base_glyph **out, size_t *n);
 void hw_base_glyphs_free(struct hw_base_glyph *g, size_t n);
+/* cp's among g (n of them, as hw_base_glyphs gives them), NULL when it has none */
+const struct hw_base_glyph *hw_base_glyph_of(const struct hw_base_glyph *g, size_t n, unsigned cp);
+/* What a layout of Autograph needs over V (hw_letters_view): V with the base's defaults as the
+ * font has them (W, sharing V's arrays) and the base's glyphs for it (none without a base);
+ * free the glyphs with hw_base_glyphs_free. 0, -1. */
+int hw_base_layout(const struct hw_letters *V, struct hw_letters *W, struct hw_base_glyph **g, size_t *n);
 
 #endif

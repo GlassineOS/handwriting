@@ -1045,7 +1045,8 @@ static uint32_t tsum(const unsigned char *d, size_t n)
 struct kent { unsigned cl, cr; const struct hw_profile *prof; double ml, mr, width; int lc, rc; };
 static struct kent kent_var(unsigned cp, const struct hw_variant *x)
 {
-	return (struct kent){ cp, cp, &x->prof, x->mid, x->mid, x->width, x->lc, x->rc };
+	double m = hw_variant_middle(x);
+	return (struct kent){ cp, cp, &x->prof, m, m, x->width, x->lc, x->rc };
 }
 static struct kent kent_joined(const struct hw_joined *j)
 {
@@ -1428,8 +1429,8 @@ int hw_font_join_half(const struct hw_letters *V, const struct hw_font_joins *J,
 	return 0;
 }
 
-void hw_font_layout(const struct hw_letters *V, const struct hw_font_joins *J, const unsigned *cp, size_t n, const int *var,
-		    const long *jo, const int *jk, double *pen, double *bear)
+void hw_font_layout(const struct hw_letters *V, const struct hw_font_joins *J, const struct hw_base_glyph *bg, size_t nbg,
+		    const unsigned *cp, size_t n, const int *var, const long *jo, const int *jk, double *pen, double *bear)
 {
 	/* the glyphs in order, as the font shapes the text: the advance, the kerning between
 	 * two that have kerning classes (letters' variants, joined pairs); a letter joined to the
@@ -1450,7 +1451,11 @@ void hw_font_layout(const struct hw_letters *V, const struct hw_font_joins *J, c
 		} else if (l && var[k] >= 0 && var[k] < l->nvar) {
 			e = kent_var(l->cp, &l->var[var[k]]);
 			adv = adv_of(V, l->var[var[k]].width);
-		} else { adv = XH; cls = 0; }             /* .notdef */
+		} else {
+			const struct hw_base_glyph *b = hw_base_glyph_of(bg, nbg, cp[k]);
+			if (b) { e = kent_var(b->cp, &b->v); adv = adv_of(V, b->v.width); }
+			else { adv = XH; cls = 0; }         /* .notdef */
+		}
 		size_t li = l ? (size_t)(l - V->l) : 0;
 		if (in >= 0 && l && J && J->voff[li] >= 0) x += J->B[(size_t)(J->voff[li] + var[k]) * J->nk + (size_t)in];
 		else if (cls && have) x += kern_of(V, &prev, &e);
