@@ -109,5 +109,55 @@ class Binding(TP.Pen):
         w.wl.wl_display_disconnect(w.d)
 
 
+    def test_regions(self):
+        """a writing region from Python: its strokes, value and words, an edit, a restore"""
+        if not (TP.STANDIN and os.environ.get("GLASSINE_HANDWRITING_LIB")):
+            self.skipTest("needs HW_STANDIN and the library")
+        self.start()
+        os.environ["XDG_RUNTIME_DIR"] = self.env["XDG_RUNTIME_DIR"]
+        os.environ["WAYLAND_DISPLAY"] = self.env["WAYLAND_DISPLAY"]
+        w = Wl()
+
+        class L:
+            def __init__(s):
+                s.ev = []
+
+            def __getattr__(s, name):
+                if name in ("stroke", "neat", "value", "candidate", "candidates_done", "gesture", "report_done"):
+                    return lambda *a: s.ev.append((name, a))
+                raise AttributeError(name)
+        pen = G.Pen(w.d, w.s, None)
+        self.assertIn("regions", pen.capabilities)
+        lst, lst2 = L(), L()
+        r = pen.region("notes", lst)
+        self.assertIsNotNone(r)
+        r.set_rect(0, 0, 400, 100)
+        w.wl.wl_display_roundtrip(w.d)
+        for s in self.ink(2, seed=4):
+            self.pen(s)
+        w.pump(lambda: any(e[0] == "candidates_done" for e in lst.ev))
+        strokes = {e[1][0]: e[1][1] for e in lst.ev if e[0] == "stroke"}
+        self.assertEqual(sorted(strokes), [0, 1])
+        serial, text, words, gone, state = [e[1] for e in lst.ev if e[0] == "value"][-1]
+        self.assertTrue(text and words and state)
+        self.assertEqual(" ".join(x["text"] for x in words), text)
+        r.edit("hello")
+        w.pump(lambda: [e for e in lst.ev if e[0] == "value"][-1][1][1] == "hello")
+        _, text, words, gone, state = [e[1] for e in lst.ev if e[0] == "value"][-1]
+        self.assertEqual(words[0]["text"], "hello")
+        self.assertIn("box", words[0])
+        self.assertIsInstance(words[0]["path"], list)
+        keep = {k: v for k, v in strokes.items() if k not in gone}
+        r2 = pen.region("copy", lst2)
+        r2.set_rect(0, 200, 400, 100)
+        r2.restore(keep, text, state)
+        w.pump(lambda: any(e[0] == "value" for e in lst2.ev))
+        self.assertEqual([e[1] for e in lst2.ev if e[0] == "value"][-1][1], "hello")
+        r.close()
+        r2.close()
+        pen.close()
+        w.wl.wl_display_disconnect(w.d)
+
+
 if __name__ == "__main__":
     unittest.main()
