@@ -10,7 +10,7 @@ import time
 import cairo
 from glassine_ui import paint as PT
 
-from . import fontview as FV, neat as N, prompts as P
+from . import fontview as FV, models as M, neat as N, prompts as P
 from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_w, btns_right, card, checkbox, chevron_h, chevron_row, dialog, draw_ink,
                    footer, header, icon, icon_rows, ink_bounds, lbl, note, page_head, radio, sep, soft_box, tabs)
 
@@ -1155,10 +1155,16 @@ def learn_page(cr, ui, hits, w, h):
     links = (("grid_view", "Samples", "%d, newest first. Look at one, delete or export them" % n if n else
               "Nothing written yet", lambda: ui.go("samples")),
              ("abc", "Coverage", "How much of each character it has seen from you", lambda: ui.go("coverage")))
-    lw = (w - 2 * PAD - 14) / 2
+    # and which model reads and neatens (spec 006): beside them when turned, else below them
+    models = ("deployed_code", "Models", "The shipped models, or one you installed yourself", lambda: ui.go("models"))
+    if LAND[0]:
+        links += (models,)
+    lw = (w - 2 * PAD - 14 * (len(links) - 1)) / len(links)
     lh = max(chevron_h(cr, k, lw, sub) for _, _, sub, _ in links)
     for i, (ic, name, sub, fn) in enumerate(links):
         chevron_row(cr, k, hits, PAD + i * (lw + 14), y, lw, ic, name, sub, fn, min_h=lh)
+    if not LAND[0]:
+        chevron_row(cr, k, hits, PAD, y + lh + 14, w - 2 * PAD, *models)
     by = h - 20 - BTN_H
     x = btns_right(cr, k, hits, w - PAD, by, btns) if btns else w - PAD
     if foot:
@@ -2986,7 +2992,7 @@ def loading_page(cr, ui, hits, w, h):
 
 
 PAGES = {"samples": samples_page, "coverage": coverage_page, "font": font_page, "learn": learn_page, "donate": donate_page,
-         "others": others_page}
+         "others": others_page, "models": M.models_page}
 
 
 def paint_full(cr, ui, hits, w, h):

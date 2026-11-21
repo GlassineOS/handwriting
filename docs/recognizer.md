@@ -1,4 +1,4 @@
-# The handwriting recognizer (contract version 1.7)
+# The handwriting recognizer (contract version 1.8)
 
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 
@@ -87,7 +87,7 @@ microsecond.
 | `forget ID SAMPLE` | `forget ID ok WHERE` |
 | anything wrong | `error ID REASON` (`ID` is `-` when the line has no usable id) |
 
-**hello** names the contract version (1: versions 1.1 to 1.7 only add to 1.0, so a client of any
+**hello** names the contract version (1: versions 1.1 to 1.8 only add to 1.0, so a client of any
 says and gets 1) and, optionally, the client: an application id
 (`org.glassine.keyboard`, same characters as an id, up to 63). The name is stored with each sample
 the client confirms; `samples` needs it. It is what the client says it is (the recognizer runs as
@@ -442,7 +442,7 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
 - **Ownership (the point aligner).** With `aligner.ghm` in the language's directory (a small
   model in the base model's format: one frame every 0.2 x-heights along the ink, no
   downsampling, per frame a log-probability for each letter, class 0 a blank only ever between
-  two equal letters in a row), whose ink is whose comes from it rather than from the
+  two equal letters in a row), or the person's installed aligner (Installed models), whose ink is whose comes from it rather than from the
   reading's alignment. With the text alone, each point's character is the best path through
   the chain of the text's letters over the frames that hold points, where a whole stroke after
   the first may instead be a delayed one: a letter already passed, of its word or the word
@@ -738,6 +738,8 @@ letters, `_` and `,` is `bad-field`.
 | `words` | `off`: readings without words (Words) | on |
 | `chars` | `off`: readings without the character model (Characters) | on |
 | `models` | a full path: the base models' directory instead of `/usr/share/glassine/handwriting` (another set installed beside the default one, Base models); taken at the next request | unset |
+| `recognizer` | `local`: the person's installed recognizer where one is usable (Installed models) | `shipped` |
+| `aligner` | `local`: the person's installed aligner where one is usable (Installed models) | `shipped` |
 
 The keyboard's `predict.conf` (`learning`, `addresses`) counts too: learning is off when either
 file says so, so the keyboard's one learning switch covers handwriting (shell spec 006 FR-008).
@@ -1322,6 +1324,9 @@ glassine-handwriting donation start CC0-1.0|CC-BY-4.0 | add SAMPLE | remove SAMP
 glassine-handwriting read [-n N] [-l LANG] FILE   read sample-format lines (testing)
 glassine-handwriting bench [-l LANG] FILE         error, time per line, memory
 glassine-handwriting calibrate [-l LANG] FILE     fit the temperature of the head in use on held-back samples
+glassine-handwriting model [status] [-l LANG]     the installed models and the choice (Installed models)
+glassine-handwriting model check [-l LANG] [-k KIND] FILE | install [-l LANG] [-k KIND] FILE
+glassine-handwriting model use recognizer|aligner shipped|local | remove recognizer|aligner [-l LANG]
 ```
 
 `export -c CLIENT` writes only that client's samples and no adaptation. An export holds the
@@ -1414,7 +1419,8 @@ One directory per language: `/usr/share/glassine/handwriting/LANG/` (or
 character model, optional; Characters) with `chars.json` (its recipe) and `CHARS-LICENSE`,
 `calibration` (the base model's temperature, optional; Calibration), `aligner.ghm` (the point aligner, optional; Neatening, Ownership), `README` (the recipe and data sources), `LICENSES` and `prompts.txt` (texts for prompted writing and donation, one per
 line), and `prompts/` with the handwriting samples app's prompt sets (`*.txt`, one per line, and
-`SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export;
+`SOURCES` with their sources and licences), shipped with the app. `recognizer/tools/onnx2ghm.py` converts the trainer's ONNX export (`--kind recognizer`, the
+default, or `--kind aligner`, recorded in the file);
 `glassine-train release` makes the whole directory as a release tarball
 ([`models/README.md`](../models/README.md)).
 
@@ -1431,7 +1437,13 @@ integers: version (1), header bytes (64), features per row `F`, first convolutio
 `C1`, the other convolutions' channels `C`, strided convolutions `S`, kernel width `K`, LSTM
 hidden size `H`, LSTM layers `L`, classes `N`, charset bytes, the training data's end (64-bit,
 two words, low first: the confirmation time, seconds since 1970, of the newest person's sample the
-model was trained on; 0 when it was trained on none) and two zeros. Then the charset
+model was trained on; 0 when it was trained on none), the kind (contract 1.8: 1 a recognizer, 2 a
+point aligner; 0 not recorded) and a zero. A file with the kind 0 (written before it was recorded)
+is told by its shape: a recognizer has the space in its charset; an aligner is version 1, one
+strided convolution, no space; anything else is of no known kind. An engine from before 1.8 reads
+the kind as one of the zeros it ignores, so a file that records it reads there as before. A file
+recording another kind than recognizer is not read as a language's `recognizer.ghm`, and only a
+file recording an aligner (or one of kind 0 with an aligner's shape) as its `aligner.ghm`. Then the charset
 (UTF-8; class `k+1` is its `k`-th character, class 0 the CTC blank), padded with zeros to a
 multiple of 4. Then 32-bit floats, each tensor row-major in this order:
 
@@ -1488,6 +1500,66 @@ bias, up weights and bias, output weights and bias.
 it), `T` its temperature. A line for another model file, or a `T` outside [0.5, 4], is not
 used; without a line that fits, the base model reads with 1.
 
+## Installed models (contract 1.8, spec 006)
+
+A person can install a model file they obtained elsewhere as a private replacement for a
+shipped `recognizer.ghm` or `aligner.ghm`: for example a model trained on handwriting data
+whose terms don't allow it to be shipped. The recognizer never downloads one and never passes
+one on; it installs only a file the person already has. Obtain such a model, and the data it
+was trained on, only from their official source and under their terms.
+
+**Where.** `$XDG_DATA_HOME/glassine/handwriting-models/LANG/recognizer.ghm` and `aligner.ghm`
+(or `~/.local/share/glassine/handwriting-models/…`): beside the store, never inside it, so a
+sample export, an erase, a donation or a writer's store never touch it. Directories 0700, files
+0600 when installed by `model install`; a file placed there by hand counts the same.
+
+**The choice.** The settings `recognizer` and `aligner` (`shipped` or `local`, Settings) choose
+per kind, for every language: the installed file where one is usable for the language, the
+shipped one (of the directory the setting `models` names, Base models) otherwise. A writer's
+store, and the environment `GLASSINE_HANDWRITING_LOCAL=off`, use the shipped files alone. Only
+one recognizer per language is loaded, whichever is chosen. Character models, prompts and word
+lists stay the shipped ones.
+
+**The checks.** An installed file is used only when it passes them all, checked once per change
+of the file (its inode, size and modification time) and again at each change:
+
+| Reason | The file |
+|---|---|
+| `missing`, `unreadable` | isn't there, or can't be read |
+| `too-big` | is larger than 64 MiB (checked before it is read) |
+| `not-a-model` | doesn't start with `GHWM` |
+| `format-version` | is of a ghm version this engine doesn't read (detail: the version) |
+| `features` | has features per row that its version doesn't stand for, or is an aligner of a shape the engine doesn't run |
+| `damaged` | doesn't hold exactly what its header says (cut short, a bad charset) |
+| `kind` | is of the other kind (detail: its kind) |
+| `kind-unknown` | records a kind this engine doesn't know, or records none and its shape doesn't tell |
+| `alphabet` | has a control character (detail `U+XXXX`) or a character twice (detail `twice C`) in its charset, or lacks characters of the language's `prompts.txt`, an aligner all but the space (detail: up to 8 of them separated by spaces, the space written `space`, then `+N` for more) |
+| `language` | is for a language without a shipped `LANG/prompts.txt` (detail: the language) |
+| `not-finite` | holds a number that isn't finite, or gives one on a fixed synthetic line |
+
+**Falling back.** A chosen file that is missing or refused is not used: the shipped file is,
+from the next request that needs the model, with no restart and nothing said to any client.
+A running recognizer looks at the chosen file at each request and reads it again when it
+changed (also a file overwritten in place); a reading is never answered from a model file read
+before the change (the engine's last run is keyed by the model's hash). When the file is usable
+again it is used again.
+
+**Learning on top.** An adaptation made while the person's recognizer is in use is kept in
+`adaptation/LANG@local/`, apart from the shipped model's (Base models); it belongs to that file
+by its hash, as every adaptation does.
+
+**Commands.** `model` (or `model status`) prints, tab-separated, for `-l LANG` (default `en`):
+`use KIND shipped|local` per kind (the setting), `inuse KIND local|shipped|none` (the file a
+request would read now; `none`: no shipped file either), and `local KIND none`, `local KIND
+ready BYTES TIME UNTIL` (its size, modification time, and the training data's end it records,
+0 none) or `local KIND refused REASON DETAIL` (DETAIL escaped as a text field, `-` none).
+`model check FILE` prints `ok KIND` or `refused REASON DETAIL` (exit 1); `-k KIND` asks for that
+kind. `model install FILE` checks it, copies it to its place for its kind through a `.tmp` file
+and a rename (the original stays), sets the kind's setting to `local` and prints `installed KIND
+LANG`, or `refused REASON DETAIL` (exit 1) with nothing changed. `model use KIND shipped|local`
+sets the setting; `model remove KIND` deletes the installed file and prints `removed` or
+`none`. In a writer's store `model` is `writer-store` (exit 2).
+
 ## Environment
 
 | Variable | Meaning |
@@ -1504,6 +1576,7 @@ used; without a line that fits, the base model reads with 1.
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
 | `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default), `tail=0`, `bar=0` and `frag=0` leave out Neatest's giving back of an exit tail, of a bar written on into a neighbour, and the keeping as written of a letter whose ink is a fragment beside one kept with more pieces than its versions have (Neatening) |
 | `GLASSINE_HANDWRITING_ALIGNER` | for measurements: `off` uses no point aligner (Neatening, Ownership) |
+| `GLASSINE_HANDWRITING_LOCAL` | for measurements: `off` uses the shipped models whatever the settings `recognizer` and `aligner` say (Installed models) |
 | `GLASSINE_HANDWRITING_LETTERS_AVG` | for measurements: `mean` builds the letter model's versions point by point without registering the samples first (The letter model and the font); it is part of the model's inputs, so a model built so is made again without it |
 | `GLASSINE_HANDWRITING_LETTERS_STATS` | for measurements: a file a letter model build appends one line to per version and joined pair it makes, numbers only (no ink): `variant CP N STROKES ARC REG EFF HM HV AM AV RM RV`, CP the character's code point (0 a joined pair), N the samples written like it, ARC and REG how far they are from it on average (x-heights RMS, by arc length and registered), EFF how many samples it is made of in effect (the weights' squared sum over the sum of their squares), HM and AM those samples' mean height and enclosed area (each stroke closed from its end to its start; with the weights), RM those samples' mean roughness (per stroke, evenly spaced along it, the squared turning at each point less its neighbours' turning, summed: how much it wobbles rather than bends), HV, AV and RV the version's own, averaged and smoothed, before its height is stretched back; `tools/eval-letters.py` sums them up |
 | `GLASSINE_HANDWRITING_WORDS` | for tuning: `lm=…,chr=…,margin=…,near=…,beam=…,nbest=…,minlen=…,guided=0\|1` replace the Words weights |

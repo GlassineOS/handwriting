@@ -23,13 +23,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import onnx
-from onnx import numpy_helper
 
 MAGIC = b"GHWM"
 VERSION = 1
 VERSION_REF = 2  # the same layout; the input is features_ref()
 NFEAT = {VERSION: 5, VERSION_REF: 6}
+KINDS = {"recognizer": 1, "aligner": 2}  # header word 14; 0 = not recorded (files from before)
 
 
 def charset_from(path: Path) -> str:
@@ -44,7 +43,9 @@ def fail(msg):
     raise SystemExit(f"onnx2ghm: {msg}")
 
 
-def convert(model: onnx.ModelProto, charset: str, trained_until: int = 0) -> bytes:
+def convert(model, charset: str, trained_until: int = 0, kind: str = "recognizer") -> bytes:
+    import onnx
+    from onnx import numpy_helper
     g = model.graph
     init = {i.name: numpy_helper.to_array(i) for i in g.initializer}
     consts = {}
@@ -143,11 +144,20 @@ def convert(model: onnx.ModelProto, charset: str, trained_until: int = 0) -> byt
     if scale.shape != (nfeat,):
         fail("scale shape")
 
+    return pack(version, nfeat, c1, conv or c1, nstrided, k0, hidden, len(lstms), nclass, charset,
+                [scale] + out, trained_until, kind)
+
+
+def pack(version, nfeat, c1, conv, nstrided, kernel, hidden, layers, nclass, charset, tensors, trained_until=0,
+         kind="recognizer") -> bytes:
+    """The file: the header, the charset, then the tensors (float32, in the format's order)."""
+    if kind not in KINDS:
+        fail(f"kind {kind!r}: recognizer or aligner")
     cs = charset.encode()
-    hdr = MAGIC + struct.pack("<15I", version, 64, nfeat, c1, conv or c1, nstrided, k0, hidden, len(lstms), nclass,
-                              len(cs), trained_until & 0xFFFFFFFF, trained_until >> 32, 0, 0)
+    hdr = MAGIC + struct.pack("<15I", version, 64, nfeat, c1, conv, nstrided, kernel, hidden, layers, nclass,
+                              len(cs), trained_until & 0xFFFFFFFF, trained_until >> 32, KINDS[kind], 0)
     body = cs + b"\0" * ((-len(cs)) % 4)
-    data = np.concatenate([scale] + out).astype("<f4").tobytes()
+    data = np.concatenate([np.asarray(t, dtype=np.float32).ravel() for t in tensors]).astype("<f4").tobytes()
     return hdr + body + data
 
 
@@ -160,9 +170,12 @@ def main(argv=None):
     ap.add_argument("-o", type=Path, required=True)
     ap.add_argument("--trained-until", type=int, default=0,
                     help="confirmation time (s since 1970) of the newest person's sample in the training data")
+    ap.add_argument("--kind", choices=sorted(KINDS), default="recognizer",
+                    help="what the model is (recorded in the file): a recognizer or a point aligner")
     a = ap.parse_args(argv)
     charset = a.charset if a.charset is not None else charset_from(a.charset_from)
-    data = convert(onnx.load(str(a.onnx)), charset, a.trained_until)
+    import onnx
+    data = convert(onnx.load(str(a.onnx)), charset, a.trained_until, a.kind)
     a.o.write_bytes(data)
     print(f"{a.o}: {len(data)} bytes", file=sys.stderr)
 

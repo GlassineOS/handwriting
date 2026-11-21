@@ -418,6 +418,40 @@ class Cli:
                                                    "before": float(f[4]), "after": float(f[5])}
         return d
 
+    # installed models (spec 006): a model the person installs themselves
+
+    def models(self, lang="en"):
+        """{"use": {kind: shipped|local}, "inuse": {kind: local|shipped|none}, "local": {kind: None |
+        ("ready", bytes, time, until) | ("refused", reason, detail)}}"""
+        d = {"use": {}, "inuse": {}, "local": {}}
+        for line in self.run("model", "status", "-l", lang).splitlines():
+            f = line.split("\t")
+            if f[0] in ("use", "inuse") and len(f) >= 3:
+                d[f[0]][f[1]] = f[2]
+            elif f[0] == "local" and len(f) >= 3:
+                if f[2] == "ready" and len(f) >= 6:
+                    d["local"][f[1]] = ("ready", int(f[3]), int(f[4]), int(f[5]))
+                elif f[2] == "refused" and len(f) >= 5:
+                    d["local"][f[1]] = ("refused", f[3], "" if f[4] == "-" else unesc(f[4]))
+                else:
+                    d["local"][f[1]] = None
+        return d
+
+    def model_install(self, path, lang="en"):
+        """("installed", kind) or ("refused", reason, detail)"""
+        f = self.run("model", "install", "-l", lang, path, check=False).rstrip("\n").split("\t")
+        if f[0] == "installed" and len(f) >= 2:
+            return ("installed", f[1])
+        if f[0] == "refused" and len(f) >= 3:
+            return ("refused", f[1], "" if f[2] == "-" else unesc(f[2]))
+        raise Error("model install failed")
+
+    def model_use(self, kind, choice):
+        self.run("model", "use", kind, choice)
+
+    def model_remove(self, kind, lang="en"):
+        self.run("model", "remove", kind, "-l", lang)
+
     def revert(self, lang="en"):
         self.run("adaptation", "revert", "-l", lang)
 

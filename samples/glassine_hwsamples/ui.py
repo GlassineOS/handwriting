@@ -35,7 +35,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from glassine_ui import paint as PT  # noqa: E402
 
-from . import APP_ID, client, flow, fontview, neat as N, pages, prompts as P, writers as WR  # noqa: E402
+from . import APP_ID, client, flow, fontview, models as M, neat as N, pages, prompts as P, writers as WR  # noqa: E402
 from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
 W0, H0 = 702, 884
@@ -201,6 +201,7 @@ class UI:
         self.prefs = []                 # [(chosen, other, cchar, ochar)]
         self.plan = None
         self.adapts = {}
+        self.models = None              # Learn › Models: the installed models' state (spec 006)
         self.adapting = None            # True while a run goes
         self.adapt_plan = None          # (learns from, kept aside) of the run
         self.adapt_round = None         # (round, rounds)
@@ -541,14 +542,14 @@ class UI:
     def go(self, page):
         """a tab, or a page beneath one: Samples and Coverage beneath Learn, a guest's Samples
         beneath Contribute, Neaten my writing beneath Your font (spec 002 FR-026)"""
-        if self.guest and page in ("font", "learn", "coverage", "neat", "others"):
+        if self.guest and page in ("font", "learn", "coverage", "neat", "others", "models"):
             page = "write"              # not in a guest's session (spec 002 FR-018)
         if (not self.guest and self.page == "write" and self.tab == "font" and self.writer
                 and self.writer.best is not None and not self.demo):
             self.run(self.writer.stop_best)     # Write it your best is left
         self.close_neat()
         self.page = page
-        self.tab = {"samples": "donate" if self.guest else "learn", "coverage": "learn",
+        self.tab = {"samples": "donate" if self.guest else "learn", "coverage": "learn", "models": "learn",
                     "neat": "font"}.get(page, page)
         self.detail = None
         self.asking_delete = False
@@ -567,6 +568,8 @@ class UI:
             self.refresh()
         if page == "font":
             self.load_font()
+        if page == "models" and not self.demo:
+            M.load(self)
         self.redraw()
 
     def open_sets(self):
@@ -2409,6 +2412,8 @@ SCREENS = ("wizard.welcome", "wizard.try", "wizard.try-done", "wizard.samples", 
            "others.remove-plain", "others.done", "others.done-kept", "guest.hello", "guest.try", "guest.share", "guest.age",
            "guest.age-ticked", "guest.licence", "guest.write", "guest.best", "guest.sets", "guest.samples",
            "guest.contribute-off", "guest.contribute", "guest.saved")
+# Learn › Models (spec 006): nothing installed, one in use, one refused
+SCREENS += ("models.none", "models.installed", "models.refused")
 # a guest's screens are the owner's pages in that writer's session (made-up names, no one's)
 GUEST_SCREENS = {"hello": "wizard.hello", "try": "wizard.try", "share": "wizard.donate", "age": "wizard.age",
                  "age-ticked": "wizard.age", "licence": "wizard.licence", "write": "write.prompt", "best": "best.write",
@@ -2589,6 +2594,17 @@ def demo(screen, voice="white"):
             ui.asking_delete = sub == "delete"
     elif sec == "coverage":
         ui.page, ui.tab = "coverage", "learn"
+    elif sec == "models":
+        ui.page, ui.tab = "models", "learn"
+        ui.models = {"use": {"recognizer": "shipped", "aligner": "shipped"},
+                     "inuse": {"recognizer": "shipped", "aligner": "shipped"}, "local": {"recognizer": None, "aligner": None}}
+        if sub == "installed":
+            ui.models["use"]["recognizer"] = ui.models["inuse"]["recognizer"] = "local"
+            ui.models["local"]["recognizer"] = ("ready", 6400000, 1700000000, 0)
+            ui.msg = "Installed replacement.ghm for reading, in use from your next writing."
+        elif sub == "refused":
+            ui.models["use"]["aligner"] = "local"
+            ui.models["local"]["aligner"] = ("refused", "format-version", "3")
     elif sec == "learn":
         ui.page = ui.tab = "learn"
         if sub == "few":
