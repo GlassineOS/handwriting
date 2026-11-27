@@ -102,11 +102,14 @@ def test_one_hand_line_is_the_letter_model_line():
     generator's hooks change nothing else)"""
     hs, g = _hands(1), _gen()
     st = hs[0].style(np.random.default_rng(1))
-    lw = H.LineWriter("cat sat", hs, [0, 0], None, None)
+    lw = H.LineWriter("cat sat", hs, [0, 0], None, None, warp=0.0)
     a = g.line("cat sat", np.random.default_rng(5), style=st, letters=lw)
     b = g.line("cat sat", np.random.default_rng(5), style=st, letters=hs[0].lw)
     _same(a, b)
     assert a["writer"] == "hand-0"
+    # with the letters' own displacement (the default) the ink differs
+    c = g.line("cat sat", np.random.default_rng(5), style=st, letters=H.LineWriter("cat sat", hs, [0, 0], None, None))
+    assert c["text"] == a["text"] and not np.array_equal(c["strokes"][0], a["strokes"][0])
 
 
 def test_mixed_and_donor_lines_say_so():

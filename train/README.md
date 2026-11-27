@@ -1178,8 +1178,13 @@ each hand's join chance set so its lines join about as many neighbouring letters
 writer did, and dots and bars delayed at chances drawn per hand around the generator's
 (BRUSH's stroke order is not the writers'). A line's characters a hand lacks come from a
 font, for at most 15 % of a line (`writer` `hand-N+donor`); a share of the lines has each word
-in one of 2-3 hands (`hands-N,M,...`). The models and everything written in them carry
-BRUSH's terms and stay private.
+in one of 2-3 hands (`hands-N,M,...`). Each letter is written with a smooth displacement of
+its own (`hands.WARP`, 0.03 em), as a version is the average of the writer's letters like it.
+Read by model 4 (line alone, with the character model), 20 hands' lines and the same
+writers' real lines go together writer by writer (correlation 0.9 of their CER) but the
+hands' are much easier (CER 18 % at no displacement, 18 % at 0.03 em, 20 % at 0.06; the real
+lines 35 %): averaged letters, the generator's own spacing and timing. The models and
+everything written in them carry BRUSH's terms and stay private.
 
 ```sh
 uv run python -m glassine_train.cli brushletters BRUSH --out PRIVATE/hands --bin ../recognizer/glassine-handwriting \

@@ -12,7 +12,9 @@ from its seed so a hand writes alike in all its lines:
 - *delayed strokes*: i's and j's dots and bars of t, f and barred capitals written after the
   word, at chances drawn around the generator's (gen.draw_style's priors), per hand;
 - *timing*: the generator's fitted timing with a writer drawn around it per hand
-  (timing.draw_writer).
+  (timing.draw_writer);
+- *shape*: each letter written with a smooth displacement of its own (`WARP`): a version is
+  the average of the writer's letters like it, smoother than any of them.
 
 **Characters a hand lacks** (no versions: digits, a capital it wrote too seldom) come from a
 donor font (gen.FontWriter), drawn per line from the fonts that have them all. A line takes
@@ -31,11 +33,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+from glassine_synth.glyph import Glyph
+from glassine_synth.ink import _warp
 
 from . import gen
 from .timing import BROADEN, draw_writer
 
 CURVE = 0.6            # share of drawn joins that bow (the rest straight)
+WARP = 0.03            # per letter written: a smooth displacement (glassine_synth.ink._warp, em),
+                       # as the versions are averages of the writer's letters
 DONOR_MAX = 0.15       # most characters of a line (not spaces) a donor writes
 MIXED_HANDS = (2, 3)   # hands in a mixed line, at most
 
@@ -88,8 +94,8 @@ class LineWriter:
     character in its word's hand, or the donor font where that hand has no versions."""
 
     def __init__(self, text: str, hands: list[Hand], word_hand: list[int], donor: gen.FontWriter | None,
-                 donor_font: int | None):
-        self.text, self.hands, self.donor, self.donor_font = text, hands, donor, donor_font
+                 donor_font: int | None, warp: float = WARP):
+        self.text, self.hands, self.donor, self.donor_font, self.warp = text, hands, donor, donor_font, warp
         self.of = []
         w = 0
         for ch in text:
@@ -108,7 +114,10 @@ class LineWriter:
     def glyph_at(self, ci: int, ch: str, rng):
         lw = self.hands[self.of[ci]].lw
         if ch in lw.chars:
-            return lw.glyph(ch, rng)
+            fid, g = lw.glyph(ch, rng)
+            if self.warp > 0 and g is not None and g.strokes:
+                g = Glyph(g.char, g.advance, _warp([q[:, :2] for q in g.strokes], rng, self.warp), list(g.delayable))
+            return fid, g
         if self.donor is None or self.donor_font is None:
             return lw.name, None
         return self.donor.glyph(self.donor_font, ch, rng)
