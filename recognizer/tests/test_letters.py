@@ -525,6 +525,35 @@ class LetterModel(unittest.TestCase):
         self.e.run("letters", "build", "-r")
         self.assertEqual(self.e.status()["chars"], {})
 
+    def test_strokes_cut_at_joins(self):
+        """a sample whose strokes were cut where the pen joined its letters (cut_at_joins):
+        a letter's stroke that ends where the next one's begins is that join, not a touch,
+        so both letters are usable; the same ink without the mark leaves both out"""
+        rnd = random.Random(14)
+
+        def joined():
+            s = sample("xy", rnd)
+            a, b = s["strokes"][s["spans"][0][-1]], s["strokes"][s["spans"][1][0]]
+            b[0][:2] = a[-1][:2]       # the cut: y's stroke begins where x's ends
+            return s
+
+        plain = [joined() for _ in range(3)]
+        self.e.put(plain)
+        self.e.run("letters", "build", "-r")
+        self.assertEqual(self.e.status()["chars"].get("x", (0, 0))[0], 0)
+        f = Env()
+        try:
+            cut = [dict(joined(), cut_at_joins=True) for _ in range(3)]
+            f.put(cut)
+            self.assertIn('"cut_at_joins":true', (f.store / "samples.jsonl").read_text().replace(" ", ""))
+            f.run("letters", "build", "-r")
+            st = f.status()
+            self.assertEqual(st["chars"]["x"][0], 3)
+            self.assertEqual(st["chars"]["y"][0], 3)
+            self.assertGreater(st["chars"]["x"][1], 0)
+        finally:
+            f.close()
+
     def test_joined_letters_join_their_variants(self):
         """letters written joined (FR-007): a stroke shared by the letters of a word is cut
         where its parts match those letters' variants from their samples written apart; each

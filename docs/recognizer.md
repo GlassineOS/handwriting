@@ -949,7 +949,9 @@ stroke). Then a character's strokes are its own only when no stroke of a neighbo
 height of it: an f's or a t's bar written on into the next letter, a p's, b's or d's bowl begun
 on its stem and run on into it, a lead-in through the letter before. Such a letter has a part
 in the other's ink and the other a part of it, so neither is usable there (no way of writing a
-letter lacks its bar or its bowl, and none of the next letter starts with one).
+letter lacks its bar or its bowl, and none of the next letter starts with one). In a sample whose strokes were cut
+at its joins (`cut_at_joins`, docs/samples.md) a stroke ending where its neighbour's begins is
+the cut, and this rule is not applied.
 **Letters written joined (FR-007).** The versions are made in two passes. The first takes the
 samples written apart alone. Then each stroke that the spans give two or more letters of one word
 (and no other) is cut where its parts best match those letters' versions from the first pass:

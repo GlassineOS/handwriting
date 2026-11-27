@@ -1147,6 +1147,51 @@ without words, the same with words, worse at Medium and Strong read back without
 every aligner. It carries BRUSH's non-commercial terms (Licence), so it is not part of the
 GPL package; it is not released.
 
+**BRUSH's hands** (`brushletters`, `gen4-hands`; brushletters.py, hands.py). Letter models of
+the 124 training writers, so training text can be written in their hands. The recognizer's
+build makes versions from letters written apart and cuts joined strokes only by versions it
+already has, so a writer who joins most letters (39 of the 124 join in at least half their
+lines) gets almost no lowercase letters from it (the most joined: about one usable sample a
+letter). So each stroke is cut where its points' character changes and the sample is marked
+`cut_at_joins` (docs/samples.md), and then built as usual. Which labelling cuts, chosen
+without reading anything back: each model, built from four fifths of the writer's lines, is
+measured on the fifth held back, by eval-setting's distance of each lowercase letter to its
+nearest version (x-heights; mean over writers of their medians), the held-back letters cut
+by either labelling:
+
+| model cut by | held back cut by the labels | by the aligner | where both agree |
+|---|---|---|---|
+| BRUSH's labels | 0.174 | 0.180 | 0.175 |
+| the aligner (spans known) | 0.176 | 0.178 | 0.175 |
+
+Each wins only on letters cut its own way (writers who join half their lines or more: by
+0.005 and 0.003); mostly-print writers do not tell them apart. Neatest set in the letters
+(eval-setting, the held-back lines as written) is the same within its spread, but for the
+joined writers a little closer in shape with the aligner (conditioned: −0.017, −0.040 to
+−0.000) and in x-height with the labels (+0.030, +0.004 to +0.068). The labels need no model,
+so they cut. Built from all their lines, every one of the 124 has all 26 lowercase letters,
+23 to 26 capitals (Z, Q and X are written too seldom), 7 to 10 of `. , ; : ! ? ' - ( )` and
+no digit (BRUSH has about one of each per writer; a character needs three).
+
+The models have no join shapes: `gen4-hands` draws the joining strokes (gen.connector) with
+each hand's join chance set so its lines join about as many neighbouring letters as its
+writer did, and dots and bars delayed at chances drawn per hand around the generator's
+(BRUSH's stroke order is not the writers'). A line's characters a hand lacks come from a
+font, for at most 15 % of a line (`writer` `hand-N+donor`); a share of the lines has each word
+in one of 2-3 hands (`hands-N,M,...`). Each letter is written with a smooth displacement of
+its own (`hands.WARP`, 0.03 em), as a version is the average of the writer's letters like it.
+Read by model 4 (line alone, with the character model), 20 hands' lines and the same
+writers' real lines go together writer by writer (correlation 0.9 of their CER) but the
+hands' are much easier (CER 18 % at no displacement, 18 % at 0.03 em, 20 % at 0.06; the real
+lines 35 %): averaged letters, the generator's own spacing and timing. The models and
+everything written in them carry BRUSH's terms and stay private.
+
+```sh
+uv run python -m glassine_train.cli brushletters BRUSH --out PRIVATE/hands --bin ../recognizer/glassine-handwriting \
+    --models MODELS
+uv run python -m glassine_train.cli gen4-hands PRIVATE/hands/hands.json --out PRIVATE/ink-hands --lines 400
+```
+
 ### Many writers read as new people (`writerseval`)
 
 A base model read on other people's ink, writer by writer, as a new person meets it on the

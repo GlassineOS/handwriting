@@ -356,6 +356,8 @@ class Generator:
                 if rng.random() < p.font_per_letter / 2:
                     fi = pick()
                 fid, g = self.fonts.glyph(fi, ch, rng)
+            elif hasattr(letters, "glyph_at"):  # a writer whose glyph depends on its place (hands.py)
+                fid, g = letters.glyph_at(ci, ch, rng)
             else:
                 fid, g = letters.glyph(ch, rng)
             if g is None or not g.strokes:
@@ -388,7 +390,8 @@ class Generator:
                 pch, pprof, _, pmid = prev
                 if letters is not None:
                     # where the letter model's spacing puts the pair (by middles, guarded)
-                    dx = S.place(letters.spacing, text[pch], text[ci], pprof, prof, pmid, mid)
+                    sp = letters.spacing_at(ci) if hasattr(letters, "spacing_at") else letters.spacing
+                    dx = S.place(sp, text[pch], text[ci], pprof, prof, pmid, mid)
                     dx += rng.normal(0, st.gap_sd)
                 else:
                     # the writer's gap in the x-height band (bars and hooks above or below

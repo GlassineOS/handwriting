@@ -167,6 +167,10 @@ int hw_sample_parse(const char *line, struct hw_sample *s, char *err, size_t err
 	if (str(o, "donor", s->donor, sizeof s->donor, 0)) FAIL("bad donor");
 	if (str(o, "written", s->written, sizeof s->written, 0) || !hw_written_ok(s->written)) FAIL("bad written");
 	if (str(o, "pair", s->pair, sizeof s->pair, 0) || !hw_pair_ok(s->pair)) FAIL("bad pair");
+	if (json_object_object_get_ex(o, "cut_at_joins", &v)) {
+		if (!json_object_is_type(v, json_type_boolean)) FAIL("bad cut_at_joins");
+		s->cut_at_joins = json_object_get_boolean(v);
+	}
 	if (!json_object_object_get_ex(o, "units", &v) || !json_object_is_type(v, json_type_object)) FAIL("no units");
 	if (str(v, "xy", s->units.xy, sizeof s->units.xy, 1)) FAIL("bad units");
 	json_object *u;
@@ -292,6 +296,7 @@ char *hw_sample_format(const struct hw_sample *s)
 	if (s->donor[0]) json_object_object_add(o, "donor", json_object_new_string(s->donor));
 	if (s->written[0]) json_object_object_add(o, "written", json_object_new_string(s->written));
 	if (s->pair[0]) json_object_object_add(o, "pair", json_object_new_string(s->pair));
+	if (s->cut_at_joins) json_object_object_add(o, "cut_at_joins", json_object_new_boolean(1));
 	json_object *u = json_object_new_object();
 	json_object_object_add(u, "xy", json_object_new_string(s->units.xy));
 	if (s->units.per_mm > 0) json_object_object_add(u, "per_mm", jnum(s->units.per_mm));
