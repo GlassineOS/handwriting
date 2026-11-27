@@ -569,7 +569,8 @@ def cmd_writerseval(a):
     charset = {"common": W.COMMON, "model4": CHARS4}[a.charset]
     if a.format == "brush":
         conv = {"line_scale": a.line_scale, "pause": a.pause, "step": a.step}
-        data = W.load_brush(path, a.per_writer, a.seed, charset, conv)
+        only = json.loads(Path(a.split).read_text())["parts"][a.part] if a.split else None
+        data = W.load_brush(path, a.per_writer, a.seed, charset, conv, only)
     else:
         data = W.load_samples(path, a.per_writer, a.seed, charset)
     if a.writers:
@@ -581,6 +582,22 @@ def cmd_writerseval(a):
         models.append((name, nc, ch))
     s = W.run(data, models, a.modes, Path(a.out), Path(a.predict).resolve(), a.workers)
     print(W.report(s), flush=True)
+
+
+def cmd_brushset(a):
+    """BRUSH as ink sets for training (realink.py): train, dev and split.json, private."""
+    from .realink import write_brush
+    r = write_brush(Path(a.dataset), Path(a.out), a.seed, a.copies, tuple(a.line_scale),
+                    test_writers=a.test_writers, dev_writers=a.dev_writers, held_texts=a.held_texts)
+    print(json.dumps({"counts": r["counts"], **{p: {k: r[p][k] for k in ("lines", "points")} for p in ("train", "dev")}},
+                     indent=1))
+
+
+def cmd_personset(a):
+    """A person's split as ink sets for training (realink.py), private."""
+    from .realink import write_person
+    r = write_person(Path(a.split), Path(a.out), a.copies, a.seed)
+    print(json.dumps({p: {k: r[p][k] for k in ("lines", "points", "samples")} for p in r}, indent=1))
 
 
 def cmd_inkread(a):
@@ -1039,6 +1056,22 @@ def main(argv=None):
     wv.add_argument("--pause", type=float, default=0.11, help="brush: seconds between strokes")
     wv.add_argument("--step", type=float, default=0.0, help="brush: densify points to this many pixels apart")
     wv.add_argument("--workers", type=int, default=8)
+    wv.add_argument("--split", help="brush: a split.json of brushset; read only the lines of --part")
+    wv.add_argument("--part", default="test", choices=["train", "dev", "test"])
+    bs = sub.add_parser("brushset", help="BRUSH as ink sets for training, split by writer and text (realink.py)")
+    bs.add_argument("dataset", help="BRUSH as you obtained it from its official source (directory or ZIP)")
+    bs.add_argument("--out", required=True, help="a PRIVATE directory (made 0700)")
+    bs.add_argument("--seed", type=int, default=5)
+    bs.add_argument("--copies", type=int, default=4, help="training copies per line (new line scale and pauses)")
+    bs.add_argument("--line-scale", type=float, nargs=2, default=[0.7, 2.5], help="the area's line over the box, log-uniform")
+    bs.add_argument("--test-writers", type=float, default=0.2)
+    bs.add_argument("--dev-writers", type=float, default=0.05)
+    bs.add_argument("--held-texts", type=float, default=0.2)
+    ps = sub.add_parser("personset", help="a person's split (glassine-train real) as ink sets for training (realink.py)")
+    ps.add_argument("split", help="the split's directory (its test session never trains)")
+    ps.add_argument("--out", required=True, help="a PRIVATE directory (made 0700)")
+    ps.add_argument("--copies", type=int, default=6, help="copies per sample, new drawings after the first")
+    ps.add_argument("--seed", type=int, default=5)
     re_ = sub.add_parser("realeval", help="real held-back ink through the recognizer program")
     re_.add_argument("--run", default="")
     re_.add_argument("--ckpt", default="best.pt")
@@ -1155,7 +1188,7 @@ def main(argv=None):
     ic.add_argument("--sheet", help="a PNG of some lines")
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
-    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "writerseval": cmd_writerseval, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
+    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "writerseval": cmd_writerseval, "brushset": cmd_brushset, "personset": cmd_personset, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
      "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 

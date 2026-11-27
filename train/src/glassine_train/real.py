@@ -75,8 +75,11 @@ def read_store(store: Path) -> list[dict]:
     for ln in raw:
         if not (ln.startswith("{") and ln.endswith("}")):
             continue
-        s = json.loads(ln)
-        if s.get("version") != 1:
+        try:
+            s = json.loads(ln)
+        except json.JSONDecodeError:  # a damaged line, skipped as the recognizer skips it
+            continue
+        if not isinstance(s, dict) or s.get("version") != 1:
             continue
         sid = "%016x" % fnv1a64(ln.encode("utf-8"))
         out.append({"id": sid, "time": meta.get(sid), "line": ln, "sample": s})
@@ -344,6 +347,7 @@ def prepare(store: Path, out: Path, keep_test: list[str] | None = None) -> dict:
     for k in ("train", "dev"):
         guard([by[i]["line"] for i in sp[k]], tid, k)
     rep = {k: len(v) for k, v in sp.items()}
+    rep["store"] = str(store.resolve())
     rep["unusable"] = {k: sum(not usable(by[i]["sample"]) for i in v) for k, v in sp.items()}
     rep["single_chars"] = {k: sum(len(by[i]["sample"]["text"]) == 1 for i in v) for k, v in sp.items()}
     # the confirmation time of the newest sample a model trained here may have seen (train,
