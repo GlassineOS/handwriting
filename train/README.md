@@ -1,8 +1,9 @@
 # glassine-train (prototype)
 
-A small English online-handwriting recognizer, trained only on synthetic ink from `../synth`.
-It is a prototype to learn what works, not the product engine: every number below is
-measured on synthetic ink, never on real handwriting.
+A small English online-handwriting recognizer. Models 2 and 4 are trained only on synthetic
+ink from `../synth`; model 5's recipe adds real ink of many writers (Real ink in the base
+model, below). It is a prototype to learn what works, not the product engine: a number below
+is measured on synthetic ink unless it says it is real ink.
 
 ```sh
 (cd ../synth && uv run glassine-synth fetch)        # the fonts in ../synth/fonts.toml
