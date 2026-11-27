@@ -37,12 +37,17 @@ def _rng(seed: int, writer: str) -> np.random.Generator:
     return np.random.default_rng(h)
 
 
-def load_brush(path: Path, per_writer: int, seed: int, charset: str, conv: dict) -> dict[str, list[dict]]:
+def load_brush(path: Path, per_writer: int, seed: int, charset: str, conv: dict,
+               only: dict[str, list[str]] | None = None) -> dict[str, list[dict]]:
     """{writer: [sample, ...]}: per writer up to `per_writer` lines drawn at random among
-    those whose text is all in `charset`, each with its ink's traits (`traits`)."""
+    those whose text is all in `charset`, each with its ink's traits (`traits`). `only`:
+    {writer: [drawing, ...]}, the lines of one part of a split (realink.py, split.json)."""
     from . import brush
     by: dict[str, list] = {}
-    for ln in brush.read(path):
+    keep = {w: set(d) for w, d in only.items()} if only is not None else None
+    for ln in brush.read(path, set(keep) if keep is not None else None):
+        if keep is not None and ln.drawing not in keep.get(ln.writer, ()):
+            continue
         if all(c in charset for c in ln.text):
             by.setdefault(ln.writer, []).append(ln)
     out = {}
