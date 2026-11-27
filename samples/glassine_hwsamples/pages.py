@@ -147,9 +147,9 @@ def script_word(cr, k, text, x, y, px, col=None):
 
 def dropdown(cr, k, hits, right, y, label, fn):
     tw, th = PT.measure(cr, label, k["sub"])
-    w = tw + 52
+    w = min(tw + 52, right)             # (no wider than the room left of it: the label ends in …)
     PT.box(cr, right - w, y, w, 40, k["btnR"], bg=k["btnBg"] if PT.color(k["btnBg"]) else k.paper, shadow=k["btnSh"])
-    PT.text(cr, label, k["sub"], right - w + 14, y + (40 - th) / 2, k.ink)
+    PT.text(cr, label, k["sub"], right - w + 14, y + (40 - th) / 2, k.ink, **({"maxw": w - 52} if tw + 52 > right else {}))
     icon(cr, "expand_more", 22, right - 22, y + 20, k.ink)
     hits.add(right - w, y, w, 40, fn)
 
@@ -374,13 +374,13 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
         y += th + 10
     elif unl:
         t = "Letters not learned yet: for now it only straightens the lines and evens out sizes and spacing."
-        bw = btn_w(cr, k, "Learn letters now")
+        bw = min(btn_w(cr, k, "Learn letters now"), w - 2 * PAD - 24)
         _, th = PT.measure(cr, t, k["sub"], maxw=w - 2 * PAD - bw - 50, wrap=True)
         nh = max(th, BTN_H) + 24
         PT.box(cr, PAD, y, w - 2 * PAD, nh, k["cardR"], bg=k.sheet)
         icon(cr, "info", 22, PAD + 24, y + nh / 2, k.ink)
         PT.text(cr, t, k["sub"], PAD + 48, y + (nh - th) / 2, k.ink, maxw=w - 2 * PAD - bw - 50, wrap=True)
-        btn(cr, k, hits, w - PAD - bw - 12, y + (nh - BTN_H) / 2, "Learn letters now", ui.build_letters, w=bw)
+        btn(cr, k, hits, w - PAD - bw - 12, y + (nh - BTN_H) / 2, "Learn letters now", ui.build_letters, w=bw, fit=True)
         y += nh + 12
     lbl(cr, k, "Strength" if k.name == "white" else "strength", PAD, y)
     y += 22
