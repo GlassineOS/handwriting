@@ -26,14 +26,14 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
  * leaves a correction out, "trace=0" the check of the glyph traced on the ink's points,
  * "set=0" the words set at Neatest (above Strong the pull goes on, all the way at 1),
  * "margin=M" sets the shape guard's margin, "tail=0", "bar=0", "frag=0" leave out Neatest's
- * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules; words are set
- * conditioned on their ink (FR-043), "cond=0" on the straight line at the font's lean,
- * "cond=2" on their line's (struct hw_neat cond) */
+ * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules; words are set on
+ * the straight line at the font's lean (FR-043), "cond=1" conditioned on their ink, "cond=2"
+ * on their line's (struct hw_neat cond) */
 static struct { int base, slant, size, space, pull, trace, set, tail, bar, frag, cond; double margin; } on;
 static void knobs(void)
 {
 	on.base = on.slant = on.size = on.space = on.pull = on.trace = on.set = on.tail = on.bar = on.frag = 1;
-	on.cond = 1;
+	on.cond = 0;
 	on.margin = HW_NEAT_GUARD_MARGIN;
 	const char *e = getenv("GLASSINE_HANDWRITING_NEATEN");
 	if (!e) return;
@@ -2326,7 +2326,7 @@ static int set_words(struct hw_neat *q, const struct hw_letters *V0, const struc
 	int *gv = malloc((nc + 1) * sizeof *gv), *jk = malloc((nc + 1) * sizeof *jk);
 	unsigned char *kept = calloc(nc + 1, 1);
 	double *fa = malloc((nc + 1) * sizeof *fa), *fb = malloc((nc + 1) * sizeof *fb);
-	int cond = q->cond < 0 ? 0 : q->cond ? q->cond : on.cond;
+	int cond = q->cond ? q->cond : on.cond;
 	struct wframe *F = NULL;
 	if (!pen || !word || !sw || !npts || !ron || !gv || !jk || !kept || !fa || !fb || hw_base_layout(V0, &W, &bg, &nbg)) goto out;
 	for (size_t k = 0; k < nc; k++) fa[k] = 1, fb[k] = 0;
