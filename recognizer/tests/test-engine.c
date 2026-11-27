@@ -1021,9 +1021,7 @@ static void test_neaten_joined(void)
 		 "{\"joined\":\"cu\",\"samples\":3,\"written\":3,\"of\":3,\"variant\":{\"width\":1.05,\"weight\":3,\"members\":3,\"use\":3,\"strokes\":[[%s]]}}\n", ps);
 	if (hw_letters_parse(model2, &L) || L.njoined != 1) { CHECK(0, "neaten joined pair: model"); hw_ink_free(&ink); return; }
 	for (int lv = 0; lv < 2; lv++) {
-		/* (set on the straight line: the conditioned setting maps the set word onto the ink) */
-		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh,
-				     .confirmed = 1, .cond = -1 };
+		struct hw_neat q = { .ink = &ink, .n = 1, .cp = cp, .nc = 2, .own = &ownp, .strength = lv ? 1 : 0.75, .L = &L, .xh = xh, .confirmed = 1 };
 		if (hw_neaten(&q)) { CHECK(0, "neaten joined pair: memory"); break; }
 		int w = lv ? HW_NEAT_WHY_SET : HW_NEAT_WHY_PULLED;
 		CHECK(q.pulled && q.pulled[0] && q.pulled[1] && q.why[0] == w && q.why[1] == w, "neaten joined pair: %d: not both", lv);
