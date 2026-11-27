@@ -1957,9 +1957,11 @@ static int own_chars(struct hw_sample *s, const unsigned *cps, size_t nc, char *
 	}
 	/* a character whose ink a neighbour's stroke in its word crosses or starts on (a bar
 	 * or a bowl written on into the next letter, a lead-in through the last) has a part
-	 * of it in the other's ink and the other a part of it: neither is a whole letter */
+	 * of it in the other's ink and the other a part of it: neither is a whole letter (not in
+	 * a sample whose strokes were cut at its joins: there one letter's stroke ends where the
+	 * next one's begins by the cut) */
 	char *part = calloc(nc + 1, 1);
-	for (size_t k = 0; part && k < nc && k < s->nspans; k++) {
+	for (size_t k = 0; part && !s->cut_at_joins && k < nc && k < s->nspans; k++) {
 		if (!s->spans[k] || cps[k] == ' ') continue;
 		double b[4] = { INFINITY, INFINITY, -INFINITY, -INFINITY };
 		for (const int *p = s->spans[k]; *p >= 0; p++) if ((size_t)*p < s->nstrokes) ink_box(&s->strokes[*p], b);

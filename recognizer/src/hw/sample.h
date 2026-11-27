@@ -42,6 +42,7 @@ struct hw_sample {
 	char donor[40];                 /* donated samples only: the donor ID ("" otherwise) */
 	char written[8];                /* how it was written: careful, quick, or "" */
 	char pair[17];                  /* the pair's link (16 hex digits) both samples carry, or "" */
+	int cut_at_joins;               /* its strokes were cut where the pen joined letters (docs/samples.md) */
 	struct hw_units units;
 	struct hw_ink *strokes;
 	size_t nstrokes;

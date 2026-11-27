@@ -835,6 +835,60 @@ def cmd_gen4_letters(a):
     build4_.render_set(Path(a.out), build4_.jobs_of(texts, a.seed), g, lw, a.workers, meta)
 
 
+def cmd_brushletters(a):
+    """Letter models of BRUSH's training writers (brushletters.py), private: OUT/<n>/model
+    and OUT/hands.json."""
+    from . import brushletters as BL
+    from .lines import CHARS4
+    from .realink import brush_split
+    from .alignrun import _writer_xh
+    by, _ = brush_split(Path(a.dataset), a.seed, a.test_writers, a.dev_writers, a.held_texts, CHARS4)
+    per = {}
+    for ln in by[a.part]:
+        per.setdefault(ln.writer, []).append(ln)
+    if a.writers:
+        per = {w: per[w] for w in sorted(per)[:a.writers]}
+    man = BL.build_all(per, Path(a.bin), Path(a.models), Path(a.out), a.way, Path(a.aligner) if a.aligner else None,
+                       _writer_xh(by[a.part]) if a.way == "aligner" else None, a.workers, Path(a.tmp) if a.tmp else None)
+    cov = [len(h["covered"]) for h in man["hands"]]
+    print(json.dumps({"hands": len(cov), "covered_median": float(np.median(cov)) if cov else 0}))
+
+
+def cmd_gen4_hands(a):
+    """Lines in the hands of a hands list (hands.py): per hand --lines lines of every kind
+    (lines.SHARES) in its own hand and --mixed of them with words in 2-3 hands, as two ink
+    sets (OUT/hands, OUT/hands_mixed). What they write is the hands' (private)."""
+    from . import hands as H
+    build4, gen, L, lg, fit, fj = _gen4_setup(a, held=False)
+    hands = H.load_hands(Path(a.hands), a.seed)
+    tabs, covers = build4.font_tables(a.donor_fonts or font_splits()["train"], Path("build/cache"), a.workers)
+    donor = gen.FontWriter(tabs, covers)
+    g = gen.Generator(None, fit, [(0.4, 1.2)], residual=1.0)
+    rng = np.random.default_rng(a.seed)
+    cal = [t for t, _ in lg.lines(a.calibrate_lines, int(rng.integers(1 << 30)), {"prose": 1.0})]
+    H.calibrate_all(g, hands, cal, a.workers, a.seed)
+    n_mixed = int(round(a.lines * a.mixed))
+    jobs = {"hands": [], "hands_mixed": []}
+    for h in hands:
+        texts = []
+        for t, k in lg.lines(a.lines * 4, int(rng.integers(1 << 30))):
+            if len(texts) >= a.lines:
+                break
+            if all(c in L.CHARS4 for c in t) and H.plan_line(t, hands, hands.index(h), False, donor,
+                                                               np.random.default_rng(0)) is not None:
+                texts.append((t, k))
+        for i, (t, k, s) in enumerate(build4.jobs_of(texts, int(rng.integers(1 << 30)))):
+            jobs["hands_mixed" if i < n_mixed else "hands"].append((t, k, s, hands.index(h), i < n_mixed))
+    meta = {"generator": "glassine_train.hands", "alphabet": L.CHARS4, "seed": a.seed, "hands": len(hands),
+            "joins": {"curve": H.CURVE, "calibrated": [round(h.join, 3) for h in hands]},
+            "donor_max": H.DONOR_MAX}
+    out = Path(a.out)
+    out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name, js in jobs.items():
+        m = H.render(out / name, js, g, hands, donor, a.workers, dict(meta, mixed=name == "hands_mixed"))
+        print(f"{name}: {m['lines']} lines, donor {m['donor_lines']}, mixed {m['mixed_lines']}, failed {m['failed']}")
+
+
 def cmd_dynfit(a):
     """The timing model (timing.py) fitted to real ink, with delayed strokes and spacing:
     aggregate numbers only, written to --out."""
@@ -1165,6 +1219,35 @@ def main(argv=None):
     gl.add_argument("--names", default="build/names")
     gl.add_argument("--given", default="ssa", choices=["ssa", "census"], help="the given-name lists (lines.GIVEN_SOURCES)")
     gl.add_argument("--wordlist", default="build/lexicon/en/words.txt")
+    bl = sub.add_parser("brushletters", help="letter models of BRUSH's training writers (private)")
+    bl.add_argument("dataset", help="the BRUSH directory or ZIP")
+    bl.add_argument("--out", required=True)
+    bl.add_argument("--bin", required=True, help="the recognizer program")
+    bl.add_argument("--models", required=True, help="its models directory")
+    bl.add_argument("--way", default="labels", choices=["labels", "aligner"])
+    bl.add_argument("--aligner", help="the point aligner's checkpoint (--way aligner)")
+    bl.add_argument("--part", default="train", choices=["train", "dev", "test"])
+    bl.add_argument("--seed", type=int, default=5)
+    bl.add_argument("--test-writers", type=float, default=0.2)
+    bl.add_argument("--dev-writers", type=float, default=0.05)
+    bl.add_argument("--held-texts", type=float, default=0.2)
+    bl.add_argument("--writers", type=int, help="the first N writers only")
+    bl.add_argument("--workers", type=int, default=8)
+    bl.add_argument("--tmp")
+    gh = sub.add_parser("gen4-hands", help="lines in letter models' hands (hands.py; private)")
+    gh.add_argument("hands", help="a hands list (brushletters' hands.json)")
+    gh.add_argument("--out", required=True)
+    gh.add_argument("--lines", type=int, default=200, help="lines per hand")
+    gh.add_argument("--mixed", type=float, default=0.3, help="share of them with words in 2-3 hands")
+    gh.add_argument("--donor-fonts", nargs="*", help="donor fonts (default: the training fonts)")
+    gh.add_argument("--calibrate-lines", type=int, default=20)
+    gh.add_argument("--seed", type=int, default=53)
+    gh.add_argument("--workers", type=int, default=8)
+    gh.add_argument("--fit", help="timing fit (glassine-train dynfit); default timing.FIT_ONE_WRITER")
+    gh.add_argument("--gclm", default="build/release/glassine-handwriting-chars-en-1/chars.gclm")
+    gh.add_argument("--names", default="build/names")
+    gh.add_argument("--given", default="ssa", choices=["ssa", "census"])
+    gh.add_argument("--wordlist", default="build/lexicon/en/words.txt")
     df = sub.add_parser("dynfit", help="timing, delayed strokes and spacing of real ink (aggregates)")
     df.add_argument("--real", default="build/real")
     df.add_argument("--out", required=True)
@@ -1188,7 +1271,7 @@ def main(argv=None):
     ic.add_argument("--sheet", help="a PNG of some lines")
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
-    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "writerseval": cmd_writerseval, "brushset": cmd_brushset, "personset": cmd_personset, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
+    {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "writerseval": cmd_writerseval, "brushset": cmd_brushset, "personset": cmd_personset, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "brushletters": cmd_brushletters, "gen4-hands": cmd_gen4_hands, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
      "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
