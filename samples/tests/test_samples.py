@@ -2149,5 +2149,196 @@ class Sized(unittest.TestCase):
                            cwd=str(Path(__file__).resolve().parents[1]), timeout=60)
         self.assertEqual(r.stdout.strip().splitlines()[-1:], ["None"], r.stderr[-400:])
 
+class Split(unittest.TestCase):
+    """a page longer than the window is split in several (no scrolling): at Large with the
+    text at 150 %, upright and turned, every screen in every voice keeps all its ink and tap
+    targets inside the window (each part of a writing page inside its part, the writing
+    area at its least height), each of its pages in turn, and together the pages offer every
+    control the page has; a page that fits is drawn as without the splitting (needs GTK and
+    glassine_ui)"""
+    PANEL = 8.943
+    SIZES = ((1404, 1768), (1872, 1300))      # the window on the panel, upright and turned (below the bar)
+
+    def setUp(self):
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            import cairo
+            from glassine_hwsamples import pages, paging, ui
+            from glassine_ui import size as S, voices
+        except (ImportError, ValueError) as e:
+            self.skipTest("no GTK or glassine_ui: %s" % e)
+        from glassine_hwsamples.look import Hits
+        self.cairo, self.U, self.P, self.PG, self.S, self.V, self.Hits = cairo, ui, pages, paging, S, voices, Hits
+        self.addCleanup(S.set_metrics)
+
+    def unsplit(self):
+        """the splitting off, for the drawing without it"""
+        plan = self.PG.plan
+        self.PG.plan = lambda draw, w, h: None
+        self.addCleanup(setattr, self.PG, "plan", plan)
+        return lambda: setattr(self.PG, "plan", plan)
+
+    def key(self, fn):
+        """what a tap does, the same across repaints (a bound method, or a function with its
+        defaults and what it closes over)"""
+        if hasattr(fn, "__func__"):
+            return (fn.__func__, id(fn.__self__))
+        if not hasattr(fn, "__code__"):
+            return id(fn)
+        cells = tuple(self.key(v) if callable(v) else repr(v) if isinstance(v, (str, int, float, tuple, type(None)))
+                      else id(v) for v in (c.cell_contents for c in fn.__closure__ or ()))
+        return (fn.__code__, repr(fn.__defaults__), cells)
+
+    def pager_fn(self, fn):
+        """a button of the split's own pager (pages.paged)"""
+        if getattr(fn, "__code__", None) not in {c for c in self.P.pager.__code__.co_consts if hasattr(c, "co_code")}:
+            return False
+        return any("_paged" in getattr(c.cell_contents, "__qualname__", "") for c in fn.__closure__ or ())
+
+    def ink(self, draw):
+        """draw(cr, hits) into a recording -> (the ink's lowest edge, its tap targets)"""
+        rec = self.cairo.RecordingSurface(self.cairo.CONTENT_COLOR_ALPHA, None)
+        hits = self.Hits()
+        draw(self.cairo.Context(rec), hits)
+        x, y, w, h = rec.ink_extents()
+        return (y + h if h > 0 else 0), hits
+
+    def regions(self, u, W, H, canvas):
+        """the parts drawn on their own: [(name, flow key, w, h, draw(cr, hits))]"""
+        U, P = self.U, self.P
+        if not U.writing(u):
+            return [("full", "full", W, H, lambda c, hh: P.paint_full(c, u, hh, W, H))]
+        out = []
+        for name, (x, y, w, h) in U.layout(u, W, H, canvas).items():
+            if name == "area":
+                self.assertGreaterEqual(h, U.AREA_MIN - 1, (name, w, h))
+            elif name == "side":
+                top, bottom = U.parts(u)
+                th, bh = U.side_heights(u, w - 2, h, canvas)
+                kw = {"foot": False} if u.page == "wizard" else {}
+                P.LAND[0] = True
+                out.append(("side top", "top", w - 2, th, lambda c, hh, w=w, th=th: P.paged(
+                    c, u, hh, w - 2, th, "top", lambda c2, h2: top(c2, u, h2, w - 2, head=False))))
+                out.append(("side bottom", "bottom", w - 2, bh, lambda c, hh, w=w, bh=bh, kw=kw: P.paged(
+                    c, u, hh, w - 2, bh, "bottom", lambda c2, h2: bottom(c2, u, h2, w - 2, bh, canvas, **kw))))
+            else:
+                out.append((name, name, w, h, lambda c, hh, n=name, w=w, h=h: U.paint_part(n, c, u, hh, w, h, canvas)))
+        return out
+
+    def check_screen(self, s, voice, px, step, text):
+        U, S = self.U, self.S
+        fac = S.factor(self.PANEL, step)
+        W, H = px[0] / fac, px[1] / fac
+        u = U.demo(s, voice)
+        S.set_voice_metrics(self.V.voice(u.theme.name), S.mm_per_px(fac, self.PANEL), text / 100.0)
+        canvas = U.Drawn(None)
+        split = 0
+        for name, key, w, h, draw in self.regions(u, W, H, canvas):
+            what = (voice, px, s, name)
+            restore = self.unsplit()
+            self.ink(draw)                      # a page that looks its state up on its first paint
+            _, whole = self.ink(draw)
+            restore()
+            want = {self.key(fn) for *_, fn in whole.boxes}
+            u.flow.pop(key, None)
+            self.ink(draw)
+            n = u.flow[key][2] if key in u.flow else 1
+            split += n > 1
+            got, k = set(), 0
+            while True:
+                end, hits = self.ink(draw)
+                self.assertLessEqual(end, h + self.PG.SLACK + 0.5, what + (k, n))   # (a card's shadow, as at Default)
+                for x, y, bw, bh, fn in hits.boxes:
+                    if (bw, bh) == (w, h) or bw >= w and bh >= h:       # a dialog's backdrop
+                        continue
+                    self.assertTrue(-0.5 <= x and x + bw <= w + 0.5 and -0.5 <= y and y + bh <= h + 0.5,
+                                    what + (k, x, y, bw, bh))
+                got |= {self.key(fn) for *_, fn in hits.boxes if not self.pager_fn(fn)}
+                if k == n - 1:
+                    break
+                # the pager's next page: its right-hand button
+                pg = sorted((x, fn) for x, _, _, _, fn in hits.boxes if self.pager_fn(fn))
+                self.assertEqual(len(pg), 1 if k == 0 else 2, what + (k, n))
+                pg[-1][1]()
+                k += 1
+                self.assertEqual(u.flow[key][1], k, what)
+            self.assertEqual(got, want, what + (n,))
+        return split
+
+    def test_large_text_150(self):
+        """Large, the text at 150 %: nothing runs off, and many pages are split to fit"""
+        split = 0
+        for voice in ("white", "editorial", "stationery"):
+            for px in self.SIZES:
+                for s in self.U.SCREENS:
+                    with self.subTest(voice=voice, size=px, screen=s):
+                        split += self.check_screen(s, voice, px, 120, 150)
+        self.assertGreater(split, 30)
+
+    def test_large_text_125(self):
+        for px in self.SIZES:
+            for s in self.U.SCREENS:
+                with self.subTest(size=px, screen=s):
+                    self.check_screen(s, "white", px, 120, 125)
+
+    def test_default_as_without(self):
+        """Default, the text at 100 %, upright and turned on the panel: a screen that fits its
+        window is drawn byte for byte as without the splitting (a body under its foot too, as
+        designed); one split there runs off its window without it"""
+        U, S = self.U, self.S
+        fac = S.factor(self.PANEL, 100)
+        for voice in ("white", "editorial", "stationery"):
+            for px in ((1404, 1768), (2496, 1404)):
+                W, H = px[0] / fac, px[1] / fac
+                for s in U.SCREENS:
+                    ink = U.demo_ink("quiet", 5)[0] if s in ("write.ink", "wizard.try", "guest.try") else None
+                    out = []
+                    for off in (False, True):
+                        u = U.demo(s, voice)
+                        S.set_voice_metrics(self.V.voice(u.theme.name), S.mm_per_px(fac, self.PANEL), 1.0)
+                        restore = self.unsplit() if off else None
+                        surf, cr = U.surface(W, H, fac)
+                        U.paint(cr, u, W, H, ink)
+                        surf.flush()
+                        out.append((bytes(surf.get_data()), dict(u.flow)))
+                        if restore:
+                            restore()
+                    if not out[0][1]:
+                        self.assertEqual(out[0][0], out[1][0], (voice, px, s))
+                        continue
+                    # split: without it, the page runs off its window there
+                    u = U.demo(s, voice)
+                    S.set_voice_metrics(self.V.voice(u.theme.name), S.mm_per_px(fac, self.PANEL), 1.0)
+                    restore = self.unsplit()
+                    for name, key, w, h, draw in self.regions(u, W, H, U.Drawn(ink)):
+                        if key in out[0][1]:
+                            self.ink(draw)
+                            end, _ = self.ink(draw)
+                            self.assertGreater(end, h + self.PG.SLACK, (voice, px, s, name))
+                    restore()
+
+    def test_page_shown_starts_again(self):
+        """the page shown of a split is kept while the screen stays, and starts at the first
+        when another page or view is opened"""
+        U, S = self.U, self.S
+        fac = S.factor(self.PANEL, 120)
+        W, H = 1404 / fac, 1768 / fac
+        u = U.demo("donate.off", "white")
+        S.set_voice_metrics(self.V.voice(u.theme.name), S.mm_per_px(fac, self.PANEL), 1.5)
+        draw = lambda c, hh: self.P.paint_full(c, u, hh, W, H)
+        self.ink(draw)
+        self.assertGreater(u.flow["full"][2], 1)
+        _, hits = self.ink(draw)
+        [fn for *_, fn in hits.boxes if self.pager_fn(fn)][0]()
+        self.ink(draw)
+        self.assertEqual(u.flow["full"][1], 1)
+        u.go("learn")
+        self.assertEqual(u.flow, {})
+        u.go("donate")
+        self.ink(draw)
+        self.assertEqual(u.flow["full"][1], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

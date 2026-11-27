@@ -193,6 +193,12 @@ export them as one file in the sample format; nothing leaves the device otherwis
   (FR-012) and its Skip, the way back from the list of writers, and the note after Finish
   go to Write; the ways back from the parts of Autograph go to the font page.
 
+  Nothing scrolls. A page longer than its window (at a large interface size or text size,
+  or turned) is split into pages: its head and its buttons stay, and the rest is shown a
+  page at a time, with which page it is ("Page 2 of 3") and the way to the one before and
+  after. The parts around the writing area are split the same way, so the writing area
+  keeps room to write in. Every control of the page is on one of its pages.
+
 ### Other writers
 
 - **FR-014**: Writers: the app opens in the owner's session. Beside it, the app keeps a list

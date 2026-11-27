@@ -210,17 +210,37 @@ def btn(cr, k, hits, x, y, label, fn, pri=False, icon_name=None, w=None, h=BTN_H
     return w
 
 
-def btns_right(cr, k, hits, right, y, items, gap=10):
-    """[(label, fn, pri)] from the right edge leftwards; -> the left edge"""
-    x = right
+def btn_rows(cr, k, items, room, gap=10):
+    """the rows [(label, fn, pri)] take in a row room wide, filled from the right (the last
+    item on the lowest row; those that don't fit go on rows above)"""
+    rows, x = [[]], room
     for it in reversed(items):
-        label, fn, pri = it[:3]
-        ic = it[3] if len(it) > 3 else None
-        w = btn_w(cr, k, label, ic)
-        x -= w
-        btn(cr, k, hits, x, y, label, fn, pri, ic, w=w)
-        x -= gap
-    return x + gap
+        w = btn_w(cr, k, it[0], it[3] if len(it) > 3 else None)
+        if rows[-1] and w > x:
+            rows.append([])
+            x = room
+        rows[-1].append(it)
+        x -= w + gap
+    return rows
+
+
+def btns_right(cr, k, hits, right, y, items, gap=10, room=None):
+    """[(label, fn, pri)] from the right edge leftwards, in rows above y when they don't fit
+    in room (see btn_rows); -> the left edge of the lowest row"""
+    rows = btn_rows(cr, k, items, room, gap) if room else [list(reversed(items))]
+    out = right
+    for r, row in enumerate(rows):
+        x = right
+        for it in row:
+            label, fn, pri = it[:3]
+            ic = it[3] if len(it) > 3 else None
+            w = btn_w(cr, k, label, ic)
+            x -= w
+            btn(cr, k, hits, x, y - r * (BTN_H + gap), label, fn, pri, ic, w=w)
+            x -= gap
+        if r == 0:
+            out = x + gap
+    return out
 
 
 def card(cr, k, x, y, w, h, on=False, bg=None):
