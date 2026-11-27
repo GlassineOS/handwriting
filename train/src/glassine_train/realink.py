@@ -158,8 +158,10 @@ def text_groups(texts: list[str]) -> dict[str, str]:
 
 
 def brush_split(path: Path, seed: int, test_writers: float, dev_writers: float, held_texts: float,
-                alphabet: str) -> tuple[dict[str, list[brush.Line]], dict]:
-    """{part: lines} (train, dev, test) and the split's record (module docstring)."""
+                alphabet: str, others: dict | None = None) -> tuple[dict[str, list[brush.Line]], dict]:
+    """{part: lines} (train, dev, test) and the split's record (module docstring). `others`:
+    a dict to receive the lines each part leaves out (a dev or test writer's lines of the
+    training texts, a training writer's of the held-out texts), by the writer's part."""
     from .real import _norm
     by = {"train": [], "dev": [], "test": []}
     stats = {"read": 0, "outside_alphabet_left_out": 0, "stripped": 0, "other_part_left_out": 0}
@@ -179,6 +181,8 @@ def brush_split(path: Path, seed: int, test_writers: float, dev_writers: float, 
         wp = part_of(seed, "writer", s.writer, [("test", test_writers), ("dev", dev_writers)], "train")
         if (group[_norm(orig)] in held_groups) != (wp != "train"):
             stats["other_part_left_out"] += 1
+            if others is not None:
+                others.setdefault(wp, []).append(s)
             continue
         by[wp].append(s)
     rec = {"seed": seed, "shares": {"test_writers": test_writers, "dev_writers": dev_writers, "held_texts": held_texts},

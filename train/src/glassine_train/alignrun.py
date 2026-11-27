@@ -11,8 +11,19 @@ not wired into the product).
   and the share of letters left without ink in a stroke that holds them. Methods: the
   aligner (text alone, and with the stroke-level spans), the recognizer's alignment
   (`align`), and point labels given from elsewhere (a file).
+- `brush`: the BRUSH dataset's lines (brush.py) as aligner sets, by the base model's split
+  (realink.brush_split, the same seed): train (the training writers' lines of the training
+  texts), dev and test per writer (the dev and test writers' lines of the held-out texts),
+  each test writer with its lines of the training texts as its letter lines. Its point labels
+  are the dataset's own: made by the authors' segmentation network (a chain loss like
+  aligner.chain_loss, without a person marking the cuts), not drawn by a person, so they
+  teach and measure agreement with that network. The files have no times: points are 10 ms
+  apart (the dataset's resampling) and every pause between strokes is drawn on its own
+  (`brush_pauses`), so the pause the aligner reads tells nothing about a BRUSH line.
 
-Synthetic ink only: no person's ink in this module's sets.
+The synthetic sets hold no person's ink. The BRUSH sets hold other people's ink: private
+directories only (`brush` makes its directory 0700 and its files 0600), never a repository,
+CI, a pull request, a release or a log; what it prints is counts.
 """
 
 import json
@@ -246,6 +257,121 @@ def mix(out: Path, parts: list[tuple[Path, Path]]):
         print(f"{name}: {len(data)} lines", flush=True)
 
 
+# ---------------------------------------------------------------------------- BRUSH
+
+BRUSH_DT = 0.01  # seconds between points within a stroke (the dataset's 10 ms resampling)
+# pauses between strokes: lognormal as the generator's (median and log spread of its
+# aligner sets' pauses), drawn per stroke, so they carry nothing about the line
+BRUSH_PAUSE, BRUSH_PAUSE_SIGMA = 0.11, 0.65
+
+
+def brush_pauses(n: int, rng) -> np.ndarray:
+    return BRUSH_PAUSE * rng.lognormal(0.0, BRUSH_PAUSE_SIGMA, n)
+
+
+def brush_line(ln, xh: float, rng) -> dict:
+    """A BRUSH line (brush.Line) as an aligner line: strokes (x, y in box heights, t),
+    each point's character (a space's points, if any, none: -1), its spans and the
+    writer's small-letter height `xh` (box heights)."""
+    from . import brush
+    em = brush.BOX_H
+    idx = brush.strokes_of(ln)
+    pz = brush_pauses(len(idx), rng)
+    strokes, owner, spans = [], [], [[] for _ in ln.text]
+    t = 0.0
+    for j, ii in enumerate(idx):
+        ts = t + np.arange(len(ii)) * BRUSH_DT
+        strokes.append(np.c_[ln.xy[ii] / em, ts].astype(np.float32))
+        o = np.array([c if ln.text[c] != " " else -1 for c in ln.owner[ii].tolist()], np.int16)
+        owner.append(o)
+        for c in set(o.tolist()):
+            if c >= 0:
+                spans[c].append(j)
+        t = float(ts[-1]) + float(pz[j])
+    return {"text": ln.text, "strokes": strokes, "spans": [sorted(x) for x in spans], "owner": owner,
+            "xh": float(xh), "line": 1.0}
+
+
+def joined_in_stroke(ln) -> bool:
+    """A character's label changes inside a stroke (a pen-down join)."""
+    from . import brush
+    return any(np.any(np.diff(ln.owner[i]) != 0) for i in brush.strokes_of(ln))
+
+
+def _writer_xh(lines) -> dict[str, float]:
+    """Per writer the median small-letter height (box heights) of its lines, as the
+    recognizer measures a person's (inkmeasure.small_height); writers with fewer than five
+    measured lines get the median of the others."""
+    from .inkmeasure import small_height
+    from . import brush
+    hs: dict[str, list] = {}
+    for ln in lines:
+        st = [ln.xy[i] / brush.BOX_H for i in brush.strokes_of(ln)]
+        sp = [[] for _ in ln.text]
+        for j, i in enumerate(brush.strokes_of(ln)):
+            for c in set(ln.owner[i].tolist()):
+                sp[c].append(j)
+        h = small_height(st, sp, ln.text)
+        hs.setdefault(ln.writer, [])
+        if h > 0:
+            hs[ln.writer].append(h)
+    good = {w: float(np.median(v)) for w, v in hs.items() if len(v) >= 5}
+    fall = float(np.median(list(good.values()))) if good else 0.2
+    return {w: good.get(w, fall) for w in hs}
+
+
+def make_brush(path: Path, out: Path, seed: int = 5, joined_copies: int = 1, letter_lines: int = 100,
+               data_seed: int = 17) -> dict:
+    """out/train.pkl (a list; lines with a join inside a stroke `joined_copies` times, each
+    with its own pauses), out/dev.pkl (a list) and out/dev-writers.pkl, out/test.pkl (per
+    writer {"letters", "test"}), by realink.brush_split at `seed` (the base model's split).
+    Returns counts only."""
+    import os
+    from .lines import CHARS4
+    from .realink import brush_split, private_dir
+    private_dir(out)
+    others: dict = {}
+    by, rec = brush_split(Path(path), seed, 0.2, 0.05, 0.2, CHARS4, others)
+    xh = _writer_xh([ln for v in by.values() for ln in v] + [ln for v in others.values() for ln in v])
+    rng = np.random.default_rng(data_seed)
+    counts = {"split": rec["counts"]}
+
+    def put(name, obj):
+        f = out / name
+        f.write_bytes(pickle.dumps(obj))
+        os.chmod(f, 0o600)
+
+    train = []
+    nj = 0
+    for ln in by["train"]:
+        j = joined_in_stroke(ln)
+        nj += j
+        for _ in range(joined_copies if j else 1):
+            train.append(brush_line(ln, xh[ln.writer], rng))
+    order = rng.permutation(len(train))
+    put("train.pkl", [train[i] for i in order])
+    counts["train"] = {"lines": len(by["train"]), "joined_lines": nj, "written": len(train)}
+    dev = [brush_line(ln, xh[ln.writer], rng) for ln in by["dev"]]
+    put("dev.pkl", dev)
+    devw: dict = {}
+    for ln, d in zip(by["dev"], dev):
+        devw.setdefault(ln.writer, {"letters": [], "test": []})["test"].append(d)
+    put("dev-writers.pkl", devw)
+    test: dict = {}
+    for ln in by["test"]:
+        test.setdefault(ln.writer, {"letters": [], "test": []})["test"].append(brush_line(ln, xh[ln.writer], rng))
+    for ln in others.get("test", []):
+        w = test.get(ln.writer)
+        if w is not None and len(w["letters"]) < letter_lines:
+            w["letters"].append(brush_line(ln, xh[ln.writer], rng))
+    put("test.pkl", test)
+    counts["dev"] = {"writers": len(devw), "lines": len(dev), "joined_lines": sum(map(joined_in_stroke, by["dev"]))}
+    counts["test"] = {"writers": len(test), "lines": sum(len(w["test"]) for w in test.values()),
+                      "joined_lines": sum(map(joined_in_stroke, by["test"])),
+                      "letter_lines": sum(len(w["letters"]) for w in test.values())}
+    return counts
+
+
 # ---------------------------------------------------------------------------- training
 
 def prepare(lines: list[dict], kind: str = "point") -> list[tuple[np.ndarray, list[int], np.ndarray]]:
@@ -274,17 +400,25 @@ def prepare(lines: list[dict], kind: str = "point") -> list[tuple[np.ndarray, li
 
 
 def train(data: Path, out: Path, steps: int, batch: int = 24, lr: float = 2e-3, hidden: int = 128,
-          threads: int = 8, seed: int = 0, minutes: float = 1e9, ce: float = 0.0, kind: str = "point"):
+          threads: int = 8, seed: int = 0, minutes: float = 1e9, ce: float = 0.0, kind: str = "point",
+          init: Path | None = None, save_every: int = 0):
     """The chain loss per frame; ce > 0 adds that weight of a frame-level cross-entropy on
     the generator's own point labels (joins left out), which the chain loss alone doesn't
-    need but which keeps the alignment from settling where the likelihood is as good."""
+    need but which keeps the alignment from settling where the likelihood is as good.
+    init: a checkpoint to start from (its kind and size); save_every > 0: also a checkpoint
+    every that many steps (OUT-stepN.pt), to choose one by a measure other than the dev loss."""
     torch.set_num_threads(threads)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     tr = prepare(pickle.loads((data / "train.pkl").read_bytes()), kind)
     dv = prepare(pickle.loads((data / "dev.pkl").read_bytes()), kind)[:400]
     print(f"train {len(tr)} lines, dev {len(dv)}", flush=True)
+    if init is not None:
+        ck = torch.load(init, weights_only=True)
+        kind, hidden = ck.get("kind", "prototype"), ck["hidden"]
     m = A.PointAligner(hidden) if kind == "point" else A.Aligner(hidden)
+    if init is not None:
+        m.load_state_dict(ck["state"])
     opt = torch.optim.AdamW(m.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps, pct_start=0.1)
     order = np.argsort([len(x) for x, *_ in tr])
@@ -328,6 +462,10 @@ def train(data: Path, out: Path, steps: int, batch: int = 24, lr: float = 2e-3, 
                 best = dl
                 out.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({"state": m.state_dict(), "hidden": hidden, "step": step + 1, "dev": dl, "kind": kind}, out)
+        if save_every and (step + 1) % save_every == 0:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({"state": m.state_dict(), "hidden": hidden, "step": step + 1, "kind": kind},
+                       out.with_name(f"{out.stem}-step{step + 1}.pt"))
         if time.time() - t0 > minutes * 60:
             break
 
@@ -588,6 +726,14 @@ def main(argv=None):
     t.add_argument("--minutes", type=float, default=1e9)
     t.add_argument("--ce", type=float, default=0.0, help="weight of a frame cross-entropy on the generator's labels")
     t.add_argument("--kind", choices=["point", "prototype"], default="point")
+    t.add_argument("--init", type=Path, help="a checkpoint to start from")
+    t.add_argument("--save-every", type=int, default=0, help="also a checkpoint every this many steps")
+    b = sub.add_parser("brush", help="BRUSH's lines as aligner sets by the base model's split (private output)")
+    b.add_argument("brush", type=Path, help="the dataset's directory or ZIP")
+    b.add_argument("--out", type=Path, required=True)
+    b.add_argument("--seed", type=int, default=5, help="the split's seed (the base model's: 5)")
+    b.add_argument("--joined-copies", type=int, default=1, help="lines with a join inside a stroke this many times")
+    b.add_argument("--letter-lines", type=int, default=100)
     e = sub.add_parser("export")
     e.add_argument("ckpt", type=Path)
     e.add_argument("out", type=Path)
@@ -604,6 +750,8 @@ def main(argv=None):
                   letters=a.letters, share=a.share)
     elif a.cmd == "joined":
         make_joined(Path(a.out), a.train, a.dev, a.test_lines, a.workers)
+    elif a.cmd == "brush":
+        print(json.dumps(make_brush(a.brush, a.out, a.seed, a.joined_copies, a.letter_lines)), flush=True)
     elif a.cmd == "mix":
         mix(a.out, [tuple(Path(q) for q in p.split(":")) for p in a.parts])
     elif a.cmd == "export":
@@ -627,7 +775,7 @@ def main(argv=None):
         a.out.write_text(json.dumps(res, indent=1))
     else:
         train(Path(a.data), Path(a.out), a.steps, a.batch, a.lr, a.hidden, a.threads, minutes=a.minutes, ce=a.ce,
-              kind=a.kind)
+              kind=a.kind, init=a.init, save_every=a.save_every)
 
 
 if __name__ == "__main__":
