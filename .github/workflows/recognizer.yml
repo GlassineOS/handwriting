@@ -21,7 +21,7 @@ jobs:
               py3-fonttools harfbuzz-utils fontconfig wayland-dev py3-jsonschema
             # the samples app draws with glassine_ui: the commit the packages build
             git clone -q https://github.com/GlassineOS/ui /tmp/ui
-            git -C /tmp/ui checkout -q f8f97d8583bb50a8caab4492c640f9a081481638
+            git -C /tmp/ui checkout -q 7ff3b84fba110f81b63ac375f548cee4fe13301a
             make -C recognizer OUT=/tmp check
             # the bases of Autograph: Edu SA Beginner and Playwrite DE Grund as the packages fetch
             # them, their centre lines made and checked, then the font over each valid in all three styles
@@ -39,9 +39,9 @@ jobs:
             # stand-in compositor, the protocol the same in all three repositories
             # GlassineOS/sway 1.10.1-glassine1
             git clone -q https://github.com/GlassineOS/sway /tmp/sway
-            git -C /tmp/sway checkout -q 79a3566df4bce6abd0e4ff0a583cf40984b96eaf
+            git -C /tmp/sway checkout -q c4380b89ceb75bf713483f87c1952d7ea992153a
             git clone -q https://github.com/GlassineOS/protocols /tmp/protocols
-            git -C /tmp/protocols checkout -q e0dd2ceeb25bfb73dcf8f06eb961dc3240954588
+            git -C /tmp/protocols checkout -q 76d63069bf9a931d4e7510e24bc21b2c8090d2ec
             cmp client/glassine-handwriting-v1.xml /tmp/protocols/glassine-handwriting-v1.xml
             cmp client/glassine-handwriting-v1.xml /tmp/sway/protocols/glassine-handwriting-v1.xml
             sh /tmp/sway/test/handwriting-standin.sh /tmp/standin
