@@ -543,27 +543,26 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   anew: the glyph the font draws for each character there (the cycle, the context and
   neighbour rules, the joined pairs, chosen over the whole text as the font chooses them) at
   the font's advances and kerning (and the joins' spacing, FR-044), exactly as `hb-shape`
-  places them in the font `font build` makes; made on the straight line (its leftmost glyph
-  point where Strong leaves its leftmost ink, on the line's baseline, at the line's
-  x-height, with the lean the glyphs have), then conditioned on the word as written: mapped
-  (sheared along the line, the baseline followed by each letter's foot) onto the word's own
-  baseline through its letters' lowest points (a word with fewer than two letters on the
-  baseline, or narrower than an x-height, along the line's; the others drawn towards the
-  line's as if they had 2 letters more on it), its own lean (its downstrokes', drawn towards
-  the line's as if it had half an x-height more of them leaning so) and x-height (its
-  letters' median, drawn towards the line's with fewer than 3 letters), the font's advances
-  scaled (0.8 to 1.25) and moved so its letters' middles fit where they were written (least
-  squares); the word stays where it was written. (`GLASSINE_HANDWRITING_NEATEN` `cond=0`, for
-  measurements, leaves it on the straight line; `cond=2` maps every word onto the line's
-  baseline, lean and x-height as written.) Each character's ink (a joined pair's
+  places them in the font `font build` makes; its leftmost glyph point where Strong leaves
+  its leftmost ink, on the line's baseline, at the line's x-height, with the lean the glyphs
+  have. (For measurements, `GLASSINE_HANDWRITING_NEATEN` `cond=1` then conditions it on the
+  word as written: mapped (sheared along the line, the baseline followed by each letter's
+  foot) onto the word's own baseline through its letters' lowest points (a word with fewer
+  than two letters on the baseline, or narrower than an x-height, along the line's; the
+  others drawn towards the line's as if they had 2 letters more on it), its own lean (its
+  downstrokes', drawn towards the line's as if it had half an x-height more of them leaning
+  so) and x-height (its letters' median, drawn towards the line's with fewer than 3
+  letters), the font's advances scaled (0.8 to 1.25) and moved so its letters' middles fit
+  where they were written (least squares), so the word stays where it was written; `cond=2`
+  maps every word onto the line's baseline, lean and x-height as written.) Each character's ink (a joined pair's
   two letters' together), its pieces in the order written, runs along its glyph's strokes
   one after another, each point at its share of the ink's length. A letter is set onto a
   version with as many strokes as its ink has pieces, one each: the font's there when it has
   that many, else the letter's version with that many made from the most samples (the
-  spacing and the joins as the font sets that one); then, of the versions with that many
-  strokes made from at least 3 samples, the one nearest to its ink as written (the word's
-  slope and lean taken off) takes its place, joined to its neighbours as the font joins
-  those versions; with none its ink stays as Strong
+  spacing and the joins as the font sets that one) (with `cond=1` or `2`, then, of the
+  versions with that many strokes made from at least 3 samples, the one nearest to its ink
+  as written, the word's slope and lean taken off, takes its place, joined to its
+  neighbours as the font joins those versions); with none its ink stays as Strong
   leaves it, moved along the line to the middle of the font's glyph there (set where the
   font sets it, with its spacing), and the letter is
   `no-structure` (a piece run over two strokes would draw the pen's lift from one to the
@@ -602,12 +601,12 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
     bar would be lost. The neighbour keeps the rest of its piece, at least a quarter of it,
     so it is still drawn; with less, the bar stays the neighbour's.
   Every letter of the reading keeps ink of its own, so none is left out (one left without
-  any would be `no-ink`). Each word stays where it was written: a word
-  not set (Strong's ink, its middle on the straight line) is mapped onto its own baseline,
-  lean and size the same way, so the line keeps its direction, and no gap between words is
-  widened. (With `cond=0` the gap between two words stays at least as wide as written, or as
-  the font's word gap where that is less: the word on the right moves along the line, set
-  or not.) A joined pair's
+  any would be `no-ink`). Between two words
+  the gap stays at least as wide as written, or as the font's word gap where that is less:
+  the word on the right moves along the line (set or not). (With `cond=1` or `2` each word
+  stays where it was written: a word not set, Strong's ink with its middle on the straight
+  line, is mapped onto its own baseline, lean and size the same way, so the line keeps its
+  direction, and no gap between words is widened.) A joined pair's
   ink keeps the rule it had: as many pieces as the glyph has strokes, one each; otherwise a pen lift moves
   to the end of a glyph's stroke within 0.2 of the glyph's length (each end once, in order).
   Only where the person didn't lift the pen between two letters the ink runs along a join
@@ -1678,7 +1677,7 @@ afterwards is used only after `model use KIND local`. In a writer's store `model
 | `GLASSINE_HANDWRITING_CALIB` | for measurements: `off` reads with no calibration, a number in [0.5, 4] with that temperature (Calibration) |
 | `GLASSINE_HANDWRITING_LOOKALIKE` | for measurements: the share of a look-alike's chance it keeps in a field that leans the other way (Characters, Look-alikes) instead of 0.5; `off` no lean |
 | `GLASSINE_PREDICT_MODELS` | the word predictor's models' directory (Words) |
-| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default), `tail=0`, `bar=0` and `frag=0` leave out Neatest's giving back of an exit tail, of a bar written on into a neighbour, and the keeping as written of a letter whose ink is a fragment beside one kept with more pieces than its versions have, by default each set word is conditioned on the ink as written (Setting the word, above: along its own baseline, at its own lean and x-height, the font's advances scaled and moved to where its letters were written, each letter onto its version nearest to its ink, a word not set mapped the same way, no word gap widened), `cond=0` sets them on the straight line at the line's x-height and the font's lean, with no version chosen by the ink and the word gaps kept at least as written; `cond=2` the same as by default along the line's baseline as written, at the line's lean and x-height for every word (`tools/eval-setting.py` measures them against the other ways; Neatening) |
+| `GLASSINE_HANDWRITING_NEATEN` | for measurements and tests: `base=0`, `slant=0`, `size=0`, `space=0`, `pull=0` leave a correction out, `guard=CHARS` has those characters fail the shape guard once pulled (up to the next comma), `trace=0` leaves out the check of the glyph traced on the ink's points, `set=0` leaves out the words set at Neatest (above Strong each covered letter is pulled further, onto its glyph at 1), `margin=M` sets the shape guard's margin (own versions within M times another character's; 1 by default), `tail=0`, `bar=0` and `frag=0` leave out Neatest's giving back of an exit tail, of a bar written on into a neighbour, and the keeping as written of a letter whose ink is a fragment beside one kept with more pieces than its versions have, by default the set words are on the straight line at the line's x-height and the font's lean, with no version chosen by the ink and the word gaps kept at least as written; `cond=1` sets the same words conditioned on the ink as written (Setting the word, above: each along its own baseline, at its own lean and x-height, the font's advances scaled and moved to where its letters were written, each letter onto its version nearest to its ink, a word not set mapped the same way, no word gap widened); `cond=2` the same as `cond=1` along the line's baseline as written, at the line's lean and x-height for every word (`tools/eval-setting.py` measures them against the other ways; Neatening) |
 | `GLASSINE_HANDWRITING_ALIGNER` | for measurements: `off` uses no point aligner (Neatening, Ownership) |
 | `GLASSINE_HANDWRITING_LOCAL` | for measurements: `off` uses the shipped models whatever the settings `recognizer` and `aligner` say (Installed models) |
 | `GLASSINE_HANDWRITING_LETTERS_CONTEXT` | for measurements: `0` leaves out the letter model's context rules (FR-046), made by default: a letter written between the same two neighbours at least 4 times, the same version in three quarters of them, a version the neighbour rules and the cycle don't show there at least a quarter above its share there, and, checked on samples the rule was not made from, picking the version written more often than they do (at most 8 per letter, before its neighbour rules); the font, its preview and Neatest follow them as they follow neighbour rules (The letter model and the font); it is part of the model's inputs, so a model built without them is made again with them |
