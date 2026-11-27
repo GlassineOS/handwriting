@@ -10,8 +10,8 @@ import time
 import cairo
 from glassine_ui import paint as PT
 
-from . import fontview as FV, models as M, neat as N, prompts as P
-from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_w, btns_right, card, checkbox, chevron_h, chevron_row, dialog, draw_ink,
+from . import fontview as FV, models as M, neat as N, paging as PG, prompts as P
+from .look import (BTN_H, GUEST_TABS, LAND, PAD, TABS, bar, btn, btn_rows, btn_w, btns_right, card, checkbox, chevron_h, chevron_row, dialog, draw_ink,
                    footer, header, icon, icon_rows, ink_bounds, lbl, note, page_head, radio, sep, soft_box, tabs)
 
 SUB = "Teach the tablet your hand"
@@ -124,6 +124,12 @@ def chrome(cr, ui, hits, w):
     return tabs(cr, k, hits, w, y, ui.tab, ui.go, GUEST_TABS if ui.guest else TABS)
 
 
+def ends(cr, ui, by):
+    """the body of a page ends above its foot: the buttons at by and the message line above
+    them (paging.foot)"""
+    PG.foot(cr, by - (40 if ui.msg else 10))
+
+
 def msg_line(cr, ui, y, w):
     if ui.msg:
         PT.text(cr, ui.msg, ui.theme["sub"], PAD, y, ui.theme.ink, maxw=w - 2 * PAD, wrap=True)
@@ -141,9 +147,9 @@ def script_word(cr, k, text, x, y, px, col=None):
 
 def dropdown(cr, k, hits, right, y, label, fn):
     tw, th = PT.measure(cr, label, k["sub"])
-    w = tw + 52
+    w = min(tw + 52, right)             # (no wider than the room left of it: the label ends in …)
     PT.box(cr, right - w, y, w, 40, k["btnR"], bg=k["btnBg"] if PT.color(k["btnBg"]) else k.paper, shadow=k["btnSh"])
-    PT.text(cr, label, k["sub"], right - w + 14, y + (40 - th) / 2, k.ink)
+    PT.text(cr, label, k["sub"], right - w + 14, y + (40 - th) / 2, k.ink, **({"maxw": w - 52} if tw + 52 > right else {}))
     icon(cr, "expand_more", 22, right - 22, y + 20, k.ink)
     hits.add(right - w, y, w, 40, fn)
 
@@ -222,15 +228,17 @@ def check_note(cr, ui, hits, x, y, w, sh, redo=False):
     ty = y + 82 if narrow else y + 14
     _, h1 = PT.measure(cr, t1, k["row"], maxw=tw, wrap=True)
     _, h2 = PT.measure(cr, t2, k["sub"], maxw=tw, wrap=True)
-    h = (ty - y) + max(0 if narrow else 56, h1 + 4 + h2) + 16 + BTN_H + 14
+    items = [("Write it again", ui.redo_again, True)] if redo else [
+        ("Keep it", lambda: ui.act("keep_anyway"), False), ("Skip", lambda: ui.act("skip"), False),
+        ("Redo", lambda: ui.act("redo"), True)]
+    rows = len(btn_rows(cr, k, items, x + w - 14))           # two rows when one runs off the window (a large text)
+    h = (ty - y) + max(0 if narrow else 56, h1 + 4 + h2) + 16 + BTN_H + 14 + (rows - 1) * (BTN_H + 10)
     note(cr, k, x, y, w, h)
     PT.box(cr, x + 14, y + 14, 130, 56, "8px", bg=k.sheet)
     draw_ink(cr, k, sh.strokes, x + 22, y + 18, 114, 48, 1.6)
     PT.text(cr, t1, k["row"], tx, ty, k.ink, weight=600, maxw=tw, wrap=True)
     PT.text(cr, t2, k["sub"], tx, ty + h1 + 4, k.soft, maxw=tw, wrap=True)
-    btns_right(cr, k, hits, x + w - 14, y + h - 14 - BTN_H, [("Write it again", ui.redo_again, True)] if redo else [
-        ("Keep it", lambda: ui.act("keep_anyway"), False), ("Skip", lambda: ui.act("skip"), False),
-        ("Redo", lambda: ui.act("redo"), True)])
+    btns_right(cr, k, hits, x + w - 14, y + h - 14 - BTN_H, items, room=x + w - 14)
     return h
 
 
@@ -252,7 +260,7 @@ def write_top(cr, ui, hits, w, h=None, head=True):
     k = ui.theme
     if h:
         fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w) if head else 0
+    y = PG.body(cr, chrome(cr, ui, hits, w) if head else 0)
     wr = ui.writer
     p = wr.prompt if wr else None
     best = bool(wr and wr.best is not None)
@@ -302,6 +310,7 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     """the counts and Clear, Skip, Next (a narrow column puts the counts above) -> height"""
     k = ui.theme
     fill(cr, k, w, h)
+    PG.body(cr, 0)
     wr = ui.writer
     has_ink = bool(canvas and canvas.strokes)
     checking = bool(wr and wr.shown and wr.shown.status == "check")
@@ -317,10 +326,14 @@ def write_bottom(cr, ui, hits, w, h, canvas):
     narrow = w < NARROW
     by = 46 if narrow else 16
     quick = bool(wr and wr.best and wr.best.get("step") == "quick")
-    x = btns_right(cr, k, hits, w - PAD, by, [
-        ("Clear", (lambda: canvas.clear()) if has_ink and not checking else None, False),
-        ("Skip", ui.skip if not has_ink and not checking else None, False),
-        ("Next: careful" if quick and not narrow else "Next", (lambda: canvas.submit()) if has_ink and not checking else None, True)])
+    items = [("Clear", (lambda: canvas.clear()) if has_ink and not checking else None, False),
+             ("Skip", ui.skip if not has_ink and not checking else None, False),
+             ("Next: careful" if quick and not narrow else "Next", (lambda: canvas.submit()) if has_ink and not checking else None, True)]
+    if narrow and sum(btn_w(cr, k, it[0]) for it in items) + 20 > w - PAD:          # (off the column)
+        btns_right(cr, k, hits, w - PAD, by, items[:2])     # too narrow for the three: Next below
+        by += BTN_H + 10
+        items = items[2:]
+    x = btns_right(cr, k, hits, w - PAD, by, items)
     if narrow:
         PT.text(cr, line, k["sub"], PAD, 14, k.soft, maxw=w - 2 * PAD)
     else:
@@ -335,7 +348,7 @@ def neat_top(cr, ui, hits, w, h=None, head=True):
     k = ui.theme
     if h:
         fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w) if head else 0
+    y = PG.body(cr, chrome(cr, ui, hits, w) if head else 0)
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Autograph", "Neaten my writing",
                   "Write anything below, in a hurry if you like. When you pause, it shows neater, in your own hand. "
                   "Nothing you write here is kept.", small=True, keep_lead=True)
@@ -351,6 +364,7 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
     """the strength, Neatened or Original, Clear, what was read, the letters' state -> height"""
     k = ui.theme
     fill(cr, k, w, h)
+    PG.body(cr, 0)
     has_ink = bool(canvas and canvas.strokes)
     y = 16
     unl = neat_unlearned(ui)
@@ -360,13 +374,13 @@ def neat_bottom(cr, ui, hits, w, h, canvas):
         y += th + 10
     elif unl:
         t = "Letters not learned yet: for now it only straightens the lines and evens out sizes and spacing."
-        bw = btn_w(cr, k, "Learn letters now")
+        bw = min(btn_w(cr, k, "Learn letters now"), w - 2 * PAD - 24)
         _, th = PT.measure(cr, t, k["sub"], maxw=w - 2 * PAD - bw - 50, wrap=True)
         nh = max(th, BTN_H) + 24
         PT.box(cr, PAD, y, w - 2 * PAD, nh, k["cardR"], bg=k.sheet)
         icon(cr, "info", 22, PAD + 24, y + nh / 2, k.ink)
         PT.text(cr, t, k["sub"], PAD + 48, y + (nh - th) / 2, k.ink, maxw=w - 2 * PAD - bw - 50, wrap=True)
-        btn(cr, k, hits, w - PAD - bw - 12, y + (nh - BTN_H) / 2, "Learn letters now", ui.build_letters, w=bw)
+        btn(cr, k, hits, w - PAD - bw - 12, y + (nh - BTN_H) / 2, "Learn letters now", ui.build_letters, w=bw, fit=True)
         y += nh + 12
     lbl(cr, k, "Strength" if k.name == "white" else "strength", PAD, y)
     y += 22
@@ -410,6 +424,7 @@ def try_top(cr, ui, hits, w, h=None, head=True):
     else:
         lbl(cr, k, k.eyebrow(2, WIZ_NAMES[1], 3 if ui.guest else 5), PAD, 26)
         y = 52
+    y = PG.body(cr, y)
     y = page_head(cr, k, PAD, y, w - 2 * PAD, None, "Try one now", "Write the word on the line below, the way you "
                   "always write.", small=True)
     p = ui.writer.prompt if ui.writer else None
@@ -423,6 +438,7 @@ def try_top(cr, ui, hits, w, h=None, head=True):
 def try_bottom(cr, ui, hits, w, h, canvas, foot=True):
     k = ui.theme
     fill(cr, k, w, h)
+    PG.body(cr, 0)
     wr = ui.writer
     sh = wr.shown if wr else None
     y = 14
@@ -503,6 +519,7 @@ def wizard_head(cr, ui, hits, w, i):
 def guest_foot(cr, ui, hits, w, h):
     """a guest's introduction: no Back on Hello, Skip to writing up to Try one, Not now beside
     Continue on 18 or older"""
+    PG.foot(cr, h - WIZ_FOOT)
     k = ui.theme
     s = ui.wstep
     land = w > h
@@ -528,6 +545,7 @@ def guest_foot(cr, ui, hits, w, h):
 
 
 def wizard_foot(cr, ui, hits, w, h):
+    PG.foot(cr, h - WIZ_FOOT)
     if ui.guest:
         return guest_foot(cr, ui, hits, w, h)
     k = ui.theme
@@ -557,7 +575,7 @@ def wizard_page(cr, ui, hits, w, h):
     fill(cr, k, w, h)
     s = ui.wstep
     i = WIZ_STEP.get(s, WIZ.index(s) if s in WIZ else 0)
-    y = wizard_head(cr, ui, hits, w, i)
+    y = PG.body(cr, wizard_head(cr, ui, hits, w, i))
     cw = w - 2 * PAD
     if ui.guest and s in ("g-hello", "g-age", "w-share"):
         guest_step(cr, ui, hits, w, h, y)
@@ -787,7 +805,7 @@ def licence_cards(cr, ui, hits, x, y, w, cur, pick):
 def sets_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w)
+    y = PG.body(cr, chrome(cr, ui, hits, w))
     g = ui.guest
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Write", "What to write",
                   "Choose what the prompts are made of. “What needs practice” mixes everything and favours the letters "
@@ -816,6 +834,7 @@ def sets_page(cr, ui, hits, w, h):
     if g:                                # what a guest's session doesn't have, said once
         how_note(cr, k, PAD, y + 6, w - 2 * PAD, "info", "No learning, font, neatening or own word list here: those are "
                  "the owner’s.")
+        PG.foot(cr, h - 30 - BTN_H)
         btn(cr, k, hits, PAD, h - 20 - BTN_H, "Back", ui.close_sets, icon_name="arrow_back")
         return
     path = P.own_words_path()
@@ -823,6 +842,7 @@ def sets_page(cr, ui, hits, w, h):
     path = "~" + path[len(home):] if path.startswith(home + "/") else path
     PT.text(cr, "Your own words are in %s, one per line." % path, k["sub"], PAD, y + 10, k.soft,
             maxw=w - 2 * PAD, wrap=True)
+    PG.foot(cr, h - 30 - BTN_H)
     btn(cr, k, hits, PAD, h - 20 - BTN_H, "Back", ui.close_sets, icon_name="arrow_back")
 
 
@@ -864,6 +884,48 @@ def pager(cr, ui, hits, x, y, page, pages, go):
         icon_name="chevron_right", w=BTN_H)
 
 
+def view(ui, w, h):
+    """what a page split in several shows: a change of it starts at its first page"""
+    sh = ui.sheet or {}
+    return (ui.page, ui.tab, ui.wstep if ui.page == "wizard" else None, ui.sets_open, ui.best,
+            ui.detail[0] if ui.detail else None, sh.get("char"), sh.get("seg"), bool(sh.get("open")),
+            sh.get("vlist") is not None, ui.reviewing, ui.picking_licence, ui.gflow, round(w), round(h))
+
+
+def paged(cr, ui, hits, w, h, name, draw):
+    """draw(cr, hits) paints region name (w x h); its body (paging.body to paging.foot)
+    split into pages when it doesn't fit, shown one at a time with the pager above the foot
+    -> what draw returns"""
+    p = PG.plan(draw, w, h)
+    if p == PG.TIGHT:
+        PG._tight[0] = True
+        try:
+            p = PG.plan(draw, w, h)
+            if not isinstance(p, PG.Plan):
+                return draw(cr, hits)
+            return _paged(cr, ui, hits, w, h, name, draw, p)
+        finally:
+            PG._tight[0] = False
+    if p is None:
+        return draw(cr, hits)
+    return _paged(cr, ui, hits, w, h, name, draw, p)
+
+
+def _paged(cr, ui, hits, w, h, name, draw, p):
+    n = len(p.slices)
+    v = view(ui, w, h)
+    at = ui.flow.get(name)
+    k = min(at[1], n - 1) if at and at[0] == v else 0
+    ui.flow[name] = (v, k, n)
+    out = PG.draw_page(cr, hits, h, p, k, draw)
+
+    def go(d):
+        ui.flow[name] = (v, max(0, min(n - 1, k + d)), n)
+        ui.redraw()
+    pager(cr, ui, hits, PAD, p.ft - PG.ROW + PG.GAP, k, n, go)
+    return out
+
+
 def sub_head(cr, ui, hits, w, y, title, lead):
     """the head of a page beneath a tab (Samples, Coverage): no eyebrow, the title with the way
     back beside it (to Learn; a guest's Samples to Contribute), the lead (dropped when the
@@ -897,6 +959,7 @@ def samples_page(cr, ui, hits, w, h):
                  ("Everything you have written here, newest first. Tap one to look at it or delete it." +
                   (" Export takes a copy of them with you, as one file." if ui.guest else "")) if n else
                  "Nothing written yet. Write shows the first prompt.")
+    y = PG.body(cr, y)
     cols = grid_cols(w)
     gap = 10
     tw = (w - 2 * PAD - gap * (cols - 1)) / cols
@@ -911,6 +974,7 @@ def samples_page(cr, ui, hits, w, h):
         sample_tile(cr, ui, hits, PAD + (i % cols) * (tw + gap), y + (i // cols) * (th + gap), tw, th, sid, t, text,
                     lambda sid=sid: ui.open_sample(sid), mark=sid in ui.donated)
     by = h - 20 - BTN_H
+    PG.foot(cr, by - (10 if ui.guest else 40) - (30 if ui.msg else 0))
     if pages > 1:
         pager(cr, ui, hits, PAD, by, ui.sp, pages, ui.samples_page)
     # a guest store takes no import; the owner's Erase all and Export are the owner's samples
@@ -935,7 +999,7 @@ def sample_detail(cr, ui, hits, w, h, y):
     k = ui.theme
     sid, smp = ui.detail
     t = next((r[1] for r in ui.samples if r[0] == sid), None)
-    y += 16
+    y = PG.body(cr, y) + 16
     ph = 260 if h > 800 else 200
     PT.box(cr, PAD, y, w - 2 * PAD, ph, PAPER_R, bg=k.paper, shadow="inset 0 0 0 1.5px " + k.ink)
     draw_ink(cr, k, smp.get("strokes", []), PAD + 24, y + 20, w - 2 * PAD - 48, ph - 40, 2.6)
@@ -961,7 +1025,9 @@ def sample_detail(cr, ui, hits, w, h, y):
         y += 54
         sep(cr, k, PAD, y, w - 2 * PAD)
     by = h - 20 - BTN_H
+    ends(cr, ui, by)
     if ui.asking_delete:
+        PG.over(cr)
         text = ("It’s removed from your samples, and from your contribution, for good." if don else
                 "It’s removed from your samples for good.")
         if not ui.guest:
@@ -998,6 +1064,7 @@ def coverage_page(cr, ui, hits, w, h):
     y = sub_head(cr, ui, hits, w, y, "How much of each character",
                  "The number is how many of your samples have it. Shaded ones could use more; a dot marks the ones "
                  "it often reads wrong.")
+    y = PG.body(cr, y)
     cov = ui.writer.cov if ui.writer else P.Coverage()
     cols = 26 if w > 900 else 13
     gap = 5
@@ -1012,6 +1079,7 @@ def coverage_page(cr, ui, hits, w, h):
                  cov.chars.get(c, (0, 0)))
         y += ((len(chars) + cols - 1) // cols) * (ch + gap) + 12
     by = h - 20 - BTN_H
+    PG.foot(cr, by - 20)
     sep(cr, k, PAD, by - 14, w - 2 * PAD)
     x = PAD
     for kind, label in (("plenty", "Plenty"), ("few", "A few"), ("none", "None yet"), ("wrong", "Often read wrong")):
@@ -1065,7 +1133,7 @@ def learn_state(ui):
 def learn_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w)
+    y = PG.body(cr, chrome(cr, ui, hits, w))
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Learn", "How it’s learning", None, small=True, land_hide=True)
     st = learn_state(ui)
     today, total = ui.counts
@@ -1166,6 +1234,7 @@ def learn_page(cr, ui, hits, w, h):
     if not LAND[0]:
         chevron_row(cr, k, hits, PAD, y + lh + 14, w - 2 * PAD, *models)
     by = h - 20 - BTN_H
+    ends(cr, ui, by)
     x = btns_right(cr, k, hits, w - PAD, by, btns) if btns else w - PAD
     if foot:
         PT.text(cr, foot, k["sub"], PAD, by + 15, k.soft, maxw=x - PAD - 10)
@@ -1186,7 +1255,7 @@ def font_page(cr, ui, hits, w, h):
 def best_pick(cr, ui, hits, w, h):
     """two of the person's own versions of one character, ink only, large"""
     k = ui.theme
-    y = chrome(cr, ui, hits, w)
+    y = PG.body(cr, chrome(cr, ui, hits, w))
     y = page_head(cr, k, PAD, y + 18, w - 2 * PAD, "Autograph", "Which one is nicer?",
                   "Tap the one you like better." if ui.pick else None, small=True)
     pk = ui.pick
@@ -1195,6 +1264,7 @@ def best_pick(cr, ui, hits, w, h):
         PT.text(cr, "Looking for two versions…" if ui.pick_loading else
                 "Not enough to choose from yet: write a few more words, and two versions of the same letter come up "
                 "here.", k["row"], PAD, y, k.soft, maxw=w - 2 * PAD, wrap=True)
+        PG.foot(cr, by - 10)
         btn(cr, k, hits, PAD, by, "Back", ui.open_best, icon_name="arrow_back")
         return
     gap = 16
@@ -1219,6 +1289,7 @@ def best_pick(cr, ui, hits, w, h):
         if on:
             icon(cr, "check_circle", 30, x + tw - 28, y + 28, k.ink)
         hits.add(x, y, tw, th, lambda i=i: ui.choose_pick(i))
+    PG.foot(cr, by - 10)
     n = ui.picks_today()
     PT.text(cr, "%d pick%s today" % (n, "" if n == 1 else "s"), k["sub"], PAD, by + 15, k.soft)
     btns_right(cr, k, hits, w - PAD, by, [("Both fine", ui.next_pick, False), ("Skip", ui.next_pick, False)])
@@ -1688,6 +1759,7 @@ def best_font(cr, ui, hits, w, h):
     if ui.exporting:
         return export_dialog(cr, ui, hits, w, h, y)
     land = w > h
+    y = PG.body(cr, y)
     # the tab's own page: no eyebrow; turned, no head at all, so the keys keep their width
     y = y + 18 if land else page_head(
         cr, k, PAD, y + 18, w - 2 * PAD, None, "Your handwriting as a font",
@@ -1699,6 +1771,7 @@ def best_font(cr, ui, hits, w, h):
     st, model = f.get("status") or {}, f.get("model")
     if not ui.font:
         PT.text(cr, "Counting your letters…", k["row"], PAD, y, k.soft, maxw=cw, wrap=True)
+        PG.foot(cr, py - 10)
         font_parts(cr, ui, hits, PAD, py, cw)
         return
     mode = font_mode(ui)
@@ -1742,6 +1815,7 @@ def best_font(cr, ui, hits, w, h):
         kh = max(34, min(46, int((py - 16 - name_h - y - 10) / rows) - KEY_GAP))
         y = font_keys(cr, ui, hits, PAD, y, cw, 13, kh, cov) + 10
         font_name_block(cr, ui, hits, PAD, y, cw, mode)
+    PG.foot(cr, py - 10 - (30 if ui.msg else 0))
     font_parts(cr, ui, hits, PAD, py, cw)
     font_buttons(cr, ui, hits, w, by, mode, land)
     if ui.msg:
@@ -1886,9 +1960,16 @@ def char_sheet(cr, ui, hits, w, h):
     sh = ui.sheet
     y = sheet_head(cr, ui, hits, x, y0 + 16, cw, tabs=not drilled(sh))
     ft = PT.measure(cr, sheet_foot_text(ui), k["sub"], maxw=cw - 36, wrap=True)[1] + 28
-    fy = h - SHEET_M - 12 - ft
-    sheet_foot(cr, ui, x, fy, cw)
     seg = sh["seg"]
+    if PG.tight():                      # a short window: the note at the foot leads the body
+        y = PG.body(cr, y)
+        sheet_foot(cr, ui, x, y, cw)
+        y += ft + 12
+        fy = h - SHEET_M - 12
+    else:
+        fy = h - SHEET_M - 12 - ft
+        sheet_foot(cr, ui, x, fy, cw)
+        y = PG.body(cr, y)
     if sh["open"]:
         sheet_opened(cr, ui, hits, x, y, cw, fy - 12 - y)
     elif sh["vlist"] is not None:
@@ -1899,9 +1980,11 @@ def char_sheet(cr, ui, hits, w, h):
         sheet_samples(cr, ui, hits, x, y, cw, fy - 12 - y)
     elif seg == "pick":
         sheet_pick(cr, ui, hits, x, y, cw, fy - 12 - y)
+    PG.foot(cr, fy - 12 - (30 if ui.msg and not sh["open"] else 0))
     if ui.msg and not sh["open"]:       # an opened sample has it above its buttons
         PT.text(cr, ui.msg, k["sub"], x, fy - 26, k.ink, maxw=cw)
     if sh["open"] and sh["asking"]:
+        PG.over(cr)
         delete_question(cr, ui, hits, x, w, h)
 
 
@@ -2377,7 +2460,7 @@ def sheet_redo_top(cr, ui, hits, w, h=None, head=True):
     k = ui.theme
     if h:
         fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w) if head else 0
+    y = PG.body(cr, chrome(cr, ui, hits, w) if head else 0)
     y += SHEET_M
     land = not head
     x, cw = (SHEET_M + 20, w - 2 * SHEET_M - 40) if not land else (PAD, w - 2 * PAD)
@@ -2402,8 +2485,9 @@ def sheet_redo_top(cr, ui, hits, w, h=None, head=True):
     shown = (ui.sheet.get("redo") or {}).get("shown")
     if shown:
         y += check_note(cr, ui, hits, x, y, cw, shown, redo=True) + 12
+    PG.over(cr)                         # (the frame is the sheet's edge, not a foot)
     if head:
-        sheet_frame(cr, k, w, top, y + 1 if not h else h, top=True, bottom=False)
+        sheet_frame(cr, k, w, top, h or (PG.height() if PG.active() else y + 1), top=True, bottom=False)
     return y
 
 
@@ -2411,6 +2495,7 @@ def sheet_redo_bottom(cr, ui, hits, w, h, canvas):
     """Clear, Cancel, Done and the sheet's foot -> height"""
     k = ui.theme
     fill(cr, k, w, h)
+    PG.body(cr, 0)
     land = pages_land()
     x, cw = (SHEET_M + 20, w - 2 * SHEET_M - 40) if not land else (PAD, w - 2 * PAD)
     r = ui.sheet.get("redo") or {}
@@ -2433,8 +2518,9 @@ def sheet_redo_bottom(cr, ui, hits, w, h, canvas):
         y += 24
     y += sheet_foot(cr, ui, x, y, cw)
     y += 12 + SHEET_M
+    PG.over(cr)
     if not land:
-        sheet_frame(cr, k, w, 0, y - SHEET_M, top=False, bottom=True)
+        sheet_frame(cr, k, w, 0, (h if PG.active() else y) - SHEET_M, top=False, bottom=True)
     return y
 
 
@@ -2443,7 +2529,7 @@ def sheet_write_top(cr, ui, hits, w, h=None, head=True):
     k = ui.theme
     if h:
         fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w) if head else 0
+    y = PG.body(cr, chrome(cr, ui, hits, w) if head else 0)
     y += SHEET_M
     land = not head
     x, cw = (SHEET_M + 20, w - 2 * SHEET_M - 40) if not land else (PAD, w - 2 * PAD)
@@ -2495,8 +2581,9 @@ def sheet_write_top(cr, ui, hits, w, h=None, head=True):
         _, sh_ = PT.measure(cr, how, k["sub"])
         PT.text(cr, how, k["sub"], x + pw + 16, y + ph - sh_ - 6, k.ink, maxw=cw - pw - 16)
         y += ph + 12
+    PG.over(cr)                         # (the frame is the sheet's edge, not a foot)
     if head:
-        sheet_frame(cr, k, w, top, y + 1 if not h else h, top=True, bottom=False)
+        sheet_frame(cr, k, w, top, h or (PG.height() if PG.active() else y + 1), top=True, bottom=False)
     return y
 
 
@@ -2504,6 +2591,7 @@ def sheet_write_bottom(cr, ui, hits, w, h, canvas):
     """the prompt count, Clear, Skip, Next and the sheet's foot -> height"""
     k = ui.theme
     fill(cr, k, w, h)
+    PG.body(cr, 0)
     land = pages_land()
     x, cw = (SHEET_M + 20, w - 2 * SHEET_M - 40) if not land else (PAD, w - 2 * PAD)
     wr = ui.writer
@@ -2532,8 +2620,9 @@ def sheet_write_bottom(cr, ui, hits, w, h, canvas):
         y += 24
     y += sheet_foot(cr, ui, x, y, cw)
     y += 12 + SHEET_M
+    PG.over(cr)
     if not land:
-        sheet_frame(cr, k, w, 0, y - SHEET_M, top=False, bottom=True)
+        sheet_frame(cr, k, w, 0, (h if PG.active() else y) - SHEET_M, top=False, bottom=True)
     return y
 
 
@@ -2556,7 +2645,7 @@ def sheet_area(cr, k, w, h):
 def donate_page(cr, ui, hits, w, h):
     k = ui.theme
     fill(cr, k, w, h)
-    y = chrome(cr, ui, hits, w)
+    y = PG.body(cr, chrome(cr, ui, hits, w))
     lic, n, donor = ui.donation
     on = bool(ui.state.donating and lic)
     cw = w - 2 * PAD
@@ -2565,6 +2654,7 @@ def donate_page(cr, ui, hits, w, h):
         y = page_head(cr, k, PAD, y + 18, cw, "Contribute", "How may others use your samples?",
                       "Pick the licence for your contribution. Both let anyone use it; you choose once.", small=True, keep_lead=True)
         licence_cards(cr, ui, hits, PAD, y, cw, ui.licence_pick, ui.pick_licence)
+        ends(cr, ui, by)
         btns_right(cr, k, hits, w - PAD, by, [
             ("Cancel", ui.cancel_licence, False),
             ("Turn on contributing", (lambda: ui.donating(True, ui.licence_pick)) if ui.licence_pick else None, True)])
@@ -2593,6 +2683,7 @@ def donate_page(cr, ui, hits, w, h):
             n_ = len(ui.samples)
             chevron_row(cr, k, hits, PAD, y, cw, "grid_view", "Your samples", plural(n_, "sample") +
                         ". Look at one, delete or export them.", lambda: ui.go("samples"), shaded=False)
+        ends(cr, ui, by)
         msg_line(cr, ui, by - 30, w)
         bw = btn_w(cr, k, "Turn on…")
         btn(cr, k, hits, w - PAD - bw, by, "Turn on…", ui.turn_on, w=bw)
@@ -2626,6 +2717,9 @@ def donate_page(cr, ui, hits, w, h):
     y += bh + 14
     # what a contribution holds: shown when there is room for it (it was shown before turning on)
     y = donor_row(cr, ui, hits, PAD, y, cw, donor)
+    items = [("Erase contribution", ui.ask_erase_donation if n else None, False), ("Turn off", ui.ask_turn_off, False),
+             ("Save as a file", ui.write_donation if n else None, True)]
+    top = by - (len(btn_rows(cr, k, items, w - PAD)) - 1) * (BTN_H + 10)    # the buttons' highest row (two when one runs off the window)
     # a guest's own samples (beneath this tab, spec 002 FR-018) and the earlier ones, side by side
     rows = []
     if g:
@@ -2641,15 +2735,14 @@ def donate_page(cr, ui, hits, w, h):
     rh = max((chevron_h(cr, k, rw_, sub) for _, _, sub, _ in rows), default=0)
     rest = (rh + 12 if rows else 0) + 30
     probe = cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
-    if holds_lists(probe, k, PAD, y, cw, never=never, holds=holds) + 14 + rest <= by - 10:
+    if holds_lists(probe, k, PAD, y, cw, never=never, holds=holds) + 14 + rest <= top - 10:
         y = holds_lists(cr, k, PAD, y, cw, never=never, holds=holds) + 14
     for i, (ic, name, sub, fn) in enumerate(rows):
         chevron_row(cr, k, hits, PAD + i * (rw_ + 12), y, rw_, ic, name, sub, fn, shaded=False, min_h=rh)
     y += rh + 12 if rows else 0
-    msg_line(cr, ui, by - 30, w)
-    btns_right(cr, k, hits, w - PAD, by, [
-        ("Erase contribution", ui.ask_erase_donation if n else None, False), ("Turn off", ui.ask_turn_off, False),
-        ("Save as a file", ui.write_donation if n else None, True)])
+    ends(cr, ui, top)
+    msg_line(cr, ui, top - 30, w)
+    btns_right(cr, k, hits, w - PAD, by, items, room=w - PAD)
 
 
 def donor_label(donor):
@@ -2712,6 +2805,7 @@ def earlier_review(cr, ui, hits, w, h, y):
     y += BTN_H + 14
     how_note(cr, k, PAD, y, cw, "info", "Only samples written for words and sentences the app showed are here. Words "
              "from your own list and everyday writing can only be added one at a time, in Samples.")
+    PG.foot(cr, by - 10)
     btns_right(cr, k, hits, w - PAD, by, [
         ("Not now", ui.close_review, False),
         ("Add %d sample%s" % (keep, "" if keep == 1 else "s") if keep else "Add none",
@@ -2746,7 +2840,7 @@ def others_page(cr, ui, hits, w, h):
     writer; what a writer is, said plainly"""
     k = ui.theme
     fill(cr, k, w, h)
-    y = head(cr, ui, hits, w)
+    y = PG.body(cr, head(cr, ui, hits, w))
     land = w > h
     cw = w - 2 * PAD
     y = page_head(cr, k, PAD, y + 18, cw, "Other writers" if k.name == "white" else "other writers",
@@ -2795,8 +2889,10 @@ def others_page(cr, ui, hits, w, h):
     btn(cr, k, hits, PAD, y, "Add a writer", ui.ask_name, pri=not items, icon_name="person_add", h=52)
     nx, ny = (PAD + lw + 24, y0 - 26) if land else (PAD, y + 52 + 18)
     other_notes(cr, k, nx, ny, nw)
+    ends(cr, ui, by)
     btn(cr, k, hits, PAD, by, "Back to your writing", lambda: ui.go("write"), icon_name="arrow_back")
     msg_line(cr, ui, by - 30, w)
+    PG.over(cr)
     if ui.naming:
         name_dialog(cr, ui, hits, w, h)
     elif ui.removing:
@@ -2907,7 +3003,11 @@ def remove_dialog(cr, ui, hits, w, h):
     def rows_h(items):
         return sum(PT.measure(cr, t, k["sub"], maxw=tw, wrap=True)[1] + 8 for t in items)
     sh = PT.measure(cr, saved, k["sub"], maxw=dw - 44 - 50, wrap=True)[1] + 22 + 12 if saved else 0
-    dh = 20 + 34 + sh + 24 + rows_h(goes) + 12 + 24 + rows_h(stays) + 16 + BTN_H + 20
+    acts = [("Cancel", ui.cancel_remove, False)] + (
+        [("Save their contribution first", ui.save_for_removal, False)] if rm["unsaved"] else []) + [
+        ("Remove", ui.remove_writer, True)]
+    rows = len(btn_rows(cr, k, acts, PAD + dw - 22))     # two rows when one runs off the window (a large text)
+    dh = 20 + 34 + sh + 24 + rows_h(goes) + 12 + 24 + rows_h(stays) + 16 + BTN_H + 20 + (rows - 1) * (BTN_H + 10)
     hits.add(0, 0, w, h, lambda: None)
     x, y = PAD, h - 20 - dh
     PT.box(cr, x, y, dw, dh, k["cardR"], bg=k.paper, shadow=k["dialogSh"])
@@ -2927,9 +3027,7 @@ def remove_dialog(cr, ui, hits, w, h):
             _, th = PT.text(cr, t, k["sub"], x + 52, yy, k.ink, maxw=tw, wrap=True)
             yy += th + 8
         yy += 12
-    btns_right(cr, k, hits, x + dw - 22, y + dh - 20 - BTN_H, [("Cancel", ui.cancel_remove, False)] +
-               ([("Save their contribution first", ui.save_for_removal, False)] if rm["unsaved"] else []) +
-               [("Remove", ui.remove_writer, True)])
+    btns_right(cr, k, hits, x + dw - 22, y + dh - 20 - BTN_H, acts, room=x + dw - 22)
 
 
 CONTRIB = "Handwriting contributions"
@@ -2985,13 +3083,14 @@ PAGES = {"samples": samples_page, "coverage": coverage_page, "font": font_page, 
 def paint_full(cr, ui, hits, w, h):
     LAND[0] = w > h
     if not ui.loaded:
-        loading_page(cr, ui, hits, w, h)
+        page = loading_page
     elif ui.page == "wizard":
-        wizard_page(cr, ui, hits, w, h)
+        page = wizard_page
     elif ui.sets_open:
-        sets_page(cr, ui, hits, w, h)
+        page = sets_page
     else:
-        PAGES.get(ui.page, samples_page)(cr, ui, hits, w, h)
+        page = PAGES.get(ui.page, samples_page)
+    paged(cr, ui, hits, w, h, "full", lambda c, hh: page(c, ui, hh, w, h))
     if ui.confirm:
         title, text, yes, fn = ui.confirm
         cr.set_source_rgba(1, 1, 1, 0.6)
