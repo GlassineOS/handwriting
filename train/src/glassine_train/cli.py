@@ -101,11 +101,11 @@ def cmd_train(a):
            "down": a.down}
     out = Path("build/runs") / a.run
     out.mkdir(parents=True, exist_ok=True)
-    (out / "args.json").write_text(json.dumps(vars(a), default=str, indent=1))
+    (out / ("args-resume.json" if a.resume else "args.json")).write_text(json.dumps(vars(a), default=str, indent=1))
     train(Path("build/data") / a.data, Path("build/data") / a.val, out, a.minutes, cfg,
           a.batch, a.lr, a.threads, a.eval_every, a.seed, steps_per_s=a.steps_per_s,
           augment=a.augment, select=[Path("build/data") / x for x in a.select.split(",") if x],
-          init=Path(a.init) if a.init else None)
+          init=Path(a.init) if a.init else None, resume=a.resume)
 
 
 def cmd_mergeset(a):
@@ -1004,6 +1004,8 @@ def main(argv=None):
     t.add_argument("--minutes", type=float, default=60)
     t.add_argument("--steps-per-s", type=float, help="measured rate, sets the LR schedule length")
     t.add_argument("--init", help="a checkpoint to go on from (its architecture; --conv, --hidden etc. are ignored)")
+    t.add_argument("--resume", action="store_true", help="go on with a stopped run from its last.pt (optimizer, "
+                   "schedule and place in the data as they were; give the run's other options again)")
     t.add_argument("--conv", type=int, default=128)
     t.add_argument("--hidden", type=int, default=176)
     t.add_argument("--layers", type=int, default=2)
