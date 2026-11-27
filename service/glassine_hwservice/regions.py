@@ -39,6 +39,8 @@ from .engine import Error, esc, map_align, parse_text, points
 READ_MS = 250
 PAUSE_MS = 900
 CANDIDATES = 5
+LINE_START = 0.3        # a set line with nothing before it starts this many x-heights in
+SIZE_BOUND = 1.5        # the writing's measured size stays within this factor of the person's letters (mm)
 FIT_MIN = 0.6           # a word's ink fits its text: the recognizer's prompted check (align SCORE)
 STATE_VERSION = 1
 BUSY = 16               # regions read at once, per compositor channel: each holds up to two
@@ -553,23 +555,50 @@ class Region:
 
     def xh(self):
         """the size of the person's writing in this region: per word with ink, its height
-        over its letters' (in x-heights), the median; else their letters in millimetres; else
-        the typical size (FR-021, FR-028)"""
+        over the height of the same text in the person's font (its shape, once known; else
+        its letters' in x-heights), the median, held within SIZE_BOUND of the size of their
+        letters in millimetres (ink that is no writing, or a word read wrongly, never sizes
+        the font far off the person's hand); else that size (FR-021, FR-028)"""
         v = []
         for w in self.words + self.read:
             if not w.ink:
                 continue
-            t, b = tops(w.text)
-            if t - b <= 0:
+            h = self.own_height(w.text)
+            if h <= 0:
                 continue
             x0, y0, x1, y1 = self.word_box(w)
-            v.append((y1 - y0) / (t - b))
+            v.append((y1 - y0) / h)
+        ref = self.hand_size()
         m = _median(v)
-        if m:
-            return m
-        mm = self.person_mm
+        if not m:
+            return ref
+        return min(max(m, ref / SIZE_BOUND), ref * SIZE_BOUND)
+
+    def hand_size(self):
+        """the person's small letters in the region's points: their letters in millimetres,
+        else the typical size"""
         pm = area.per_mm(self.own_units()) or area.DEFAULT_PX_PER_MM
-        return (mm or area.TYPICAL_XH_MM) * pm
+        return (self.person_mm or area.TYPICAL_XH_MM) * pm
+
+    def own_height(self, text):
+        """a word's height in x-heights: as the person's font sets it, when its shape is
+        known (their tall letters may reach well past the usual 1.6); else from its letters"""
+        sh = self.shapes.get(text)
+        ys = [p[1] for s_ in sh[3] for p in s_] if sh else []
+        if ys and max(ys) > min(ys):
+            return max(ys) - min(ys)
+        t, b = tops(text)
+        return t - b
+
+    async def know_shapes(self, words):
+        """the person's font's shapes of the words with ink (their sizes are measured against
+        them)"""
+        for w in words:
+            if w.ink and w.text and w.text not in self.shapes:
+                try:
+                    await self.shape(w.text)
+                except Error:
+                    pass                # measured from its letters
 
     person_mm = 0.0
 
@@ -714,12 +743,7 @@ class Region:
         when something changed. Each value is kept a while with the writing it was read from,
         for the reports that name it (FR-013)"""
         if self.display == "set":
-            for w in self.words + self.read:
-                if w.ink and w.text not in self.shapes:
-                    try:
-                        await self.shape(w.text)
-                    except Error:
-                        pass            # not shown set: its ink
+            await self.know_shapes(self.words + self.read)  # not known: not shown set, its ink
         text, words = self.layout()
         m = {"text": text, "words": words, "state": self.state()}
         gone = sorted(self.gone)
@@ -878,6 +902,7 @@ class Region:
         # read and left as they were, and the words whose ink was given another text
         result = await self.samples([(w, w.text) for w in kept if w.kind == "read"] + learn, "corrected")
         await self.person()
+        await self.know_shapes(self.words + self.read)
         size = self.xh()
         gap, step = self.word_gap(size), self.line_step(size)
         if fallback:
@@ -886,6 +911,21 @@ class Region:
             plan = [("add", t) if t is not None else None for t in b]
         out, prev, shift = [], None, 0.0
         base = self.first_line(size)
+        if self.guides[0] <= 0 and not any(w.ink for w in self.words + self.read if not set(w.ks) & drop):
+            # an empty line of its own: its first line low enough that the person's tall
+            # letters stay inside the region (their font's, not the usual 1.6)
+            tall = 0.0
+            for p in plan:
+                if p is None:
+                    break
+                if p[0] != "keep":
+                    try:
+                        sh = await self.shape(p[-1])
+                    except Error:
+                        continue
+                    ys = [q[1] for s_ in sh[3] for q in s_]
+                    tall = max([tall] + ys)
+            base = max(base, (tall + 0.3) * size)
         lines_ = [[]]
         for p in plan:
             if p is None:
@@ -925,7 +965,7 @@ class Region:
                         x0, bb = self.word_box(nxt)[0], self.base_of(nxt)
                         shift += width + gap
                     else:
-                        x0, bb = 0.0, base
+                        x0, bb = LINE_START * size, base   # clear of the region's edge
                 w = Word(t, kind="set", place=(x0, bb, size))
                 w.shape = shape
                 out.append(w)
