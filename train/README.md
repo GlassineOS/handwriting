@@ -1042,6 +1042,111 @@ The aligner trained with a person's letters is that person's: it stays on their 
 is not released. The fonts-only one could be released, but it is not better on this
 person's ink, so there is no release yet.
 
+**BRUSH's point labels** (`alignrun brush`; Data, BRUSH). BRUSH labels every point of real
+ink from 170 writers with its character. Those labels were not marked by people: the
+dataset's authors made them with their own segmentation network, trained without cuts to
+learn from (a chain loss like `chain_loss`), after correcting the texts by hand. So they
+are a second aligner's output, and the numbers below measure agreement with it, not
+truth. Checked over the whole dataset before using them (27 649 lines, 438 816 characters):
+
+- each character's points are one run within a stroke (12 characters come back to a
+  stroke after another, 21 changes go backwards in the text), 10 characters have no point,
+  one point belongs to a space; that much the network's decoding guarantees;
+- 92 % of the label changes fall at a pen lift, 8 % (32 740) inside a stroke: the dataset
+  is mostly print (3.5 % of the strokes hold more than one character; per writer the
+  median share of changes inside strokes is 2.5 %), and the joins are in a few writers;
+- dots: of the small strokes above the letters, 64 % go to an i or j and 31 % to
+  punctuation; a bar over a t's body goes to that t in 99 %; a t has two strokes or more in
+  93 %;
+- the cuts inside strokes lie nearer the stroke's low points than chance (median 0.42
+  x-heights along the stroke from one against 0.69 for a random place in the same
+  strokes; within 0.25: 33 % against 19 %), and no nearer its high points than chance;
+- by eye (joined lines drawn with their cuts): the cuts sit between letters, at times a
+  part of a letter early or late;
+- the files are not always in writing order (the authors put late additions back in
+  place from left to right), so BRUSH can neither teach nor test delayed strokes;
+- the files have no times; the authors' page says the points are resampled every 10 ms.
+
+`alignrun brush` takes the base model's split (`realink.brush_split`, seed 5: 124
+training writers, 14 dev, 32 test, 241 held-out text groups) and writes the training
+writers' lines of the training texts (15 832, the 5 499 with a join inside a stroke three
+times), the dev writers' and the test writers' lines of the held-out texts (482 and 1 115),
+and each test writer's lines of the training texts as its letter lines (for the shape cut,
+which needs a letter model). Times: points 10 ms apart, every pause between strokes drawn on
+its own (lognormal, as the generator's), so the pause the aligner reads (the only time it
+reads: `features.py` resamples by arc length) says nothing about a BRUSH line. How little
+the aligner (realistic + joined) leans on the pause anyway: with every pause drawn anew, 0.09 % of the points of
+synthetic joined lines and 0.6 % of a person's change their letter.
+
+```sh
+uv run python -m glassine_train.alignrun brush BRUSH --out PRIVATE/align-brush --joined-copies 3
+uv run python -m glassine_train.alignrun mix PRIVATE/align-mixB build/align-mix/train.pkl:build/align-mix/dev.pkl \
+    PRIVATE/align-brush/train.pkl:PRIVATE/align-brush/dev.pkl
+uv run python -m glassine_train.alignrun train --data PRIVATE/align-mixB --out PRIVATE/aligner.pt --ce 1.0 \
+    --init ALIGNER_MIX.pt --steps 4000 --lr 1e-3 --save-every 500
+```
+
+Three ways, chosen on the dev writers (14 writers, 482 lines, 615 joins inside strokes; within
+0.25 x-heights / a letter lost / the median writer within 0.25) with the synthetic dev sets
+kept (realistic dev, within 0.25):
+
+| | BRUSH dev | realistic dev |
+|---|---|---|
+| realistic + joined (start) | 53 / 6.5 % / 48 % | 93.5 % |
+| + BRUSH, from it, 3500 of 4000 steps (chosen) | 70 / 1.8 % / 70 % | 93.1 % |
+| + BRUSH, from nothing, 8000 steps | 72 / 2.8 % / 68 % | 90.8 % |
+| BRUSH alone, from it, 3000 steps | 75 / 1.8 % / 76 % | 77.9 % |
+
+BRUSH alone forgets the synthetic joins and late strokes (a letter lost on 10.7 % of the
+realistic dev's joins), from nothing it is a little behind on both; so the aligner below
+starts from the realistic + joined one.
+
+BRUSH's test writers (32 writers, 1 115 lines, 797 joins inside strokes; the cut against
+the labels' cut: within 0.25 and 0.5 x-heights along the stroke, the median, a letter lost,
+all points given the labels' letter). "In the join" is left out: a BRUSH join is two
+neighbouring points, so it would ask for the very same pair. Neatest's cut is the engine's
+(text alone: from the recognizer's alignment, the aligner where it cuts; spans known: the
+lines' spans from the labels); the aligner alone is its own decoding of the whole line:
+
+| | Neatest, text alone | Neatest, spans known | aligner alone |
+|---|---|---|---|
+| shape cut (no aligner) | 38 / 52 %, 0.46, 8.0 %; 66 % | 56 / 72 %, 0.20, 2.8 % | |
+| realistic + joined (above) | 52 / 69 %, 0.22, 7.3 %; 72 % | 59 / 77 %, 0.18, 2.1 % | 58 / 75 %, 0.18, 5.5 %; 80 % |
+| realistic + joined + BRUSH | 67 / 78 %, 0.14, 5.3 %; 79 % | 77 / 89 %, 0.11, 2.4 % | 76 / 88 %, 0.12, 3.1 %; 88 % |
+
+The text-alone column is held back by the recognizer's alignment before any cut: it gives
+57 % of the strokes the labels give one letter more than one (the shape cut's), 37 % with
+the BRUSH aligner; the aligner alone 12 %.
+
+Synthetic joined ink, as above (text alone, delay −1): the joined test 95 / 95 / 0.6 %, 96 %
+(realistic + joined: 94 / 95 / 0.6 %, 96 %), the realistic test 79 / 88 / 2.2 %, 92 %,
+delayed strokes 34 % (79 / 89 / 2.2 %, 91 %, 34 %): no worse.
+
+A person's samples, as above (Neatest with the text; Medium and Strong without words),
+measured again on today's main (Neatest's default changed since):
+
+| | CER | with words | 0.5 | 1 |
+|---|---|---|---|---|
+| shape cut | 30.8 % | 22.2 % | 46.0 % | 46.2 % |
+| realistic + joined | 30.7 % | 23.2 % | 46.4 % | 47.1 % |
+| realistic + joined + BRUSH | 29.6 % | 21.9 % | 47.2 % | 47.1 % |
+
+Against the shape cut on this fifth: −1.2 points (95 % interval by samples −2.7 to +0.2),
+with words −0.3 (−1.7 to +1.1); against the aligner without BRUSH −1.1 (−2.2 to −0.1), with
+words −1.3 (−2.7 to −0.1). With each fifth held back in turn (all 1 951 samples, the letter
+model from the other four each time): 30.7 → 29.9 %, −0.8 (−1.4 to −0.2), with words 22.8
+→ 22.5 %, −0.3 (−0.9 to +0.3). The letter model built with it is as close to its samples
+as before (`tools/eval-letters.py`: 0.216 x-heights by arc length for all three). An
+aligner costs the same time with or without BRUSH (median 18 ms a line at 0.5 against the
+shape cut's 6 ms, on the same loaded machine).
+
+So BRUSH's labels make the aligner agree much more with BRUSH's own segmenter on writers
+it never saw, keep it on the synthetic joins, and on the person's ink make it the first
+aligner from other people's ink that is not worse than the shape cut: a little better
+without words, the same with words, worse at Medium and Strong read back without words, as
+every aligner. It carries BRUSH's non-commercial terms (Licence), so it is not part of the
+GPL package; it is not released.
+
 ### Many writers read as new people (`writerseval`)
 
 A base model read on other people's ink, writer by writer, as a new person meets it on the
