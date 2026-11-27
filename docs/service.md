@@ -251,7 +251,8 @@ reading order, joined by spaces and the lines by a newline (FR-008, FR-009). Eac
 With the region's display `set` (`region_set` `display`, FR-030) an ink word has both: its
 `strokes`, `dx`, `dy` as above and the `box` and `path` it is shown in, its text in the person's
 font on its line (the line its ink sits on) at the size of the person's writing in the region
-(as for an edit, FR-021), from where its ink starts, moved right only as far as needed to stand
+(as for an edit, FR-021: per word with ink, its height over the height of the same text in the
+person's font, the median, held within `SIZE_BOUND` (1.5) of their letters' size in millimetres), from where its ink starts, moved right only as far as needed to stand
 a word space after the word before it on the line. A change of the display sends the value again
 with that layout (a new `serial`) and nothing else: no reading, no session, no stroke leaving,
 the same text and saved state. A word whose shape can't be had (the recognizer's `set` fails)
