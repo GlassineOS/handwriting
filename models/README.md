@@ -20,7 +20,10 @@ holding the directory the recognizer reads (`docs/recognizer.md`, "Base models")
 | `prompts.txt` | `models/LANG/prompts.txt` |
 
 `VERSION` is a plain number, counted per language (`model-en-1`, `model-en-2`, …). A
-published asset is never replaced: a new model is a new version and a new tag.
+published asset is never replaced: a new model is a new version and a new tag. A release
+published again under a new tag (its old tag can't be reused) adds `-rN` to the tag
+(`model-en-2-r2`, `chars-en-1-r2`); its assets keep their names and bytes, so the version
+is still the number before `-rN`.
 
 ## Making one
 
