@@ -29,8 +29,11 @@ while the device is idle and charging and is kept only when it does better on he
 samples. Learning can be turned off, everything erased at once, and samples moved to a
 new device by export and import. Nothing leaves the device otherwise.
 
-Base models are trained only on data the project may redistribute, or on synthetic
-handwriting; the recipe, sources and licences ship with them.
+Base models are trained only on data the project may use: synthetic handwriting, data under
+a suitable licence, data used with its authors' permission (the BRUSH dataset, for
+non-commercial use; [`train/README.md`](train/README.md)), and samples their writer gave for
+training. The recipe, sources and licences ship with them, and a model whose data carry terms
+of their own, such as non-commercial use, carries those terms.
 
 The first spec is [`specs/001-recognizer`](specs/001-recognizer/spec.md).
 
