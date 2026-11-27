@@ -1,12 +1,14 @@
 """Reading the BRUSH dataset (Kotani, Tellex, Tompkin, "Generating Handwriting via
-Decoupled Style Descriptors", ECCV 2020) as sample-format lines, for an evaluation only.
+Decoupled Style Descriptors", ECCV 2020) as sample-format lines, for training and evaluation.
 
-The dataset is not part of this repository and nothing here downloads it. It comes from
-the authors' page (https://github.com/brownvc/decoupled-style-descriptors, "BRUSH
-dataset"), under their terms: non-commercial research only, publications cite the paper.
-Nothing derived from it (ink, features, writer numbers, per-sample results, models) belongs
-in this repository, its CI, a pull request, a release or a published log: point
-`writerseval --out` at a private directory. Never train on it.
+BRUSH is used to train the base models with the dataset authors' permission, for
+non-commercial use. The dataset is not redistributed: it is not part of this repository and
+nothing here downloads it. Whoever trains with it fetches it from the authors' page
+(https://github.com/brownvc/decoupled-style-descriptors, "BRUSH dataset") under its terms
+there. A model trained on it carries non-commercial terms (train/README.md, Licence). Only
+the trained model and aggregate measurements are published; the ink, features, writer
+numbers, splits and per-sample results stay in private directories, never in this
+repository, its CI, a pull request, a release or a published log.
 
 **The files.** One directory per writer, one file per line of writing: a Python pickle of
 a list [text, drawing, labels]: `drawing` an (N, 3) array of x, y (pixels, y down) and 1

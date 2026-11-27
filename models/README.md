@@ -16,7 +16,7 @@ holding the directory the recognizer reads (`docs/recognizer.md`, "Base models")
 |---|---|
 | `recognizer.ghm` | the model (ghm version 1, or 2 for one reading the reference height; its kind, recognizer, recorded in the header) |
 | `README` | the recipe (trainer commit, training command), the data sources, the results |
-| `LICENSES` | the licences of these files and of the training data (font notices, OFL text) |
+| `LICENSES` | the licences of these files and of the training data (font notices, OFL text), and the terms a model carries from its data (a model trained on BRUSH: non-commercial use, `train/README.md`) |
 | `prompts.txt` | `models/LANG/prompts.txt` |
 
 `VERSION` is a plain number, counted per language (`model-en-1`, `model-en-2`, …). A

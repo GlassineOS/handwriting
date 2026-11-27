@@ -11,13 +11,14 @@ can't be used, and installing it from the samples app.
 
 The device reads handwriting with the shipped base model of each language (spec 001) and
 neatens and builds the letter model with an optional point aligner beside it (spec 003). The
-shipped models are trained only on data the project may redistribute (the repository's
-principles, Models and data).
+shipped models are trained only on data the project may use: synthetic ink, data under a
+suitable licence, data whose authors permitted the project to train and publish a model on it,
+and samples their writer gave for training (the repository's principles, Models and data).
 
-Some handwriting data is published for research under terms that don't allow a model trained
-on it to be shipped with the system. A model trained on such data can read some people better
-than the shipped one. If the project never gets permission to ship such a model, a person who
-has one from elsewhere, under the data's terms, can still use it on their own device.
+Some handwriting data is published under terms that don't allow a model trained on it to be
+shipped with the system. A model trained on such data can read some people better than the
+shipped one. A person who has such a model from elsewhere, under the data's terms, can still
+use it on their own device.
 
 This spec lets the person install a model file they already have as a **private
 replacement** for a shipped model, for themselves only. The system never fetches such a model
