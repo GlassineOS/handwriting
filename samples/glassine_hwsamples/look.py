@@ -179,8 +179,9 @@ def btn_w(cr, k, label, icon_name=None):
     return PT.measure(cr, label, k["btnF"])[0] + (40 if not icon_name else 64)
 
 
-def btn(cr, k, hits, x, y, label, fn, pri=False, icon_name=None, w=None, h=BTN_H, icon_after=False):
-    """a button as the design draws it; fn None: drawn inactive (no target). -> its width"""
+def btn(cr, k, hits, x, y, label, fn, pri=False, icon_name=None, w=None, h=BTN_H, icon_after=False, fit=False):
+    """a button as the design draws it; fn None: drawn inactive (no target); fit: w may be
+    narrower than the label (fit_widths), which then ends in … -> its width"""
     w = w or btn_w(cr, k, label, icon_name)
     on = fn is not None
     if pri and on:
@@ -195,6 +196,9 @@ def btn(cr, k, hits, x, y, label, fn, pri=False, icon_name=None, w=None, h=BTN_H
         PT.box(cr, x, y, w, h, k["btnR"], bg=None, shadow="inset 0 0 0 1.5px " + k.dim)
         col = k.dim
     tw, th = PT.measure(cr, label, k["btnF"])
+    room = w - (40 if not icon_name else 64)
+    fit = {"maxw": room} if fit and tw > room + 0.5 else {}
+    tw = min(tw, room) if fit else tw
     if icon_name:
         gap = 8
         total = tw + gap + 22
@@ -202,7 +206,9 @@ def btn(cr, k, hits, x, y, label, fn, pri=False, icon_name=None, w=None, h=BTN_H
         ix = lx + tw + gap + 11 if icon_after else lx + 11
         tx = lx if icon_after else lx + 22 + gap
         icon(cr, icon_name, 22, ix, y + h / 2, col)
-        PT.text(cr, label, k["btnF"], tx, y + (h - th) / 2, col)
+        PT.text(cr, label, k["btnF"], tx, y + (h - th) / 2, col, **fit)
+    elif fit:
+        PT.text(cr, label, k["btnF"], x + 20, y + (h - th) / 2, col, **fit)
     else:
         PT.text(cr, label, k["btnF"], x + w / 2, y + (h - th) / 2, col, align=1)
     if on:
@@ -210,17 +216,53 @@ def btn(cr, k, hits, x, y, label, fn, pri=False, icon_name=None, w=None, h=BTN_H
     return w
 
 
-def btns_right(cr, k, hits, right, y, items, gap=10):
-    """[(label, fn, pri)] from the right edge leftwards; -> the left edge"""
-    x = right
+def fit_widths(ws, room, gap=10, least=2 * BTN_H):
+    """buttons' widths ws in a row room wide: as they are when they fit, else the widest
+    narrowed (not below least) until they do"""
+    ws = list(ws)
+    over = sum(ws) + gap * (len(ws) - 1) - room
+    while over > 0.5:
+        i = max(range(len(ws)), key=lambda j: ws[j])
+        cut = min(over, ws[i] - least)
+        if cut <= 0:
+            break
+        ws[i] -= cut
+        over -= cut
+    return ws
+
+
+def btn_rows(cr, k, items, room, gap=10):
+    """the rows [(label, fn, pri)] take in a row room wide, filled from the right (the last
+    item on the lowest row; those that don't fit go on rows above)"""
+    rows, x = [[]], room
     for it in reversed(items):
-        label, fn, pri = it[:3]
-        ic = it[3] if len(it) > 3 else None
-        w = btn_w(cr, k, label, ic)
-        x -= w
-        btn(cr, k, hits, x, y, label, fn, pri, ic, w=w)
-        x -= gap
-    return x + gap
+        w = btn_w(cr, k, it[0], it[3] if len(it) > 3 else None)
+        if rows[-1] and w > x:
+            rows.append([])
+            x = room
+        rows[-1].append(it)
+        x -= w + gap
+    return rows
+
+
+def btns_right(cr, k, hits, right, y, items, gap=10, room=None):
+    """[(label, fn, pri)] from the right edge leftwards, in rows above y when they don't fit
+    in room (see btn_rows); -> the left edge of the lowest row"""
+    rows = btn_rows(cr, k, items, room, gap) if room else [list(reversed(items))]
+    out = right
+    for r, row in enumerate(rows):
+        x = right
+        # a row that runs off the window's left edge is narrowed to fit
+        ws = fit_widths([btn_w(cr, k, it[0], it[3] if len(it) > 3 else None) for it in row], right, gap)
+        for it, w in zip(row, ws):
+            label, fn, pri = it[:3]
+            ic = it[3] if len(it) > 3 else None
+            x -= w
+            btn(cr, k, hits, x, y - r * (BTN_H + gap), label, fn, pri, ic, w=w, fit=True)
+            x -= gap
+        if r == 0:
+            out = x + gap
+    return out
 
 
 def card(cr, k, x, y, w, h, on=False, bg=None):
@@ -354,17 +396,20 @@ def footer(cr, k, hits, w, y, h, back=None, status="", skip=None, next_=None, ne
     PT.fill(cr, 0, y, w, h, k.paper)
     PT.rule(cr, 0, y, w, k["footRule"])
     by = y + (h - BTN_H) / 2
+    # the buttons' widths, narrowed when they don't fit across (a large text)
+    ws = ([btn_w(cr, k, "Back", "arrow_back")] if back else []) + [btn_w(cr, k, c[0], c[1]) for c in choices] + (
+        [btn_w(cr, k, next_label, next_icon)] if next_label else [])
+    ws = fit_widths(ws, w - 2 * PAD - 14 * (bool(back) + bool(next_label and choices)), 10)
     left = PAD
     if back:
-        left += btn(cr, k, hits, PAD, by, "Back", back, icon_name="arrow_back") + 14
+        left += btn(cr, k, hits, PAD, by, "Back", back, icon_name="arrow_back", w=ws.pop(0), fit=True) + 14
     right = w - PAD
     if next_label:
-        nw = btn_w(cr, k, next_label, next_icon)
-        btn(cr, k, hits, right - nw, by, next_label, next_, pri=True, icon_name=next_icon, w=nw, icon_after=True)
+        nw = ws.pop()
+        btn(cr, k, hits, right - nw, by, next_label, next_, pri=True, icon_name=next_icon, w=nw, icon_after=True, fit=True)
         right -= nw + 14
-    for label, ic, fn in reversed(choices):
-        cw = btn_w(cr, k, label, ic)
-        btn(cr, k, hits, right - cw, by, label, fn, icon_name=ic, w=cw)
+    for (label, ic, fn), cw in zip(reversed(choices), reversed(ws)):
+        btn(cr, k, hits, right - cw, by, label, fn, icon_name=ic, w=cw, fit=True)
         right -= cw + 10
     if skip and right - PT.measure(cr, "Skip to writing", k["btnF"])[0] - 20 < left:
         skip = None                       # no room (a narrow column): Continue goes on anyway
