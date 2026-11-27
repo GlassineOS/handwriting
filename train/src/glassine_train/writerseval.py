@@ -9,8 +9,8 @@ from the ink.
 
 The dataset is the user's: a path, never downloaded here. Formats:
 
-- `brush`: the BRUSH dataset as its authors distribute it (brush.py; their page and terms
-  are there). Non-commercial research only.
+- `brush`: the BRUSH dataset as its authors distribute it (brush.py; where it comes from,
+  its terms and the paper to cite are there).
 - `samples`: sample-format lines (docs/samples.md) whose `donor` tells the writers apart.
 
 Everything per sample (texts, readings, ink) goes to `--out`, which must be a private
