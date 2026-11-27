@@ -1,8 +1,9 @@
 # glassine-train (prototype)
 
-A small English online-handwriting recognizer, trained only on synthetic ink from `../synth`.
-It is a prototype to learn what works, not the product engine: every number below is
-measured on synthetic ink, never on real handwriting.
+A small English online-handwriting recognizer. Models 2 and 4 are trained only on synthetic
+ink from `../synth`; model 5's recipe adds real ink of many writers (Real ink in the base
+model, below). It is a prototype to learn what works, not the product engine: a number below
+is measured on synthetic ink unless it says it is real ink.
 
 ```sh
 (cd ../synth && uv run glassine-synth fetch)        # the fonts in ../synth/fonts.toml
@@ -377,6 +378,51 @@ same after case, marks and spaces; or 0.85 alike), are left out. The real test s
 writer, the one whose ink the timing fit and the letter model come from: results on it are
 **same writer**, not other hands. A test on other writers comes from guest contributions
 (spec 002).
+
+## Real ink in the base model (model 5; `brushset`, `personset`)
+
+Model 5 is model 4's recipe with real ink of many writers beside the generator's: the BRUSH
+dataset (Data, BRUSH) and the person's own prompted samples given for training. Both become
+ink sets (`realink.py`) featurized as the generator's and merged into its training set, so
+they reach the model through the same features, references and characters (`CHARS4`):
+
+```sh
+uv run glassine-train real STORE --out PRIVATE/real5 --keep-test PRIVATE/test-ids.txt  # the fixed test session
+uv run glassine-train personset PRIVATE/real5 --out PRIVATE/person5 --copies 6
+uv run glassine-train brushset BRUSH --out PRIVATE/brush5 --copies 4                  # your copy of BRUSH
+uv run glassine-train gen4 --out build/ink5 --workers 16
+uv run glassine-train featurize build/ink5/train --out build/data/synth5 --ref mix --measured
+uv run glassine-train featurize build/ink5/val --out build/data/val5.xh --ref xh      # and dev, dev_kinds
+uv run glassine-train featurize PRIVATE/brush5/train --out build/data/brush5 --ref mix --measured
+uv run glassine-train featurize PRIVATE/brush5/dev --out build/data/brush5-dev --ref line
+uv run glassine-train featurize PRIVATE/person5/train --out build/data/person5 --ref mix --measured
+uv run glassine-train mergeset --base synth5 --add brush5 person5 --out train5
+uv run glassine-train train --run m5 --data train5 --val val5.xh --select dev5.xh,dev5_kinds.xh,brush5-dev \
+    --augment --hidden 176 --minutes 600 --steps-per-s RATE --threads 9
+uv run glassine-train writerseval BRUSH --split PRIVATE/brush5/split.json --part test --per-writer 0 \
+    --models m4=M4_NOCHARS,M4_CHARS m5=M5_NOCHARS,M5_CHARS --modes words+chars ink --out PRIVATE/eval5
+```
+
+- **BRUSH, split by writer and by text** (`brushset`). Writers wrote shared prompts, so a
+  test writer's text must not be learned from other writers: texts alike as `real.near_test`
+  finds them form one group, and writers and groups go to their parts by a hash of the seed
+  and their name (20 % of writers test, 5 % dev, 20 % of the groups held out). Training is
+  the training writers' lines of the other groups; dev and test the dev and test writers'
+  lines of the held-out groups. The split is the same on every machine and needs no list
+  here; `split.json` (private) records it for `writerseval --split`. Characters outside
+  `CHARS4` (`"`, `[`, `]`, `*`, `<`, `>`) are left out with their own strokes. Each training
+  line is written `--copies` times, each with its own writing-area line (0.7 to 2.5 times
+  the writing box, log-uniform: the letters' size against the line varies as the
+  generator's does) and pauses (lognormal around 0.11 s: the dataset has no times); dev and
+  test at the box's own line, as `writerseval` reads them.
+- **The person's samples** (`personset`): the split's training sessions (its test session
+  never; `real` keeps the earlier test ids), prompted, in `CHARS4`, with their writing area;
+  copies after the first are new drawings (`real.ink_augment`). A guest writer's store is
+  refused: guests' samples are evaluation only. A model trained on them records the split's
+  `trained_until`, so adaptation never learns the base model's own samples again.
+- Everything `brushset`, `personset`, `featurize` and `mergeset` write from them holds other
+  people's ink: private directories only (`brushset` and `personset` make theirs 0700),
+  never a repository, CI, a pull request, a release or a log; what they print is counts.
 
 ## Results
 
@@ -933,8 +979,7 @@ dots 42 set (38 before); a 5's roof 2 of 5 (1); the h after a t in "the" 6 of 7 
 F and f cases unchanged. The letter model built with the aligner's cut is as close to its
 samples as before (`tools/eval-letters.py`: 231 versions, 0.216 x-heights by arc length).
 
-Neatest's guards (`GLASSINE_HANDWRITING_NEATEN`), each left out, with the aligner and without
-(words set on the straight line, `cond=0`):
+Neatest's guards (`GLASSINE_HANDWRITING_NEATEN`), each left out, with the aligner and without:
 
 | left out | with the aligner | without |
 |---|---|---|
