@@ -50,7 +50,7 @@ from glassine_ui import paint as PT  # noqa: E402
 from glassine_ui import size as S  # noqa: E402
 from glassine_ui import voices  # noqa: E402
 
-from . import APP_ID, client, flow, fontview, models as M, neat as N, pages, prompts as P, writers as WR  # noqa: E402
+from . import APP_ID, client, flow, fontview, models as M, neat as N, pages, paging as PG, prompts as P, writers as WR  # noqa: E402
 from .look import Hits, Look, draw_ink, guides  # noqa: E402
 
 W0, H0 = 702, 884                   # the window's default size: below the shell's bar at Default, design px
@@ -232,6 +232,7 @@ class UI:
         self.reviewing = False          # the list of the earlier samples is open
         self.ep = 0                     # its page
         self.confirm = None             # (title, text, yes-label, fn) for a destructive action
+        self.flow = {}                  # {part: (what it shows, page, pages)}: a split part's page shown (pages.paged)
         self.sets_open = False
         self.best = None                # on the Autograph tab: "font" (its page) or "pick"; else None
         self.font = None                # the font page: {"status": cli.letters(), "model": fontview.parse()}
@@ -284,6 +285,7 @@ class UI:
         self.waiting_charge = False     # a learning run waiting for the charger is called off
         self.wstep, self.tried, self.adult, self.gflow = "w-welcome", False, False, None
         self.naming = self.removing = None
+        self.flow = {}
         self.page = self.tab = "write"
 
     # ---------------------------------------------------------- background
@@ -571,6 +573,7 @@ class UI:
         self.confirm = None
         self.msg = ""
         self.sets_open = False
+        self.flow = {}
         self.saved = None
         self.picking_licence = False
         self.reviewing = False
@@ -2186,6 +2189,7 @@ def parts(ui):
 
 
 RESERVE = 160          # room under the prompt for the last sample or the failed check
+AREA_MIN = 200         # the writing area's least height: the parts around it are split in pages instead
 
 
 def _probe():
@@ -2221,6 +2225,39 @@ def side_width(w):
     return max(300, int(w * 0.34))
 
 
+def part_heights(ui, W, th, bh, room, canvas, side=False):
+    """the top's and the bottom's heights when they don't fit in room together (in the
+    landscape column, side): one of them whole when the other can be split in what is left,
+    else each split, its least and a share of the rest (paging.least)"""
+    top, bottom = parts(ui)
+    kw = {"foot": False} if side and ui.page == "wizard" else {}
+    mt = int(math.ceil(PG.least(lambda c, hh: top(c, ui, hh, W, head=not side), th)))
+    mb = int(math.ceil(PG.least(lambda c, hh: bottom(c, ui, hh, W, bh, canvas, **kw), bh)))
+    if room - bh >= mt:
+        return int(room - bh), bh
+    if room - th >= mb:
+        return th, int(room - th)
+    extra = room - mt - mb
+    if extra <= 0:
+        return min(th, mt), min(bh, mb)
+    t = mt + int(extra * (th - mt) / max(1, (th - mt) + (bh - mb)))
+    return t, int(room - t)
+
+
+def side_heights(ui, w, h, canvas):
+    """the landscape column's top and bottom (w x h): the bottom at its height, the top above
+    it; split when the two don't fit (part_heights)"""
+    top, _ = parts(ui)
+    bh = bottom_height(ui, w, canvas, foot=False)
+    th = top(_probe(), ui, Hits(), w, head=False)
+    rec = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
+    top(cairo.Context(rec), ui, Hits(), w, head=False)
+    _, iy, _, ih = rec.ink_extents()
+    if th <= h - bh or iy + ih <= h - bh + PG.SLACK:      # (its ink fits: the room below it is the bottom's)
+        return h - bh, bh
+    return part_heights(ui, w, int(math.ceil(th)), bh, h, canvas, side=True)
+
+
 def layout(ui, W, H, canvas=None):
     """where the parts of a writing page go: {name: (x, y, w, h)}. Portrait: the top, the
     writing area, the bottom. Landscape: the head across, a column beside the area, and
@@ -2236,6 +2273,9 @@ def layout(ui, W, H, canvas=None):
         return out
     pages.LAND[0] = False
     th, bh = top_height(ui, W), bottom_height(ui, W, canvas)
+    room = H - AREA_MIN
+    if th + bh > room and PG.larger():  # the writing area keeps its least: the parts are split (pages.paged; at Default as designed)
+        th, bh = part_heights(ui, W, th, bh, room, canvas)
     return {"top": (0, 0, W, th), "area": (0, th, W, H - th - bh), "bottom": (0, H - bh, W, bh)}
 
 
@@ -2248,9 +2288,9 @@ def paint_part(name, cr, ui, hits, w, h, canvas):
         pages.write_head(cr, ui, hits, w)
     elif name == "top":
         pages.LAND[0] = False
-        top(cr, ui, hits, w)
+        pages.paged(cr, ui, hits, w, h, "top", lambda c, hh: top(c, ui, hh, w))
     elif name == "bottom":
-        bottom(cr, ui, hits, w, h, canvas)
+        pages.paged(cr, ui, hits, w, h, "bottom", lambda c, hh: bottom(c, ui, hh, w, h, canvas))
     elif name == "foot":
         cr.save()
         cr.translate(0, -(2000 - h))
@@ -2259,14 +2299,15 @@ def paint_part(name, cr, ui, hits, w, h, canvas):
     elif name == "side":
         pages.LAND[0] = True
         PT.fill(cr, w - 1.5, 0, 1.5, h, k.ink)
-        top(cr, ui, hits, w - 2, head=False)
-        bh = bottom_height(ui, w - 2, canvas, foot=False)
+        th, bh = side_heights(ui, w - 2, h, canvas)
+        pages.paged(cr, ui, hits, w - 2, th, "top", lambda c, hh: top(c, ui, hh, w - 2, head=False))
         cr.save()
         cr.translate(0, h - bh)
         if ui.page == "wizard":
-            bottom(cr, ui, Shifted(hits, h - bh), w - 2, bh, canvas, foot=False)
+            pages.paged(cr, ui, Shifted(hits, h - bh), w - 2, bh, "bottom",
+                        lambda c, hh: bottom(c, ui, hh, w - 2, bh, canvas, foot=False))
         else:
-            bottom(cr, ui, Shifted(hits, h - bh), w - 2, bh, canvas)
+            pages.paged(cr, ui, Shifted(hits, h - bh), w - 2, bh, "bottom", lambda c, hh: bottom(c, ui, hh, w - 2, bh, canvas))
         cr.restore()
 
 
