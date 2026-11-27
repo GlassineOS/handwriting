@@ -18,7 +18,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -2079,6 +2081,11 @@ class Sized(unittest.TestCase):
             self.skipTest("no GTK or glassine_ui: %s" % e)
         self.U, self.S, self.V = ui, S, voices
         self.addCleanup(S.set_metrics)
+        # one clock for every drawing: the demo's samples say "Today, 14:02", so two drawings
+        # on either side of a minute would differ in that line alone
+        clock = mock.patch("time.time", return_value=time.time())
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def draw(self, screen, voice, px, fac, dens=0.0, text=100, metrics=True):
         """screen drawn into px device pixels at fac device px per design px -> (bytes, hits, W, H)"""
