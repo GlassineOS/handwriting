@@ -933,8 +933,7 @@ dots 42 set (38 before); a 5's roof 2 of 5 (1); the h after a t in "the" 6 of 7 
 F and f cases unchanged. The letter model built with the aligner's cut is as close to its
 samples as before (`tools/eval-letters.py`: 231 versions, 0.216 x-heights by arc length).
 
-Neatest's guards (`GLASSINE_HANDWRITING_NEATEN`), each left out, with the aligner and without
-(words set on the straight line, `cond=0`):
+Neatest's guards (`GLASSINE_HANDWRITING_NEATEN`), each left out, with the aligner and without:
 
 | left out | with the aligner | without |
 |---|---|---|
