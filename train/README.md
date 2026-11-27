@@ -97,6 +97,28 @@ for the test sets. The alphabet (`CHARS4`) is `CHARS` with `@/&+#%_=$` appended 
 training font has them), so the old characters keep their class numbers. The test book is
 never a source; its words are only kept out of the pseudo-words.
 
+**BRUSH** (real ink of many writers). The BRUSH dataset (BRown University Stylus
+Handwriting: 170 writers, about 27 600 lines, each point labelled with its character) is
+used for training the base models with the dataset authors' permission, for non-commercial
+use. It is not redistributed: this repository holds only the code that reads it
+(`brush.py`), nothing downloads it, and whoever trains with it fetches it from the official
+source, https://github.com/brownvc/decoupled-style-descriptors (section "BRUSH dataset"),
+under its terms there. A model trained on it carries non-commercial terms (Licence, below).
+The ink, its features, writer numbers, the writer and text splits and per-sample results
+stay in private directories; only the trained model and aggregate measurements are
+published. Work that uses it cites the paper:
+
+```bibtex
+@inproceedings{kotani2020generating,
+  title={Generating Handwriting via Decoupled Style Descriptors},
+  author={Kotani, Atsunobu and Tellex, Stefanie and Tompkin, James},
+  booktitle={European Conference on Computer Vision},
+  pages={764--780},
+  year={2020},
+  organization={Springer}
+}
+```
+
 ## Features (`features.py`)
 
 Only what a pen reports: x, y, t per point, strokes in order. Height, tilt and baseline
@@ -1001,8 +1023,7 @@ Formats (`--format`):
 - `brush` (`brush.py`): the BRUSH dataset (Kotani, Tellex and Tompkin, "Generating
   Handwriting via Decoupled Style Descriptors", ECCV 2020) as its authors distribute it on
   https://github.com/brownvc/decoupled-style-descriptors (section "BRUSH dataset"): its
-  directory or its ZIP. Their terms: non-commercial research only; work that uses it cites
-  the paper. The reader is our own, from the format's description: a pickle per line, read
+  directory or its ZIP (Data, BRUSH, for its terms and the citation). The reader is our own, from the format's description: a pickle per line, read
   with an unpickler that builds numpy arrays and nothing else. Each line becomes a sample in
   their writing box (120 by 748 pixels, baseline 100 pixels from the top): the area's line is
   the box's height (`--line-scale` changes it), its guide on their baseline, spans from their
@@ -1134,4 +1155,7 @@ each model reads the same lines.
 Code GPL-2.0-or-later. The fonts are OFL or Apache 2.0 (their licence travels with them
 in `../synth/build/fonts`); the texts are public domain. The lexicon files built by
 `lexicon` are CC BY-SA 3.0 (see above). A model trained by this recipe
-contains neither, but its recipe, sources and licences are this file.
+contains neither, but its recipe, sources and licences are this file. A model trained on
+BRUSH (Data, above) is used and published with the dataset authors' permission for
+non-commercial use only, and carries those terms beside the code's licence; the dataset
+itself is never part of it or of this repository.

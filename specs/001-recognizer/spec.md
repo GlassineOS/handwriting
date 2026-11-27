@@ -126,10 +126,12 @@ included unless they pick them one by one.
   see and erase what each app taught. A client that reads samples (Scenario 4) gets only
   those it sent itself unless the person grants it all of them.
 - **FR-012**: Base models are trained only on data the project may use: data under a
-  suitable licence, text rendered as synthetic handwriting, and samples a person gave for
-  it (contributed under FR-014, or given to the project by their writer for training). The
-  training recipe, the data sources and their licences ship with the models; a model
-  trained on real handwriting says so and from how many writers. The samples themselves
+  suitable licence, text rendered as synthetic handwriting, data whose authors permitted the
+  project to train and publish a model on it (such data is never redistributed), and samples
+  a person gave for it (contributed under FR-014, or given to the project by their writer for
+  training). The training recipe, the data sources and their licences ship with the models;
+  a model trained on real handwriting says so and from how many writers, and a model carries
+  the terms of its data (such as non-commercial use). The samples themselves
   are never published with a model or in the project's repositories, only aggregate
   measurements of them. No other sample of any person is part of a base model.
 - **FR-013**: No device names in the program; what differs per device (the pen's units,

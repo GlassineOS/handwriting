@@ -81,9 +81,11 @@ it (Models and data).
 ### Models and data
 
 Base models are trained only on data the project may use: under a suitable licence,
-synthetic, or samples their writer gave for training. Such samples are never committed or
+synthetic, used with its authors' permission, or samples their writer gave for training.
+Such samples, and data the project may use but not redistribute, are never committed or
 published; only the trained model and aggregate measurements are. Every model ships with
-its training recipe, its data sources and their licences. No vendor engine, model or resource is committed or shipped.
+its training recipe, its data sources and their licences, and a model carries the terms of
+its data (such as non-commercial use). No vendor engine, model or resource is committed or shipped.
 
 ### Tests and hardware
 

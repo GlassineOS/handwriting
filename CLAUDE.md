@@ -8,8 +8,9 @@ the first spec is `specs/001-recognizer/`.
 - Nothing leaves the device: no network code, no telemetry. Samples come only from a
   person's confirmation, never from private fields; a change touching samples needs a test
   of these rules.
-- Base models only from redistributable or synthetic data, or samples their writer gave
-  for training (those samples never go into the repository, CI, a pull request, a release or
+- Base models only from synthetic data, data under a suitable licence, data used with its
+  authors' permission (BRUSH: non-commercial use, never redistributed), or samples their
+  writer gave for training (those samples never go into the repository, CI, a pull request, a release or
   a log; only aggregate numbers do), with recipe, sources and licences next to them. No
   vendor engine, model or resource in this repository.
 - Commits carry an `Assisted-by:` or `Co-Authored-By:` trailer. Never add
