@@ -7,6 +7,7 @@ import os
 
 from glassine_ui import paint as PT
 
+from . import paging as PG
 from .look import BTN_H, LAND, PAD, btn, btn_w, btns_right, card, icon, lbl, radio, soft_box
 
 KINDS = (("recognizer", "Reading", "The model that reads your writing in every app."),
@@ -124,6 +125,7 @@ def models_page(cr, ui, hits, w, h):
     y = sub_head(cr, ui, hits, w, y, "Models",
                  "Which model reads and neatens your %s writing: the shipped one, or one you installed yourself. "
                  "Yours is for you alone; guests always use the shipped one." % lang_name(lang))
+    y = PG.body(cr, y)
     d = ui.models
     cw = w - 2 * PAD
     # turned: the two kinds side by side
@@ -169,6 +171,7 @@ def models_page(cr, ui, hits, w, h):
     icon(cr, "info", 22, PAD + 24, y + 22, k.ink)
     PT.text(cr, text, k["sub"], PAD + 48, y + 14, k.ink, maxw=cw - 60, wrap=True)
     by = h - 20 - BTN_H
+    PG.foot(cr, by - 10)
     left = btns_right(cr, k, hits, w - PAD, by, [("Install", lambda: install(ui), True)])
     if ui.msg:                  # what Install did, on the button's row
         _, mh = PT.measure(cr, ui.msg, k["sub"], maxw=left - 14 - PAD, wrap=True)
