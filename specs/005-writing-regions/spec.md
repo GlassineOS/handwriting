@@ -249,8 +249,13 @@ again exactly as written, "sharp" included.
   none of its ink is shown.
 - **FR-021**: A set word is set at the size of the person's writing in that region, else
   at the size of their letters in millimetres, else at the typical handwriting size of
-  spec 004 FR-016 (FR-028). The line a set word goes on is the line of the word before it, else the region's
-  first line. When an edited word is wider or narrower than the ink it replaces, the kept
+  spec 004 FR-016 (FR-028). The writing's size is measured against the person's own letters
+  (a hand whose tall letters reach far above its small ones is not taken for a larger hand),
+  and stays within half again of the size of their letters in millimetres either way, so
+  that ink that is no writing (a line, a drawing read as a letter) never sets the font far
+  off the person's hand. The line a set word goes on is the line of the word before it, else the region's
+  first line; a first line with nothing on it lies low enough for the person's tall letters
+  to stay inside the region, its first word clear of the region's left edge. When an edited word is wider or narrower than the ink it replaces, the kept
   ink after it on the line moves along the line by the difference, unchanged in shape.
   Whether words that no longer fit the region's width wrap to its next line is the app's
   choice.

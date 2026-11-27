@@ -52,6 +52,7 @@ class FakeEngine:
         self.log = []
         self.samples = []
         self.fail_fit = set()   # words whose ink doesn't fit
+        self.tall = 1.0         # the person's font: how high its words reach, in x-heights
 
     def name(self, pts, text):
         self.label[json.dumps(pts)] = text
@@ -65,7 +66,7 @@ class FakeEngine:
         if verb == "set":
             t = unesc(f[0])
             w = 0.6 * len(t)
-            return [verb, "ok", "%g" % w, "2.0", "0.1", "1", "0,0 %g,1" % w]
+            return [verb, "ok", "%g" % w, "2.0", "0.1", "1", "0,0 %g,%g" % (w, self.tall)]
         s = self.sessions.get(f[0])
         if verb == "end":
             self.sessions.pop(f[0], None)
@@ -677,6 +678,54 @@ class Regions(unittest.TestCase):
         self.assertFalse(g.restore([(1, word_stroke(0, 40, "a"))], None))
         self.assertEqual(self.pen.engine.log, [])
         self.assertEqual(self.pen.out, [])
+
+    # ------------------------------------------------------------------ the size of set words
+
+    def tall_word(self, g, x, base, text, height):
+        """a word's stroke reaching height above its line (a hand whose tall letters are
+        taller than the usual 1.6 x-heights)"""
+        self.k += 1
+        pts = [[x + 6.0 * i, base - (height if i % 2 else 0), 1000 + 7 * i, 0.5, 0, 0] for i in range(8)]
+        self.pen.engine.name(pts, text)
+        self.run_(self._stroke(g, self.k, pts))
+        return self.k
+
+    def set_size(self, g, text):
+        return next(w.place[2] for w in g.words if not w.ink and w.text == text)
+
+    def test_set_word_at_the_size_of_the_persons_own_letters(self):
+        # their tall letters reach 3 x-heights (in their font as in their ink): a word set
+        # beside their writing has their small letters' size, not 3 / 1.6 of it
+        self.pen.engine.tall = 3.0
+        g = self.region()
+        self.tall_word(g, 20, 60, "dd", 3 * XH)
+        self.tall_word(g, 80, 60, "bb", 3 * XH)
+        self.run_(g.update())
+        self.run_(g.set_text("dd bb kk"))
+        self.assertAlmostEqual(self.set_size(g, "kk"), XH, delta=0.5)
+
+    def test_ink_that_is_no_writing_never_sizes_the_font_far_off(self):
+        # two long lines read as a letter: the set word stays near the person's size (2 mm,
+        # the stand-in's letter model, at 5 px per mm)
+        g = self.region(units="device:5")
+        self.tall_word(g, 20, 120, "M", 100)
+        self.run_(g.update())
+        self.run_(g.set_text("M nap"))
+        ref = 2.0 * 5
+        self.assertLessEqual(self.set_size(g, "nap"), ref * regions.SIZE_BOUND + 1e-6)
+        self.assertGreaterEqual(self.set_size(g, "nap"), ref / regions.SIZE_BOUND - 1e-6)
+
+    def test_text_typed_into_an_empty_region_stays_inside_it(self):
+        # no ink, no ruled lines: the person's size, the first line low enough for their tall
+        # letters, the line started clear of the left edge
+        self.pen.engine.tall = 3.2
+        g = self.region(units="device:5")
+        self.run_(g.set_text("Fild"))
+        v = self.value()
+        box = v["words"][0]["box"]
+        self.assertGreater(box[0], 0)
+        self.assertGreater(box[1], 0)
+        self.assertAlmostEqual(self.set_size(g, "Fild"), 10.0, delta=1e-6)
 
     def test_size_reference(self):
         g = self.region(units="device:5")
