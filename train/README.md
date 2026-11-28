@@ -299,7 +299,11 @@ uv run glassine-train inkread SETS... --models DIR --measured --samples build/ev
 ```
 
 `train --init CKPT` goes on from a checkpoint (its architecture, inputs and characters) with
-a new schedule. `writereval STORE --models NAME=NOCHARS,CHARS ...` reads another writer's
+a new schedule. `train --run RUN --resume` (with the run's other options again) goes on with a
+stopped run exactly where its `last.pt` left it: the optimizer, the LR schedule, the place in
+the epoch and dropout's random state come back, so it ends with the weights of a run never
+stopped (`--augment` draws its slants fresh, as in any run). Each epoch's order is
+`seed + epoch` from epoch 0. `writereval STORE --models NAME=NOCHARS,CHARS ...` reads another writer's
 samples as a new person (no head, no letters), every decoder mode, each model against the
 first; it is an evaluation set only and writes only aggregates.
 

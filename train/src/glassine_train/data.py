@@ -148,10 +148,12 @@ def collate(batch, alphabet: str | None = ALPHABET):
 
 
 class BucketSampler(torch.utils.data.Sampler):
-    """Batches of similar length (less padding), in random order each epoch."""
+    """Batches of similar length (less padding), in random order each epoch. The trainer sets
+    epoch (the order) and skip (batches of it already trained on, for a resumed run): the
+    DataLoader may call __iter__ more than once for one pass, so __iter__ changes neither."""
 
     def __init__(self, ds: InkSet, batch: int, seed: int = 0, down: int = 3):
-        self.ds, self.batch, self.seed, self.epoch = ds, batch, seed, 0
+        self.ds, self.batch, self.seed, self.epoch, self.skip = ds, batch, seed, 0, 0
         self.lens = np.array([ds.length(i) for i in range(len(ds))])
         frames = self.lens.copy()
         for _ in range(down):
@@ -162,7 +164,6 @@ class BucketSampler(torch.utils.data.Sampler):
 
     def __iter__(self):
         rng = np.random.default_rng(self.seed + self.epoch)
-        self.epoch += 1
         idx = rng.permutation(self.keep)
         out = []
         for k in range(0, len(idx), self.batch * 50):
@@ -170,7 +171,7 @@ class BucketSampler(torch.utils.data.Sampler):
             chunk = chunk[np.argsort(self.lens[chunk])]
             out += [chunk[j:j + self.batch].tolist() for j in range(0, len(chunk), self.batch)]
         rng.shuffle(out)
-        return iter(out)
+        return iter(out[self.skip:])
 
     def __len__(self):
         return (len(self.keep) + self.batch - 1) // self.batch

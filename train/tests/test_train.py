@@ -174,3 +174,60 @@ def test_training_goes_on_from_a_checkpoint(tmp_path):
           batch=4, threads=1, eval_every=1, steps_per_s=1.0, init=tmp_path / "init.pt")
     got = load(tmp_path / "run" / "last.pt")
     assert got.cfg == m.cfg
+
+
+def _tiny_set(path, texts):
+    import json
+    path.mkdir()
+    xs = [features(_ink(scale=1 + 0.1 * i)) for i in range(len(texts))]
+    np.concatenate(xs).astype(np.float16).tofile(path / "feat.f16")
+    np.save(path / "offsets.npy", np.cumsum([0] + [len(x) for x in xs]))
+    (path / "texts.json").write_text(json.dumps(texts))
+    return path
+
+
+def test_a_resumed_run_matches_an_uninterrupted_one(tmp_path, monkeypatch):
+    """--resume: a run stopped after a checkpoint goes on to the same weights as one never stopped
+    (optimizer, LR schedule, place in the epoch and dropout's random state come back)"""
+    import pytest
+    from glassine_train import train as T
+    data = _tiny_set(tmp_path / "data", ["ab", "ba", "a", "b", "abab", "bab", "aab", "bb"])
+    cfg = {"conv": 16, "hidden": 8, "layers": 2, "dropout": 0.3, "down": 3}
+    # 7 steps of 2 batches an epoch: the checkpoint after step 3 falls in the middle of epoch 1
+    kw = dict(batch=4, lr=1e-2, threads=1, eval_every=3, steps_per_s=0.01)
+    minutes = 7 / 60 / 0.01
+    T.train(data, data, tmp_path / "whole", minutes, cfg, **kw)
+
+    class Stop(Exception):
+        pass
+    save = torch.save
+
+    def crash(obj, path):  # the process ends right after writing its first checkpoint
+        save(obj, path)
+        if str(path).endswith("last.pt.tmp"):
+            raise Stop
+    monkeypatch.setattr(T.torch, "save", crash)
+    with pytest.raises(Stop):
+        T.train(data, data, tmp_path / "cut", minutes, cfg, **kw)
+    monkeypatch.setattr(T.torch, "save", save)
+    (tmp_path / "cut" / "last.pt.tmp").replace(tmp_path / "cut" / "last.pt")
+    assert torch.load(tmp_path / "cut" / "last.pt", weights_only=False)["step"] == 3
+    T.train(data, data, tmp_path / "cut", minutes, cfg, resume=True, **kw)
+    a = torch.load(tmp_path / "whole" / "last.pt", weights_only=False)
+    b = torch.load(tmp_path / "cut" / "last.pt", weights_only=False)
+    assert a["step"] == b["step"] == 7
+    for k in a["state"]:
+        assert torch.equal(a["state"][k], b["state"][k]), k
+    assert a["resume"]["sched"]["last_epoch"] == b["resume"]["sched"]["last_epoch"] == 7
+
+
+def test_resume_needs_a_resume_state(tmp_path):
+    """a last.pt from before resuming existed: a clear stop, not a silent fresh schedule"""
+    import pytest
+    from glassine_train.train import train
+    data = _tiny_set(tmp_path / "data", ["ab"] * 4)
+    m = Recognizer(conv=16, hidden=8, layers=1, down=3)
+    (tmp_path / "run").mkdir()
+    torch.save({"cfg": m.cfg, "state": m.state_dict(), "step": 2, "val": {}}, tmp_path / "run" / "last.pt")
+    with pytest.raises(SystemExit):
+        train(data, data, tmp_path / "run", 1.0, m.cfg, batch=2, threads=1, resume=True)
