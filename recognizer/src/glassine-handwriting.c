@@ -1415,10 +1415,10 @@ static void do_neaten(const char *id, struct session *s, const char *strength, c
 			int ar = hw_aligner_run(am, s->ink, s->n, keep, &aligned);
 			if (ar < 0) goto oom;
 			if (!ar && !align && fit && hw_aligner_label(&aligned, cp, nc, HW_ALIGNER_DELAY, own) < 0) goto oom;
-			/* (measurements, not shipped) nearest=1: a delayed stroke goes to the nearest of
-			 * equal letters (hw_aligner_nearest) */
+			/* a delayed stroke goes to the nearest of equal letters (hw_aligner_nearest);
+			 * $GLASSINE_HANDWRITING_NEATEN nearest=0 leaves it on the first, for measurements */
 			const char *nk = getenv("GLASSINE_HANDWRITING_NEATEN");
-			if (!ar && !align && fit && nk && strstr(nk, "nearest=1") && hw_aligner_nearest(s->ink, s->n, cp, nc, own) < 0)
+			if (!ar && !align && fit && !(nk && strstr(nk, "nearest=0")) && hw_aligner_nearest(s->ink, s->n, cp, nc, own) < 0)
 				goto oom;
 			if (!ar) q.aligned = &aligned;
 		}
