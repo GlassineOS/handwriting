@@ -231,3 +231,49 @@ def test_resume_needs_a_resume_state(tmp_path):
     torch.save({"cfg": m.cfg, "state": m.state_dict(), "step": 2, "val": {}}, tmp_path / "run" / "last.pt")
     with pytest.raises(SystemExit):
         train(data, data, tmp_path / "run", 1.0, m.cfg, batch=2, threads=1, resume=True)
+
+
+def test_device_choice_and_a_missing_gpu_stop_cleanly(tmp_path):
+    """--device: cpu by default, auto falls back to the CPU, a GPU asked for and not there (or a
+    device name the trainer doesn't know) stops with a message before any data is read"""
+    import pytest
+    from glassine_train.train import pick_device, train
+    assert pick_device().type == "cpu" and pick_device("cpu").type == "cpu"
+    if not torch.cuda.is_available():
+        assert pick_device("auto").type == "cpu"
+        for name in ("cuda", "cuda:0"):
+            with pytest.raises(SystemExit, match="no usable CUDA GPU"):
+                train(tmp_path / "missing", tmp_path / "missing", tmp_path / "run", 1.0, {}, device=name)
+    with pytest.raises((SystemExit, RuntimeError)):
+        pick_device("tpu")
+    assert not (tmp_path / "run").exists()
+
+
+def test_cpu_runs_are_exact_with_the_default_device_and_workers(tmp_path):
+    """the CPU default stays bit for bit: the same seed gives the same weights and optimizer
+    state with the options left out or given as their defaults; checkpoints hold CPU tensors
+    (the loader workers' count is part of a run's random stream: the same count, the same run)"""
+    from glassine_train import train as T
+    data = _tiny_set(tmp_path / "data", ["ab", "ba", "a", "b", "abab", "bab", "aab", "bb"])
+    cfg = {"conv": 16, "hidden": 8, "layers": 2, "dropout": 0.3, "down": 3}
+    kw = dict(batch=4, lr=1e-2, threads=1, eval_every=3, steps_per_s=0.01)
+    minutes = 7 / 60 / 0.01
+    T.train(data, data, tmp_path / "a", minutes, cfg, **kw)
+    T.train(data, data, tmp_path / "b", minutes, cfg, device="cpu", workers=2, **kw)
+    a = torch.load(tmp_path / "a" / "last.pt", weights_only=False)
+    b = torch.load(tmp_path / "b" / "last.pt", weights_only=False)
+    assert a["step"] == b["step"] == 7
+    for k in a["state"]:
+        assert a["state"][k].device.type == "cpu"
+        assert torch.equal(a["state"][k], b["state"][k]), k
+    for i, s in a["resume"]["opt"]["state"].items():
+        for name, v in s.items():
+            assert torch.equal(v, b["resume"]["opt"]["state"][i][name]), (i, name)
+    assert "cuda_rng" not in a["resume"]
+
+
+def test_cpu_copy_of_nested_state():
+    from glassine_train.train import _cpu
+    t = torch.arange(3.0)
+    got = _cpu({"a": [t, (t, 1)], "b": "x"})
+    assert torch.equal(got["a"][0], t) and got["a"][1][1] == 1 and got["b"] == "x"
