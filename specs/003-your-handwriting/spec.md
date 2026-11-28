@@ -106,8 +106,9 @@ drawn; only what is read as writing is neatened.
 ### Scenario 5 – Letters not learned yet (Priority: P2)
 
 **Given** ink containing characters the letter model doesn't cover, **When** it is
-neatened, **Then** those characters get only the line-level corrections (baseline, slant,
-size, spacing) and keep their shape.
+neatened below Neatest, **Then** those characters get only the line-level corrections
+(baseline, slant, size, spacing) and keep their shape; at Neatest a set word sets them on
+their letters in the person's style where there are any (spec 007 FR-015).
 
 ## Requirements
 
@@ -462,7 +463,7 @@ size, spacing) and keep their shape.
   or mirrored. At Neatest the word itself is set in the font instead (FR-043). A character
   Autograph draws from the base font, or from a letter in the person's style (spec 007
   FR-015), is never a target: neatening moves ink only towards
-  the person's own letters, so an uncovered character keeps its shape (Scenario 5).
+  the person's own letters, so below Neatest an uncovered character keeps its shape (Scenario 5).
 - **FR-036**: A pull follows the stroke: each point of the person's stroke goes to the place
   on the version's stroke that matches it in shape (direction and curvature along the
   stroke), in order, so no point moves backwards along the stroke and the ink never folds

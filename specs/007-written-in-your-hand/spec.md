@@ -7,7 +7,7 @@ character, so the person's style, worked out on the device from their own sample
 they never wrote: letters they haven't written yet in their own style, Neatest as a neat
 rewriting of what they wrote, typed text shown as ink in their hand, and text from elsewhere
 shown in a hand that is clearly not theirs. The generator ships centrally in a package of its
-own, may carry non-commercial terms, and every feature works without it as before.
+own, may carry non-commercial terms, and every feature works without it.
 
 ## Context
 
@@ -67,7 +67,7 @@ Terms used below:
 ### Scenario 1 – Letters you haven't written yet (Priority: P1)
 
 **Given** the generator is installed and the person has written their first session of prompts
-(about 30 words) in the samples app, **When** their style is ready and they open the font page
+(at least 20 words) in the samples app, **When** their style is ready and they open the font page
 on the Autograph tab, **Then** the preview shows the whole sentence in their style: the letters
 they wrote at least 3 times from their own samples, the others in their style, none in the
 base's print. The list of characters says which are "written by you" and which are "in your
@@ -95,7 +95,7 @@ your style can be worked out".
 field's text mode (spec 005 Scenario 4) and goes back to ink mode, **Then** "one" is shown as ink
 in their hand, on the field's line at their size, varied and joined as they write, and the
 unchanged words keep their ink. **When** they turn the setting off, **Then** "one" is set in
-Autograph as before. The field's value is "Meet the team at one" either way.
+Autograph. The field's value is "Meet the team at one" either way.
 
 ### Scenario 4 – Neatest rewrites (Priority: P2)
 
@@ -122,12 +122,13 @@ mode is theirs from then on (their font, or their hand with Scenario 3's setting
 one sentence says why and how to change it: "Letters you haven't written yet are plain: the
 handwriting generator isn't installed." **When** they open the neatening control, a field's
 text-mode bar or an app's setting for text from elsewhere, **Then** the features of this spec
-are offered as unavailable with the same kind of sentence, and everything else works as before.
+are offered as unavailable with the same kind of sentence, and everything else works as specs
+003 and 005 say.
 
 **Given** the person opens the generator's row on the Autograph tab, **When** they read it,
 **Then** it says in plain words what the generator does, that it runs only on the device, and
-its terms: "Made from handwriting shared for non-commercial use: use it for yourself, not to
-sell what it writes."
+the terms it comes under: "Made from handwriting shared for non-commercial use only, and
+offered under those terms."
 
 ### Scenario 7 – Generated ink teaches nothing (Priority: P1)
 
@@ -139,7 +140,7 @@ reaches a contribution.
 ### Edge cases
 
 - **A character the generator can't write** (a script or symbol it wasn't trained on) comes from
-  the base as before, in the font and in set words; in a rewritten or generated word it is drawn
+  the base, in the font and in set words; in a rewritten or generated word it is drawn
   from the person's font at its place (FR-022).
 - **A word with letters written and letters not yet written**: at Neatest's setting (spec 003
   FR-043) the covered letters are set on the person's own glyphs and the others on their letters
@@ -239,13 +240,13 @@ reaches a contribution.
   the person's own learned joins (spec 003 FR-044); they never add ways of joining.
 - **FR-013**: Autograph draws letters in your style in all three styles (spec 003 FR-034); in
   Brush their width follows the pressure and speed the generator wrote. They take part in the
-  cycle, the rules and the preview as a base character does: one way each in the cycle's
-  proportions, no context or neighbour rules of their own. Making them never changes the person's
+  cycle and the preview with their ways in equal shares (FR-012), and have no context or
+  neighbour rules of their own. Making them never changes the person's
   own letters.
 - **FR-014**: The font page and a character's page (spec 003 Scenario 3, FR-030, FR-033) tell the
   three sources apart: the characters list says "written by you", "in your style, not written
-  yet" or "plain"; the note under the preview counts the letters in their style instead of saying
-  "Plain letters are the base's still"; a character in their style opens on writing it, with its
+  yet" or "plain"; the note under the preview counts the letters in their style, and names the
+  plain ones only when there are any; a character in their style opens on writing it, with its
   generated ways shown and marked as made, not written. Marks (spec 003 FR-031) apply to the
   person's own letters only.
 - **FR-015**: A letter in your style is never a neatening target at Light, Medium or Strong:
@@ -280,14 +281,16 @@ reaches a contribution.
 ### Rewriting at Neatest
 
 - **FR-021**: Neatest (spec 003 FR-014) offers **Rewrite**, a choice beside the strength, off by
-  default. With it on, each word whose text is known as Neatest knows it (spec 003 FR-043: the
-  confirmed text, or the reading on a surface that sets words as they are read, such as the
-  handwriting app's writing page) is replaced by generated ink of that text in the person's style,
+  default. With it on, each word whose text is known (the confirmed text, or else its reading,
+  unless the word is read with low confidence, spec 003 FR-017) is replaced by generated ink of that text in the person's style,
   written neatly: on the line's baseline, at the line's x-height and the style's slant, its
   letters spaced by the letter model's spacing, placed where the written word starts. A word is
   rewritten only when its rewritten ink passes all of these, checked per word; otherwise it gets
   Neatest as spec 003 says:
   - the recognizer reads the rewritten ink as the word's text, as its first candidate;
+  - for a word known only by its reading, the rewritten ink is close to the written word's own ink
+    by likeness (FR-009), within a margin documented with the recognizer, so a misread word is not
+    rewritten as another word;
   - its likeness (FR-009) to the person's writing is no lower than the likeness of the word as
     Neatest would set it, less a fixed margin documented with the recognizer;
   - it is about as wide as the written word (neither more than 1.6 times the other), so the line
@@ -342,15 +345,19 @@ reaches a contribution.
 - **FR-030**: Generated ink is made once and kept on the device with the person's data, so
   drawing, scrolling, a new page or reopening a document never makes it again: letters in your
   style with the letter model's build, a word without ink when its text, its size or the style
-  changes, a rewritten word when its ink or text changes, text from elsewhere when it arrives or
-  changes. What is kept is keyed by the text, the size, the style and the generator, so the app
-  keeps nothing new; an app on an earlier version of the pen interface gets the font as before.
-  Kept generated ink is erased with the samples, and dropped when the generator is removed.
+  changes, text from elsewhere when it arrives or changes. What is kept is keyed by the text, the
+  size, the style and the generator, so the app keeps nothing new; an app on an earlier version of
+  the pen interface gets the font. Kept words are kept apart per app, as spec 004 keeps each app's
+  writing apart: only the app they were made for and the person reach them. Kept generated ink is
+  erased with the samples, and dropped when the generator is removed. Rewritten words are kept by
+  the app instead: the neat ink layer passes them on with the neatened strokes and keeps nothing
+  itself (spec 003 FR-021), and they are made again only when the word's ink, its text or the
+  strength changes.
 - **FR-031**: Kept words don't change while they are shown: when the style or the generator
   changes, kept generated words are made again in the background at low priority and shown the
   next time their view is drawn anew, never while the pen writes and never by a refresh of their
   own.
-- **FR-032**: A word whose generated ink isn't ready when it is first shown (FR-035) is shown as
+- **FR-032**: A word whose generated ink isn't ready when it is first shown (SC-006, SC-007) is shown as
   without the generator, and replaced by its generated ink once, in one refresh of only its area,
   never while the pen writes.
 - **FR-033**: The same text, size, style and generator always give the same generated ink, and
@@ -360,8 +367,6 @@ reaches a contribution.
 
 - **FR-034**: Making generated ink never delays the ink under the pen (spec 003 FR-019) or a
   reading, and never makes the device less responsive: it runs below the recognizer's priority.
-- **FR-035**: Timing targets on the slowest supported device are in the success criteria
-  (SC-005 to SC-008).
 
 ## Key entities
 
@@ -420,7 +425,7 @@ Host level, with a stand-in generator where the real one isn't needed:
   set word sets an uncovered character on it;
 - with Rewrite on, a word with known text whose rewritten ink passes the checks is rewritten, its
   strokes marked as rewritten and as replacing the word's raw strokes; a word that fails any check
-  gets Neatest as before, with the reason in the reply; strength below Neatest, Rewrite off and
+  gets Neatest as spec 003 says, with the reason in the reply; strength below Neatest, Rewrite off and
   strength 0 give the same strokes as without rewriting, byte for byte;
 - a word typed in text mode with "Typed words in my hand" on comes as generated ink at the place
   and size spec 005 gives its set word, with the same value, saved state and reports as with the
@@ -450,7 +455,7 @@ package removed, it shows the base's letters and the sentence of FR-005.
 
 ## Assumptions
 
-- A first session of the samples app (about 30 prompted words) is enough for a usable style; the
+- A first session of the samples app (at least 20 prompted words) is enough for a usable style; the
   readiness check (FR-008) decides it per person.
 - The generator can be trained on data the project may use; when its data carry non-commercial
   terms, shipping it as a package of its own under those terms is allowed by them.
