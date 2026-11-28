@@ -286,7 +286,8 @@ size, spacing) and keep their shape.
 - **FR-009**: The font, **Autograph**, is a standard outline font the system installs for
   each person from the start, for them only. It is made of the person's letter model over a
   base font: it maps every character of the base and the space; a covered character is
-  drawn from the letter model, every other character from the base, so no character falls
+  drawn from the letter model, every other character from the base (or, with the generator,
+  from the person's letters in their style: spec 007 FR-011), so no character falls
   back to a system font. The base's letters are taken as pen strokes (their centre lines),
   so they are drawn like the person's: in the person's ink width (the pen's width on the
   writing paper they wrote their samples on, relative to their x-height), scaled to the
@@ -459,7 +460,8 @@ size, spacing) and keep their shape.
   character by similarity only: moved to its place, scaled uniformly to the line's
   x-height and set at the line's slant (or the letter model's), never stretched, sheared
   or mirrored. At Neatest the word itself is set in the font instead (FR-043). A character
-  Autograph draws from the base font is never a target: neatening moves ink only towards
+  Autograph draws from the base font, or from a letter in the person's style (spec 007
+  FR-015), is never a target: neatening moves ink only towards
   the person's own letters, so an uncovered character keeps its shape (Scenario 5).
 - **FR-036**: A pull follows the stroke: each point of the person's stroke goes to the place
   on the version's stroke that matches it in shape (direction and curvature along the
@@ -522,6 +524,7 @@ size, spacing) and keep their shape.
   strokes (FR-044), else the pair's learned join shape (or its kind's) fitted between them,
   each letter's ink along its glyph and its half of the join; only where there is no learned
   join a straight line runs from the one to the other. A character the letter model doesn't cover
+  is set on its letter in the person's style where there is one (spec 007 FR-015), else
   keeps its written ink as the line-level corrections leave it, moved to the middle of the
   box the font has for it. Only the confirmed text is known: without it no word is set (a
   word read wrongly would be set as another word). A word is set only when its ink can be its
@@ -741,8 +744,8 @@ by its neatened version and the original comes back at strength 0.
 
 ## Out of scope
 
-- Generated handwriting beyond the person's own letters and joins for text never written
-  (a learned writing model that invents ways of writing or joining; a later spec).
+- Generated handwriting for text never written (a learned writing model in the person's
+  style, rewriting at Neatest, another hand): spec 007.
 - Neatening with another person's letter model, or a way to share Autograph with others
   beyond the person's own export (FR-012).
 - Fonts for scripts the recognizer has no model for.
