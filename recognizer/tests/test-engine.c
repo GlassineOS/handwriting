@@ -1161,22 +1161,26 @@ static void test_aligner(void)
 	for (int j = 0; j < 5; j++) hw_ink_free(&ik[j]);
 }
 
-/* a stroke taller than HW_NEAT_DRAWING x-heights is drawing; $GLASSINE_HANDWRITING_NEATEN
- * drawing=F sets the factor (a looped f is taller than that in some hands) */
+/* a stroke taller than HW_NEAT_DRAWING (6) x-heights is drawing, a looped f's 4 is writing;
+ * $GLASSINE_HANDWRITING_NEATEN drawing=F sets the factor */
 static void test_drawing(void)
 {
-	struct hw_ink k[2] = { { 0 } };
-	for (int i = 0; i < 5; i++) { hw_ink_add(&k[0], 0, i * 1.0, i * 0.01, NAN); hw_ink_add(&k[1], 1, i * 0.2, i * 0.01, NAN); }
-	unsigned char keep[2] = { 0, 0 };
+	struct hw_ink k[3] = { { 0 } };
+	for (int i = 0; i < 5; i++) {
+		hw_ink_add(&k[0], 0, i * 1.75, i * 0.01, NAN);  /* 7 x-heights */
+		hw_ink_add(&k[1], 1, i * 1.0, i * 0.01, NAN);   /* 4: a looped f */
+		hw_ink_add(&k[2], 2, i * 0.2, i * 0.01, NAN);
+	}
+	unsigned char keep[3] = { 0, 0, 0 };
 	unsetenv("GLASSINE_HANDWRITING_NEATEN");
-	hw_neat_drawing(k, 2, 1.0, keep);
-	CHECK(keep[0] == 1 && keep[1] == 0, "4 x-heights tall is drawing: %d %d", keep[0], keep[1]);
-	keep[0] = keep[1] = 0;
-	setenv("GLASSINE_HANDWRITING_NEATEN", "drawing=5", 1);
-	hw_neat_drawing(k, 2, 1.0, keep);
-	CHECK(keep[0] == 0, "at drawing=5 it is writing: %d", keep[0]);
+	hw_neat_drawing(k, 3, 1.0, keep);
+	CHECK(keep[0] == 1 && keep[1] == 0 && keep[2] == 0, "7 x-heights is drawing, 4 writing: %d %d %d", keep[0], keep[1], keep[2]);
+	keep[0] = keep[1] = keep[2] = 0;
+	setenv("GLASSINE_HANDWRITING_NEATEN", "drawing=8", 1);
+	hw_neat_drawing(k, 3, 1.0, keep);
+	CHECK(keep[0] == 0, "at drawing=8 it is writing: %d", keep[0]);
 	unsetenv("GLASSINE_HANDWRITING_NEATEN");
-	for (int j = 0; j < 2; j++) hw_ink_free(&k[j]);
+	for (int j = 0; j < 3; j++) hw_ink_free(&k[j]);
 }
 
 int main(int argc, char **argv)

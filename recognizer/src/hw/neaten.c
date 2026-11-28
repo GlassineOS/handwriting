@@ -384,8 +384,7 @@ void hw_neat_drawing(const struct hw_ink *ink, size_t n, double xh, unsigned cha
 		free(h);
 	}
 	if (xh <= 0) return;
-	/* (measurements, not shipped) $GLASSINE_HANDWRITING_NEATEN drawing=F: the factor (a
-	 * looped f is taller than HW_NEAT_DRAWING x-heights in some hands) */
+	/* $GLASSINE_HANDWRITING_NEATEN drawing=F sets the factor, for measurements */
 	double f = HW_NEAT_DRAWING;
 	const char *e = getenv("GLASSINE_HANDWRITING_NEATEN"), *d = e ? strstr(e, "drawing=") : NULL;
 	if (d && atof(d + 8) > 0) f = atof(d + 8);

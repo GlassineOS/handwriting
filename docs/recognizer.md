@@ -411,7 +411,7 @@ candidates) and never stores anything: neatened ink is not a sample (FR-016, FR-
   `read` gives it for that text: per character the strokes or `N:A-B` parts), that alignment
   is used as it is, trusted (`bad-align` when it doesn't parse; `bad-text` for an empty or too
   long `TEXT`).
-- **Writing only (FR-020).** The newest stroke when it is a gesture, strokes taller than 3.5
+- **Writing only (FR-020).** The newest stroke when it is a gesture, strokes taller than 6
   x-heights (the person's letters for the size, else the strokes' own median height) and
   strokes no character of the reading has are drawing and stay `kept`.
 - **Per word (FR-017).** Without `TEXT`, a word whose characters' mean fit (as in `align`:

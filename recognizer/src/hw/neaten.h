@@ -60,7 +60,7 @@ enum {
 #define HW_NEAT_BAR_MIN 0.3     /* (x-heights) the shortest such bar */
 #define HW_NEAT_BAR_KEEP 0.25   /* (of its piece) a neighbour keeps when a bar run into it is the letter's */
 /* a stroke taller than this many x-heights is drawing, not writing */
-#define HW_NEAT_DRAWING 3.5
+#define HW_NEAT_DRAWING 6.0     /* a looped f reaches about 4 in some hands */
 
 struct hw_neat {
 	/* in */
