@@ -13,7 +13,47 @@ from .metrics import rates
 from .model import Recognizer, greedy
 
 
-def loader(ds, batch, shuffle_seed=None, workers=2, down=3):
+def pick_device(name: str = "cpu") -> torch.device:
+    """cpu (the default), cuda, cuda:N, or auto (cuda when a GPU is there, else cpu). A GPU
+    asked for and not there is a clear stop before any data loads."""
+    if name == "auto":
+        name = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = torch.device(name)
+    if dev.type == "cuda":
+        if not torch.cuda.is_available():
+            built = torch.version.cuda or "no CUDA (a CPU build)"
+            raise SystemExit(f"--device {name}: no usable CUDA GPU (this torch {torch.__version__} is built "
+                             f"for {built}; check nvidia-smi and, in a container, --gpus all)")
+        if dev.index is not None and dev.index >= torch.cuda.device_count():
+            raise SystemExit(f"--device {name}: only {torch.cuda.device_count()} GPU(s)")
+    elif dev.type != "cpu":
+        raise SystemExit(f"--device {name}: cpu, cuda, cuda:N or auto")
+    return dev
+
+
+def _cpu_state(model):
+    """The model's state_dict with every tensor on the CPU: checkpoints read the same on any
+    machine (on the CPU it is the state_dict itself)."""
+    sd = model.state_dict()
+    if all(v.device.type == "cpu" for v in sd.values()):
+        return sd
+    out = type(sd)((k, v.detach().cpu()) for k, v in sd.items())
+    out._metadata = getattr(sd, "_metadata", None)
+    return out
+
+
+def _cpu(obj):
+    """obj with every tensor in it on the CPU (the optimizer's state of a GPU run)."""
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu()
+    if isinstance(obj, dict):
+        return {k: _cpu(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_cpu(v) for v in obj)
+    return obj
+
+
+def loader(ds, batch, shuffle_seed=None, workers=2, down=3, pin=False):
     alphabet = getattr(ds, "alphabet", None) or ALPHABET
     if shuffle_seed is None:  # evaluation: fixed order, sorted batches, no labels needed
         order = sorted(range(len(ds)), key=ds.length)
@@ -24,17 +64,20 @@ def loader(ds, batch, shuffle_seed=None, workers=2, down=3):
         print(f"{sampler.dropped} lines too short for CTC left out", flush=True)
     return torch.utils.data.DataLoader(ds, batch_sampler=sampler,
                                        collate_fn=functools.partial(collate, alphabet=alphabet),
-                                       num_workers=workers, persistent_workers=workers > 0)
+                                       num_workers=workers, persistent_workers=workers > 0,
+                                       pin_memory=pin)
 
 
 @torch.no_grad()
 def recognise(model, ds, batch=64):
     model.eval()
+    dev = next(model.parameters()).device
     refs, hyps = [], []
     for x, lens, _, _, texts in loader(ds, batch, workers=0):
         # a line without ink (a font without the glyph) reads as nothing
-        logp, ol = model(x, lens.clamp(min=1))
-        hyps += ["" if n == 0 else decode(s, model.alphabet) for s, n in zip(greedy(logp, ol), lens.tolist())]
+        logp, ol = model(x.to(dev), lens.clamp(min=1).to(dev))
+        hyps += ["" if n == 0 else decode(s, model.alphabet)
+                 for s, n in zip(greedy(logp.cpu(), ol.cpu()), lens.tolist())]
         refs += texts
     return refs, hyps
 
@@ -47,10 +90,13 @@ def evaluate(model, ds, batch=64):
 def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: int = 32,
           lr: float = 2e-3, threads: int = 8, eval_every: int = 2000, seed: int = 0,
           val_limit: int = 2000, steps_per_s: float | None = None, augment: bool = False,
-          select: Path | list[Path] | None = None, init: Path | None = None, resume: bool = False):
+          select: Path | list[Path] | None = None, init: Path | None = None, resume: bool = False,
+          device: str = "cpu", workers: int = 2):
     """Checkpoints every eval_every steps; best.pt is the lowest CER on `select` (fonts never
     trained on; several sets: the mean of their CERs) if given, else on `val`. The model's
-    inputs and characters are the training set's."""
+    inputs and characters are the training set's. device: where the model trains (pick_device);
+    checkpoints are written with CPU tensors whatever it is. workers: data loader processes."""
+    dev = pick_device(device)
     torch.manual_seed(seed)
     torch.set_num_threads(threads)
     out.mkdir(parents=True, exist_ok=True)
@@ -62,7 +108,7 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
             raise SystemExit(f"{d.feat.filename}: inputs or characters differ from the training set's")
     state = None
     if resume:  # the same run after a stop: out/last.pt with its optimizer, schedule and place
-        state = torch.load(out / "last.pt", weights_only=False)
+        state = torch.load(out / "last.pt", weights_only=False, map_location="cpu")
         if "resume" not in state:
             raise SystemExit(f"{out / 'last.pt'}: no resume state (written before resuming was possible)")
         init = out / "last.pt"
@@ -72,6 +118,7 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
             raise SystemExit(f"{init}: inputs or characters differ from the training set's")
     else:
         model = Recognizer(**cfg, nfeat=ds.nfeat, alphabet=ds.alphabet)
+    model.to(dev)  # before the optimizer: its state follows the parameters
     nparam = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
     ctc = nn.CTCLoss(blank=0, zero_infinity=False)
@@ -83,7 +130,7 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
     log = open(out / "log.jsonl", "a")
     print(f"params {nparam}, {len(ds)} lines, planned {total} steps", flush=True)
     t0, step, best, run, spent = time.time(), 0, 9.0, 0.0, 0.0
-    dl = loader(ds, batch, seed, down=model.cfg["down"])
+    dl = loader(ds, batch, seed, workers=workers, down=model.cfg["down"], pin=dev.type == "cuda")
     epoch, done = 0, 0  # the sampler's epoch and the batches of it already trained on
     if state:
         r = state["resume"]
@@ -97,11 +144,16 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
         dl.batch_sampler.epoch, dl.batch_sampler.skip = epoch, done
         it = iter(dl)  # draws the workers' seed from torch's generator: the saved state comes after it
         if state:
-            torch.set_rng_state(state.pop("resume")["torch_rng"])
+            r = state.pop("resume")
+            torch.set_rng_state(r["torch_rng"])
+            if dev.type == "cuda" and "cuda_rng" in r:  # dropout on the GPU draws from its own generator
+                torch.cuda.set_rng_state(r["cuda_rng"], dev)
             state = None
         for x, lens, y, ylens, _ in it:
             done += 1
             model.train()
+            if dev.type != "cpu":
+                x, lens, y, ylens = (t.to(dev, non_blocking=True) for t in (x, lens, y, ylens))
             logp, ol = model(x, lens)
             loss = ctc(logp.transpose(0, 1), y, ol, ylens)
             if not torch.isfinite(loss):
@@ -125,15 +177,18 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
                 print("val", json.dumps(r), flush=True)
                 log.write(json.dumps(r) + "\n")
                 log.flush()
-                ck = {"cfg": model.cfg, "state": model.state_dict(), "step": step, "val": r}
+                ck = {"cfg": model.cfg, "state": _cpu_state(model), "step": step, "val": r}
                 score = r["select"]["cer"] if ss else r["cer"]
                 if score < best:
                     best = score
                     torch.save(ck, out / "best.pt")
                 # last.pt also carries what a resumed run needs to go on exactly as this one would
-                ck["resume"] = {"opt": opt.state_dict(), "sched": sched.state_dict(), "total": total, "best": best,
+                ostate = opt.state_dict() if dev.type == "cpu" else _cpu(opt.state_dict())
+                ck["resume"] = {"opt": ostate, "sched": sched.state_dict(), "total": total, "best": best,
                                 "run": run, "spent": spent + time.time() - t0, "epoch": epoch, "done": done,
                                 "torch_rng": torch.get_rng_state()}
+                if dev.type == "cuda":
+                    ck["resume"]["cuda_rng"] = torch.cuda.get_rng_state(dev)
                 torch.save(ck, out / "last.pt.tmp")
                 (out / "last.pt.tmp").replace(out / "last.pt")
             if step >= total or time.time() > deadline:
@@ -146,7 +201,7 @@ def train(data: Path, val: Path, out: Path, minutes: float, cfg: dict, batch: in
 
 
 def load(path: Path) -> Recognizer:
-    ck = torch.load(path, weights_only=False)
+    ck = torch.load(path, weights_only=False, map_location="cpu")
     m = Recognizer(**ck["cfg"])
     m.load_state_dict(ck["state"])
     m.eval()

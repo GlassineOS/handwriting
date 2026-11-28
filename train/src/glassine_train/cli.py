@@ -96,7 +96,8 @@ def cmd_data(a):
 
 
 def cmd_train(a):
-    from .train import train
+    from .train import pick_device, train
+    pick_device(a.device)  # a GPU asked for and not there: a stop before the run directory exists
     cfg = {"conv": a.conv, "hidden": a.hidden, "layers": a.layers, "dropout": a.dropout,
            "down": a.down}
     out = Path("build/runs") / a.run
@@ -105,7 +106,7 @@ def cmd_train(a):
     train(Path("build/data") / a.data, Path("build/data") / a.val, out, a.minutes, cfg,
           a.batch, a.lr, a.threads, a.eval_every, a.seed, steps_per_s=a.steps_per_s,
           augment=a.augment, select=[Path("build/data") / x for x in a.select.split(",") if x],
-          init=Path(a.init) if a.init else None, resume=a.resume)
+          init=Path(a.init) if a.init else None, resume=a.resume, device=a.device, workers=a.workers)
 
 
 def cmd_mergeset(a):
@@ -1017,6 +1018,9 @@ def main(argv=None):
     t.add_argument("--eval-every", type=int, default=2000)
     t.add_argument("--seed", type=int, default=0)
     t.add_argument("--augment", action="store_true", help="random slant and stretch per line")
+    t.add_argument("--device", default="cpu", help="cpu, cuda, cuda:N or auto (cuda if a GPU is there); "
+                   "checkpoints are written for the CPU either way")
+    t.add_argument("--workers", type=int, default=2, help="data loader processes")
     e = sub.add_parser("eval")
     e.add_argument("--run", required=True)
     e.add_argument("--ckpt", default="best.pt")

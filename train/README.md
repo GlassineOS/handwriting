@@ -22,6 +22,16 @@ uv run pytest -q tests
 `--minutes` is a hard deadline and `--steps-per-s` only sets the schedule length (minutes ×
 60 × rate = 16000 steps here), so runs on a busy host get the same step count.
 
+`train --device cuda` (or `auto`: the GPU if there is one) trains on an NVIDIA GPU; the
+default is the CPU, and a CPU run is bit for bit what it was before the option existed.
+Checkpoints are written with CPU tensors either way, so `eval`, `export`, `release` and
+`--resume` read a GPU run's `best.pt` and `last.pt` on a machine without a GPU. A GPU run is
+not bit-reproducible (cuDNN's LSTM and the CTC loss on CUDA are not deterministic), and a
+resumed GPU run is close to, not equal to, one never stopped. `--batch` and `--workers`
+(data loader processes, default 2; the count is part of a run's random stream, so the same
+seed and count give the same CPU run) are options. `gpu/README.md`: a container kit for
+training on a GPU server. The point aligner (`glassine-train-align`) trains on the CPU only.
+
 ## Data
 
 **Ink.** `glassine-synth` (`../synth`): one rendered sample per text line. The fonts are
