@@ -1,0 +1,11 @@
+# The trainer's dependencies besides torch (the base image's), pinned. Installed with
+# --no-deps for glassine-synth and glassine-train themselves (../pyproject.toml,
+# ../../synth/pyproject.toml); keep these in step with them.
+numpy==2.5.5
+scipy==1.18.1
+onnx==1.23.2
+onnxruntime==1.32.0
+fonttools==4.68.0
+uharfbuzz==0.57.0
+pillow==13.0.0
+scikit-image==0.26.0

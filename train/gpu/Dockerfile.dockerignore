@@ -1,0 +1,9 @@
+# Only the code goes into the image: never build/, data, bundles or runs.
+*
+!synth/pyproject.toml
+!synth/src/
+!train/pyproject.toml
+!train/src/
+!train/gpu/requirements.txt
+**/__pycache__
+**/*.pyc

@@ -980,23 +980,7 @@ def cmd_inkcheck(a):
     print(json.dumps(out, indent=1, default=float))
 
 
-def main(argv=None):
-    import sys
-    argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["release"]:  # its own options: glassine-train release --help
-        from .release import main as release
-        return release(argv[1:])
-    ap = argparse.ArgumentParser(prog="glassine-train", epilog="glassine-train release --help: "
-                                 "a trained run as a base model package (models/README.md)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    d = sub.add_parser("data", help="fetch text, render train/val/test datasets")
-    d.add_argument("--train-lines", type=int, default=300_000)
-    d.add_argument("--workers", type=int, default=8)
-    d.add_argument("--ablation", action="store_true", help="also render without order variants")
-    d.add_argument("--subsets", type=int, nargs="*", default=[], help="also train sets of N random training fonts")
-    d.add_argument("--variation", action="store_true", help="also the full training set with letter-shape variation")
-    d.add_argument("--copies", type=int, default=1, help="also a variation set with every line rendered N times")
-    t = sub.add_parser("train")
+def _train_args(t):
     t.add_argument("--data", default="train")
     t.add_argument("--val", default="val", help="dataset shown during training (training fonts)")
     t.add_argument("--select", default="dev", help="datasets for model selection (fonts never trained on), "
@@ -1021,6 +1005,48 @@ def main(argv=None):
     t.add_argument("--device", default="cpu", help="cpu, cuda, cuda:N or auto (cuda if a GPU is there); "
                    "checkpoints are written for the CPU either way")
     t.add_argument("--workers", type=int, default=2, help="data loader processes")
+    return t
+
+
+def cmd_bundle(a):
+    from .bundle import argv_of, pack, plan
+    rest = a.train_args[1:] if a.train_args[:1] == ["--"] else a.train_args
+    tp = _train_args(argparse.ArgumentParser(prog="glassine-train bundle --out FILE --"))
+    ns = tp.parse_args(rest)
+    files, new = plan(ns)
+    for k, v in new.items():
+        setattr(ns, k, v)
+    pack(Path(a.out), files, argv_of(tp, ns))
+
+
+def cmd_unbundle(a):
+    from .bundle import unpack
+    unpack(Path(a.tar), Path(a.dest))
+
+
+def main(argv=None):
+    import sys
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["release"]:  # its own options: glassine-train release --help
+        from .release import main as release
+        return release(argv[1:])
+    ap = argparse.ArgumentParser(prog="glassine-train", epilog="glassine-train release --help: "
+                                 "a trained run as a base model package (models/README.md)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("data", help="fetch text, render train/val/test datasets")
+    d.add_argument("--train-lines", type=int, default=300_000)
+    d.add_argument("--workers", type=int, default=8)
+    d.add_argument("--ablation", action="store_true", help="also render without order variants")
+    d.add_argument("--subsets", type=int, nargs="*", default=[], help="also train sets of N random training fonts")
+    d.add_argument("--variation", action="store_true", help="also the full training set with letter-shape variation")
+    d.add_argument("--copies", type=int, default=1, help="also a variation set with every line rendered N times")
+    _train_args(sub.add_parser("train"))
+    bd = sub.add_parser("bundle", help="a training run's inputs as one tarball (gpu/README.md)")
+    bd.add_argument("--out", required=True, help="the tarball (written 0600, with OUT.sha256 beside it)")
+    bd.add_argument("train_args", nargs=argparse.REMAINDER, help="-- and the run's train options")
+    ub = sub.add_parser("unbundle", help="unpack and check a bundle (bundle.py)")
+    ub.add_argument("tar")
+    ub.add_argument("dest")
     e = sub.add_parser("eval")
     e.add_argument("--run", required=True)
     e.add_argument("--ckpt", default="best.pt")
@@ -1278,7 +1304,7 @@ def main(argv=None):
     ic.add_argument("--sheet-lines", type=int, default=24)
     a = ap.parse_args(argv)
     {"inkcheck": cmd_inkcheck, "mergeset": cmd_mergeset, "writereval": cmd_writereval, "writerseval": cmd_writerseval, "brushset": cmd_brushset, "personset": cmd_personset, "gen4": cmd_gen4, "gen4-letters": cmd_gen4_letters, "brushletters": cmd_brushletters, "gen4-hands": cmd_gen4_hands, "dynfit": cmd_dynfit, "featurize": cmd_featurize,
-     "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
+     "inkstats": cmd_inkstats, "inkread": cmd_inkread, "synthset": cmd_synthset, "hand": cmd_hand, "realeval": cmd_realeval, "real": cmd_real, "charlm": cmd_charlm, "finetune": cmd_finetune, "lexicon": cmd_lexicon, "tune": cmd_tune, "adapt": cmd_adapt, "data": cmd_data, "train": cmd_train, "bundle": cmd_bundle, "unbundle": cmd_unbundle, "eval": cmd_eval, "export": cmd_export}[a.cmd](a)
 
 
 if __name__ == "__main__":
