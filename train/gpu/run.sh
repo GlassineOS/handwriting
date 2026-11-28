@@ -22,6 +22,7 @@
 #   --workers N       data loader processes    (default 4)
 #   --gpus SPEC       docker --gpus            (default all)
 #   --cpu-only        no GPU: --device cpu (a test of the kit on any machine)
+#   --writable-root   no --read-only root (if the GPU setup needs to write in the container)
 #   --status-port P   status page port         (default 8686; 0 = none)
 #   --status-bind A   host address it is published on (default 127.0.0.1; anything else warns)
 #   --linger S        seconds the page stays up after the job (default 86400)
@@ -34,7 +35,7 @@ repo=$(cd "$here/../.." && pwd)
 DOCKER=${DOCKER:-docker}
 DATA=$HOME/glassine-train/data
 OUT=$HOME/glassine-train/out
-CPUS=8 MEMORY=16g SHM=2g NICE=10 THREADS=4 WORKERS=4 GPUS=all CPU_ONLY=0
+CPUS=8 MEMORY=16g SHM=2g NICE=10 THREADS=4 WORKERS=4 GPUS=all CPU_ONLY=0 READ_ONLY=1
 PORT=8686 BIND=127.0.0.1 LINGER=86400 IMAGE=glassine-train-gpu NAME=glassine-train
 
 die() { echo "run.sh: $*" >&2; exit 2; }
@@ -52,6 +53,7 @@ while [ $# -gt 0 ]; do
     --workers) WORKERS=$2; shift 2 ;;
     --gpus) GPUS=$2; shift 2 ;;
     --cpu-only) CPU_ONLY=1; shift ;;
+    --writable-root) READ_ONLY=0; shift ;;
     --status-port) PORT=$2; shift 2 ;;
     --status-bind) BIND=$2; shift 2 ;;
     --linger) LINGER=$2; shift 2 ;;
@@ -69,8 +71,9 @@ abs() { mkdir -p -m 700 "$1" && (cd "$1" && pwd); }
 is_loopback() { case $1 in 127.*|::1|localhost) return 0 ;; *) return 1 ;; esac; }
 
 # the options every container gets: this user, read-only root, no network unless a job's port
-BASE=(--rm --init --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:rw,exec,mode=1777
-      -e HOME=/tmp --security-opt no-new-privileges)
+BASE=(--init --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,exec,mode=1777 -e HOME=/tmp
+      --security-opt no-new-privileges)
+[ "$READ_ONLY" = 1 ] && BASE+=(--read-only)
 
 job_opts() {  # JOB: a training container's caps, GPU, mounts and status port
   local data out
@@ -120,7 +123,7 @@ case $cmd in
     data=$(abs "$DATA")
     chmod 700 "$data"
     tdir=$(cd "$(dirname "$tar")" && pwd)
-    "$DOCKER" run "${BASE[@]}" --network none -v "$tdir:/in:ro" -v "$data:/data:rw" --entrypoint python \
+    "$DOCKER" run --rm "${BASE[@]}" --network none -v "$tdir:/in:ro" -v "$data:/data:rw" --entrypoint python3 \
       "$IMAGE" -m glassine_train.bundle unpack "/in/$(basename "$tar")" /data ;;
 
   train|bench)
@@ -132,7 +135,15 @@ case $cmd in
     job_args
     extra=()
     [ "$cmd" = bench ] && extra=(--bench 10 --no-export)
+    # the last job's container (kept so its output can be read) goes now
+    "$DOCKER" rm "$NAME" >/dev/null 2>&1 || true
     "$DOCKER" run -d "${BASE[@]}" "${JOB[@]}" "$IMAGE" train "${extra[@]}" "${ARGS[@]}" "$@" >/dev/null
+    sleep "${RUN_SH_SETTLE:-5}"
+    if ! running; then
+      echo "run.sh: the job ended at once:" >&2
+      "$DOCKER" logs --tail 30 "$NAME" >&2 || true
+      exit 1
+    fi
     echo "run.sh: started $NAME; output: run.sh logs; stop: run.sh stop"
     [ "$PORT" = 0 ] || echo "run.sh: status page: http://$BIND:$PORT/ (from another machine: ssh -L $PORT:localhost:$PORT SERVER)"
     if [ "$cmd" = bench ]; then
@@ -142,7 +153,7 @@ case $cmd in
   selftest)
     dev=cuda gpu=(--gpus "$GPUS")
     if [ "$CPU_ONLY" = 1 ]; then dev=cpu gpu=(); fi
-    "$DOCKER" run "${BASE[@]}" --network none --cpus "$CPUS" --memory "$MEMORY" --shm-size "$SHM" "${gpu[@]}" \
+    "$DOCKER" run --rm "${BASE[@]}" --network none --cpus "$CPUS" --memory "$MEMORY" --shm-size "$SHM" "${gpu[@]}" \
       "$IMAGE" selftest --device "$dev" ;;
 
   logs) exec "$DOCKER" logs -f "$NAME" ;;
@@ -155,14 +166,15 @@ case $cmd in
     [ -d "$out/$1" ] || die "$out/$1: no such run"
     warn_bind
     echo "run.sh: http://$BIND:$PORT/ (ctrl-c ends it)"
-    exec "$DOCKER" run "${BASE[@]}" --name "$NAME-status" -v "$out:/work/build/runs:ro" -p "$BIND:$PORT:8686" \
-      --entrypoint python "$IMAGE" -m glassine_train.status "/work/build/runs/$1" --bind 0.0.0.0 \
+    exec "$DOCKER" run --rm "${BASE[@]}" --name "$NAME-status" -v "$out:/work/build/runs:ro" -p "$BIND:$PORT:8686" \
+      --entrypoint python3 "$IMAGE" -m glassine_train.status "/work/build/runs/$1" --bind 0.0.0.0 \
       --reachable-on "$BIND" ;;
 
   clean)
     bundle=
     if [ "${1:-}" = --bundle ]; then bundle=${2:?--bundle BUNDLE.tar}; fi
     running && die "a job named $NAME is running (run.sh stop first)"
+    "$DOCKER" rm "$NAME" >/dev/null 2>&1 || true
     if [ -e "$DATA" ]; then
       data=$(cd "$DATA" && pwd)
       [ "$data" != / ] && [ "$data" != "$HOME" ] || die "refusing to delete $data"

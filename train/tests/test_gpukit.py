@@ -207,7 +207,10 @@ def _kit(tmp_path, *args, data=True, env=None):
     fake = tmp_path / "bin" / "docker"
     if not fake.exists():
         fake.parent.mkdir(parents=True)
-        fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$DOCKER_LOG"\nprintf "%s\\n" "--END--" >> "$DOCKER_LOG"\n')
+        # records its arguments; "running" once a container was started (ps -q prints an id)
+        fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$DOCKER_LOG"\nprintf "%s\\n" "--END--" >> "$DOCKER_LOG"\n'
+                        'case "$1 $2" in "run -d") touch "$DOCKER_LOG.up" ;; "ps -q") [ -e "$DOCKER_LOG.up" ] && echo 1f2e ;; esac\n'
+                        'exit 0\n')
         fake.chmod(0o755)
     home = tmp_path / "home"
     if data and not (home / "glassine-train" / "data").exists():
@@ -216,7 +219,8 @@ def _kit(tmp_path, *args, data=True, env=None):
         (d / "manifest.json").write_text(json.dumps({"format": B.FORMAT, "train_args": []}, indent=1))
     log = tmp_path / "docker.log"
     log.unlink(missing_ok=True)
-    e = dict(os.environ, HOME=str(home), DOCKER=str(fake), DOCKER_LOG=str(log), **(env or {}))
+    Path(str(log) + ".up").unlink(missing_ok=True)
+    e = dict(os.environ, HOME=str(home), DOCKER=str(fake), DOCKER_LOG=str(log), RUN_SH_SETTLE="0", **(env or {}))
     r = subprocess.run(["bash", str(KIT / "run.sh"), *args], capture_output=True, text=True, env=e, timeout=60)
     calls = [c.strip("\n").split("\n") for c in log.read_text().split("--END--\n") if c.strip()] if log.exists() else []
     return r, calls, home
@@ -230,16 +234,20 @@ def test_run_sh_train_options(tmp_path):
     data = home / "glassine-train" / "data"
     assert f"{data}:/work/bundle:ro" in run and f"{home}/glassine-train/out:/work/build/runs:rw" in run
     for want in ("--gpus all", "--cpus 8", "--memory 16g", "--memory-swap 16g", "--shm-size 2g", "--read-only",
-                 "-p 127.0.0.1:8686:8686", "--name glassine-train", "--nice 10", "--rm", "--init",
+                 "-p 127.0.0.1:8686:8686", "--name glassine-train", "--nice 10", "--init",
                  "--device cuda --threads 4 --workers 4 --run m5 --batch 64"):
         assert want in j, want
     assert f"--user {os.getuid()}:{os.getgid()}" in j
+    assert "--rm" not in run  # the job's container stays (its output) until the next start removes it
+    assert ["rm", "glassine-train"] in calls
     assert (home / "glassine-train" / "out").stat().st_mode & 0o777 == 0o700
     r, calls, _ = _kit(tmp_path, "--cpu-only", "--cpus", "3", "--status-port", "0", "train")
-    j = " ".join(calls[-1])
+    j = " ".join([c for c in calls if c[0] == "run"][-1])
     assert "--gpus" not in j and "--device cpu" in j and "--cpus 3" in j and "-p " not in j and "--network none" in j
+    r, calls, _ = _kit(tmp_path, "--writable-root", "train")
+    assert "--read-only" not in [c for c in calls if c[0] == "run"][-1]
     r, calls, _ = _kit(tmp_path, "--status-bind", "0.0.0.0", "train")
-    assert "WARNING" in r.stderr and "-p 0.0.0.0:8686:8686" in " ".join(calls[-1])
+    assert "WARNING" in r.stderr and "-p 0.0.0.0:8686:8686" in " ".join([c for c in calls if c[0] == "run"][-1])
 
 
 def test_run_sh_needs_a_bundle_and_clean_deletes_only_one(tmp_path):
@@ -281,3 +289,29 @@ def test_run_sh_unpack_checks_the_sum(tmp_path, monkeypatch):
     j = " ".join(calls[0])
     assert "--network none" in j and f"{tmp_path}:/in:ro" in j and "glassine_train.bundle unpack /in/b.tar /data" in j
     assert (tmp_path / "new").stat().st_mode & 0o777 == 0o700
+
+
+def test_run_sh_reports_a_job_that_ends_at_once(tmp_path):
+    fake = tmp_path / "bin" / "docker"
+    fake.parent.mkdir(parents=True)
+    fake.write_text('#!/bin/sh\n[ "$1" = logs ] && echo "glassine-train: error: unrecognized arguments: --bogus"\nexit 0\n')
+    fake.chmod(0o755)
+    _kit(tmp_path, "ps")  # the bundle directory
+    r, _, _ = _kit(tmp_path, "train", "--", "--bogus")
+    assert r.returncode != 0 and "ended at once" in r.stderr and "--bogus" in r.stderr
+
+
+def test_status_shows_the_gpu(tmp_path, monkeypatch):
+    smi = tmp_path / "bin" / "nvidia-smi"
+    smi.parent.mkdir()
+    smi.write_text("#!/bin/sh\necho 'NVIDIA GeForce RTX 3060, 87, 2310, 12288, 61, 142.50'\n")
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{smi.parent}:{os.environ['PATH']}")
+    monkeypatch.setitem(S._gpu, "t", 0.0)
+    run = tmp_path / "r"
+    run.mkdir()
+    st = S.status(run)
+    assert st["gpu"] == [{"name": "NVIDIA GeForce RTX 3060", "util_pct": "87", "mem_used_mib": "2310",
+                          "mem_total_mib": "12288", "temp_c": "61", "power_w": "142.50"}]
+    assert "RTX 3060: 87 %, 2310 / 12288 MiB" in S.page(st)
+    monkeypatch.setitem(S._gpu, "t", 0.0)

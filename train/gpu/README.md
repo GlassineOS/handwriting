@@ -15,8 +15,8 @@ caps, so the server keeps room for its other work.
 - An NVIDIA driver of branch **580 or newer** (CUDA 13; 595 or newer matches CUDA 13.2 exactly).
   `nvidia-smi` shows it. Arch: `nvidia-open` (or `nvidia`) and `nvidia-utils`.
 - Docker: Arch `docker`, the service running, the training user in the `docker` group.
-- The NVIDIA Container Toolkit, so containers see the GPU. Arch: `nvidia-container-toolkit`
-  (it pulls in `libnvidia-container`), then:
+- The NVIDIA Container Toolkit, so containers see the GPU. Arch: `nvidia-container-toolkit`,
+  then:
 
   ```sh
   sudo pacman -S --needed nvidia-container-toolkit
@@ -25,10 +25,24 @@ caps, so the server keeps room for its other work.
   docker run --rm --gpus all pytorch/pytorch:2.15.0-cuda13.2-cudnn9-runtime nvidia-smi   # the GPU shows
   ```
 
-  Without the toolkit `--gpus all` fails with `could not select device driver` or
-  `failed to discover GPU vendor from CDI`.
-- About 9 GB of disk for the image, plus the bundle twice (the tarball and its unpacked copy)
-  and the runs.
+  Without the toolkit `--gpus all` fails (for instance `failed to discover GPU vendor from
+  CDI`).
+- Disk for the image (the base is about 3 GB to download and several times that unpacked;
+  `docker images` shows it after the build), plus the bundle twice (the tarball and its
+  unpacked copy) and the runs.
+
+## First: the kit on the server, without data
+
+```sh
+git clone https://github.com/GlassineOS/handwriting && cd handwriting/train/gpu
+./run.sh build          # the image, from this checkout
+./run.sh selftest       # ~1 min, synthetic ink: 40 steps on the GPU, the checkpoint read
+                        # back with the GPU hidden, ONNX export; ends in "selftest: PASS"
+```
+
+Only when that passes does the data need to move. If the GPU setup cannot work with a
+read-only container root, `./run.sh --writable-root selftest` (and the same option for the
+other commands) leaves the root writable.
 
 ## The data: a bundle, never in the repository
 
@@ -56,17 +70,19 @@ ssh SERVER 'mkdir -m 700 -p ~/glassine-train'
 scp -p ~/m5.tar ~/m5.tar.sha256 SERVER:glassine-train/
 ```
 
-## On the server
+## Training on the server
 
 ```sh
-git clone https://github.com/GlassineOS/handwriting && cd handwriting/train/gpu
-./run.sh build                                   # the image (a few GB to pull, once)
+cd handwriting/train/gpu
 ./run.sh unpack ~/glassine-train/m5.tar          # checks the sums; into ~/glassine-train/data (0700)
-./run.sh selftest                                # ~1 min, synthetic ink: GPU training, CPU read-back, export
 ./run.sh bench                                   # at most 10 min: 300 steps of the bundle's run, prints steps/s
 ./run.sh train                                   # the bundle's run, in the background
 ./run.sh logs                                    # follow it (ctrl-c leaves it running)
 ```
+
+A job that fails at once (a wrong option, no GPU) is reported by `run.sh train` with its last
+output; its container stays (no data in it) until the next `train` or `clean`, so `run.sh logs`
+still shows what happened.
 
 `run.sh train -- OPTIONS` adds `glassine-train train` options after the bundle's (a later
 option wins), e.g. `./run.sh train -- --steps-per-s 9 --minutes 120`. The kit itself adds
@@ -87,6 +103,7 @@ option wins), e.g. `./run.sh train -- --steps-per-s 9 --minutes 120`. The kit it
 | `--linger S` | 86400 | seconds the page stays up after the job, for the download |
 | `--name NAME` | glassine-train | container name: one job per name |
 | `--cpu-only` | | no GPU, `--device cpu`: the kit on any machine |
+| `--writable-root` | | no read-only container root |
 
 **Benchmark.** `./run.sh bench` trains the bundle's run for 300 steps (the schedule set
 for 300, evaluation only at the end) and prints `BENCH ... steps/s`. The same on the CPU host,
@@ -143,6 +160,7 @@ uv run glassine-train eval --run m5 ...                 # tune, export, release 
 ## Clean up
 
 ```sh
+./run.sh stop                                    # the job, or its page still lingering
 ./run.sh clean --bundle ~/glassine-train/m5.tar
 ```
 
