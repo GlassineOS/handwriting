@@ -238,7 +238,8 @@ again exactly as written, "sharp" included.
   word by word: a word left unchanged keeps the person's original ink (raw or neatened as
   the region's neatening has it); an edited or added word is set in the person's font
   (spec 003) on the region's line, at the person's size, where the word stands in the
-  text.
+  text, or written there in the person's hand where that is chosen (spec 007 FR-018). Text
+  an app hands a region as from elsewhere can be shown in another hand (spec 007 FR-026).
 - **FR-019**: Words set this way are a different thing from spec 003 FR-043's set words:
   they have no ink, they are drawn from the font alone, and they are never data about the
   person's hand (FR-014). At the neatest strength, a word whose ink is kept stays the
