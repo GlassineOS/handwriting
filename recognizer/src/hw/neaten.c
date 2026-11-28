@@ -28,7 +28,7 @@ static double clampd(double x, double a, double b) { return x < a ? a : x > b ? 
  * "margin=M" sets the shape guard's margin, "tail=0", "bar=0", "frag=0" leave out Neatest's
  * exit-tail, bar-into-a-neighbour and fragment-beside-a-kept-letter rules; words are set on
  * the straight line at the font's lean (FR-043), "cond=1" conditioned on their ink, "cond=2"
- * on their line's (struct hw_neat cond) */
+ * on their line's (struct hw_neat cond); "drawing=F" the factor of hw_neat_drawing */
 static struct { int base, slant, size, space, pull, trace, set, tail, bar, frag, cond; double margin; } on;
 static void knobs(void)
 {
@@ -384,10 +384,15 @@ void hw_neat_drawing(const struct hw_ink *ink, size_t n, double xh, unsigned cha
 		free(h);
 	}
 	if (xh <= 0) return;
+	/* (measurements, not shipped) $GLASSINE_HANDWRITING_NEATEN drawing=F: the factor (a
+	 * looped f is taller than HW_NEAT_DRAWING x-heights in some hands) */
+	double f = HW_NEAT_DRAWING;
+	const char *e = getenv("GLASSINE_HANDWRITING_NEATEN"), *d = e ? strstr(e, "drawing=") : NULL;
+	if (d && atof(d + 8) > 0) f = atof(d + 8);
 	for (size_t j = 0; j < n; j++) {
 		double y0 = INFINITY, y1 = -INFINITY;
 		for (size_t i = 0; i < ink[j].n; i++) { if (ink[j].y[i] < y0) y0 = ink[j].y[i]; if (ink[j].y[i] > y1) y1 = ink[j].y[i]; }
-		if (y1 - y0 > HW_NEAT_DRAWING * xh) keep[j] = 1;
+		if (y1 - y0 > f * xh) keep[j] = 1;
 	}
 }
 
