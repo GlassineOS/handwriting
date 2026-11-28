@@ -317,3 +317,47 @@ out:
 	free(cur); free(prev); free(nx); free(sums); free(back); free(dl); free(dlab); free(lab);
 	return ret;
 }
+
+int hw_aligner_nearest(const struct hw_ink *ink, size_t n, const unsigned *cp, size_t nc, int **own)
+{
+	int ret = -1;
+	int *whole = malloc((n + 1) * sizeof *whole), *word = malloc((nc + 1) * sizeof *word);
+	unsigned char *del = calloc(n + 1, 1);
+	if (!whole || !word || !del) goto out;
+	int w = 0;
+	for (size_t k = 0; k < nc; k++) { word[k] = w; if (cp[k] == ' ') w++; }
+	int seen = -1;
+	for (size_t j = 0; j < n; j++) {
+		whole[j] = -1;
+		if (!own[j] || !ink[j].n) continue;
+		int r = own[j][0], all = r >= 0 && (size_t)r < nc;
+		for (size_t i = 1; all && i < ink[j].n; i++) all = own[j][i] == r;
+		if (all) { whole[j] = r; del[j] = r < seen; }
+		for (size_t i = 0; i < ink[j].n; i++) if (own[j][i] > seen) seen = own[j][i];
+	}
+	for (size_t j = 0; j < n; j++) {
+		if (!del[j]) continue;
+		int r = whole[j], best = -1, cands = 0;
+		double x = 0, bd = 0;
+		for (size_t i = 0; i < ink[j].n; i++) x += ink[j].x[i];
+		x /= (double)ink[j].n;
+		for (size_t k = 0; k < nc; k++) {
+			if (cp[k] != cp[r] || abs(word[k] - word[r]) > 1) continue;
+			cands++;
+			double sx = 0;
+			size_t m = 0;
+			for (size_t a = 0; a < n; a++) {
+				if (del[a] || !own[a]) continue;
+				for (size_t i = 0; i < ink[a].n; i++) if (own[a][i] == (int)k) { sx += ink[a].x[i]; m++; }
+			}
+			if (!m) continue;
+			double d = fabs(sx / (double)m - x);
+			if (best < 0 || d < bd) { bd = d; best = (int)k; }
+		}
+		if (cands > 1 && best >= 0) for (size_t i = 0; i < ink[j].n; i++) own[j][i] = best;
+	}
+	ret = 0;
+out:
+	free(whole); free(word); free(del);
+	return ret;
+}

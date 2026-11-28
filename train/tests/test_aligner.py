@@ -140,3 +140,15 @@ def test_rows_map_each_point_to_its_frame():
     model = A.PointAligner(16, 16)
     with torch.no_grad():
         assert model(torch.from_numpy(x)[None]).shape == (1, nf, A.NCLASS)
+
+
+def test_nearest_delayed_gives_each_dot_to_the_letter_under_it():
+    """as test-engine.c: "iti" with both dots on the first i; an i two words on is no candidate"""
+    xs = [0, 1, 2, 2, 0]
+    st = [np.array([[x + 0.01 * i, -i * 0.3 if j < 3 else 1.0, 0.1 * j] for i in range(3)]) for j, x in enumerate(xs)]
+    own = [np.full(3, k) for k in (0, 1, 2, 0, 0)]
+    got = A.nearest_delayed("iti", st, own)
+    assert [int(p[0]) for p in got] == [0, 1, 2, 2, 0]
+    assert [int(p[0]) for p in own] == [0, 1, 2, 0, 0]  # the input stays as it was
+    far = A.nearest_delayed("i x i", st, [np.full(3, k) for k in (0, 2, 4, 0, 0)])
+    assert int(far[3][0]) == 0

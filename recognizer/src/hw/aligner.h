@@ -48,6 +48,12 @@ int hw_aligner_class(const struct hw_aligned *a, unsigned cp);
  * 0, 1 no path (too few frames, no character), -1 out of memory. */
 int hw_aligner_label(const struct hw_aligned *a, const unsigned *cp, size_t nc, double pen, int **own);
 
+/* A delayed stroke (all of it one character, written after ink of a later one) whose
+ * character comes again in its word or a word beside it goes to the occurrence whose other
+ * ink is horizontally nearest the stroke's centre (the decoding gives it the first of equal
+ * letters: "it is" puts both dots on the first i). Changes only own's delayed strokes. */
+int hw_aligner_nearest(const struct hw_ink *ink, size_t n, const unsigned *cp, size_t nc, int **own);
+
 /* The best monotone split of frames [f0, f1] over the classes cls[0..R) in order (each at
  * least one frame, a blank frame required between two equal classes): per frame the index
  * of its class, into lab (f1 - f0 + 1 of them). 0, 1 too few frames, -1 out of memory. */

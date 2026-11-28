@@ -343,11 +343,48 @@ def class_of(text: str, idx: list[int]) -> list[int]:
     return [LETTERS.index(text[i]) if text[i] in LETTERS else BLANK for i in idx]
 
 
+def nearest_delayed(text: str, strokes: list[np.ndarray], own: list[np.ndarray]) -> list[np.ndarray]:
+    """A delayed stroke (all of it one character, written after ink of a later one) whose
+    character comes again in its word or a word beside it goes to the occurrence whose other
+    ink is horizontally nearest the stroke's centre (as aligner.c hw_aligner_nearest: the
+    decoding gives it the first of equal letters, "it is" puts both dots on the first i)."""
+    own = [np.asarray(p, int).copy() for p in own]
+    n = len(strokes)
+    whole, late, seen = [-1] * n, [False] * n, -1
+    for j in range(n):
+        p = own[j]
+        if not len(p):
+            continue
+        if p[0] >= 0 and p[0] < len(text) and (p == p[0]).all():
+            whole[j], late[j] = int(p[0]), int(p[0]) < seen
+        seen = max(seen, int(p.max()))
+    word = [text[:k].count(" ") for k in range(len(text))]
+    for j in range(n):
+        if not late[j]:
+            continue
+        r = whole[j]
+        x = float(np.asarray(strokes[j], float)[:, 0].mean())
+        cands, best = 0, None
+        for k in range(len(text)):
+            if text[k] != text[r] or abs(word[k] - word[r]) > 1:
+                continue
+            cands += 1
+            xs = [np.asarray(strokes[a], float)[own[a] == k, 0] for a in range(n) if not late[a] and len(own[a])]
+            xs = np.concatenate(xs) if xs else np.zeros(0)
+            if len(xs) and (best is None or abs(xs.mean() - x) < best[0]):
+                best = (abs(float(xs.mean()) - x), k)
+        if cands > 1 and best is not None:
+            own[j][:] = best[1]
+    return own
+
+
 def label_points(model, strokes: list[np.ndarray], text: str, spans: list[list[int]] | None = None,
-                 delay: float | None = None) -> list[np.ndarray]:
+                 delay: float | None = None, nearest: bool = False) -> list[np.ndarray]:
     """Each point's character (index into text; -1 none): text alone (spans None), or each
     stroke over the letters its span lists. delay (text alone): a stroke may be a delayed one
-    of a letter already passed, at that log-penalty (decode_delayed); None: never."""
+    of a letter already passed, at that log-penalty (decode_delayed); None: never. nearest
+    (with delay): then each delayed stroke to the nearest of equal letters (nearest_delayed;
+    the recognizer's GLASSINE_HANDWRITING_NEATEN=nearest=1, measurements, not shipped)."""
     x, maps = features_for(model, strokes)
     out = [np.full(len(q), -1, int) for q in strokes]
     if not len(x):
@@ -376,7 +413,8 @@ def label_points(model, strokes: list[np.ndarray], text: str, spans: list[list[i
         for t in range(len(fc) - 1, -1, -1):
             if fc[t] < 0 and t + 1 < len(fc):
                 fc[t] = fc[t + 1]
-        return [fc[m] if len(m) else np.zeros(0, int) for m in maps]
+        got = [fc[m] if len(m) else np.zeros(0, int) for m in maps]
+        return nearest_delayed(text, strokes, got) if nearest and delay is not None else got
     for j, q in enumerate(strokes):
         if not len(q):
             continue

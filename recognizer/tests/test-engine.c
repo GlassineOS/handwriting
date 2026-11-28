@@ -1142,6 +1142,23 @@ static void test_aligner(void)
 	CHECK(o0[0] == 0 && o1[0] == 1 && o1[7] == 2 && o2[0] == 0 && o2[3] == 0, "the late stroke goes to the a: %d %d %d", o1[7], o2[0], o2[3]);
 	CHECK(!hw_aligner_label(&b, cp, 3, -1e6, own), "label");
 	CHECK(o2[0] == 2, "at a penalty no stroke pays, the chain's last letter: %d", o2[0]);
+	/* the nearest of equal letters: "iti", both dots given to the first i by the decoding */
+	struct hw_ink ik[5] = { { 0 } };
+	double xs[5] = { 0, 1, 2, 2, 0 };
+	for (int j = 0; j < 5; j++) for (int i = 0; i < 3; i++) hw_ink_add(&ik[j], xs[j] + 0.01 * i, j < 3 ? -i * 0.3 : 1.0, 0.1 * j, NAN);
+	int d0[3] = { 0, 0, 0 }, d1[3] = { 1, 1, 1 }, d2[3] = { 2, 2, 2 }, d3[3] = { 0, 0, 0 }, d4[3] = { 0, 0, 0 };
+	int *dn[5] = { d0, d1, d2, d3, d4 };
+	unsigned iti[3] = { 'i', 't', 'i' };
+	CHECK(!hw_aligner_nearest(ik, 5, iti, 3, dn), "nearest");
+	CHECK(d3[0] == 2 && d3[2] == 2 && d4[0] == 0 && d0[0] == 0 && d2[0] == 2,
+	      "each dot to the i under it: %d %d", d3[0], d4[0]);
+	/* two words apart ("i x i", the i two words on): a late dot stays where it was */
+	unsigned far[5] = { 'i', ' ', 'x', ' ', 'i' };
+	int e0[3] = { 0, 0, 0 }, e1[3] = { 2, 2, 2 }, e2[3] = { 4, 4, 4 }, e3[3] = { 0, 0, 0 }, e4[3] = { 0, 0, 0 };
+	int *en[5] = { e0, e1, e2, e3, e4 };
+	CHECK(!hw_aligner_nearest(ik, 5, far, 5, en), "nearest");
+	CHECK(e3[0] == 0, "an i two words on is not a candidate: %d", e3[0]);
+	for (int j = 0; j < 5; j++) hw_ink_free(&ik[j]);
 }
 
 int main(int argc, char **argv)
